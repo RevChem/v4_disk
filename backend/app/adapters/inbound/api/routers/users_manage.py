@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.adapters.inbound.api.deps import get_client_ip, require_developer_access
+from app.adapters.inbound.api.deps import get_client_ip, require_manage_users_access
 from app.adapters.outbound.auth import hibp
 from app.adapters.outbound.auth.security import hash_password
 from app.adapters.outbound.persistence import repositories as repo
@@ -24,7 +24,7 @@ def _user_read(user: User) -> UserRead:
 @router.get("", response_model=UserListOut)
 def list_users(
     db: Session = Depends(get_db),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_manage_users_access),
 ):
     return UserListOut(items=[_user_read(u) for u in repo.list_users(db)])
 
@@ -34,7 +34,7 @@ def create_user(
     body: UserAdminCreateIn,
     request: Request,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_developer_access),
+    actor: User = Depends(require_manage_users_access),
 ):
     try:
         hibp.assert_password_not_pwned(body.password)
@@ -79,7 +79,7 @@ def update_user(
     body: UserAdminUpdateIn,
     request: Request,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_developer_access),
+    actor: User = Depends(require_manage_users_access),
 ):
     user = repo.get_user_by_id(db, user_id)
     if user is None:
@@ -132,7 +132,7 @@ def update_user(
 def get_user_profile(
     user_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_manage_users_access),
 ):
     user = repo.get_user_by_id(db, user_id)
     if user is None:

@@ -51,6 +51,9 @@ class User(Base):
     def is_developer(self) -> bool:
         return self.role == "developer"
 
+    def can_manage_users(self) -> bool:
+        return self.role == "developer"
+
     def is_admin(self) -> bool:
         return self.role == "admin"
 

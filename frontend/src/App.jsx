@@ -359,6 +359,7 @@ export default function App() {
 
   function handleNavChange(id) {
     if (id === "users") {
+      if (!isDeveloper) return;
       setUsersModalOpen(true);
       return;
     }
@@ -554,7 +555,11 @@ export default function App() {
           onClose={() => setLogsModalOpen(false)}
           title="Логи"
         >
-          <LogsPage focus={logsFocus} onFocusConsumed={() => setLogsFocus(null)} />
+          <LogsPage
+            focus={logsFocus}
+            onFocusConsumed={() => setLogsFocus(null)}
+            canViewUserEvents={isDeveloper}
+          />
         </PageModalDialog>
       )}
       {canGenerate && (user?.role === "developer" || user?.role === "admin") && (

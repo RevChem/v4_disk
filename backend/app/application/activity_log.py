@@ -263,6 +263,9 @@ def build_activity_feed(
     user_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     report_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
+    if viewer.role != "developer":
+        user_events = []
+
     if see_all:
         user_rows = (
             db.query(User)

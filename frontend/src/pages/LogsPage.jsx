@@ -188,8 +188,8 @@ function matchesUserFilter(ev, filterUserId) {
   return String(ev.user_id) === String(filterUserId);
 }
 
-export default function LogsPage({ focus, onFocusConsumed }) {
-  const [tab, setTab] = useState("users");
+export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = false }) {
+  const [tab, setTab] = useState(canViewUserEvents ? "users" : "reports");
   const [feed, setFeed] = useState({ user_events: [], report_events: [], users: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -217,12 +217,19 @@ export default function LogsPage({ focus, onFocusConsumed }) {
   }, [loadFeed]);
 
   useEffect(() => {
+    if (!canViewUserEvents && tab === "users") {
+      setTab("reports");
+    }
+  }, [canViewUserEvents, tab]);
+
+  useEffect(() => {
     if (!focus) return;
-    if (focus.tab) setTab(focus.tab);
+    const nextTab = focus.tab === "users" && !canViewUserEvents ? "reports" : focus.tab;
+    if (nextTab) setTab(nextTab);
     if (focus.jobId) setSelectedJobId(focus.jobId);
     if (focus.reportId) setSelectedReportId(focus.reportId);
     onFocusConsumed?.();
-  }, [focus, onFocusConsumed]);
+  }, [focus, onFocusConsumed, canViewUserEvents]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -323,22 +330,28 @@ export default function LogsPage({ focus, onFocusConsumed }) {
             </Alert>
           )}
 
-          <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ minHeight: 40 }}>
-            <Tab
-              value="users"
-              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 18 }} />}
-              iconPosition="start"
-              label="Пользователи"
-              sx={{ minHeight: 40, py: 0.5 }}
-            />
-            <Tab
-              value="reports"
-              icon={<DescriptionOutlinedIcon sx={{ fontSize: 18 }} />}
-              iconPosition="start"
-              label="Сводки"
-              sx={{ minHeight: 40, py: 0.5 }}
-            />
-          </Tabs>
+          {canViewUserEvents ? (
+            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ minHeight: 40 }}>
+              <Tab
+                value="users"
+                icon={<PersonOutlineRoundedIcon sx={{ fontSize: 18 }} />}
+                iconPosition="start"
+                label="Пользователи"
+                sx={{ minHeight: 40, py: 0.5 }}
+              />
+              <Tab
+                value="reports"
+                icon={<DescriptionOutlinedIcon sx={{ fontSize: 18 }} />}
+                iconPosition="start"
+                label="Сводки"
+                sx={{ minHeight: 40, py: 0.5 }}
+              />
+            </Tabs>
+          ) : (
+            <Typography variant="subtitle2" fontWeight={700}>
+              Сводки
+            </Typography>
+          )}
 
           {loading && (
             <Stack direction="row" spacing={1} alignItems="center">
