@@ -23,7 +23,9 @@ TZ_MSK = timezone(timedelta(hours=3))
 logger = logging.getLogger(__name__)
 
 DAY_START_HOUR = 6
-MTFMI_TASK_BATCH_SIZE = 200
+# Cropwise принимает machine_task_id=1,2,3,... в одном GET (как svodki/plan/2_main_ideal_compact.py).
+MTFMI_HTTP_BATCH_SIZE = 300
+MACHINE_TASKS_WT_BATCH_SIZE = 25
 MTFMI_SEMAPHORE_LIMIT = 40  # как в works (2).py
 
 # Инкрементальная синхронизация (Cropwise API: /changes, /changes/ids, /mass_request —
@@ -367,6 +369,10 @@ def _build_field_firm(fields: list[dict], fgs: list[dict], gfs: list[dict]) -> d
     return result
 
 
+def _chunked_ints(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 async def _pages(client: httpx.AsyncClient, url: str, params: dict, sem: asyncio.Semaphore) -> list[dict]:
     items: list[dict] = []
     from_id = 0
@@ -388,11 +394,94 @@ async def _pages(client: httpx.AsyncClient, url: str, params: dict, sem: asyncio
 
 
 async def _mtfmi_async(base_url: str, token: str, task_ids: list[int]) -> dict[int, list[dict]]:
+    """mtfmi пачками machine_task_id через запятую; при ошибке батча — поштучный fallback."""
+    unique = sorted({int(t) for t in task_ids if t is not None})
+    if not unique:
+        return {}
+
     sem = asyncio.Semaphore(MTFMI_SEMAPHORE_LIMIT)
-    url = f"{base_url}/machine_task_field_mapping_items"
+    url = f"{base_url.rstrip('/')}/machine_task_field_mapping_items"
+    mtfmi_map: dict[int, list[dict]] = defaultdict(list)
+    batches = _chunked_ints(unique, MTFMI_HTTP_BATCH_SIZE)
+    if len(unique) > 20:
+        logger.info(
+            "works_summary: mtfmi batch %s tasks → %s HTTP requests (batch_size=%s)",
+            len(unique),
+            len(batches),
+            MTFMI_HTTP_BATCH_SIZE,
+        )
+
     async with httpx.AsyncClient(headers={"X-User-Api-Token": token}, timeout=120) as client:
-        results = await asyncio.gather(*[_pages(client, url, {"machine_task_id": tid}, sem) for tid in task_ids])
-    return {tid: items for tid, items in zip(task_ids, results)}
+        batch_results = await asyncio.gather(
+            *[
+                _pages(client, url, {"machine_task_id": ",".join(str(t) for t in batch)}, sem)
+                for batch in batches
+            ],
+            return_exceptions=True,
+        )
+        failed: list[int] = []
+        for batch, res in zip(batches, batch_results):
+            if isinstance(res, BaseException):
+                logger.warning(
+                    "works_summary: mtfmi batch failed (%s tasks), retry per-task",
+                    len(batch),
+                    exc_info=res,
+                )
+                failed.extend(batch)
+                continue
+            for item in res:
+                tid = item.get("machine_task_id")
+                if tid is not None:
+                    mtfmi_map[int(tid)].append(item)
+
+        if failed:
+            logger.info("works_summary: mtfmi per-task fallback for %s tasks", len(failed))
+            retry_results = await asyncio.gather(
+                *[_pages(client, url, {"machine_task_id": tid}, sem) for tid in failed],
+                return_exceptions=True,
+            )
+            for tid, res in zip(failed, retry_results):
+                if isinstance(res, BaseException):
+                    continue
+                mtfmi_map[tid] = list(res)
+
+    return dict(mtfmi_map)
+
+
+def _fetch_machine_tasks_batched(
+    session: requests.Session,
+    base_url: str,
+    wt_ids: set[int],
+    base_params: dict,
+) -> list[dict]:
+    """GET machine_tasks с work_type_id=1,2,3,... пачками (как svodki/plan)."""
+    wt_list = sorted(wt_ids)
+    if not wt_list:
+        return []
+    all_rows: list[dict] = []
+    fallback_wts: list[int] = []
+    for batch in _chunked_ints(wt_list, MACHINE_TASKS_WT_BATCH_SIZE):
+        params = {**base_params, "work_type_id": ",".join(str(w) for w in batch)}
+        try:
+            rows = _get_all(session, base_url, "machine_tasks", params)
+        except Exception:
+            fallback_wts.extend(batch)
+            continue
+        if not rows:
+            fallback_wts.extend(batch)
+            continue
+        all_rows.extend(rows)
+    for wt in dict.fromkeys(fallback_wts):
+        try:
+            all_rows.extend(_get_all(session, base_url, "machine_tasks", {**base_params, "work_type_id": wt}))
+        except Exception:
+            continue
+    by_id: dict[int, dict] = {}
+    for row in all_rows:
+        rid = row.get("id")
+        if rid is not None:
+            by_id[int(rid)] = row
+    return list(by_id.values())
 
 
 def _load_field_crop(
@@ -426,7 +515,7 @@ def _task_contributions(
 ) -> list[dict]:
     """Вклад одной задачи (machine_task) в сводку — список {year,date,group,crop,firm,area}.
 
-    Общая логика для полного построения кэша (_collect_for_year) и для инкрементального
+    Общая логика для полного построения кэша (_collect_contribs_for_tasks) и для инкрементального
     обновления по одной изменившейся задаче (update_cache_incremental) — не должна расходиться,
     иначе полный пересчёт и точечное обновление после /changes дадут разные цифры.
     """
@@ -476,77 +565,47 @@ def _task_contributions(
     return out
 
 
-def _collect_for_year(
+def _in_period_tasks_for_year(
     session: requests.Session,
     base_url: str,
-    token: str,
     season_year: int,
     d_from: date,
     d_to: date,
+    all_wt_ids: set[int],
+) -> list[dict]:
+    season_start = datetime(season_year, 1, 1, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK)
+    cutoff_end = datetime(d_to.year, d_to.month, d_to.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
+    base_params = {
+        "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "end_time_lt": cutoff_end.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    all_tasks = _fetch_machine_tasks_batched(session, base_url, all_wt_ids, base_params)
+    all_tasks = [t for t in all_tasks if str(t.get("status") or "").strip().lower() != "canceled"]
+    in_period: list[dict] = []
+    for t in all_tasks:
+        if _get_shift(t.get("end_time"), d_from, d_to):
+            in_period.append(t)
+    logger.info("works_summary: year=%s in_period_tasks=%s", season_year, len(in_period))
+    return in_period
+
+
+def _collect_contribs_for_tasks(
+    in_period: list[dict],
+    mtfmi: dict[int, list[dict]],
     field_crop: dict[int, str],
     field_firm: dict[int, str],
     wt_to_group: dict[int, str],
-    all_wt_ids: set[int],
-) -> tuple[dict[str, dict[str, dict[str, dict[date, float]]]], dict[int, list[dict]]]:
-    """Возвращает (агрегат group→crop→firm→date→area, вклад по task_id) — второе нужно
-    исключительно для инкрементального обновления кэша по /changes."""
-    season_start = datetime(season_year, 1, 1, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK)
-    cutoff_end = datetime(d_to.year, d_to.month, d_to.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
-
-    all_tasks: list[dict] = []
-    for wt_id in sorted(all_wt_ids):
-        all_tasks.extend(
-            _get_all(
-                session,
-                base_url,
-                "machine_tasks",
-                {
-                    "work_type_id": wt_id,
-                    "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "end_time_lt": cutoff_end.strftime("%Y-%m-%dT%H:%M:%S"),
-                },
-            )
-        )
-    all_tasks = [t for t in all_tasks if str(t.get("status") or "").strip().lower() != "canceled"]
-
-    task_shift: dict[int, tuple[date, datetime]] = {}
-    for t in all_tasks:
-        info = _get_shift(t.get("end_time"), d_from, d_to)
-        if info:
-            task_shift[int(t["id"])] = info
-    in_period = [t for t in all_tasks if int(t["id"]) in task_shift]
-    if not in_period:
-        return {}, {}
-
-    task_ids = [int(t["id"]) for t in in_period]
-    total_task_ids = len(task_ids)
-    logger.info(
-        "works_summary: year=%s in_period_tasks=%s mtfmi_batch_size=%s",
-        season_year,
-        total_task_ids,
-        MTFMI_TASK_BATCH_SIZE,
-    )
-    mtfmi: dict[int, list[dict]] = {}
-    for start in range(0, total_task_ids, MTFMI_TASK_BATCH_SIZE):
-        chunk = task_ids[start : start + MTFMI_TASK_BATCH_SIZE]
-        mtfmi.update(asyncio.run(_mtfmi_async(base_url, token, chunk)))
-        logger.info(
-            "works_summary: year=%s mtfmi_progress=%s/%s",
-            season_year,
-            min(start + len(chunk), total_task_ids),
-            total_task_ids,
-        )
-    data: dict[str, dict[str, dict[str, dict[date, float]]]] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-    )
+    season_year: int,
+    d_from: date,
+    d_to: date,
+) -> dict[int, list[dict]]:
     task_contribs: dict[int, list[dict]] = {}
     for task in in_period:
         tid = int(task["id"])
-        contribs = _task_contributions(task, mtfmi.get(tid, []), field_firm, field_crop, wt_to_group, season_year, d_from, d_to)
-        task_contribs[tid] = contribs
-        for c in contribs:
-            data[c["group"]][c["crop"]][c["firm"]][date.fromisoformat(c["date"])] += c["area"]
-    return data, task_contribs
+        task_contribs[tid] = _task_contributions(
+            task, mtfmi.get(tid, []), field_firm, field_crop, wt_to_group, season_year, d_from, d_to
+        )
+    return task_contribs
 
 
 def _works_bounds(season_year: int) -> tuple[date, date, date, date]:
@@ -642,12 +701,22 @@ def _build_rows() -> dict:
     all_wt_ids: set[int] = {wt_id for _, ids in WORK_GROUPS for wt_id in ids}
 
     logger.info("works_summary: collect current season=%s", season_year)
-    _data_curr, task_contribs_curr = _collect_for_year(
-        session, base_url, token, season_year, d_from, d_to, field_crop_curr, field_firm, wt_to_group, all_wt_ids
+    curr_in_period = _in_period_tasks_for_year(
+        session, base_url, season_year, d_from, d_to, all_wt_ids
     )
     logger.info("works_summary: collect previous season=%s", prev_year)
-    _data_prev, task_contribs_prev = _collect_for_year(
-        session, base_url, token, prev_year, d_from_prev, d_to_prev, field_crop_prev, field_firm, wt_to_group, all_wt_ids
+    prev_in_period = _in_period_tasks_for_year(
+        session, base_url, prev_year, d_from_prev, d_to_prev, all_wt_ids
+    )
+    all_task_ids = sorted(
+        {int(t["id"]) for t in curr_in_period} | {int(t["id"]) for t in prev_in_period}
+    )
+    mtfmi = asyncio.run(_mtfmi_async(base_url, token, all_task_ids)) if all_task_ids else {}
+    task_contribs_curr = _collect_contribs_for_tasks(
+        curr_in_period, mtfmi, field_crop_curr, field_firm, wt_to_group, season_year, d_from, d_to
+    )
+    task_contribs_prev = _collect_contribs_for_tasks(
+        prev_in_period, mtfmi, field_crop_prev, field_firm, wt_to_group, prev_year, d_from_prev, d_to_prev
     )
 
     # id задач в Cropwise глобальны (не привязаны к сезону) — пересечений между двумя
@@ -736,9 +805,8 @@ def update_cache_incremental() -> dict:
     3. Объединяем id затронутых задач из обоих источников.
     4. POST /machine_tasks/mass_request — свежее состояние именно этих задач (здесь mass_request
        наконец применим: id уже известны заранее, это не фильтрация по чужому ключу).
-    5. Для этого же (небольшого) набора задач — mtfmi по одному запросу на задачу, как раньше;
-       набор мал, поэтому это быстро и не требует комма-разделённого батчинга (который, как
-       выяснилось, Cropwise не поддерживает).
+    5. mtfmi для затронутых задач — батчами machine_task_id через запятую (как svodki/plan),
+       с поштучным fallback при ошибке батча.
     6. Пересчитываем вклад именно этих задач через _task_contributions (та же функция, что и при
        полном построении — исключает расхождение логики), заменяем их в tasks_map, остальные вклады
        не трогаем. rows/groups/crops/firms пересобираем из tasks_map — чистая агрегация в памяти.
@@ -805,10 +873,7 @@ def update_cache_incremental() -> dict:
     fresh_tasks = _mass_request(session, base_url, "machine_tasks", changed_id_list)
     task_by_id = {int(t["id"]): t for t in fresh_tasks if t.get("id") is not None}
 
-    mtfmi_by_task: dict[int, list[dict]] = {}
-    for start in range(0, len(changed_id_list), MTFMI_TASK_BATCH_SIZE):
-        chunk = changed_id_list[start : start + MTFMI_TASK_BATCH_SIZE]
-        mtfmi_by_task.update(asyncio.run(_mtfmi_async(base_url, token, chunk)))
+    mtfmi_by_task = asyncio.run(_mtfmi_async(base_url, token, changed_id_list)) if changed_id_list else {}
 
     tasks_map: dict[int, list[dict]] = {int(k): v for k, v in (cache.get("tasks") or {}).items()}
     for tid in changed_id_list:
