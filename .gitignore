@@ -6,7 +6,6 @@ __pycache__/
 *.sqlite
 *.sqlite3
 node_modules/
-frontend/dist/
 uploads/
 backend/uploads/
 .venv/
@@ -17,7 +16,6 @@ venv/
 
 # Временные копии / бенчмарки / дубликат plan
 _bench_plan_zip*/
-plan/
 _reference/
 _ref_frontend/
 
@@ -27,9 +25,7 @@ all_operations_seasons_*.json
 work_seasons_*.json
 work_json_*.json
 compare_report*.json
-proverka_verify/
 
 # Ручные бэкапы скриптов
 *.bak*
 *.bak_before_*
-.ssh/

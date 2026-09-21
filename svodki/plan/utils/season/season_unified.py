@@ -1,0 +1,674 @@
+"""
+Единый источник сезонов по группам работ (WORK_GROUPS).
+
+Данные пользователя: uploads/season_ranges.json (редактор планов).
+Правила (код): GROUP_SEASON_RULE ниже.
+
+Все потребители (PDF, сводки 1/2, proverka) вызывают resolve_group_season_config().
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+# Группа работ → season_rule
+GROUP_SEASON_RULE: dict[str, str] = {
+    "1.1 Внесение минеральных удобрений": "both_years",
+    "2.1 Боронование": "none",
+    "2.4 Вспашка": "plow_year_plus_one",
+    "2.8 Глубокорыхление": "plow_year_plus_one",
+    "2.9 Дискование": "both_years",
+    "2.11 Культивация": "none",
+    "2.12 Прикатывание": "none",
+    "2.6 Фрезерование": "none",
+    "2.7 Гребнеобразование": "none",
+    "3.1 Опрыскивание": "year_plus_one",
+    "3.2 Опрыскивание (овощи)": "year_plus_one",
+    "4.0 Посев": "year_plus_one",
+    "4.1 Посев (овощи)": "year_plus_one",
+    "5.0 Уборка": "none",
+    "5.4 Уборка картофеля, лука": "none",
+}
+
+# season_rule тематической сводки (report_id) — proverka ReportSpec
+REPORT_SEASON_RULE: dict[str, str] = {
+    "3": "both_years",
+    "4": "none",
+    "5": "year_plus_one",
+    "6": "year_plus_one",
+    "7": "both_years",
+    "8": "none",
+    "9": "plow_year_plus_one",
+    "11": "none",
+}
+
+# Приоритет глобальных env (SEASON_YEAR / SEASON_START_DATE) при генерации PDF
+_GLOBAL_ENV_GROUP_PRIORITY = (
+    "5.0 Уборка",
+    "2.4 Вспашка",
+    "4.0 Посев",
+    "3.1 Опрыскивание",
+    "1.1 Внесение минеральных удобрений",
+)
+
+_STORE_CACHE: dict[str, Any] | None = None
+_STORE_CACHE_DATE: date | None = None
+
+
+def clear_season_cache() -> None:
+    global _STORE_CACHE, _STORE_CACHE_DATE
+    _STORE_CACHE = None
+    _STORE_CACHE_DATE = None
+
+
+# Общие legacy-ключи (SVODKI_SPRAY_*, SVODKI_SEEDING_*) перезаписывались последней
+# группой в пачке — в inject больше не пишем, только per-group ключи ниже.
+_COLLIDING_SHARED_ENV_KEYS = frozenset({
+    "SVODKI_SPRAY_SEASON_YEARS",
+    "SVODKI_SPRAY_TASK_SEASON_YEARS",
+    "SVODKI_SPRAY_PERIOD_START",
+    "SVODKI_SPRAY_PERIOD_END",
+    "SVODKI_SEEDING_SEASON_YEARS",
+})
+
+
+def _group_env_slug(group_name: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", str(group_name or "").strip())
+    return slug.strip("_")[:96]
+
+
+def group_env_key(group_name: str, suffix: str) -> str:
+    """Per-group env: SVODKI_GRP_<группа>_HISTORY_YEARS и т.д."""
+    return f"SVODKI_GRP_{_group_env_slug(group_name)}_{suffix}"
+
+
+def _years_from_env_var(key: str) -> list[int]:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return []
+    return _normalize_years([part.strip() for part in raw.split(",") if part.strip()])
+
+
+def _apply_per_group_env(name: str, ov: dict[str, Any]) -> None:
+    hist = _years_from_env_var(group_env_key(name, "HISTORY_YEARS"))
+    if hist:
+        ov["history_years"] = hist
+    task = _years_from_env_var(group_env_key(name, "TASK_SEASON_YEARS"))
+    if task:
+        ov["task_season_years"] = task
+    ps = os.environ.get(group_env_key(name, "PERIOD_START"), "").strip()
+    if ps:
+        ov["period_start"] = ps.split("T")[0]
+    pe = os.environ.get(group_env_key(name, "PERIOD_END"), "").strip()
+    if pe:
+        ov["period_end"] = pe.split("T")[0]
+
+
+def season_rule_for_group(group_name: str) -> str:
+    return GROUP_SEASON_RULE.get(str(group_name or "").strip(), "none")
+
+
+def season_rule_for_report(report_id: str) -> str:
+    return REPORT_SEASON_RULE.get(str(report_id).strip(), "none")
+
+
+def task_years_from_rule(season_rule: str, report_date: date) -> list[int]:
+    y = report_date.year
+    if season_rule in ("year_plus_one", "plow_year_plus_one"):
+        return [y + 1]
+    if season_rule == "report_year":
+        return [y]
+    if season_rule == "both_years":
+        return [y, y + 1]
+    return []
+
+
+def history_years_from_rule(season_rule: str, report_date: date) -> list[int]:
+    y = report_date.year
+    if season_rule in ("year_plus_one", "plow_year_plus_one", "both_years"):
+        return [y, y + 1]
+    if season_rule == "report_year":
+        return [y]
+    return [y]
+
+
+def default_task_years_for_group(group_name: str, report_date: date) -> list[int]:
+    return task_years_from_rule(season_rule_for_group(group_name), report_date)
+
+
+def default_history_years_for_group(group_name: str, report_date: date) -> list[int]:
+    return history_years_from_rule(season_rule_for_group(group_name), report_date)
+
+
+def default_task_years_for_report_rule(season_rule: str, report_date: date) -> list[int]:
+    return task_years_from_rule(season_rule, report_date)
+
+
+def default_history_years_for_report_rule(season_rule: str, report_date: date) -> list[int]:
+    return history_years_from_rule(season_rule, report_date)
+
+
+def plow_only_for_rule(season_rule: str) -> bool:
+    return season_rule == "plow_year_plus_one"
+
+
+def applies_task_season_filter(group_name: str) -> bool:
+    """Нужно ли фильтровать machine_task.season для этой группы."""
+    rule = season_rule_for_group(group_name)
+    if rule == "none":
+        return False
+    if rule == "plow_year_plus_one":
+        return group_name.strip() == "2.4 Вспашка"
+    return True
+
+
+def merge_task_years_from_file(
+    season_rule: str,
+    report_date: date,
+    group_years: list[int],
+    *,
+    has_file_override: bool,
+) -> list[int]:
+    """
+    Выбор сезонов из редактора планов важнее правила в коде.
+
+    Ранее для year_plus_one здесь оставался только последний год: выбор
+    «2026 и 2027» в редакторе превращался в один сезон 2027, и опрыскивание
+    считалось 2713.89 га вместо 6215.87 га за оба сезона.
+    """
+    if has_file_override and group_years:
+        if season_rule in (
+            "year_plus_one", "plow_year_plus_one", "both_years", "report_year",
+        ):
+            return list(group_years)
+    return default_task_years_for_report_rule(season_rule, report_date)
+
+
+def _normalize_years(raw: Any) -> list[int]:
+    years: list[int] = []
+    if raw is None:
+        return years
+    items = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    for item in items:
+        try:
+            y = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1990 <= y <= 2100:
+            years.append(y)
+    return sorted(set(years))
+
+
+def _years_from_meta(meta: dict | None) -> list[int]:
+    if not meta:
+        return []
+    years = _normalize_years(meta.get("season_years"))
+    if years:
+        return years
+    return _normalize_years(meta.get("season_year"))
+
+
+def _parse_iso_date(raw: Any) -> date | None:
+    text = str(raw or "").strip().split("T")[0]
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _season_ranges_path() -> Path | None:
+    configured = (os.environ.get("SVODKI_SEASON_RANGES_PATH") or "").strip()
+    if configured:
+        return Path(configured)
+    upload = (os.environ.get("SVODKI_UPLOAD_DIR") or os.environ.get("UPLOAD_DIR") or "").strip()
+    if upload:
+        return Path(upload) / "season_ranges.json"
+    return None
+
+
+def load_season_store(report_date: date | None = None, *, reload: bool = False) -> dict[str, Any]:
+    """season_ranges.json + calendar_seasons."""
+    global _STORE_CACHE, _STORE_CACHE_DATE
+    rd = report_date or date.today()
+    if not reload and _STORE_CACHE is not None and _STORE_CACHE_DATE == rd:
+        return _STORE_CACHE
+
+    try:
+        from season_calendar import load_season_ranges_store
+
+        store = load_season_ranges_store(rd)
+    except ImportError:
+        path = _season_ranges_path()
+        raw: dict[str, Any] = {}
+        if path and path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except (OSError, json.JSONDecodeError):
+                pass
+        by_group: dict[str, Any] = {}
+        bg = raw.get("by_group")
+        if isinstance(bg, dict):
+            by_group = {str(k): v for k, v in bg.items() if isinstance(v, dict)}
+        store = {"calendar_seasons": raw.get("calendar_seasons") or {}, "by_group": by_group}
+
+    _STORE_CACHE = store
+    _STORE_CACHE_DATE = rd
+    return store
+
+
+def default_period_start_for_group(group_name: str, report_date: date) -> date:
+    name = str(group_name or "").strip()
+    if name.startswith("5.0 Уборка"):
+        raw = (
+            os.environ.get("SVODKI_COMBINE_SEASON_START")
+            or os.environ.get("SVODKI_SEASON_START_DATE")
+            or os.environ.get("SEASON_START_DATE")
+            or ""
+        ).strip()
+        if raw:
+            parsed = _parse_iso_date(raw)
+            if parsed:
+                return parsed
+        start = date(report_date.year, 6, 1)
+        if report_date < start:
+            return date(report_date.year - 1, 6, 1)
+        return start
+    if name.startswith("2.1 "):
+        return date(report_date.year, 1, 1)
+    if name.startswith("1.1 ") or name.startswith("3.1 ") or name.startswith("3.2 "):
+        return date(report_date.year, 3, 1)
+    if "Уборка картофеля" in name or (name.startswith("5.") and "овощ" in name.lower()):
+        return date(report_date.year, 3, 1)
+    raw = (os.environ.get("SVODKI_SEASON_START_DATE") or os.environ.get("SEASON_START_DATE") or "").strip()
+    if raw:
+        parsed = _parse_iso_date(raw)
+        if parsed:
+            return parsed
+    return date(report_date.year, 3, 14)
+
+
+def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any]:
+    """Переопределения из env subprocess (inject_season_range_env)."""
+    name = str(group_name or "").strip()
+    ov: dict[str, Any] = {}
+    _apply_per_group_env(name, ov)
+
+    if name.startswith("1.1 "):
+        ps = os.environ.get("SVODKI_FERT_PERIOD_START", "").strip()
+        pe = os.environ.get("SVODKI_FERT_PERIOD_END", "").strip()
+        if ps and "period_start" not in ov:
+            ov["period_start"] = ps.split("T")[0]
+        if pe and "period_end" not in ov:
+            ov["period_end"] = pe.split("T")[0]
+        if "history_years" not in ov:
+            fert_years = _years_from_env_var("SVODKI_FERT_SEASON_YEARS")
+            if fert_years:
+                ov["history_years"] = fert_years
+
+    if name.startswith("3.1 ") or name.startswith("3.2 ") or "Опрыск" in name:
+        if "history_years" not in ov:
+            spray_hist = _years_from_env_var("SVODKI_SPRAY_SEASON_YEARS")
+            if spray_hist:
+                ov["history_years"] = spray_hist
+        if "task_season_years" not in ov:
+            spray_task = _years_from_env_var("SVODKI_SPRAY_TASK_SEASON_YEARS")
+            if spray_task:
+                ov["task_season_years"] = spray_task
+        ps = os.environ.get("SVODKI_SPRAY_PERIOD_START", "").strip()
+        pe = os.environ.get("SVODKI_SPRAY_PERIOD_END", "").strip()
+        if ps and "period_start" not in ov:
+            ov["period_start"] = ps.split("T")[0]
+        if pe and "period_end" not in ov:
+            ov["period_end"] = pe.split("T")[0]
+
+    if name.startswith("4.0 Посев") or name.startswith("4.1 Посев"):
+        if "history_years" not in ov:
+            seed_years = _years_from_env_var("SVODKI_SEEDING_SEASON_YEARS")
+            if seed_years:
+                ov["history_years"] = seed_years
+
+    if name.startswith("5.0 Уборка"):
+        ps = (
+            os.environ.get("SVODKI_COMBINE_SEASON_START")
+            or os.environ.get("SVODKI_SEASON_START_DATE")
+            or os.environ.get("SEASON_START_DATE")
+            or ""
+        ).strip()
+        if ps:
+            ov["period_start"] = ps.split("T")[0]
+
+    if name.startswith("2.4 Вспашка"):
+        ps = (os.environ.get("SVODKI_SEASON_START_DATE") or os.environ.get("SEASON_START_DATE") or "").strip()
+        if ps:
+            ov["period_start"] = ps.split("T")[0]
+
+    rule = season_rule_for_group(name)
+    task_str = (os.environ.get("SEASON_TASK_YEAR_STR") or "").strip()
+    season_year_raw = (os.environ.get("SEASON_YEAR") or "").strip()
+    if applies_task_season_filter(name) and "task_season_years" not in ov:
+        if rule == "both_years":
+            # МУ/диск: 2026+2027 — не подменять одиночным SEASON_TASK_YEAR_STR из batch env.
+            hist = ov.get("history_years") or []
+            if len(hist) >= 2:
+                ov["task_season_years"] = list(hist)
+        elif rule in ("year_plus_one", "plow_year_plus_one"):
+            if task_str:
+                ov["task_season_years"] = _normalize_years([task_str])
+            elif season_year_raw:
+                ov["task_season_years"] = _normalize_years([season_year_raw])
+
+    global_years = _normalize_years(
+        [p.strip() for p in os.environ.get("SVODKI_SEASON_YEARS", "").split(",") if p.strip()]
+    )
+    if global_years and "history_years" not in ov:
+        ov["history_years"] = global_years
+
+    _ = report_date
+    return ov
+
+
+def resolve_group_season_config(
+    group_name: str,
+    report_date: date,
+    *,
+    store: dict[str, Any] | None = None,
+    run_override: dict[str, Any] | None = None,
+    reload: bool = False,
+) -> dict[str, Any]:
+    """
+    Итоговые сезоны и диапазон для одной группы работ.
+    Приоритет: run_override > season_ranges.json (редактор) > env > defaults.
+    """
+    name = str(group_name or "").strip()
+    rule = season_rule_for_group(name)
+    st = store if store is not None else load_season_store(report_date, reload=reload)
+    calendar = st.get("calendar_seasons") or {}
+    by_group = st.get("by_group") or {}
+    gm = by_group.get(name) or {}
+
+    file_years = _years_from_meta(gm)
+    has_file_override = bool(file_years)
+
+    run_ov = dict(run_override or {})
+    ov = dict(run_ov)
+    env_ov = _env_override_for_group(name, report_date)
+    for key, val in env_ov.items():
+        ov.setdefault(key, val)
+
+    if "history_years" in run_ov:
+        history_years = _normalize_years(run_ov.get("history_years"))
+    elif has_file_override:
+        history_years = list(file_years)
+    else:
+        history_years = _normalize_years(ov.get("history_years"))
+        if not history_years:
+            history_years = sorted(set(default_history_years_for_group(name, report_date)))
+
+    if "task_season_years" in run_ov:
+        task_years = _normalize_years(run_ov.get("task_season_years"))
+    elif has_file_override and applies_task_season_filter(name):
+        task_years = merge_task_years_from_file(
+            rule, report_date, file_years, has_file_override=True,
+        )
+    else:
+        task_years = _normalize_years(ov.get("task_season_years"))
+        if not task_years and applies_task_season_filter(name):
+            task_years = merge_task_years_from_file(
+                rule, report_date, file_years, has_file_override=has_file_override,
+            )
+
+    default_start = default_period_start_for_group(name, report_date)
+    period_start = run_ov.get("period_start")
+    period_end = run_ov.get("period_end")
+
+    if period_start is None and period_end is None and has_file_override and history_years:
+        try:
+            from season_calendar import merged_period_for_years
+
+            ps, pe = merged_period_for_years(history_years, report_date, calendar)
+            period_start = ps.isoformat()
+            period_end = pe.isoformat()
+        except ImportError:
+            period_start = period_end = None
+
+    if period_start is None:
+        period_start = ov.get("period_start")
+    if period_end is None:
+        period_end = ov.get("period_end")
+
+    if not period_start or not period_end:
+        try:
+            from season_calendar import merged_period_for_years
+
+            # none: окно дат до report_date (не календарь Cropwise — иначе обрезка на 01.07).
+            if rule == "none" and not has_file_override:
+                ps, pe = default_start, report_date
+            elif has_file_override and history_years:
+                ps, pe = merged_period_for_years(history_years, report_date, calendar)
+            elif history_years and rule != "none":
+                ps, pe = merged_period_for_years(history_years, report_date, calendar)
+            elif name.startswith("5.0 Уборка"):
+                ps, pe = default_start, report_date
+            else:
+                ps, pe = default_start, report_date
+        except ImportError:
+            ps, pe = default_start, report_date
+        period_start = period_start or ps.isoformat()
+        period_end = period_end or pe.isoformat()
+
+    ps_iso = str(period_start).split("T")[0]
+    pe_iso = str(period_end).split("T")[0]
+
+    return {
+        "group_name": name,
+        "season_rule": rule,
+        "history_years": history_years,
+        "task_season_years": task_years,
+        "period_start": ps_iso,
+        "period_end": pe_iso,
+        "task_season_plow_only": plow_only_for_rule(rule) and name == "2.4 Вспашка",
+        "has_file_override": has_file_override,
+        "crop_priority_year": history_years[-1] if history_years else report_date.year,
+    }
+
+
+def resolve_report_season_config(
+    work_groups: tuple[str, ...] | list[str],
+    season_rule: str,
+    report_date: date,
+    run_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Сезоны для тематической сводки / proverka (объединение work_groups)."""
+    groups = [str(g).strip() for g in work_groups if str(g).strip()]
+    store = load_season_store(report_date)
+    ov = dict(run_override or {})
+
+    group_years: list[int] = []
+    for gn in groups:
+        gm = (store.get("by_group") or {}).get(gn) or {}
+        group_years.extend(_years_from_meta(gm))
+    group_years = sorted(set(group_years))
+    has_file_override = any(
+        _years_from_meta((store.get("by_group") or {}).get(gn)) for gn in groups
+    )
+
+    task_years = _normalize_years(ov.get("task_season_years"))
+    if not task_years:
+        task_years = merge_task_years_from_file(
+            season_rule, report_date, group_years, has_file_override=has_file_override,
+        )
+
+    history_years = _normalize_years(ov.get("history_years"))
+    if not history_years:
+        history_years = sorted(set(group_years or default_history_years_for_report_rule(season_rule, report_date)))
+
+    period_start = ov.get("period_start")
+    period_end = ov.get("period_end")
+    if not period_start or not period_end:
+        if groups:
+            cfg0 = resolve_group_season_config(groups[0], report_date, store=store, run_override=ov)
+            period_start = period_start or cfg0["period_start"]
+            period_end = period_end or cfg0["period_end"]
+        else:
+            period_start = period_start or report_date.replace(month=3, day=1).isoformat()
+            period_end = period_end or report_date.isoformat()
+
+    per_group = {
+        gn: resolve_group_season_config(gn, report_date, store=store, run_override=ov)
+        for gn in groups
+    }
+
+    return {
+        "work_groups": groups,
+        "season_rule": season_rule,
+        "task_season_years": task_years,
+        "history_years": history_years,
+        "crop_priority_year": history_years[-1] if history_years else report_date.year,
+        "period_start": str(period_start).split("T")[0],
+        "period_end": str(period_end).split("T")[0],
+        "shift_start_hour": ov.get("shift_start_hour"),
+        "shift_end_hour": ov.get("shift_end_hour"),
+        "task_season_plow_only": bool(
+            ov.get("task_season_plow_only", plow_only_for_rule(season_rule))
+        ),
+        "by_group": per_group,
+    }
+
+
+def season_label_for_group(group_name: str, report_date: date) -> str:
+    cfg = resolve_group_season_config(group_name, report_date)
+    ty = cfg.get("task_season_years") or []
+    hy = cfg.get("history_years") or []
+    rule = cfg.get("season_rule") or "none"
+    if ty and len(ty) == 1 and rule in ("year_plus_one", "plow_year_plus_one"):
+        return str(ty[0])
+    if hy and len(hy) > 1:
+        return "+".join(str(y) for y in hy)
+    if hy:
+        return str(hy[0])
+    return str(report_date.year)
+
+
+def task_season_str_for_group(group_name: str, report_date: date) -> str | None:
+    if not applies_task_season_filter(group_name):
+        return None
+    cfg = resolve_group_season_config(group_name, report_date)
+    ty = cfg.get("task_season_years") or []
+    if len(ty) == 1:
+        return str(ty[0])
+    return None
+
+
+def task_season_years_set_for_group(group_name: str, report_date: date) -> set[str] | None:
+    cfg = resolve_group_season_config(group_name, report_date)
+    ty = cfg.get("task_season_years") or []
+    if len(ty) > 1:
+        return {str(y) for y in ty}
+    if len(ty) == 1 and season_rule_for_group(group_name) == "both_years":
+        return {str(y) for y in ty}
+    rule = season_rule_for_group(group_name)
+    if rule == "both_years" and ty:
+        return {str(y) for y in ty}
+    hy = cfg.get("history_years") or []
+    if rule == "both_years" and hy:
+        return {str(y) for y in hy}
+    return None
+
+
+def period_range_for_group(group_name: str, report_date: date) -> tuple[date, date]:
+    cfg = resolve_group_season_config(group_name, report_date)
+    return (
+        date.fromisoformat(cfg["period_start"]),
+        date.fromisoformat(cfg["period_end"]),
+    )
+
+
+def season_env_for_group(group_name: str, cfg: dict[str, Any]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    name = group_name.strip()
+    years = cfg.get("history_years") or []
+    task_years = cfg.get("task_season_years") or []
+    if years:
+        env["SVODKI_SEASON_YEARS"] = ",".join(str(y) for y in years)
+        env["SEASON_YEAR"] = str(years[-1])
+    if len(task_years) == 1:
+        env["SEASON_TASK_YEAR_STR"] = str(task_years[0])
+    if name.startswith("1.1 "):
+        if cfg.get("period_start"):
+            env["SVODKI_FERT_PERIOD_START"] = str(cfg["period_start"]).split("T")[0]
+        if cfg.get("period_end"):
+            env["SVODKI_FERT_PERIOD_END"] = str(cfg["period_end"]).split("T")[0]
+        if years:
+            env["SVODKI_FERT_SEASON_YEARS"] = ",".join(str(y) for y in years)
+    if name.startswith("4.0 Посев") or name.startswith("4.1 Посев"):
+        if years:
+            env["SVODKI_SEEDING_SEASON_YEARS"] = ",".join(str(y) for y in years)
+    if name.startswith("3.1 ") or name.startswith("3.2 ") or "Опрыск" in name:
+        if years:
+            env["SVODKI_SPRAY_SEASON_YEARS"] = ",".join(str(y) for y in years)
+        if task_years:
+            env["SVODKI_SPRAY_TASK_SEASON_YEARS"] = ",".join(str(y) for y in task_years)
+        if cfg.get("period_start"):
+            env["SVODKI_SPRAY_PERIOD_START"] = str(cfg["period_start"]).split("T")[0]
+        if cfg.get("period_end"):
+            env["SVODKI_SPRAY_PERIOD_END"] = str(cfg["period_end"]).split("T")[0]
+    if name.startswith("5.0 Уборка") and cfg.get("period_start"):
+        iso = str(cfg["period_start"]).split("T")[0]
+        env["SVODKI_COMBINE_SEASON_START"] = iso
+        env["SVODKI_SEASON_START_DATE"] = iso
+        env["SEASON_START_DATE"] = iso
+    if name.startswith("2.4 Вспашка") and cfg.get("period_start"):
+        iso = str(cfg["period_start"]).split("T")[0]
+        if "SVODKI_SEASON_START_DATE" not in env:
+            env["SVODKI_SEASON_START_DATE"] = iso
+            env["SEASON_START_DATE"] = iso
+    if years:
+        env[group_env_key(name, "HISTORY_YEARS")] = ",".join(str(y) for y in years)
+    if task_years:
+        env[group_env_key(name, "TASK_SEASON_YEARS")] = ",".join(str(y) for y in task_years)
+    if cfg.get("period_start"):
+        env[group_env_key(name, "PERIOD_START")] = str(cfg["period_start"]).split("T")[0]
+    if cfg.get("period_end"):
+        env[group_env_key(name, "PERIOD_END")] = str(cfg["period_end"]).split("T")[0]
+    return env
+
+
+def inject_season_range_env(env: dict[str, str], report_date: date | None = None) -> None:
+    """Подставить сезоны всех групп в env генерации PDF / сводок."""
+    rd = report_date or date.today()
+    path = _season_ranges_path()
+    if path and path.is_file():
+        env["SVODKI_SEASON_RANGES_PATH"] = str(path.resolve())
+        upload = path.parent
+        env["SVODKI_UPLOAD_DIR"] = str(upload.resolve())
+
+    store = load_season_store(rd, reload=True)
+    all_groups = set(GROUP_SEASON_RULE) | set((store.get("by_group") or {}).keys())
+
+    global_env: dict[str, str] = {}
+    for gn in sorted(all_groups):
+        cfg = resolve_group_season_config(gn, rd, store=store)
+        for k, v in season_env_for_group(gn, cfg).items():
+            if k in ("SEASON_YEAR", "SVODKI_SEASON_YEARS", "SVODKI_SEASON_START_DATE", "SEASON_START_DATE"):
+                continue
+            if k in _COLLIDING_SHARED_ENV_KEYS:
+                continue
+            env[k] = v
+
+    for gn in _GLOBAL_ENV_GROUP_PRIORITY:
+        if gn not in all_groups:
+            continue
+        cfg = resolve_group_season_config(gn, rd, store=store)
+        genv = season_env_for_group(gn, cfg)
+        for k in ("SEASON_YEAR", "SVODKI_SEASON_YEARS", "SVODKI_SEASON_START_DATE", "SEASON_START_DATE"):
+            if k in genv and k not in global_env:
+                global_env[k] = genv[k]
+    env.update(global_env)
