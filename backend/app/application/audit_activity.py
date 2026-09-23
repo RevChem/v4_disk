@@ -209,6 +209,11 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
         uid = d.get("target_user_id")
         fields = ", ".join(d.get("updated_fields") or [])
         return f"{username} изменил пользователя #{uid}: {fields or '—'}"
+    if action == "users.password_changed":
+        if d.get("self_service"):
+            return f"{username} сменил свой пароль"
+        uid = d.get("target_user_id")
+        return f"{username} сменил пароль пользователя #{uid}"
     if action == "reports.generation.requested":
         rids = d.get("report_ids") or []
         labels = compact_report_ids(rids)

@@ -359,7 +359,6 @@ export default function App() {
 
   function handleNavChange(id) {
     if (id === "users") {
-      if (!isDeveloper) return;
       setUsersModalOpen(true);
       return;
     }
@@ -376,7 +375,7 @@ export default function App() {
 
   const nav = useMemo(() => {
     const items = [];
-    if (isDeveloper) {
+    if (user) {
       items.push({ id: "users", label: "Пользователи" });
     }
     items.push({ id: "dashboard", label: "Сводки" });
@@ -482,6 +481,7 @@ export default function App() {
         customBackground={customBackground}
         user={user}
         onLogout={handleLogout}
+        onPasswordChanged={handleLogout}
         nav={nav}
         activeNav={activeNav}
         navActiveId={navActiveId}
@@ -540,13 +540,19 @@ export default function App() {
         onOpenReport={handleAiReportClick}
         onOpenPrompts={() => setAiPromptsOpen(true)}
       />
-      {isDeveloper && (
+      {user && (
         <PageModalDialog
           open={usersModalOpen}
           onClose={() => setUsersModalOpen(false)}
           title="Пользователи"
         >
-          <UsersPage currentUserId={user.id} embedded />
+          <UsersPage
+            currentUserId={user.id}
+            currentUser={user}
+            manageAll={isDeveloper}
+            embedded
+            onPasswordChanged={handleLogout}
+          />
         </PageModalDialog>
       )}
       {canGenerate && (

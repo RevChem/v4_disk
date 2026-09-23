@@ -72,3 +72,119 @@ def test_build_cross_check_uses_total_ha_not_only_firm_sum():
     assert row["totals"]["11"] == 761.10
     assert row["totals"]["10"] == 770.73
     assert row["max_diff_ha"] == round(770.73 - 761.10, 2)
+
+
+def test_build_cross_check_crop_rows_when_two_peers_have_breakdown():
+    batch = {
+        "reports": {
+            "1": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 100.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 40.0},
+                                "Пшеница озимая": {"АФ А": 60.0},
+                            },
+                        },
+                    },
+                },
+            },
+            "5": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 100.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 35.0},
+                                "Пшеница озимая": {"АФ А": 65.0},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    cc = build_cross_check(batch)
+    row = next(r for r in cc["operations"] if r["group_name"] == "4.0 Посев")
+    rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
+    assert rapeseed["status"] == "DIFF"
+    assert rapeseed["max_diff_ha"] == 5.0
+    wheat = next(c for c in row["crops"] if c["crop"] == "Пшеница озимая")
+    assert wheat["status"] == "DIFF"
+
+
+def test_sub_half_ha_crop_diff_is_ok():
+    batch = {
+        "reports": {
+            "1": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 100.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 40.0},
+                            },
+                        },
+                    },
+                },
+            },
+            "5": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 100.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 40.3},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    cc = build_cross_check(batch)
+    row = next(r for r in cc["operations"] if r["group_name"] == "4.0 Посев")
+    rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
+    assert rapeseed["status"] == "OK"
+
+
+def test_spray_crop_rows_when_two_peers_have_breakdown():
+    batch = {
+        "reports": {
+            "1": {
+                "svodka": {
+                    "operations": {
+                        "3.1 Опрыскивание": {
+                            "total_ha": 1000.0,
+                            "area_today_by_firm": {"АФ А": 1000.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 727.1},
+                            },
+                        },
+                    },
+                },
+            },
+            "2": {
+                "svodka": {
+                    "operations": {
+                        "3.1 Опрыскивание": {
+                            "total_ha": 1000.0,
+                            "area_today_by_firm": {"АФ А": 1000.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 728.0},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    cc = build_cross_check(batch)
+    row = next(r for r in cc["operations"] if r["group_name"] == "3.1 Опрыскивание")
+    rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
+    assert rapeseed["status"] == "DIFF"

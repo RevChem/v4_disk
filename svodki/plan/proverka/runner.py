@@ -996,6 +996,9 @@ def run_proverka_batch(
     _inject_canonical_svodka_for_cross_check(
         all_results, report_date, overrides_map, svodka_cache, prog,
     )
+    from proverka.machine_runner import apply_report1_donor_area_graft
+
+    apply_report1_donor_area_graft(all_results)
     all_results["cross_check"] = build_cross_check(all_results)
 
     xlsx_path: Path | None = None

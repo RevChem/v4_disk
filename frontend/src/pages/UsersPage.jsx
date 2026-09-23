@@ -30,6 +30,7 @@ import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 
 import { createManagedUser, fetchManagedUsers, updateManagedUser } from "../api";
+import ChangePasswordSection from "../components/ChangePasswordSection";
 import UserProfileDialog from "../components/UserProfileDialog";
 
 const ROLE_OPTIONS = [
@@ -56,7 +57,85 @@ function errorText(err) {
   return map[code] || code;
 }
 
-export default function UsersPage({ currentUserId, embedded = false }) {
+function UsersSelfAccountView({ currentUser, embedded, onPasswordChanged }) {
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  if (!currentUser) {
+    return null;
+  }
+
+  return (
+    <Stack spacing={embedded ? 1.5 : 2.5}>
+      {!embedded && (
+        <Typography variant="h5" fontWeight={700}>
+          Пользователи
+        </Typography>
+      )}
+      <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.8125rem" }}>
+        Здесь только ваша учётная запись. Управление всеми пользователями доступно роли «Разработчик».
+      </Typography>
+      <Card variant="outlined">
+        <CardContent sx={{ py: embedded ? 1.5 : 2, px: embedded ? 1.5 : 2 }}>
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" fontWeight={700}>
+              {currentUser.full_name || currentUser.username}
+            </Typography>
+            <Stack spacing={0.25}>
+              <Typography variant="body2" sx={{ fontSize: "0.8125rem" }}>
+                Email: {currentUser.email || "—"}
+              </Typography>
+              <Typography variant="body2" sx={{ fontSize: "0.8125rem" }}>
+                Логин: {currentUser.username}
+              </Typography>
+              <Typography variant="body2" sx={{ fontSize: "0.8125rem" }}>
+                Роль: {roleLabel(currentUser.role)}
+              </Typography>
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<BadgeOutlinedIcon fontSize="small" />}
+                onClick={() => setProfileOpen(true)}
+              >
+                Профиль и активность
+              </Button>
+            </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
+      <Card variant="outlined">
+        <CardContent sx={{ py: embedded ? 1.5 : 2, px: embedded ? 1.5 : 2 }}>
+          <ChangePasswordSection onChanged={onPasswordChanged} />
+        </CardContent>
+      </Card>
+      <UserProfileDialog
+        self
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onPasswordChanged={onPasswordChanged}
+      />
+    </Stack>
+  );
+}
+
+export default function UsersPage({
+  currentUserId,
+  currentUser,
+  manageAll = false,
+  embedded = false,
+  onPasswordChanged,
+}) {
+  if (!manageAll) {
+    return (
+      <UsersSelfAccountView
+        currentUser={currentUser}
+        embedded={embedded}
+        onPasswordChanged={onPasswordChanged}
+      />
+    );
+  }
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

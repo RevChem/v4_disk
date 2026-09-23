@@ -6,14 +6,28 @@ from typing import Any
 from proverka.operation_registry import (
     OPERATION_PEERS,
     display_group_name,
+    peer_reports_for_crop_cross_check,
     peer_reports_for_group,
 )
+from proverka.ha_thresholds import compare_ha_status, diff_is_significant
 from proverka.reports_config import REPORTS
 
 
 def _area_from_operation(op: dict[str, Any]) -> dict[str, float]:
     raw = op.get("area_today_by_firm") or {}
     return {str(k): round(float(v or 0), 2) for k, v in raw.items()}
+
+
+def _crop_area_from_operation(op: dict[str, Any]) -> dict[str, dict[str, float]]:
+    raw = op.get("area_today_by_firm_crop") or {}
+    return {
+        str(crop): {str(firm): round(float(v or 0), 2) for firm, v in by_firm.items()}
+        for crop, by_firm in raw.items()
+    }
+
+
+def _crop_totals(area_by_firm: dict[str, float]) -> float:
+    return round(sum(area_by_firm.values()), 2)
 
 
 def operations_from_svodka(svodka: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -102,7 +116,7 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
     reports = batch.get("reports") or {}
     present = set(reports.keys())
     rows: list[dict[str, Any]] = []
-    ok = diff = partial = 0
+    ok = diff = partial = crop_diff = 0
 
     for group_name in OPERATION_PEERS:
         peer_ids = [rid for rid in peer_reports_for_group(group_name) if rid in present]
@@ -111,6 +125,13 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
 
         totals: dict[str, float] = {}
         by_firm: dict[str, dict[str, float]] = {}
+        # crop -> rid -> total_ha (сумма по всем АФ), для строки «между собой» по культуре.
+        crop_totals: dict[str, dict[str, float]] = {}
+        # crop -> firm -> rid -> ha, для детализации расхождений по культуре и АФ.
+        crop_by_firm: dict[str, dict[str, dict[str, float]]] = {}
+        crop_peer_ids = [
+            rid for rid in peer_reports_for_crop_cross_check(group_name) if rid in present
+        ]
         for rid in peer_ids:
             op = operation_for_cross_check(reports[rid], rid, group_name)
             if not op:
@@ -119,6 +140,14 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             totals[rid] = _operation_total_ha(op)
             for firm, ha in area.items():
                 by_firm.setdefault(firm, {})[rid] = ha
+        for rid in crop_peer_ids:
+            op = operation_for_cross_check(reports[rid], rid, group_name)
+            if not op:
+                continue
+            for crop, area_by_firm in _crop_area_from_operation(op).items():
+                crop_totals.setdefault(crop, {})[rid] = _crop_totals(area_by_firm)
+                for firm, ha in area_by_firm.items():
+                    crop_by_firm.setdefault(crop, {}).setdefault(firm, {})[rid] = ha
 
         active_peers = [rid for rid in peer_ids if rid in totals]
         if len(active_peers) < 2:
@@ -132,6 +161,7 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
                 "status": "partial",
                 "max_diff_ha": None,
                 "note": "данные не во всех сводках (сводка 1 без standalone?)",
+                "crops": [],
             })
             continue
 
@@ -143,14 +173,49 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
                 continue
             vlist = list(vals.values())
             fd = round(max(vlist) - min(vlist), 2)
-            if fd >= 0.01 or any(vlist):
+            if diff_is_significant(fd) or any(vlist):
                 firm_rows.append({"firm": firm, "values": vals, "max_diff_ha": fd})
 
-        status = "OK" if max_diff < 0.01 else "DIFF"
+        # Та же сверка, но по культуре (напр. «Рапс яровой» внутри «4.0 Посев»).
+        # Показываем культуру только там, где она есть минимум в двух сводках
+        # из peer_ids — иначе «расхождение» будет просто из-за того, что одна
+        # из сводок ещё не отдаёт разбивку по культуре (см. area_today_by_firm_crop).
+        crop_rows: list[dict[str, Any]] = []
+        for crop, vals in sorted(crop_totals.items()):
+            active_crop_peers = [rid for rid in active_peers if rid in vals]
+            if len(active_crop_peers) < 2:
+                continue
+            vlist = [vals[rid] for rid in active_crop_peers]
+            cdiff = round(max(vlist) - min(vlist), 2)
+            crop_firm_rows: list[dict[str, Any]] = []
+            for firm, by_rid in sorted((crop_by_firm.get(crop) or {}).items()):
+                firm_peers = {rid: ha for rid, ha in by_rid.items() if rid in active_crop_peers}
+                if len(firm_peers) < 2:
+                    continue
+                fvlist = list(firm_peers.values())
+                ffd = round(max(fvlist) - min(fvlist), 2)
+                if diff_is_significant(ffd) or any(fvlist):
+                    crop_firm_rows.append({"firm": firm, "values": firm_peers, "max_diff_ha": ffd})
+            crop_rows.append({
+                "crop": crop,
+                "active_reports": active_crop_peers,
+                "totals": {rid: vals[rid] for rid in active_crop_peers},
+                "max_diff_ha": cdiff,
+                "status": compare_ha_status(cdiff),
+                "firms": crop_firm_rows,
+            })
+
+        status = compare_ha_status(max_diff)
         if status == "OK":
             ok += 1
         else:
             diff += 1
+        # Расхождение может появиться и по культуре, даже когда общий факт по
+        # операции совпал (ошибки культур компенсируют друг друга в сумме) —
+        # считаем отдельно, чтобы не потерять такие случаи.
+        crop_diff_count = sum(1 for cr in crop_rows if cr["status"] == "DIFF")
+        if crop_diff_count:
+            crop_diff += 1
 
         canon = next((r for r in active_peers if r not in ("1", "2")), active_peers[-1])
         spec = REPORTS.get(canon)
@@ -165,9 +230,13 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             "max_diff_ha": max_diff,
             "status": status,
             "firms": firm_rows,
+            "crops": crop_rows,
         })
 
     return {
         "operations": rows,
-        "summary": {"ok": ok, "diff": diff, "partial": partial, "total": len(rows)},
+        "summary": {
+            "ok": ok, "diff": diff, "partial": partial, "total": len(rows),
+            "crop_diff": crop_diff,
+        },
     }

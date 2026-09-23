@@ -20,6 +20,7 @@ PLAN_DIR = Path(__file__).resolve().parent.parent
 if str(PLAN_DIR) not in sys.path:
     sys.path.insert(0, str(PLAN_DIR))
 
+from proverka.ha_thresholds import diff_is_significant  # noqa: E402
 from proverka.reports_config import REPORTS, list_report_ids  # noqa: E402
 
 
@@ -117,9 +118,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
         status = "OK" if abs(diff) <= 5.0 else "DIFF"
     elif parsed.get("error") or report_blank:
         status = "blank"
-    elif abs(diff) < 0.01:
-        status = "OK"
-    elif abs(diff) <= 5.0:
+    elif not diff_is_significant(diff):
         status = "OK"
     elif api_ha > 0 and abs(sv_ha - api_ha) <= 5.0:
         # Сводка сошлась с API v3 самого Cropwise, а «Всего» из work.json — нет.
@@ -133,7 +132,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
 
     firms_with_diff = 0
     for d in (cmp_.get("by_firm_diff") or {}).values():
-        if abs(float(d)) >= 0.01:
+        if diff_is_significant(float(d)):
             firms_with_diff += 1
 
     return {
@@ -178,6 +177,33 @@ def compute_violations(
         diff = abs(float(r.get("diff_ha") or 0))
         if status in ("blank", "UI error") and diff < 0.01:
             continue
+        if r.get("is_crop_row") and status == "DIFF":
+            violations.append(
+                {
+                    "kind": "cropwise_crop",
+                    "report_id": r.get("id"),
+                    "title": r.get("title"),
+                    "status": status,
+                    "svodka_ha": r.get("svodka_ha"),
+                    "cropwise_ha": r.get("cropwise_ha"),
+                    "diff_ha": r.get("diff_ha"),
+                    "season": r.get("season") or "",
+                    "detail": (
+                        f"Cropwise / культура «{r.get('crop')}»: сводка {r.get('svodka_ha')} га, "
+                        f"UI {r.get('cropwise_ha')} га (Δ {r.get('diff_ha')} га)"
+                    ),
+                }
+            )
+            error_logs.append(
+                {
+                    "source": r.get("title") or "культура",
+                    "message": (
+                        f"Cropwise / культура «{r.get('crop')}»: сводка {r.get('svodka_ha')} га, "
+                        f"UI {r.get('cropwise_ha')} га (Δ {r.get('diff_ha')} га)"
+                    ),
+                }
+            )
+            continue
         if status in CROPWISE_VIOLATION_STATUSES or status.startswith("UI season "):
             violations.append(
                 {
@@ -202,6 +228,29 @@ def compute_violations(
 
     for row in cross_check_rows:
         if row.get("status") != "DIFF":
+            # Даже когда сумма по всем культурам сошлась, внутри могла быть
+            # компенсация: одна культура в плюс, другая в минус. Проверяем
+            # культуры отдельно и в этом случае.
+            for crop_row in row.get("crops") or []:
+                if crop_row.get("status") != "DIFF":
+                    continue
+                violations.append(
+                    {
+                        "kind": "cross_check_crop",
+                        "report_id": row.get("canonical_report"),
+                        "title": f"{row.get('title') or row.get('group_name')} · {crop_row.get('crop')}",
+                        "status": "DIFF",
+                        "max_diff_ha": crop_row.get("max_diff_ha"),
+                        "peer_reports": crop_row.get("active_reports") or [],
+                        "detail": _violation_detail_cross_crop(row, crop_row),
+                    }
+                )
+                error_logs.append(
+                    {
+                        "source": f"сверка {row.get('display_name') or row.get('group_name')} · {crop_row.get('crop')}",
+                        "message": _violation_detail_cross_crop(row, crop_row),
+                    }
+                )
             continue
         violations.append(
             {
@@ -220,15 +269,37 @@ def compute_violations(
                 "message": _violation_detail_cross(row),
             }
         )
+        # Плюс отдельные расхождения по культуре внутри этой же операции.
+        for crop_row in row.get("crops") or []:
+            if crop_row.get("status") != "DIFF":
+                continue
+            violations.append(
+                {
+                    "kind": "cross_check_crop",
+                    "report_id": row.get("canonical_report"),
+                    "title": f"{row.get('title') or row.get('group_name')} · {crop_row.get('crop')}",
+                    "status": "DIFF",
+                    "max_diff_ha": crop_row.get("max_diff_ha"),
+                    "peer_reports": crop_row.get("active_reports") or [],
+                    "detail": _violation_detail_cross_crop(row, crop_row),
+                }
+            )
 
     cropwise_count = sum(1 for v in violations if v["kind"] == "cropwise")
+    cropwise_crop_count = sum(1 for v in violations if v["kind"] == "cropwise_crop")
     cross_count = sum(1 for v in violations if v["kind"] == "cross_check")
-    cropwise_diff_count = sum(1 for r in summary_rows if str(r.get("status") or "") == "DIFF")
+    cross_crop_count = sum(1 for v in violations if v["kind"] == "cross_check_crop")
+    cropwise_diff_count = sum(
+        1 for r in summary_rows
+        if str(r.get("status") or "") == "DIFF" and not r.get("is_crop_row")
+    )
     return {
         "violation_count": len(violations),
         "cropwise_diff_count": cropwise_diff_count,
         "cropwise_violation_count": cropwise_count,
+        "cropwise_crop_violation_count": cropwise_crop_count,
         "cross_check_violation_count": cross_count,
+        "cross_check_crop_violation_count": cross_crop_count,
         "violations": violations,
         "error_logs": error_logs,
     }
@@ -274,6 +345,15 @@ def _violation_detail_cross(row: dict[str, Any]) -> str:
     return f"Сводки не совпадают по операции «{name}»: {'; '.join(parts)} (max Δ {md} га)"
 
 
+def _violation_detail_cross_crop(row: dict[str, Any], crop_row: dict[str, Any]) -> str:
+    totals = crop_row.get("totals") or {}
+    parts = [f"{rid}: {ha} га" for rid, ha in sorted(totals.items())]
+    md = crop_row.get("max_diff_ha")
+    name = row.get("display_name") or row.get("group_name")
+    crop = crop_row.get("crop")
+    return f"Сводки не совпадают по «{name}» / культуре «{crop}»: {'; '.join(parts)} (max Δ {md} га)"
+
+
 def per_op_row_title(rid: str, group_name: str) -> str:
     from proverka.operation_registry import display_group_name
 
@@ -312,7 +392,7 @@ def _row_from_per_operation(rid: str, group_name: str, oc: dict[str, Any]) -> di
     local_diff = oc.get("svodka_local_diff_ha")
     if local_diff is None:
         local_diff = oc.get("svodka_r2_diff_ha")
-    if local_diff is not None and abs(float(local_diff)) >= 0.01:
+    if local_diff is not None and diff_is_significant(float(local_diff)):
         local_op = oc.get("svodka_op_local") or oc.get("svodka_op_r2") or {}
         local_label = f"св.{rid}={float(local_op.get('total_ha') or 0):.2f}"
         row["season"] = (
@@ -322,6 +402,46 @@ def _row_from_per_operation(rid: str, group_name: str, oc: dict[str, Any]) -> di
     if not work.get("ok") and not row.get("status"):
         row["status"] = "UI error"
     return row
+
+
+def _cropwise_crop_summary_rows(
+    rid: str,
+    group_name: str,
+    oc: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Строки «сводка ↔ Cropwise» по культурам (опрыскивание, посев, …)."""
+    from proverka.operation_registry import display_group_name
+
+    base = per_op_row_title(rid, group_name)
+    op_label = display_group_name(group_name)
+    out: list[dict[str, Any]] = []
+    for cc in oc.get("crop_comparisons") or []:
+        status = str(cc.get("status") or "OK")
+        diff = float(cc.get("diff_ha") or 0)
+        out.append({
+            "id": rid,
+            "title": f"{base} · {cc.get('crop')}",
+            "operation": group_name,
+            "operation_display": op_label,
+            "crop": cc.get("crop"),
+            "is_crop_row": True,
+            "svodka_ha": float(cc.get("svodka_ha") or 0),
+            "cropwise_ha": float(cc.get("cropwise_ha") or 0),
+            "cropwise_ui_ha": float(cc.get("cropwise_ha") or 0),
+            "cropwise_api_ha": 0.0,
+            "ui_vs_api_ha": 0.0,
+            "diff_ha": diff,
+            "status": status,
+            "fact_column": "",
+            "season": f"культура · {op_label}"[:80],
+            "firms_with_diff": sum(
+                1 for fr in (cc.get("firms") or []) if fr.get("status") == "DIFF"
+            ),
+            "work_type_ids": oc.get("work_type_ids") or [],
+            "warnings": [],
+            "crop_firms": cc.get("firms") or [],
+        })
+    return out
 
 
 def build_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -335,7 +455,9 @@ def build_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
         if spec and spec.cropwise_per_operation:
             op_cmp = result.get("operation_comparisons") or {}
             for group_name in sorted(op_cmp.keys()):
-                rows.append(_row_from_per_operation(rid, group_name, op_cmp[group_name]))
+                oc = op_cmp[group_name]
+                rows.append(_row_from_per_operation(rid, group_name, oc))
+                rows.extend(_cropwise_crop_summary_rows(rid, group_name, oc))
             continue
         rows.append(_row_from_result(rid, result))
     return rows

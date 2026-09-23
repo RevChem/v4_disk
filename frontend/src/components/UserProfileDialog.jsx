@@ -18,6 +18,7 @@ import {
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import { fetchMyProfile, fetchUserProfile, updateManagedUser } from "../api";
+import ChangePasswordSection from "./ChangePasswordSection";
 import { formatDuration } from "../utils/formatDuration";
 
 const ROLE_LABELS = { developer: "Разработчик", admin: "Админ", user: "Пользователь" };
@@ -253,7 +254,14 @@ function JobCard({ job }) {
  * self — свой профиль (данные из /users/me/profile, ФИО только для чтения);
  * иначе — профиль userId для разработчика (ФИО можно менять).
  */
-export default function UserProfileDialog({ open, userId, onClose, onSaved, self = false }) {
+export default function UserProfileDialog({
+  open,
+  userId,
+  onClose,
+  onSaved,
+  self = false,
+  onPasswordChanged,
+}) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -370,6 +378,12 @@ export default function UserProfileDialog({ open, userId, onClose, onSaved, self
                 </Stack>
               </Stack>
             </Section>
+
+            {self && (
+              <Section title="Пароль">
+                <ChangePasswordSection compact onChanged={onPasswordChanged} />
+              </Section>
+            )}
 
             <Section
               title="Входы в систему"

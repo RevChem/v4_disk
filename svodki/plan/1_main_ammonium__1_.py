@@ -83,6 +83,7 @@ from season_unified import (
     period_range_for_group,
     resolve_group_season_config,
     task_season_str_for_group,
+    task_season_years_set_for_group,
 )
 
 SEASON           = str(REPORT_DATE.year)
@@ -122,6 +123,25 @@ FACT_BY_ALL_FIELDS_GROUPS = frozenset({
     "2.1 Боронование",
     SEEDING_GROUP_NAME,
     "2.12 Прикатывание",
+})
+# Группы, для которых сводка 1 показывает только общий итог по агрофирме
+# (лист «Выраб. — <группа>»), БЕЗ разбивки по культурам — в отличие от
+# «1.1 Внесение минеральных удобрений» (свой расчёт, вне этой функции) и
+# «4.0 Посев» (разбивка по культурам приходит отдельно из 1_main_dop.py).
+# available_field_ids/field_to_crop построены специально под окно и культуры
+# группы «1.1» (load_crop_field_ids/inventory_history_items с PERIOD_START_DATE
+# от 1.1) — применять их как фильтр к этим группам неверно: часть реально
+# обработанных полей (напр. под культивацию/опрыскивание до официального
+# оформления культуры) отсекается, и итоговая площадь по агрофирме занижается.
+# Поэтому здесь, как и в FACT_BY_ALL_FIELDS_GROUPS/TILLAGE_GROUPS, для
+# включения поля в площадь достаточно того, что у него определена агрофирма.
+FIRM_ONLY_NO_CROP_GROUPS = frozenset({
+    "2.6 Фрезерование",
+    "2.7 Гребнеобразование",
+    # "2.8 Глубокорыхление" уже покрыта TILLAGE_GROUPS выше.
+    "2.9 Дискование",
+    "2.11 Культивация",
+    "3.1 Опрыскивание",
 })
 SPRAY_GROUP_NAME = "3.1 Опрыскивание"
 VEG_SPRAY_GROUP_NAME = "3.2 Опрыскивание (овощи)"
@@ -187,6 +207,27 @@ def refresh_season_config() -> None:
 # Быстрый первичный источник field_to_crop — agro_operations (без полной выгрузки history_items).
 _CROP_LOOKUP_WT_IDS: frozenset[int] = frozenset({6, 7, 111, 118, 125, 126, WORK_TYPE_ID}) | VEG_HARVEST_WT_IDS
 SPRAY_TASK_GROUPS = frozenset({SPRAY_GROUP_NAME, VEG_SPRAY_GROUP_NAME})
+
+
+def _allowed_task_seasons_for_group(group_name: str) -> set[str] | None:
+    """machine_task.season для опрыскивания — один или несколько лет из редактора планов."""
+    if group_name not in SPRAY_TASK_GROUPS:
+        return None
+    multi = task_season_years_set_for_group(group_name, REPORT_DATE)
+    if multi:
+        return multi
+    single = task_season_str_for_group(group_name, REPORT_DATE)
+    if single:
+        return {single}
+    env_multi = (os.environ.get("SVODKI_SPRAY_TASK_SEASON_YEARS") or "").strip()
+    if env_multi:
+        return {y.strip() for y in env_multi.split(",") if y.strip()}
+    single_env = (os.environ.get("SEASON_TASK_YEAR_STR") or "").strip()
+    if single_env:
+        return {single_env}
+    return None
+
+
 VEG_SPRAY_CROPS = frozenset({
     "Картофель", "Морковь", "Свекла столовая",
 })
@@ -249,10 +290,20 @@ def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
 def _spray_field_ok(fid_i: int, group_name: str) -> bool:
     # Вспашка/глубокорыхление — все поля с фирмой (как 2_main / сводка 9), без available.
     if group_name not in TILLAGE_GROUPS:
-        if fid_i not in available_field_ids:
-            return False
-        if fid_i not in field_to_crop:
-            return False
+        if group_name in SPRAY_TASK_GROUPS:
+            # Опрыскивание (3.1/3.2) в сводке 1 — только общий итог по
+            # агрофирме (деление по культурам нужно лишь чтобы отличить
+            # «овощное» от обычного, см. _spray_item_allowed). available_field_ids
+            # построен под окно группы «1.1» (Внесение МУ) — здесь он не
+            # применим и лишь отсекает реально обработанные поля,
+            # занижая итог по агрофирме.
+            if fid_i not in field_to_crop:
+                return False
+        else:
+            if fid_i not in available_field_ids:
+                return False
+            if fid_i not in field_to_crop:
+                return False
     return _spray_item_allowed(group_name, fid_i)
 
 
@@ -1839,11 +1890,7 @@ async def fetch_day_stats_for_work_types(
     area_min_ha = _detail_area_min_ha(group_name)
     is_plow = group_name == PLOW_GROUP_NAME
     _plow_season_str = PLOW_TASK_SEASON if is_plow else None
-    _spray_task_season = (
-        task_season_str_for_group(group_name, REPORT_DATE)
-        if group_name in SPRAY_TASK_GROUPS
-        else None
-    )
+    _spray_task_seasons = _allowed_task_seasons_for_group(group_name)
 
     def _shift_window(end_time_raw):
         end_dt = parse_dt(end_time_raw)
@@ -1973,6 +2020,11 @@ async def fetch_day_stats_for_work_types(
             return bool(get_firm_for_field(fid_i))
         if group_name in FACT_BY_ALL_FIELDS_GROUPS:
             return bool(get_firm_for_field(fid_i))
+        if group_name in FIRM_ONLY_NO_CROP_GROUPS:
+            # Сводка 1 показывает эту группу только итогом по агрофирме
+            # (без разбивки по культурам) — available_field_ids/field_to_crop
+            # от группы «1.1» здесь не применимы, см. FIRM_ONLY_NO_CROP_GROUPS.
+            return bool(get_firm_for_field(fid_i))
         if fid_i not in available_field_ids:
             return False
         if fid_i not in field_to_crop:
@@ -2011,7 +2063,7 @@ async def fetch_day_stats_for_work_types(
         tid = t["id"]
         tseason = str(t.get("season") or t.get("year") or "").strip()
         # Опрыскивание / вспашка: machine_task.season из season_unified (как сводки 2/6/9).
-        if _spray_task_season is not None and tseason != _spray_task_season:
+        if _spray_task_seasons is not None and tseason not in _spray_task_seasons:
             continue
         if _plow_season_str is not None and tseason != _plow_season_str:
             continue

@@ -47,6 +47,7 @@ export default function AppShell({
   aiStatus = "none",
   aiViolationCount = 0,
   secondaryToolbar = null,
+  onPasswordChanged,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -188,7 +189,12 @@ export default function AppShell({
         </Stack>
       </Container>
       {user && (
-        <UserProfileDialog self open={profileOpen} onClose={() => setProfileOpen(false)} />
+        <UserProfileDialog
+          self
+          open={profileOpen}
+          onClose={() => setProfileOpen(false)}
+          onPasswordChanged={onPasswordChanged}
+        />
       )}
     </Box>
   );

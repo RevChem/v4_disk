@@ -6,7 +6,8 @@ import importlib
 import importlib.util
 import os
 import sys
-from datetime import date, datetime, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
@@ -16,10 +17,482 @@ from proverka.season_runtime import (
     apply_module_season_attrs,
     filter_tasks_by_seasons,
     reload_report_module,
+    resolve_group_season,
     season_context,
     sync_module_season_start,
 )
 from proverka.svodka_details import flatten_firm_details
+
+
+def _crop_label(raw: str) -> str:
+    """
+    Нормализует название культуры к единому каноническому виду (как в
+    plan/1_main_dop.py::_CROP_MAP / FULL_SEEDING_CROP_ORDER), чтобы одна и
+    та же культура из сводок 1, 2 и 5 совпадала по ключу при сверке —
+    даже если в сыром field_to_crop/crops остались небольшие расхождения
+    в написании ("рапс яр" vs "Рапс яровой" и т.п.).
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return raw
+    try:
+        dop_mod = _load_dop_module_for_crops()
+    except Exception:
+        return raw
+    try:
+        label = dop_mod._crop_label_for_stats(raw)
+    except Exception:
+        return raw
+    return label or raw
+
+
+_DOP_MODULE_FOR_CROPS: Any = None
+
+
+def _load_dop_module_for_crops() -> Any:
+    """Ленивая загрузка 1_main_dop.py только ради _crop_label_for_stats/_CROP_MAP —
+    без побочных эффектов остальных модулей (использует их собственный
+    importlib-кэш, как и _extract_5 → _load_dop_module)."""
+    global _DOP_MODULE_FOR_CROPS
+    if _DOP_MODULE_FOR_CROPS is None:
+        _DOP_MODULE_FOR_CROPS = importlib.import_module("1_main_dop")
+    return _DOP_MODULE_FOR_CROPS
+
+
+def _crop_breakdown_from_day_stats(
+    day_stats: dict[str, dict],
+    firm_order: list[str],
+    *,
+    crop_key: str = "area_by_crop",
+) -> dict[str, dict[str, float]]:
+    """
+    {firm: {"area_by_crop": {crop: ha, ...}}} → {crop: {firm: ha}},
+    с нормализацией названия культуры через _crop_label.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for firm in firm_order:
+        by_crop = (day_stats.get(firm, {}) or {}).get(crop_key) or {}
+        for crop, val in by_crop.items():
+            v = round(float(val or 0), 2)
+            if v <= 0:
+                continue
+            label = _crop_label(crop)
+            out.setdefault(label, {})
+            out[label][firm] = round(out[label].get(firm, 0.0) + v, 2)
+    return out
+
+
+def _parse_dt_msk(s: Any) -> datetime | None:
+    from plans import TZ_MSK
+
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        ts = float(s)
+        if ts > 1e12:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(TZ_MSK)
+        except (OSError, ValueError, OverflowError):
+            return None
+    s = str(s).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TZ_MSK)
+    else:
+        dt = dt.astimezone(TZ_MSK)
+    return dt
+
+
+SEEDING_WORK_GROUP = "4.0 Посев"
+
+
+def _seeding_season_cfg(
+    report_date: date,
+    cfg: dict | None = None,
+    run_override: dict | None = None,
+) -> dict[str, Any]:
+    """Сезоны посева — resolve_group_season_config(4.0 Посев), как сводка 5."""
+    cfg = cfg or {}
+    gcfg = (cfg.get("by_group") or {}).get(SEEDING_WORK_GROUP)
+    if gcfg and (gcfg.get("task_season_years") or gcfg.get("history_years")):
+        return gcfg
+    return resolve_group_season(SEEDING_WORK_GROUP, report_date, run_override)
+
+
+def _seeding_field_crop_by_id(
+    m: Any,
+    report_date: date,
+    cfg: dict | None = None,
+    run_override: dict | None = None,
+) -> dict[int, str]:
+    """Карта поля → культура посева (как 5_main_fixed / 2_main для 4.0 Посев)."""
+    m5 = importlib.import_module("5_main_fixed")
+    crop_cfg = _seeding_season_cfg(report_date, cfg, run_override)
+    history_years = crop_cfg.get("history_years") or [report_date.year, report_date.year + 1]
+    report_season_year = int(min(int(y) for y in history_years))
+    task_years = crop_cfg.get("task_season_years") or []
+    crop_season_year = int(task_years[0]) if task_years else report_season_year + 1
+    crops = m.get_all_from_id("crops")
+    crop_names_by_id = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in crops
+        if c.get("id") is not None
+    }
+    all_history: list[dict] = []
+    for crop_year in sorted({int(y) for y in history_years}):
+        all_history.extend(m.get_all_from_id("history_items", {"year": str(crop_year)}))
+    skip_crops = getattr(m, "SKIP_CROPS", set()) or set()
+    return m5.build_field_to_crop(
+        crop_map=crop_names_by_id,
+        history_items=all_history,
+        report_date=report_date,
+        period_start=date(report_season_year, 1, 1),
+        skip_crops=skip_crops,
+        season_year=crop_season_year,
+    )
+
+
+async def _seeding_area_today_by_firm_crop_dop(
+    m: Any,
+    report_date: date,
+    cfg: dict | None = None,
+    run_override: dict | None = None,
+    *,
+    day_start: datetime | None = None,
+    cutoff: datetime | None = None,
+) -> dict[str, dict[str, float]]:
+    """Разбивка посева за смену — fetch_all_crop_stats (как сводка 5)."""
+    import httpx
+
+    crop_cfg = _seeding_season_cfg(report_date, cfg, run_override)
+    m5 = importlib.import_module("5_main_fixed")
+    m5.REPORT_DATE = report_date
+    day_start, cutoff = m5.resolve_time_range(
+        report_date, m5.DAY_START_HOUR, m5.DAY_END_HOUR,
+    )
+    history_years = crop_cfg.get("history_years") or [report_date.year, report_date.year + 1]
+    task_years = crop_cfg.get("task_season_years") or []
+    report_season_year = int(min(int(y) for y in history_years))
+    season_start = datetime(report_season_year, 1, 1, tzinfo=m5.TZ_MSK)
+    seeding_field_crop = _seeding_field_crop_by_id(
+        m5, report_date, cfg, run_override,
+    )
+    period_start = date(report_season_year, 1, 1)
+    available_field_ids: set[int] = set()
+    for r in m5.get_all_from_id("inventory_history_items", {"historyable_type": "Field"}):
+        if not r.get("available"):
+            continue
+        fid_r = r.get("historyable_id")
+        if fid_r is None:
+            continue
+        try:
+            ev_start = date.fromisoformat(str(r.get("event_start_at"))[:10]) if r.get("event_start_at") else None
+        except ValueError:
+            ev_start = None
+        try:
+            ev_end = date.fromisoformat(str(r.get("event_end_at"))[:10]) if r.get("event_end_at") else None
+        except ValueError:
+            ev_end = None
+        if ev_start is None:
+            continue
+        if ev_start <= report_date and (ev_end is None or ev_end >= period_start):
+            available_field_ids.add(int(fid_r))
+    from report_resources_fetch import load_report_resources
+
+    headers = {"X-User-Api-Token": m5.API_TOKEN}
+    sem = asyncio.Semaphore(m5.SEMAPHORE_LIMIT)
+    pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
+    area_today_by_firm_crop: dict[str, dict[str, float]] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=120, limits=pool) as client:
+        tasks_today, tasks_season, mtfmi = await m5.fetch_all_tasks_and_mtfmi(
+            client, sem, day_start, cutoff, season_start, m5.ALL_WT_IDS, label="Посев",
+        )
+        tasks_today = filter_tasks_by_seasons(m5, tasks_today, task_years)
+        tasks_season = filter_tasks_by_seasons(m5, tasks_season, task_years)
+        all_tasks = tasks_today + tasks_season
+        field_to_firm, _, _ = await load_report_resources(
+            client, m5.BASE_URL, sem, all_tasks, mtfmi, m5.get_all_from_id, m5._build_field_to_firm,
+        )
+        dop_mod = _load_dop_module_for_crops()
+        dop_mod.SEASON_YEAR = report_season_year
+        crop_firm_stats = await dop_mod.fetch_all_crop_stats(
+            client, sem, day_start, cutoff, season_start,
+            seeding_field_crop, field_to_firm,
+            available_field_ids=available_field_ids,
+            report_date=report_date,
+            field_to_firm_all=field_to_firm,
+        )
+    for firm, st in (crop_firm_stats or {}).items():
+        for crop, val in (st.get("today_by_crop") or {}).items():
+            v = round(float(val or 0), 2)
+            if v <= 0:
+                continue
+            label = _crop_label(crop)
+            area_today_by_firm_crop.setdefault(label, {})
+            area_today_by_firm_crop[label][firm] = round(
+                area_today_by_firm_crop[label].get(firm, 0.0) + v, 2,
+            )
+    return area_today_by_firm_crop
+
+
+def _crop_breakdown_seeding_from_today_by_field(
+    day_stats: dict[str, dict],
+    firm_order: list[str],
+    seeding_field_crop: dict[int, str],
+) -> dict[str, dict[str, float]]:
+    per_firm: dict[str, dict[str, float]] = {}
+    for firm in firm_order:
+        by_crop: dict[str, float] = defaultdict(float)
+        for fid, cov in (day_stats.get(firm, {}) or {}).get("today_by_field", {}).items():
+            v = float(cov or 0)
+            if v <= 0:
+                continue
+            crop = seeding_field_crop.get(int(fid))
+            if crop:
+                by_crop[_crop_label(crop)] += v
+        if by_crop:
+            per_firm[firm] = {c: round(v, 2) for c, v in by_crop.items() if round(v, 2) > 0}
+    return _crop_breakdown_from_firm_crop_dicts(firm_order, per_firm)
+
+
+def _load_field_to_crop_for_proverka(
+    m: Any,
+    cfg: dict,
+    report_date: date,
+) -> dict[int, str]:
+    """field_id → культура (как в сводках 1/2/3 при разбивке area_by_crop)."""
+    from plans import build_field_to_crop_general
+
+    history_years = cfg.get("history_years") or [int(report_date.year)]
+    priority_year = int(history_years[-1])
+    if hasattr(m, "get_all_page"):
+        crops = m.get_all_page("crops")
+    else:
+        crops = m.get_all_from_id("crops")
+    crop_map_int = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in crops
+        if c.get("id") is not None
+    }
+    history_by_year: dict[int, list] = {}
+    for crop_year in history_years:
+        history_by_year[int(crop_year)] = m.get_all_from_id(
+            "history_items", {"year": str(crop_year)},
+        )
+    skip_crops = getattr(m, "SKIP_CROPS", set()) or set()
+    return build_field_to_crop_general(
+        crop_map=crop_map_int,
+        history_by_year=history_by_year,
+        priority_year=priority_year,
+        skip_crops=skip_crops,
+    )
+
+
+def _per_firm_area_by_crop_from_mtfmi(
+    tasks_today: list[dict],
+    mtfmi_map: dict[int, list[dict]],
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+    cutoff: datetime,
+    *,
+    min_item_ha: float = 0.5,
+    crop_field_ids: set[int] | None = None,
+) -> dict[str, dict[str, float]]:
+    """Площадь за смену по культуре поля (firm → crop → ha), как area_by_crop в сводке 1."""
+    per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for t in tasks_today:
+        tid = t.get("id")
+        if tid is None:
+            continue
+        items = mtfmi_map.get(tid) or mtfmi_map.get(int(tid)) or []
+        for item in items:
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            fid_int = int(fid)
+            if crop_field_ids is not None and fid_int not in crop_field_ids:
+                continue
+            firm = field_to_firm.get(fid_int)
+            if not firm:
+                continue
+            cov = 0.0
+            for entry in (item.get("covered_area_hourly") or []):
+                h = _parse_dt_msk(entry[0])
+                if h and h < cutoff:
+                    cov += float(entry[1] or 0.0)
+            if cov <= min_item_ha:
+                continue
+            crop = field_to_crop.get(fid_int)
+            if crop:
+                per_firm[firm][str(crop)] += cov
+    return {
+        f: {c: round(v, 2) for c, v in crops.items() if round(v, 2) > 0}
+        for f, crops in per_firm.items()
+    }
+
+
+def _crop_breakdown_from_firm_area_by_crop(
+    per_firm: dict[str, dict[str, float]],
+    firm_order: list[str],
+) -> dict[str, dict[str, float]]:
+    day_stats = {f: {"area_by_crop": per_firm.get(f, {})} for f in firm_order}
+    return _crop_breakdown_from_day_stats(day_stats, firm_order)
+
+
+def _harvest_crop_breakdown_from_main10(m: Any, cache: Any | None) -> dict[str, dict[str, float]]:
+    """
+    Факт уборки за смену по культурам — как листы культур сводки 10
+    (cache.area_by_firm_crop после prepare_harvest_cache).
+    """
+    firm_order = list(getattr(m, "AGROFARM_ORDER", []) or [])
+    general_order = list(getattr(m, "GENERAL_CROP_ORDER", []) or [])
+    other_key = getattr(m, "OTHER_CROP_KEY", "Иные культуры")
+    out: dict[str, dict[str, float]] = {}
+    if not cache or not getattr(cache, "area_by_firm_crop", None):
+        return out
+    crop_names = list(general_order)
+    if other_key and other_key not in crop_names:
+        crop_names.append(other_key)
+    for crop_name in crop_names:
+        label = _crop_label(crop_name)
+        for firm in firm_order:
+            _ft, fd = cache.area_by_firm_crop.get((firm, crop_name), (0.0, 0.0))
+            v = round(float(fd or 0), 2)
+            if v <= 0:
+                continue
+            out.setdefault(label, {})
+            out[label][firm] = round(out[label].get(firm, 0.0) + v, 2)
+    return out
+
+
+def _crop_breakdown_from_firm_crop_dicts(
+    firm_order: list[str],
+    per_firm_crop: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    return _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
+
+
+def _report9_plow_crop_breakdown(
+    m: Any,
+    firm_order: list[str],
+    today_task_ids: set[int],
+    tasks_season: list[dict],
+    mtfmi: dict[int, list[dict]],
+    cutoff: datetime,
+    field_to_firm: dict[int, str],
+    task_year: int | None,
+) -> dict[str, dict[str, float]]:
+    crops = m.get_all_from_id("crops")
+    crops_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in crops
+        if c.get("id") is not None
+    }
+    field_to_crop_plow = m._build_field_to_crop_plow(
+        crops_map, season_year=task_year,
+    )
+    by_firm_crop = m.build_plow_stats_by_crop(
+        today_task_ids, tasks_season, mtfmi, cutoff,
+        field_to_firm, field_to_crop_plow, task_year=task_year,
+    )
+    per_firm: dict[str, dict[str, float]] = {}
+    for firm in firm_order:
+        by_crop: dict[str, float] = {}
+        for crop in getattr(m, "PLOW_SEASON_CROPS", ()):
+            v = round(
+                float((by_firm_crop.get(firm, {}).get(crop) or {}).get("plow_today") or 0),
+                2,
+            )
+            if v > 0:
+                by_crop[str(crop)] = v
+        if by_crop:
+            per_firm[firm] = by_crop
+    return _crop_breakdown_from_firm_crop_dicts(firm_order, per_firm)
+
+
+def _report9_deep_crop_breakdown(
+    m: Any,
+    firm_order: list[str],
+    today_task_ids: set[int],
+    tasks_season: list[dict],
+    mtfmi: dict[int, list[dict]],
+    cutoff: datetime,
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+) -> dict[str, dict[str, float]]:
+    """Глубокорыхление за смену по культуре поля (как сумма по полям в сводке 9)."""
+    per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    deep_wt = set(getattr(m, "DEEP_WT_IDS", set()) or set())
+
+    def _item_cov_before(item: dict) -> float:
+        cov = 0.0
+        for entry in (item.get("covered_area_hourly") or []):
+            h = _parse_dt_msk(entry[0])
+            if h and h < cutoff:
+                cov += float(entry[1] or 0.0)
+        if not item.get("covered_area_hourly"):
+            cov = float(item.get("covered_area") or 0.0)
+        return cov
+
+    for t in tasks_season:
+        tid = t.get("id")
+        if tid not in today_task_ids:
+            continue
+        try:
+            if int(t.get("work_type_id")) not in deep_wt:
+                continue
+        except (TypeError, ValueError):
+            continue
+        for item in mtfmi.get(tid) or mtfmi.get(int(tid)) or []:
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            fid_i = int(fid)
+            firm = field_to_firm.get(fid_i)
+            if not firm:
+                continue
+            cov_h = _item_cov_before(item)
+            if cov_h <= 0:
+                continue
+            crop = field_to_crop.get(fid_i)
+            if crop:
+                per_firm[firm][str(crop)] += cov_h
+
+    per_firm_rounded = {
+        f: {c: round(v, 2) for c, v in crops.items() if round(v, 2) > 0}
+        for f, crops in per_firm.items()
+    }
+    return _crop_breakdown_from_firm_crop_dicts(firm_order, per_firm_rounded)
+
+
+def _operations_with_crop_breakdown(
+    spec: ReportSpec,
+    firm_order: list[str],
+    by_firm: dict[str, float],
+    crop_breakdown: dict[str, dict[str, float]],
+    *,
+    work_type_ids: list[int] | set[int] | None = None,
+) -> dict[str, dict[str, Any]] | None:
+    if not spec.work_groups:
+        return None
+    wt_ids = sorted(int(x) for x in (work_type_ids or []))
+    return {
+        gn: _op_from_firm_dict(
+            firm_order,
+            by_firm,
+            work_type_ids=wt_ids or None,
+            area_today_by_firm_crop=crop_breakdown or None,
+        )
+        for gn in spec.work_groups
+    }
 
 
 def _pack(
@@ -90,11 +563,14 @@ def _op_from_firm_dict(
     by_firm: dict[str, float],
     *,
     work_type_ids: list[int] | None = None,
+    area_today_by_firm_crop: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     area = {f: round(float(by_firm.get(f, 0) or 0), 2) for f in firm_order}
     op: dict[str, Any] = {"area_today_by_firm": area, "total_ha": round(sum(area.values()), 2)}
     if work_type_ids:
         op["work_type_ids"] = sorted(int(x) for x in work_type_ids)
+    if area_today_by_firm_crop:
+        op["area_today_by_firm_crop"] = area_today_by_firm_crop
     return op
 
 
@@ -171,6 +647,7 @@ async def _extract_1(
     cfg: dict | None = None,
     run_override: dict | None = None,
 ) -> dict[str, Any]:
+    cfg = cfg or {}
     import httpx
 
     from proverka.work_groups import work_group_wt_map
@@ -216,6 +693,12 @@ async def _extract_1(
         }
         operations[gn]["machines_today_by_firm"] = machines_by_firm
         operations[gn]["total_machines"] = sum(machines_by_firm.values())
+        # Культуры в PDF сводки 1 — только лист МУ; посев/опрыскивание и др.
+        # подставляются из доноров (apply_report1_donor_area_graft).
+        if gn == m.WORK_TYPE_NAME:
+            crop_breakdown = _crop_breakdown_from_day_stats(st, firm_order)
+            if crop_breakdown:
+                operations[gn]["area_today_by_firm_crop"] = crop_breakdown
     harvest_gn = getattr(m, "HARVEST_GRAIN_GROUP_NAME", HARVEST_GRAIN_GROUP)
     if harvest_gn in operations:
         prev = operations[harvest_gn]
@@ -266,8 +749,21 @@ async def _extract_2(
             f: round(float((abfd.get(f) or {}).get(shift_date, 0) or 0), 2)
             for f in firm_order
         }
+        # Разбивка «факт за сутки» по культуре — уже посчитана в collect_work_data
+        # (gd["crops"][firm][crop]["by_date"]), берём срез за сегодняшнюю смену.
+        crop_breakdown: dict[str, dict[str, float]] = {}
+        crops_by_firm = gd.get("crops") or {}
+        for f in firm_order:
+            for crop, cdata in (crops_by_firm.get(f) or {}).items():
+                v = round(float((cdata.get("by_date") or {}).get(shift_date, 0) or 0), 2)
+                if v <= 0:
+                    continue
+                label = _crop_label(crop)
+                crop_breakdown.setdefault(label, {})
+                crop_breakdown[label][f] = round(crop_breakdown[label].get(f, 0.0) + v, 2)
         op = _op_from_firm_dict(
             firm_order, by_firm, work_type_ids=wt_by_group.get(gn),
+            area_today_by_firm_crop=crop_breakdown,
         )
         # Кол-во машин — как блок «СУТОЧНАЯ ВЫРАБОТКА» в 2_main_ideal_compact
         # (machine_day_area + _day_rate_machines + _group_count_threshold), а не
@@ -356,11 +852,23 @@ async def _extract_3(
         firm: int(details[firm].get("machines_today") or 0) for firm in m.AGROFIRMS
     }
     season_filter = "+".join(str(y) for y in task_years) if task_years else None
+    firm_order = list(m.AGROFIRMS.keys())
+    field_to_crop = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
+    per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
+        tasks_today, mtfmi, field_to_firm, field_to_crop, cutoff,
+        crop_field_ids=crop_field_ids,
+    )
+    crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
+    operations = _operations_with_crop_breakdown(
+        spec, firm_order, by_firm, crop_breakdown,
+        work_type_ids=m.WORK_TYPE_IDS,
+    )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         season_filter=season_filter,
         tasks_today_count=len(tasks_today), raw_details=details,
         machines_today_by_firm=machines_today_by_firm,
+        operations=operations,
         run_override=run_override,
     )
 
@@ -378,10 +886,17 @@ async def _extract_4(
     machines_today_by_firm = {
         firm: int(day_stats.get(firm, {}).get("n_mach") or 0) for firm in m.AGROFIRMS
     }
+    firm_order = list(m.AGROFIRMS.keys())
+    crop_breakdown = _crop_breakdown_from_day_stats(day_stats, firm_order)
+    operations = _operations_with_crop_breakdown(
+        spec, firm_order, by_firm, crop_breakdown,
+        work_type_ids=m.ALL_WT_IDS,
+    )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         raw_details=day_stats,
         machines_today_by_firm=machines_today_by_firm,
+        operations=operations,
         run_override=run_override,
     )
 
@@ -398,13 +913,11 @@ async def _extract_5(
     m = importlib.import_module("5_main_fixed")
     history_years = cfg.get("history_years") or [m.SEASON_YEAR, m.SEASON_YEAR + 1]
     task_years = cfg.get("task_season_years") or []
-    if task_years:
-        m.SEASON_YEAR = int(task_years[-1])
-    elif history_years:
-        m.SEASON_YEAR = int(history_years[-1])
+    report_season_year = int(min(int(y) for y in history_years))
+    m.SEASON_YEAR = report_season_year
     day_start, cutoff = m.resolve_time_range(report_date, m.DAY_START_HOUR, m.DAY_END_HOUR)
-    period_start = date(m.SEASON_YEAR, 1, 1)
-    season_start = datetime(m.SEASON_YEAR, 1, 1, tzinfo=m.TZ_MSK)
+    period_start = date(report_season_year, 1, 1)
+    season_start = datetime(report_season_year, 1, 1, tzinfo=m.TZ_MSK)
 
     crops = m.get_all_from_id("crops")
     crop_names_by_id = {
@@ -420,7 +933,7 @@ async def _extract_5(
         report_date=report_date,
         period_start=period_start,
         skip_crops=m.SKIP_CROPS,
-        season_year=int(task_years[0] if task_years else m.SEASON_YEAR + 1),
+        season_year=int(task_years[0] if task_years else report_season_year + 1),
     )
     available_field_ids: set[int] = set()
     for r in m.get_all_from_id("inventory_history_items", {"historyable_type": "Field"}):
@@ -457,6 +970,34 @@ async def _extract_5(
         field_to_firm, _, _ = await load_report_resources(
             client, m.BASE_URL, sem, all_tasks, mtfmi, m.get_all_from_id, m._build_field_to_firm,
         )
+        # Разбивка «факт за сутки» по культуре (в т.ч. яровой рапс) — тем же
+        # способом, каким сводка 5 сама строит лист «Сводка по культурам»
+        # (см. 5_main_fixed._fetch_crop_seeding_stats → 1_main_dop.fetch_all_crop_stats).
+        # Отдельный проход по machine_tasks того же периода — совпадает с тем,
+        # что сама сводка 5 уже делает при генерации Excel.
+        area_today_by_firm_crop: dict[str, dict[str, float]] = {}
+        try:
+            dop_mod = _load_dop_module_for_crops()
+            dop_mod.SEASON_YEAR = report_season_year
+            crop_firm_stats = await dop_mod.fetch_all_crop_stats(
+                client, sem, day_start, cutoff, season_start,
+                field_crop_by_id, field_to_firm,
+                available_field_ids=available_field_ids,
+                report_date=report_date,
+                field_to_firm_all=field_to_firm,
+            )
+            for firm, st in (crop_firm_stats or {}).items():
+                for crop, val in (st.get("today_by_crop") or {}).items():
+                    v = round(float(val or 0), 2)
+                    if v <= 0:
+                        continue
+                    label = _crop_label(crop)
+                    area_today_by_firm_crop.setdefault(label, {})
+                    area_today_by_firm_crop[label][firm] = round(
+                        area_today_by_firm_crop[label].get(firm, 0.0) + v, 2
+                    )
+        except Exception as exc:  # noqa: BLE001 — сверка не должна падать из-за доп. листа
+            print(f"  [proverka] сводка 5: пропускаем разбивку по культуре ({exc})")
     details = m.build_all_firm_stats(
         tasks_today, tasks_season, mtfmi, field_to_firm, day_start, cutoff, report_date,
         m.ALL_WT_IDS, m.MIN_DETAIL_AREA_HA, crop_names_by_id,
@@ -471,12 +1012,25 @@ async def _extract_5(
         firm: int(details.get(firm, {}).get("machines_today") or 0) for firm in m.AGROFIRMS
     }
     season_filter = "+".join(str(y) for y in task_years) if task_years else None
+    operations = None
+    if spec.work_groups:
+        firm_order = list(m.AGROFIRMS.keys())
+        operations = {
+            gn: _op_from_firm_dict(
+                firm_order, by_firm,
+                work_type_ids=sorted(int(x) for x in m.ALL_WT_IDS),
+                area_today_by_firm_crop=area_today_by_firm_crop,
+            )
+            for gn in spec.work_groups
+        }
+        # machines_today_by_firm/total_machines проставит _pack (см. ниже).
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         season_filter=season_filter,
         work_type_ids=set(m.ALL_WT_IDS),
         tasks_today_count=len(tasks_today),
         raw_details=details,
+        operations=operations,
         machines_today_by_firm=machines_today_by_firm,
         run_override=run_override,
     )
@@ -494,7 +1048,14 @@ async def _extract_6(
     m = importlib.import_module("6_main_3")
     day_start, cutoff = m.compute_time_range(report_date, m.DAY_START_HOUR, m.DAY_END_HOUR)
     _load_spray_reference_data(m, cfg, report_date, run_override)
-    task_years = cfg.get("task_season_years") or []
+    spray_cfg = resolve_group_season("3.1 Опрыскивание", report_date, run_override)
+    veg_cfg = resolve_group_season("3.2 Опрыскивание (овощи)", report_date, run_override)
+    field_task_years = list(spray_cfg.get("task_season_years") or [])
+    veg_task_years = list(veg_cfg.get("task_season_years") or [])
+    if not field_task_years:
+        field_task_years = list(cfg.get("task_season_years") or [])
+    if not veg_task_years:
+        veg_task_years = list(cfg.get("task_season_years") or [])
     headers = {"X-User-Api-Token": m.API_TOKEN}
     sem = asyncio.Semaphore(m.SEMAPHORE_LIMIT)
     pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
@@ -502,7 +1063,7 @@ async def _extract_6(
         all_details, veg_details = await asyncio.gather(
             m.fetch_all_data(
                 client, sem, day_start, cutoff,
-                task_season_years=task_years or None,
+                task_season_years=field_task_years or None,
             ),
             m.fetch_all_data(
                 client, sem, day_start, cutoff,
@@ -510,7 +1071,7 @@ async def _extract_6(
                 agrofirms=m.VEG_AGROFIRMS,
                 min_detail_area=0.0,
                 track_veg_crops=True,
-                task_season_years=task_years or None,
+                task_season_years=veg_task_years or None,
             ),
         )
     firm_order = list(m.AGROFIRMS.keys())
@@ -529,17 +1090,32 @@ async def _extract_6(
     veg_machines = {
         f: int(veg_details.get(f, {}).get("machines_today") or 0) for f in firm_order
     }
-    op_spray = _op_from_firm_dict(firm_order, spray)
+    spray_day_stats = {
+        f: {"area_by_crop": all_details.get(f, {}).get("today_by_crop") or {}}
+        for f in firm_order
+    }
+    veg_day_stats = {
+        f: {"area_by_crop": veg_details.get(f, {}).get("veg_today_by_crop") or {}}
+        for f in firm_order
+    }
+    spray_crop_bd = _crop_breakdown_from_day_stats(spray_day_stats, firm_order)
+    veg_crop_bd = _crop_breakdown_from_day_stats(veg_day_stats, firm_order)
+    op_spray = _op_from_firm_dict(
+        firm_order, spray, area_today_by_firm_crop=spray_crop_bd or None,
+    )
     op_spray["machines_today_by_firm"] = spray_machines
     op_spray["total_machines"] = sum(spray_machines.values())
-    op_veg = _op_from_firm_dict(firm_order, veg)
+    op_veg = _op_from_firm_dict(
+        firm_order, veg, area_today_by_firm_crop=veg_crop_bd or None,
+    )
     op_veg["machines_today_by_firm"] = veg_machines
     op_veg["total_machines"] = sum(veg_machines.values())
     operations = {
         "3.1 Опрыскивание": op_spray,
         "3.2 Опрыскивание (овощи)": op_veg,
     }
-    season_filter = "+".join(str(y) for y in task_years) if task_years else None
+    season_years = sorted(set(field_task_years) | set(veg_task_years))
+    season_filter = "+".join(str(y) for y in season_years) if season_years else None
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         season_filter=season_filter,
@@ -604,12 +1180,27 @@ async def _extract_7_8(
     machines_today_by_firm = {
         firm: int(details[firm].get("machines_today") or 0) for firm in m.AGROFIRMS
     }
+    firm_order = list(m.AGROFIRMS.keys())
+    field_to_crop_map: dict[int, str] = {}
+    if module_name == "8_main_fixed":
+        field_to_crop_map = field_to_crop
+    else:
+        field_to_crop_map = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
+    per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
+        tasks_today, mtfmi, field_to_firm, field_to_crop_map, cutoff,
+    )
+    crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
+    operations = _operations_with_crop_breakdown(
+        spec, firm_order, by_firm, crop_breakdown,
+        work_type_ids=m.ALL_WT_IDS,
+    )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         work_type_ids=set(m.ALL_WT_IDS),
         tasks_today_count=len(tasks_today),
         raw_details=details,
         machines_today_by_firm=machines_today_by_firm,
+        operations=operations,
         run_override=run_override,
     )
 
@@ -665,10 +1256,23 @@ async def _extract_9(
     deep_machines = {
         f: int(details.get(f, {}).get("deep_machines_today") or 0) for f in firm_order
     }
-    op_plow = _op_from_firm_dict(firm_order, plow)
+    task_year = int(task_years[-1]) if task_years else int(getattr(m, "SEASON_YEAR", report_date.year + 1))
+    plow_crop_bd = _report9_plow_crop_breakdown(
+        m, firm_order, today_task_ids, tasks_season, mtfmi, cutoff,
+        field_to_firm, task_year,
+    )
+    deep_crop_bd = _report9_deep_crop_breakdown(
+        m, firm_order, today_task_ids, tasks_season, mtfmi, cutoff,
+        field_to_firm, field_to_crop,
+    )
+    op_plow = _op_from_firm_dict(
+        firm_order, plow, area_today_by_firm_crop=plow_crop_bd or None,
+    )
     op_plow["machines_today_by_firm"] = plow_machines
     op_plow["total_machines"] = sum(plow_machines.values())
-    op_deep = _op_from_firm_dict(firm_order, deep)
+    op_deep = _op_from_firm_dict(
+        firm_order, deep, area_today_by_firm_crop=deep_crop_bd or None,
+    )
     op_deep["machines_today_by_firm"] = deep_machines
     op_deep["total_machines"] = sum(deep_machines.values())
     operations = {
@@ -821,7 +1425,9 @@ async def _grain_harvest_operation_for_proverka(
         cache = None
         if not getattr(m, "USE_FAST_MODE", False):
             cache = await asyncio.to_thread(m.prepare_harvest_cache, report_date)
-        return await asyncio.to_thread(_grain_harvest_op_main10, m, report_date, cache)
+        return await asyncio.to_thread(
+            _grain_harvest_op_main10, m, report_date, cache,
+        )
 
 
 def _grain_harvest_op_main10(
@@ -859,7 +1465,11 @@ def _grain_harvest_op_main10(
     from proverka.work_groups import work_type_ids_for_group
 
     wt_ids = work_type_ids_for_group(HARVEST_GRAIN_GROUP)
-    op = _op_from_firm_dict(firm_order, by_firm, work_type_ids=wt_ids or None)
+    crop_breakdown = _harvest_crop_breakdown_from_main10(m, cache)
+    op = _op_from_firm_dict(
+        firm_order, by_firm, work_type_ids=wt_ids or None,
+        area_today_by_firm_crop=crop_breakdown or None,
+    )
     op["total_ha"] = round(grain_total, 2)
     return op
 

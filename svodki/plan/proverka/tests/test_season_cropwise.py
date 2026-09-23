@@ -99,6 +99,22 @@ def test_seasons_sum_ui_session_plus_api_for_other_years() -> None:
     assert by_firm["Агрофирма А"] == BOTH_SEASONS_HA
 
 
+def test_task_season_years_set_for_spray_both_years_from_editor() -> None:
+    store = {
+        "calendar_seasons": {},
+        "by_group": {"3.1 Опрыскивание": {"season_years": [2026, 2027]}},
+    }
+    original_loader = su.load_season_store
+    su.load_season_store = lambda rd, reload=False: store  # noqa: ARG005
+    su.clear_season_cache()
+    try:
+        allowed = su.task_season_years_set_for_group("3.1 Опрыскивание", REPORT_DATE)
+        assert allowed == {"2026", "2027"}
+    finally:
+        su.load_season_store = original_loader
+        su.clear_season_cache()
+
+
 def test_file_override_beats_shared_spray_env_from_other_group() -> None:
     """3.1 и 3.2 — разные сезоны из редактора, даже если legacy spray env от 3.2."""
     store = {

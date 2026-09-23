@@ -35,7 +35,9 @@ from app.config import settings
 from app.database import get_db
 from app.infrastructure.logging import get_logger
 from app.models import User
+from app.application.audit_activity import record_activity
 from app.schemas_auth import (
+    ChangeMyPasswordIn,
     EmailVerifyRequest,
     LoginRequest,
     LoginResponse,
@@ -78,6 +80,34 @@ def my_profile(
 @users_router.get("/me", response_model=UserRead)
 def get_me(current_user: User = Depends(get_current_active_user)):
     return current_user
+
+
+@users_router.patch("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_my_password(
+    body: ChangeMyPasswordIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Смена своего пароля (админ / пользователь / разработчик)."""
+    if not verify_password(body.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="wrong_current_password")
+    try:
+        hibp.assert_password_not_pwned(body.new_password)
+    except ValueError as exc:
+        if str(exc) == "password_pwned":
+            raise HTTPException(status_code=400, detail="password_pwned") from exc
+        raise
+    current_user.password_hash = hash_password(body.new_password)
+    repo.bump_token_version(db, current_user)
+    record_activity(
+        db,
+        action="users.password_changed",
+        user_id=current_user.id,
+        ip=get_client_ip(request),
+        target_user_id=current_user.id,
+        self_service=True,
+    )
 
 
 @users_router.post("/register", status_code=status.HTTP_200_OK)

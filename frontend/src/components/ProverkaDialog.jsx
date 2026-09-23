@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -11,6 +12,7 @@ import {
   DialogTitle,
   FormControlLabel,
   FormGroup,
+  IconButton,
   Stack,
   Table,
   TableBody,
@@ -22,8 +24,13 @@ import {
 } from "@mui/material";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
+import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
+import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import AiReportPanel from "./AiReportPanel";
+
+/** Согласовано с proverka/ha_thresholds.py DIFF_MIN_HA */
+const DIFF_MIN_HA = 0.5;
 import { sortCatalogDesc } from "../utils/reportSort";
 import { formatDateTimeRu } from "../utils/formatDuration";
 import {
@@ -34,6 +41,35 @@ import {
   fetchProverkaJob,
   runProverka,
 } from "../api";
+
+function formatHa(value) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value);
+}
+
+function cropKey(groupName, cropName) {
+  return `${groupName}\0${cropName}`;
+}
+
+function CrossCheckStatusChips({ row }) {
+  const cropDiff = (row.crops || []).some((c) => c.status === "DIFF");
+  if (row.status === "partial") {
+    return <Chip size="small" color="default" label="partial" />;
+  }
+  return (
+    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+      <Chip
+        size="small"
+        color={row.status === "DIFF" ? "error" : "success"}
+        label={row.status || "—"}
+      />
+      {cropDiff && row.status === "OK" && (
+        <Chip size="small" color="warning" variant="outlined" label="культуры" />
+      )}
+    </Stack>
+  );
+}
 
 export default function ProverkaDialog({ open, onClose, summaryDate, onComplete }) {
   const [catalog, setCatalog] = useState([]);
@@ -48,6 +84,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState(false);
+  const [showAllCrops, setShowAllCrops] = useState(false);
+  const [expandedCropKeys, setExpandedCropKeys] = useState(() => new Set());
 
   const sortedCatalog = useMemo(() => sortCatalogDesc(catalog), [catalog]);
 
@@ -207,6 +245,52 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
   const crossCheckRows = job?.cross_check_rows ?? job?.cross_check?.operations ?? [];
   const cropwiseRows = useMemo(() => job?.summary_rows || [], [job?.summary_rows]);
 
+  useEffect(() => {
+    setExpandedCropKeys(new Set());
+  }, [jobId]);
+
+  const hasCropBreakdown = useMemo(
+    () => crossCheckRows.some((row) => (row.crops || []).length > 0),
+    [crossCheckRows]
+  );
+
+  const crossCheckTableRows = useMemo(() => {
+    const out = [];
+    for (const row of crossCheckRows) {
+      out.push({ kind: "op", row });
+      const crops = (row.crops || []).filter((c) => showAllCrops || c.status === "DIFF");
+      for (const cr of crops) {
+        const key = cropKey(row.group_name, cr.crop);
+        const firmRows = (cr.firms || []).filter(
+          (fr) => showAllCrops || (fr.max_diff_ha || 0) >= DIFF_MIN_HA
+        );
+        out.push({
+          kind: "crop",
+          op: row,
+          crop: cr,
+          key,
+          firmCount: firmRows.length,
+          expandable: firmRows.length > 0,
+        });
+        if (expandedCropKeys.has(key)) {
+          for (const fr of firmRows) {
+            out.push({ kind: "firm", op: row, crop: cr, firm: fr, key });
+          }
+        }
+      }
+    }
+    return out;
+  }, [crossCheckRows, showAllCrops, expandedCropKeys]);
+
+  function toggleCropFirms(key) {
+    setExpandedCropKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const crossCheckPeerIds = useMemo(() => {
     const ids = new Set();
     for (const row of crossCheckRows) {
@@ -222,8 +306,30 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
     });
   }, [crossCheckRows]);
 
+  const firmCheckRows = useMemo(() => {
+    const rows = [];
+    for (const row of crossCheckRows) {
+      for (const firmRow of row.firms || []) {
+        rows.push({
+          group_name: row.group_name,
+          display_name: row.display_name || row.group_name,
+          firm: firmRow.firm,
+          values: firmRow.values || {},
+          max_diff_ha: firmRow.max_diff_ha,
+        });
+      }
+    }
+    return rows;
+  }, [crossCheckRows]);
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+    <Dialog
+      open={open}
+      onClose={onClose}
+      fullWidth
+      maxWidth="xl"
+      PaperProps={{ sx: { width: "95vw", maxWidth: "95vw" } }}
+    >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <FactCheckRoundedIcon color="primary" />
         Проверка сводок
@@ -344,13 +450,42 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
 
           {completed && crossCheckRows.length > 0 && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
-              <Typography variant="subtitle2" sx={{ p: 1 }}>
-                Сверка операций между сводками
-              </Typography>
+              <Stack
+                direction="row"
+                alignItems="center"
+                justifyContent="space-between"
+                flexWrap="wrap"
+                useFlexGap
+                sx={{ p: 1, gap: 1 }}
+              >
+                <Typography variant="subtitle2">Сверка операций между сводками</Typography>
+                {hasCropBreakdown && (
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={showAllCrops}
+                        onChange={(e) => setShowAllCrops(e.target.checked)}
+                      />
+                    }
+                    label={
+                      <Typography variant="body2">
+                        Показать все культуры (не только расхождения)
+                      </Typography>
+                    }
+                  />
+                )}
+              </Stack>
+              {hasCropBreakdown && (
+                <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
+                  Под операцией — сумма за смену по культуре (все АФ). Нажмите ▶ у культуры, чтобы
+                  развернуть расхождения по агрофирмам.
+                </Typography>
+              )}
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Операция</TableCell>
+                    <TableCell>Операция / культура</TableCell>
                     <TableCell>Сводки</TableCell>
                     {crossCheckPeerIds.map((rid) => (
                       <TableCell key={rid} align="right">
@@ -362,19 +497,146 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {crossCheckRows.map((row) => (
-                    <TableRow key={row.group_name}>
-                      <TableCell>{row.display_name || row.group_name}</TableCell>
-                      <TableCell>{(row.active_reports || []).join("+")}</TableCell>
+                  {crossCheckTableRows.map((item) => {
+                    if (item.kind === "op") {
+                      const row = item.row;
+                      return (
+                        <TableRow key={`op-${row.group_name}`}>
+                          <TableCell sx={{ fontWeight: 600 }}>
+                            {row.display_name || row.group_name}
+                          </TableCell>
+                          <TableCell>{(row.active_reports || []).join("+")}</TableCell>
+                          {crossCheckPeerIds.map((rid) => (
+                            <TableCell key={rid} align="right">
+                              {formatHa(row.totals?.[rid])}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                          <TableCell>
+                            <CrossCheckStatusChips row={row} />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }
+                    if (item.kind === "crop") {
+                      const { op, crop: cr, key, expandable, firmCount } = item;
+                      const expanded = expandedCropKeys.has(key);
+                      return (
+                        <TableRow
+                          key={`crop-${key}`}
+                          sx={{
+                            bgcolor: cr.status === "DIFF" ? "action.selected" : "action.hover",
+                          }}
+                        >
+                          <TableCell sx={{ pl: 3 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.5}>
+                              {expandable ? (
+                                <IconButton
+                                  size="small"
+                                  aria-label={expanded ? "Свернуть фирмы" : "Развернуть фирмы"}
+                                  onClick={() => toggleCropFirms(key)}
+                                >
+                                  {expanded ? (
+                                    <ExpandLessRoundedIcon fontSize="small" />
+                                  ) : (
+                                    <ExpandMoreRoundedIcon fontSize="small" />
+                                  )}
+                                </IconButton>
+                              ) : (
+                                <Box sx={{ width: 28 }} />
+                              )}
+                              <Typography variant="body2" component="span">
+                                {cr.crop}
+                                {firmCount > 0 && (
+                                  <Typography
+                                    component="span"
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ ml: 0.5 }}
+                                  >
+                                    ({firmCount} АФ)
+                                  </Typography>
+                                )}
+                              </Typography>
+                            </Stack>
+                          </TableCell>
+                          <TableCell>{(cr.active_reports || op.active_reports || []).join("+")}</TableCell>
+                          {crossCheckPeerIds.map((rid) => (
+                            <TableCell key={rid} align="right">
+                              {formatHa(cr.totals?.[rid])}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">{formatHa(cr.max_diff_ha)}</TableCell>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              color={cr.status === "DIFF" ? "error" : "success"}
+                              label={cr.status}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }
+                    const { op, crop: cr, firm: fr, key } = item;
+                    return (
+                      <TableRow key={`firm-${key}-${fr.firm}`} sx={{ bgcolor: "background.default" }}>
+                        <TableCell sx={{ pl: 7, py: 0.75 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {fr.firm}
+                          </Typography>
+                        </TableCell>
+                        <TableCell />
+                        {crossCheckPeerIds.map((rid) => (
+                          <TableCell key={rid} align="right">
+                            <Typography variant="caption">{formatHa(fr.values?.[rid])}</Typography>
+                          </TableCell>
+                        ))}
+                        <TableCell align="right">
+                          <Typography variant="caption">{formatHa(fr.max_diff_ha)}</Typography>
+                        </TableCell>
+                        <TableCell />
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
+          )}
+
+          {completed && firmCheckRows.length > 0 && (
+            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
+              <Typography variant="subtitle2" sx={{ p: 1 }}>
+                Сверка по агрофирмам
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", mb: 0.5 }}>
+                Итог за смену по каждой АФ внутри операции (сводки между собой). Сводка 1 для
+                посева, опрыскивания и др. подставляет гектары с доноров — как в PDF; без
+                доноров 4–8 в проверке цифры сводки 1 могут не совпасть с Excel.
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Операция</TableCell>
+                    <TableCell>Агрофирма</TableCell>
+                    {crossCheckPeerIds.map((rid) => (
+                      <TableCell key={rid} align="right">
+                        {rid}
+                      </TableCell>
+                    ))}
+                    <TableCell align="right">Max diff</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {firmCheckRows.map((row, idx) => (
+                    <TableRow key={`${row.group_name}-${row.firm}-${idx}`}>
+                      <TableCell>{row.display_name}</TableCell>
+                      <TableCell>{row.firm}</TableCell>
                       {crossCheckPeerIds.map((rid) => (
                         <TableCell key={rid} align="right">
-                          {row.totals?.[rid]?.toFixed?.(2) ?? row.totals?.[rid] ?? "—"}
+                          {formatHa(row.values?.[rid])}
                         </TableCell>
                       ))}
-                      <TableCell align="right">
-                        {row.max_diff_ha != null ? row.max_diff_ha.toFixed?.(2) ?? row.max_diff_ha : "—"}
-                      </TableCell>
-                      <TableCell>{row.status}</TableCell>
+                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -386,6 +648,10 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
               <Typography variant="subtitle2" sx={{ p: 1 }}>
                 Сводки ↔ Cropwise UI
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
+                Строки с названием культуры (после «·») — сводка ↔ Cropwise по культурам;
+                в таблице выше — те же peer-сводки, что и по операции, если есть разбивка.
               </Typography>
               <Table size="small">
                 <TableHead>

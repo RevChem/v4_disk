@@ -131,6 +131,69 @@ def _apply_report1_donor_graft(all_results: dict[str, Any]) -> None:
             )
             r1_op["_grafted_from_report_id"] = "6"
 
+
+def _copy_donor_op_area_fields(donor_op: dict[str, Any], r1_op: dict[str, Any], donor_rid: str) -> None:
+    """Гектары за смену — как в PDF сводки 1 (листы доноров 4/5/6/7/8)."""
+    import copy
+
+    area = donor_op.get("area_today_by_firm")
+    if isinstance(area, dict):
+        r1_op["area_today_by_firm"] = copy.deepcopy(area)
+    if donor_op.get("total_ha") is not None:
+        r1_op["total_ha"] = round(float(donor_op["total_ha"]), 2)
+    elif isinstance(area, dict):
+        r1_op["total_ha"] = round(sum(float(v or 0) for v in area.values()), 2)
+    crop = donor_op.get("area_today_by_firm_crop")
+    if isinstance(crop, dict) and crop:
+        r1_op["area_today_by_firm_crop"] = copy.deepcopy(crop)
+    else:
+        r1_op.pop("area_today_by_firm_crop", None)
+    r1_op["_grafted_area_from_report_id"] = donor_rid
+
+
+def apply_report1_donor_area_graft(all_results: dict[str, Any]) -> None:
+    """Подставляет area_today/total_ha (и культуры, если есть у донора) в сводку 1."""
+    reports = all_results.get("reports") or {}
+    r1 = reports.get(REPORT1_ID)
+    if not r1 or not _report1_graft_enabled():
+        return
+    r1_ops = (r1.get("svodka") or {}).get("operations") or {}
+    for donor_rid, group_name in REPORT1_FAST_SLAVE_GROUPS_BY_ID.items():
+        donor = reports.get(donor_rid)
+        if not donor:
+            continue
+        donor_op = (donor.get("svodka") or {}).get("operations", {}).get(group_name)
+        if not donor_op:
+            continue
+        r1_op = r1_ops.get(group_name)
+        if r1_op is None:
+            continue
+        _copy_donor_op_area_fields(donor_op, r1_op, donor_rid)
+
+    donor6 = reports.get("6")
+    if donor6:
+        donor6_ops = (donor6.get("svodka") or {}).get("operations") or {}
+        for group_name in REPORT1_DONOR6_EXTRA_GRAFT_GROUPS:
+            donor_op = donor6_ops.get(group_name)
+            if not donor_op:
+                continue
+            r1_op = r1_ops.get(group_name)
+            if r1_op is None:
+                continue
+            _copy_donor_op_area_fields(donor_op, r1_op, "6")
+
+    import copy
+
+    op_cmp = r1.get("operation_comparisons") or {}
+    for gn, r1_op in r1_ops.items():
+        if not r1_op.get("_grafted_area_from_report_id"):
+            continue
+        grafted = copy.deepcopy(r1_op)
+        if gn in op_cmp:
+            op_cmp[gn]["svodka_op_local"] = grafted
+            op_cmp[gn]["svodka_op_r2"] = grafted
+
+
 # Условный список агрофирм для заглушки. Реальные сводки берут AGROFIRMS
 # своего модуля (см. extractors.py) — тут это только для тех отчётов,
 # для которых факт по машинам ещё не подключён.

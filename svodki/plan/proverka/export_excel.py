@@ -24,6 +24,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from proverka.ha_thresholds import DIFF_MIN_HA, diff_is_significant  # noqa: E402
 from proverka.reports_config import REPORTS, list_report_ids  # noqa: E402
 from proverka.summary import build_rows, load_for_date, per_op_row_title  # noqa: E402
 from proverka.task_errors import collect_task_errors_from_batch  # noqa: E402
@@ -137,7 +138,7 @@ def _sheet_summary(
     _style_header_row(ws, r, len(err_headers))
     r += 1
 
-    err_rows = [e for e in err_rows if abs(float(e.get("diff_ha") or 0)) >= 0.01]
+    err_rows = [e for e in err_rows if diff_is_significant(float(e.get("diff_ha") or 0))]
     if not err_rows:
         ws.cell(row=r, column=1, value="Нет расхождений на уровне заданий (или PROVERKA_TASK_ERRORS=0).")
         r += 1
@@ -192,7 +193,7 @@ def _sheet_firms(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
                     s_ha = float(sv.get(firm, 0) or 0)
                     c_ha = float(cw.get(firm, 0) or 0)
                     diff = round(s_ha - c_ha, 2)
-                    fill = FILL_OK if abs(diff) < 0.01 else (FILL_BAD if s_ha or c_ha else None)
+                    fill = FILL_OK if not diff_is_significant(diff) else (FILL_BAD if s_ha or c_ha else None)
                     _write_row(ws, r, [rid, op_title, firm, s_ha, c_ha, diff], fill=fill)
                     r += 1
             continue
@@ -204,7 +205,7 @@ def _sheet_firms(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
             s_ha = float(sv.get(firm, 0) or 0)
             c_ha = float(cw.get(firm, 0) or 0)
             diff = round(s_ha - c_ha, 2)
-            fill = FILL_OK if abs(diff) < 0.01 else (FILL_BAD if s_ha or c_ha else None)
+            fill = FILL_OK if not diff_is_significant(diff) else (FILL_BAD if s_ha or c_ha else None)
             _write_row(ws, r, [rid, title, firm, s_ha, c_ha, diff], fill=fill)
             r += 1
     _autowidth(ws, len(headers))
@@ -261,7 +262,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
         r += 1
 
     r += 1
-    ws.cell(row=r, column=1, value="Детализация по фирмам (только DIFF ≥ 0.01 га)")
+    ws.cell(row=r, column=1, value=f"Детализация по фирмам (только DIFF ≥ {DIFF_MIN_HA} га)")
     ws.cell(row=r, column=1).font = FONT_BOLD
     r += 1
     firm_headers = ["Операция", "Агрофирма", "Значения по сводкам", "Max diff"]
@@ -274,7 +275,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
         if item.get("status") != "DIFF":
             continue
         for fr in item.get("firms") or []:
-            if (fr.get("max_diff_ha") or 0) < 0.01:
+            if not diff_is_significant(fr.get("max_diff_ha") or 0):
                 continue
             vals = fr.get("values") or {}
             val_str = "; ".join(f"{rid}={v:.2f}" for rid, v in sorted(vals.items()))
@@ -290,7 +291,51 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
             )
             r += 1
 
-    _autowidth(ws, max(len(headers), len(firm_headers)))
+    r += 1
+    ws.cell(row=r, column=1, value="Детализация по культурам (только DIFF, сумма по всем АФ)")
+    ws.cell(row=r, column=1).font = FONT_BOLD
+    r += 1
+    crop_headers = ["Операция", "Культура", "Значения по сводкам", "Max diff"]
+    for ci, h in enumerate(crop_headers, 1):
+        ws.cell(row=r, column=ci, value=h)
+    _style_header_row(ws, r, len(crop_headers))
+    r += 1
+
+    for item in rows:
+        for cr in item.get("crops") or []:
+            if cr.get("status") != "DIFF":
+                continue
+            totals = cr.get("totals") or {}
+            val_str = "; ".join(f"{rid}={v:.2f}" for rid, v in sorted(totals.items()))
+            _write_row(
+                ws, r,
+                [
+                    item.get("display_name") or item.get("group_name"),
+                    cr.get("crop"),
+                    val_str,
+                    cr.get("max_diff_ha"),
+                ],
+                fill=FILL_BAD,
+            )
+            r += 1
+            for fr in cr.get("firms") or []:
+                if not diff_is_significant(fr.get("max_diff_ha") or 0):
+                    continue
+                fvals = fr.get("values") or {}
+                fval_str = "; ".join(f"{rid}={v:.2f}" for rid, v in sorted(fvals.items()))
+                _write_row(
+                    ws, r,
+                    [
+                        "",
+                        f"  └ {fr.get('firm')}",
+                        fval_str,
+                        fr.get("max_diff_ha"),
+                    ],
+                    fill=FILL_BAD,
+                )
+                r += 1
+
+    _autowidth(ws, max(len(headers), len(firm_headers), len(crop_headers)))
 
 
 def _sheet_details(
@@ -361,9 +406,9 @@ def _sheet_discrepancies(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
         cw_firms = (res.get("cropwise_parsed") or {}).get("fact_by_firm") or {}
         problem_firms = {
             f for f in set(sv_firms) | set(cw_firms)
-            if abs(float(firm_diffs.get(f, sv_firms.get(f, 0) - cw_firms.get(f, 0)))) >= 0.01
+            if diff_is_significant(float(firm_diffs.get(f, sv_firms.get(f, 0) - cw_firms.get(f, 0))))
         }
-        if not problem_firms and abs(float(cmp_.get("total_diff_ha") or 0)) >= 0.01:
+        if not problem_firms and diff_is_significant(float(cmp_.get("total_diff_ha") or 0)):
             problem_firms = set(sv_firms) | set(cw_firms)
 
         for firm in sorted(problem_firms):
@@ -371,7 +416,7 @@ def _sheet_discrepancies(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
                 float(firm_diffs.get(firm, float(sv_firms.get(firm, 0)) - float(cw_firms.get(firm, 0)))),
                 2,
             )
-            if abs(fd) < 0.01 and not problem_firms:
+            if not diff_is_significant(fd) and not problem_firms:
                 continue
             note = ""
             seasons = res.get("cropwise_seasons") or {}

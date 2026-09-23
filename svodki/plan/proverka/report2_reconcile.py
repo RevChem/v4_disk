@@ -497,6 +497,23 @@ def _reconcile_one_operation(
     if fetch_note:
         out["comparison"]["note"] += f" {fetch_note}"
 
+    svodka_crop = display_op.get("area_today_by_firm_crop") or {}
+    if svodka_crop and work.get("ok"):
+        from proverka.crop_compare import (
+            compare_svodka_cropwise_crops,
+            cropwise_area_by_firm_crop,
+        )
+
+        cw_crop = cropwise_area_by_firm_crop(
+            work.get("body"), firm_names, hints,
+        )
+        crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+        if crop_cmp:
+            out["crop_comparisons"] = crop_cmp
+            out["comparison"]["crop_diff_count"] = sum(
+                1 for c in crop_cmp if c.get("status") == "DIFF"
+            )
+
     from proverka.summary import per_op_row_title
     from proverka.task_errors import attach_task_errors
 

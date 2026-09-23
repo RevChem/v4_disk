@@ -26,7 +26,6 @@ MACHINE_OPERATION_PEER_OVERRIDES: dict[str, tuple[str, ...]] = {
     "5.0 Уборка": ("1", "2", "11", "14"),
 }
 
-
 def peer_reports_for_machine_group(group_name: str) -> tuple[str, ...]:
     if group_name in MACHINE_OPERATION_PEER_OVERRIDES:
         return MACHINE_OPERATION_PEER_OVERRIDES[group_name]
@@ -48,6 +47,11 @@ def display_group_name(group_name: str) -> str:
 
 def peer_reports_for_group(group_name: str) -> tuple[str, ...]:
     return OPERATION_PEERS.get(group_name, ("1", "2"))
+
+
+def peer_reports_for_crop_cross_check(group_name: str) -> tuple[str, ...]:
+    """Те же peer-сводки, что и для итога по операции; строка по культуре — только если разбивка есть ≥2 сводках."""
+    return peer_reports_for_group(group_name)
 
 
 def canonical_cropwise_report(group_name: str) -> str | None:

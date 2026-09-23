@@ -692,7 +692,25 @@ def main() -> int:
             print(
                 f"Сверка операций: OK={cc.get('ok', 0)} DIFF={cc.get('diff', 0)} "
                 f"partial={cc.get('partial', 0)}"
+                + (
+                    f" | расхождения по культурам: {cc.get('crop_diff', 0)}"
+                    if cc.get("crop_diff")
+                    else ""
+                )
             )
+            for op_row in all_results["cross_check"].get("operations") or []:
+                crop_diffs = [
+                    cr for cr in (op_row.get("crops") or []) if cr.get("status") == "DIFF"
+                ]
+                if not crop_diffs:
+                    continue
+                name = op_row.get("display_name") or op_row.get("group_name")
+                print(f"  Расхождение по культурам в «{name}»:")
+                for cr in crop_diffs:
+                    totals_str = ", ".join(
+                        f"{rid}={ha}" for rid, ha in sorted((cr.get("totals") or {}).items())
+                    )
+                    print(f"    {cr.get('crop')}: {totals_str} (Δ {cr.get('max_diff_ha')} га)")
 
     if getattr(args, "excel", False) and len(report_ids) > 1:
         from proverka.export_excel import export_excel

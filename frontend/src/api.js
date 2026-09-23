@@ -843,6 +843,13 @@ export async function updateManagedUser(userId, payload) {
   return data;
 }
 
+export async function changeMyPassword(currentPassword, newPassword) {
+  await api.patch("/users/me/password", {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
 export async function fetchInterfaceSettings() {
   const { data } = await api.get("/interface-settings");
   return data;
