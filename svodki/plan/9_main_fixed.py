@@ -1085,6 +1085,14 @@ def build_all_firm_stats(
     today_deep_by_field: dict[str, dict[int, float]] = {
         firm: defaultdict(float) for firm in FIRM_ORDER
     }
+    _note = None
+    try:
+        from proverka.task_facts import bind_capture
+
+        _bound = bind_capture()
+        _note = _bound[0] if _bound else None
+    except Exception:
+        _note = None
 
     for t in tasks_season:
         tid = t.get("id")
@@ -1134,8 +1142,23 @@ def build_all_firm_stats(
                 cov_firm_today += cov_h
                 if wt in PLOW_WT_IDS and fid_i:
                     today_plow_by_field[firm][fid_i] += cov_h
+                    if _note is not None:
+                        _note(
+                            group="2.4 Вспашка", firm=firm, crop=str(field_to_crop.get(fid_i) or ""),
+                            field_id=fid_i, task_id=int(tid) if tid is not None else None,
+                            machine_id=int(mid) if mid is not None else None, ha=cov_h,
+                            season=str(t.get("season") or ""),
+                        )
                 if wt in DEEP_WT_IDS and fid_i:
                     today_deep_by_field[firm][fid_i] += cov_h
+                    if _note is not None:
+                        _note(
+                            group="2.8 Глубокорыхление", firm=firm,
+                            crop=str(field_to_crop.get(fid_i) or ""),
+                            field_id=fid_i, task_id=int(tid) if tid is not None else None,
+                            machine_id=int(mid) if mid is not None else None, ha=cov_h,
+                            season=str(t.get("season") or ""),
+                        )
 
                 hourly_all = item.get("covered_area_hourly") or []
                 cov_item_total = sum(e[1] or 0 for e in hourly_all)

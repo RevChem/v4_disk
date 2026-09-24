@@ -1803,6 +1803,14 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
     season_firm: dict[str, float] = defaultdict(float)
     today_firm: dict[str, float] = defaultdict(float)
     machines_by_crop: dict[str, set[int]] = defaultdict(set)
+    _note = None
+    try:
+        from proverka.task_facts import bind_capture
+
+        _bound = bind_capture()
+        _note = _bound[0] if _bound else None
+    except Exception:
+        _note = None
 
     def process(
         task_list: list[dict],
@@ -1849,6 +1857,17 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                     wt_i, crop, general_set, OTHER_CROP_KEY,
                 )
                 fc[(firm, crop_key)] += cov
+                if _note is not None and count_machines:
+                    _note(
+                        group="5.0 Уборка",
+                        firm=firm,
+                        crop=str(crop_key or ""),
+                        field_id=fid_i,
+                        task_id=int(task["id"]) if task.get("id") is not None else None,
+                        machine_id=int(mid) if mid is not None else None,
+                        ha=cov,
+                        season=str(task.get("season") or ""),
+                    )
                 if count_machines and _is_harvest_combine(mid, machines_map):
                     if is_mowing:
                         machine_crop = CORN_SILAGE_CROP
@@ -3435,6 +3454,14 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
     field_to_crop_map = get_field_to_crop()
     field_to_firm_map = load_field_to_firm()
     agg: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+    _note = None
+    try:
+        from proverka.task_facts import bind_capture
+
+        _bound = bind_capture()
+        _note = _bound[0] if _bound else None
+    except Exception:
+        _note = None
 
     for task in tasks_in_period:
         tid = task["id"]
@@ -3458,6 +3485,18 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             agg[crop][t_date] += cov
             if t_date == report_shift_date and task.get("machine_id") is not None:
                 veg_machines_today.add(task["machine_id"])
+            if _note is not None and t_date == report_shift_date:
+                _mid = task.get("machine_id")
+                _note(
+                    group="5.4 Уборка картофеля, лука",
+                    firm=_VEG_HARVEST_FIRM,
+                    crop=crop,
+                    field_id=fid_i,
+                    task_id=int(tid),
+                    machine_id=int(_mid) if _mid is not None else None,
+                    ha=cov,
+                    season=str(task.get("season") or ""),
+                )
 
     for task in no_shift_tasks:
         tid = task["id"]

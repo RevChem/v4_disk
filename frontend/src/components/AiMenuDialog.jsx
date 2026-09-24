@@ -18,6 +18,7 @@ import {
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import EditNoteOutlinedIcon from "@mui/icons-material/EditNoteOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
+import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
 
 import { fetchProverkaAiSettings, saveProverkaAiSettings } from "../api";
 
@@ -26,6 +27,7 @@ export default function AiMenuDialog({
   onClose,
   onOpenReport,
   onOpenPrompts,
+  onOpenTaskFacts,
 }) {
   const [settings, setSettings] = useState(null);
   const [model, setModel] = useState("deepseek-flash");
@@ -104,6 +106,18 @@ export default function AiMenuDialog({
               Промпты AI
             </Button>
           </Stack>
+
+          <Button
+            variant="outlined"
+            fullWidth
+            startIcon={<QuestionAnswerOutlinedIcon />}
+            onClick={() => {
+              onClose();
+              onOpenTaskFacts?.();
+            }}
+          >
+            Вопросы по заданиям
+          </Button>
 
           <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>

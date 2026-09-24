@@ -1356,6 +1356,13 @@ async def fetch_fertilizer_11_mtfmi(
     cmp_mtfmi: dict[int, float] = defaultdict(float)
 
     # --- Сутки: как 3_main build_all_firm_stats (tasks_today) ---
+    _cap = None
+    try:
+        from proverka.task_facts import bind_capture
+
+        _cap = bind_capture()
+    except Exception:
+        _cap = None
     for t in tasks_today:
         mid = t.get("machine_id")
         items = mtfmi_map.get(t["id"], [])
@@ -1433,6 +1440,21 @@ async def fetch_fertilizer_11_mtfmi(
                 pm[mid]["speeds"].append(sp)
             for fid, fid_cov in field_cov_today.items():
                 pm[mid]["field_cov"][fid] += fid_cov
+                if _cap is not None and fid_cov > 0:
+                    mrec = machines_map.get(mid) or {}
+                    _cap[1](
+                        (WORK_TYPE_NAME, firm, mid),
+                        group=WORK_TYPE_NAME,
+                        firm=firm,
+                        crop=str(field_to_crop.get(int(fid)) or ""),
+                        field_id=int(fid),
+                        field=str(field_name_map.get(int(fid)) or ""),
+                        task_id=int(t["id"]),
+                        machine_id=int(mid) if mid is not None else None,
+                        machine=str(mrec.get("name") or ""),
+                        ha=fid_cov,
+                        season=str(t.get("season") or ""),
+                    )
 
     # --- Сезон: как 3_main — любая cov>0, без порога 0.5/10 ---
     for t in tasks_season:
@@ -1483,13 +1505,17 @@ async def fetch_fertilizer_11_mtfmi(
                     cmp_mtfmi[fid_i] += cov
 
     today_area_by_field: dict[int, float] = defaultdict(float)
+    _ok_mu: set[tuple] = set()
     for firm in AGROFIRMS:
         for mid, d in per_firm_machine[firm].items():
             if round(d["cov_total"], 2) < MIN_DETAIL_AREA_HA:
                 continue
+            _ok_mu.add((firm, mid))
             for fid, fid_cov in d["field_cov"].items():
                 if fid_cov > 0:
                     today_area_by_field[int(fid)] += float(fid_cov)
+    if _cap is not None:
+        _cap[2](WORK_TYPE_NAME, _ok_mu)
     today_field_ids = set(today_area_by_field)
     print(f"    [1.1] Полей в сегодняшних machine_tasks: {len(today_field_ids)}")
 
@@ -2047,6 +2073,14 @@ async def fetch_day_stats_for_work_types(
     season_daily_machines: dict[str, dict[str, set[int]]] = {f: defaultdict(set)   for f in AGROFIRMS}
     season_field_cov:      dict[str, dict[int, float]]    = {f: defaultdict(float) for f in AGROFIRMS}
     per_firm_machine:      dict[str, dict[int, dict]]     = {f: {} for f in AGROFIRMS}
+    _cap = None
+    if not is_harvest:
+        try:
+            from proverka.task_facts import bind_capture
+
+            _cap = bind_capture()
+        except Exception:
+            _cap = None
 
     if is_plow:
         from collections import Counter
@@ -2159,6 +2193,20 @@ async def fetch_day_stats_for_work_types(
                         )
                         for fid, fcov in field_cov.items():
                             pm[mid]["field_cov"][fid] += fcov
+                            if _cap is not None and fcov > 0:
+                                mrec = machines_map.get(mid) or {}
+                                _cap[1](
+                                    (group_name, firm, mid),
+                                    group=group_name,
+                                    firm=firm,
+                                    crop=str(field_to_crop.get(int(fid)) or ""),
+                                    field_id=int(fid),
+                                    task_id=int(t["id"]),
+                                    machine_id=int(mid) if mid is not None else None,
+                                    machine=str(mrec.get("name") or ""),
+                                    ha=fcov,
+                                    season=str(t.get("season") or ""),
+                                )
                         if not pm[mid]["implement_width"]:
                             imp = implements_map.get(t.get("implement_id"))
                             w   = (imp.get("width") if imp else None) or 0
@@ -2304,6 +2352,20 @@ async def fetch_day_stats_for_work_types(
             for fid, fid_cov in field_cov_today.items():
                 if fid_cov > 0:
                     pm[mid]["field_cov"][fid] += fid_cov
+                    if _cap is not None:
+                        mrec = machines_map.get(mid) or {}
+                        _cap[1](
+                            (group_name, firm, mid),
+                            group=group_name,
+                            firm=firm,
+                            crop=str(field_to_crop.get(int(fid)) or ""),
+                            field_id=int(fid),
+                            task_id=int(t["id"]),
+                            machine_id=int(mid) if mid is not None else None,
+                            machine=str(mrec.get("name") or ""),
+                            ha=fid_cov,
+                            season=str(t.get("season") or ""),
+                        )
 
     # Сезонная площадь grain-only для уборки (avg/machines как 11_main).
     season_daily_area_grain: dict[str, dict[str, float]] = {
@@ -2396,6 +2458,19 @@ async def fetch_day_stats_for_work_types(
                 for fid, fid_cov in d["field_cov"].items():
                     if fid_cov > 0:
                         today_area_by_field[int(fid)] += float(fid_cov)
+    if _cap is not None:
+        if is_plow:
+            _cap[2](group_name, None)
+        else:
+            _cap[2](
+                group_name,
+                {
+                    (firm, mid)
+                    for firm, pm in per_firm_machine.items()
+                    for mid, d in pm.items()
+                    if _machine_qualifies_for_area(d["cov_total"], area_min_ha)
+                },
+            )
 
     harvest_perf_10: tuple[
         dict[str, float],

@@ -804,6 +804,14 @@ async def fetch_all_data(
     # не распозналась ни под одну из VEGGIE_CROPS (карто/лук/морков/свек) —
     # их площадь иначе молча выпадала бы из таблицы "Опрыскивание (овощи)".
     veg_unmatched_today: dict[str, list[tuple[int, str, float]]] = {f: [] for f in agrofirms}
+    _cap = None
+    _fact_group = "3.2 Опрыскивание (овощи)" if track_veg_crops else "3.1 Опрыскивание"
+    try:
+        from proverka.task_facts import bind_capture
+
+        _cap = bind_capture()
+    except Exception:
+        _cap = None
     for t in tasks_today_with_area:
         tid = t["id"]
         mid = t["machine_id"]
@@ -833,6 +841,33 @@ async def fetch_all_data(
                 }
             pm[mid]["cov_total"] += cov_for_firm
             pm[mid]["work_dur"] += dur_for_firm
+            if _cap is not None and cov_for_firm > 0:
+                try:
+                    crops: list[str] = []
+                    for _item in mtfmi_map.get(tid, []):
+                        _fid = _item.get("field_id")
+                        if not _fid:
+                            continue
+                        _fid_i = int(_fid)
+                        if get_firm_for_field(_fid_i) != firm or not _field_ok(_fid_i):
+                            continue
+                        _crop = str(field_to_crop.get(_fid_i) or "")
+                        if _crop and _crop not in crops:
+                            crops.append(_crop)
+                    _mrec = machines_map.get(mid) or {}
+                    _cap[1](
+                        (_fact_group, firm, mid),
+                        group=_fact_group,
+                        firm=firm,
+                        crop=crops[0] if len(crops) == 1 else "",
+                        task_id=int(tid),
+                        machine_id=int(mid) if mid is not None else None,
+                        machine=str(_mrec.get("name") or ""),
+                        ha=cov_for_firm,
+                        season=str(t.get("season") or ""),
+                    )
+                except Exception:
+                    pass
 
             # Сырая площадь по культурам внутри задания+фирмы; при совпадении
             # с cov_for_firm масштаб ≈ 1 (площадь уже без подгонки к task.covered_area).
@@ -1070,6 +1105,15 @@ async def fetch_all_data(
                 sample_today = sorted(set(unmatched_today), key=lambda x: -x[2])[:10]
                 for fid_i, crop_name, area in sample_today:
                     print(f"      field_id={fid_i}  culture='{crop_name}'  area={area} га (сутки)")
+
+    if _cap is not None:
+        ok_pairs = {
+            (firm, mid)
+            for firm, pm in per_firm_machine.items()
+            for mid, d in pm.items()
+            if round(d["cov_total"], 2) >= min_area
+        }
+        _cap[2](_fact_group, ok_pairs)
 
     return all_stats
 

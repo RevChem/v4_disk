@@ -614,6 +614,13 @@ async def fetch_all_data(
     # -------------------------------------------------------------------------
     # Проход 2: суточная статистика (только задания текущей смены)
     # -------------------------------------------------------------------------
+    _cap = None
+    try:
+        from proverka.task_facts import bind_capture
+
+        _cap = bind_capture()
+    except Exception:
+        _cap = None
     for t in tasks_with_area:
         tid   = t["id"]
         mid   = t["machine_id"]
@@ -642,6 +649,21 @@ async def fetch_all_data(
             if cov_item <= 0.5:
                 continue
             firm_items_map[firm].append((item, cov_item))
+            if _cap is not None:
+                fid_i = int(item.get("field_id") or 0)
+                mrec = machines_map.get(mid) or {}
+                _cap[1](
+                    ("2.1 Боронование", firm, mid),
+                    group="2.1 Боронование",
+                    firm=firm,
+                    crop=field_to_crop.get(fid_i, ""),
+                    field_id=fid_i,
+                    task_id=int(tid),
+                    machine_id=int(mid) if mid is not None else None,
+                    machine=str(mrec.get("name") or ""),
+                    ha=cov_item,
+                    season=str(t.get("season") or ""),
+                )
 
         for firm, fitems_cov in firm_items_map.items():
 
@@ -809,6 +831,15 @@ async def fetch_all_data(
             "detail_own":   sorted(detail_own,   key=lambda x: -x["area"]),
             "detail_hired": sorted(detail_hired, key=lambda x: -x["area"]),
         }
+
+    if _cap is not None:
+        ok_pairs = {
+            (firm, mid)
+            for firm, pm in per_firm_machine.items()
+            for mid, d in pm.items()
+            if round(d["cov_total"], 2) >= MIN_DISPLAY_AREA_HA
+        }
+        _cap[2]("2.1 Боронование", ok_pairs)
 
     return day_stats, avg_season, total_season_sum_global, total_machine_days_global
 

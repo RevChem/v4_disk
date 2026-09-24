@@ -452,6 +452,82 @@ export async function downloadProverkaExcel(jobId) {
   return data;
 }
 
+// --- Вопросы по уже сохранённым фактам заданий (задание × поле), без ---
+// --- повторного прогона сводок. См. backend .../task_facts_service.py. ---
+
+export async function fetchTaskFactsOptions({ reportDate, jobId } = {}) {
+  try {
+    const { data } = await api.get("/proverka/task-facts/options", {
+      params: { report_date: reportDate, job_id: jobId || undefined },
+      timeout: 20_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+function taskFactsFilterBody({
+  reportDate,
+  jobId,
+  reportIds,
+  group,
+  crop,
+  firm,
+  machine,
+  field,
+  taskId,
+  minHa,
+  exact,
+}) {
+  return {
+    report_date: reportDate,
+    job_id: jobId || null,
+    report_ids: reportIds && reportIds.length ? reportIds : null,
+    group: group || null,
+    crop: crop || null,
+    firm: firm || null,
+    machine: machine || null,
+    field: field || null,
+    task_id: taskId === "" || taskId === undefined || taskId === null ? null : Number(taskId),
+    min_ha: minHa === "" || minHa === undefined || minHa === null ? null : Number(minHa),
+    exact: Boolean(exact),
+  };
+}
+
+/** Отфильтрованные строки + агрегаты. Модель не вызывается, 0 токенов. */
+export async function queryTaskFacts(filters) {
+  try {
+    const { data } = await api.post(
+      "/proverka/task-facts/query",
+      taskFactsFilterBody(filters),
+      { timeout: 30_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+/** Ответ DeepSeek по отфильтрованному срезу (или таблица, если useLlm=false). */
+export async function askTaskFacts({ question, useLlm = true, maxRows, ...filters }) {
+  try {
+    const { data } = await api.post(
+      "/proverka/task-facts/ask",
+      {
+        ...taskFactsFilterBody(filters),
+        question: question || "",
+        use_llm: Boolean(useLlm),
+        max_rows: maxRows === "" || maxRows === undefined ? null : Number(maxRows),
+      },
+      { timeout: 120_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 // --- Проверка количества машин по операциям: независимый механизм, ---
 // --- свои job'ы, свой API, ничего общего с /proverka/run по гектарам. ---
 

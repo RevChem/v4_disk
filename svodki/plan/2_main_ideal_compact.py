@@ -2319,6 +2319,29 @@ def collect_work_data(
         count_threshold = _group_count_threshold(group_name)
 
         group_has_data = False
+        _cap = None
+        if group_name != HARVEST_GROUP_NAME:
+            try:
+                from proverka.task_facts import bind_capture
+
+                _cap = bind_capture()
+            except Exception:
+                _cap = None
+
+        def _note_shift(firm_s, mid_s, tid_s, fid_s, crop_s, ha_s, task_s, t_date_s) -> None:
+            if _cap is None or t_date_s != REPORT_SHIFT_DATE or ha_s <= 0:
+                return
+            _cap[1](
+                (group_name, firm_s, mid_s),
+                group=group_name,
+                firm=firm_s,
+                crop=str(crop_s or ""),
+                field_id=int(fid_s) if fid_s else None,
+                task_id=int(tid_s) if tid_s is not None else None,
+                machine_id=int(mid_s) if mid_s is not None else None,
+                ha=float(ha_s),
+                season=str(task_s.get("season") or ""),
+            )
 
         for task in all_tasks:
             tid  = task["id"]
@@ -2410,6 +2433,15 @@ def collect_work_data(
                         )
                     machine_day_area[firm_s][t_date][mid] += cov_for_firm
                     machine_day_group[firm_s][t_date][mid] = machine_group.get(mid, 0)
+                    if len(crop_cov) == 1:
+                        only_crop = next(iter(crop_cov))
+                        _note_shift(firm_s, mid, tid, 0, only_crop, cov_for_firm, task, t_date)
+                    else:
+                        noted = 0.0
+                        for crop_s, crop_area in crop_cov.items():
+                            _note_shift(firm_s, mid, tid, 0, crop_s, crop_area, task, t_date)
+                            noted += float(crop_area or 0)
+                        _note_shift(firm_s, mid, tid, 0, "", cov_for_firm - noted, task, t_date)
                 continue
 
             if group_name == PLOW_GROUP_NAME:
@@ -2476,6 +2508,7 @@ def collect_work_data(
                 if group_name == PLOW_GROUP_NAME:
                     # «Выполнено» = все поля с season==year+1 (фирма из field_to_firm_all).
                     field_day_area[firm][t_date][fid_i] += float(cov)
+                    _note_shift(firm, mid, tid, fid_i, crop, cov, task, t_date)
                     agg[firm][crop][t_date] += float(cov)
                     firm_crop_fields[firm][crop].add(fid_i)
                     group_has_data = True
@@ -2485,6 +2518,7 @@ def collect_work_data(
                     continue
 
                 machine_day_area[firm][t_date][mid] += float(cov)
+                _note_shift(firm, mid, tid, fid_i, crop_for_agg or crop, cov, task, t_date)
                 if mid is not None:
                     machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
                 if crop_for_agg:
@@ -2609,6 +2643,19 @@ def collect_work_data(
             firm: {dt: dict(by_mid) for dt, by_mid in machine_day_area[firm].items()}
             for firm in FIRM_ORDER
         }
+
+        if _cap is not None:
+            if group_name == PLOW_GROUP_NAME:
+                _cap[2](group_name, None)
+            else:
+                min_ha = _detail_area_min_ha(group_name)
+                ok_pairs = set()
+                for firm in FIRM_ORDER:
+                    by_mid = machine_day_area[firm].get(REPORT_SHIFT_DATE) or {}
+                    for mid, total in by_mid.items():
+                        if _machine_qualifies_for_area(total, min_ha):
+                            ok_pairs.add((firm, mid))
+                _cap[2](group_name, ok_pairs)
 
         if not group_has_data:
             print(f"    Пусто по API (шаблонные значения)")

@@ -2007,6 +2007,30 @@ def build_summary_report(
         # иначе такие машины лишний раз попадают в «Количество ... на полях»,
         # хотя фактически ничего не убрали за этот отрезок времени.
         fmi_df = fmi_df[fmi_df["covered_area"] > 0]
+        try:
+            from proverka.task_facts import bind_capture
+
+            _bound = bind_capture()
+        except Exception:
+            _bound = None
+        if _bound is not None and not fmi_df.empty:
+            _folder_to_firm = {folder_id: name for name, (folder_id, _region) in firms.items()}
+            _tasks_by_id = {t.get("id"): t for t in tasks}
+            for rec in fmi_df.to_dict("records"):
+                firm_name = _folder_to_firm.get(rec.get("folder_id"))
+                if not firm_name:
+                    continue
+                task = _tasks_by_id.get(rec.get("machine_task_id")) or {}
+                _mid = rec.get("machine_id")
+                _bound[0](
+                    group="5.0 Уборка",
+                    firm=firm_name,
+                    field_id=rec.get("field_id"),
+                    task_id=rec.get("machine_task_id"),
+                    machine_id=int(_mid) if _mid is not None and str(_mid) != "nan" else None,
+                    ha=float(rec.get("covered_area") or 0),
+                    season=str(task.get("season") or ""),
+                )
 
     rows = []
     total_work_hours = 0.0

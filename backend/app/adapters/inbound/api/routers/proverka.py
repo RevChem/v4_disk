@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 
 from app.adapters.inbound.api.deps import get_client_ip, require_developer_access
@@ -28,6 +29,11 @@ from app.adapters.outbound.proverka.ai_settings import (
     reset_settings,
     save_settings,
     settings_out,
+)
+from app.adapters.outbound.proverka.task_facts_service import (
+    facts_ask,
+    facts_options,
+    facts_query,
 )
 from app.adapters.outbound.proverka.service import (
     ai_report_for_date,
@@ -582,3 +588,78 @@ def run_proverka_ai_report(
 
     run_ai_job(job_id)
     return ai_report_for_date(report_date)
+
+
+class TaskFactsFilterIn(BaseModel):
+    report_date: date
+    job_id: str | None = None
+    report_ids: list[str] | None = None
+    group: str | None = None
+    crop: str | None = None
+    firm: str | None = None
+    machine: str | None = None
+    field: str | None = None
+    task_id: int | None = None
+    min_ha: float | None = None
+    exact: bool = False
+
+
+class TaskFactsAskIn(TaskFactsFilterIn):
+    question: str = ""
+    use_llm: bool = True
+    max_rows: int | None = Field(default=None, ge=1, le=500)
+
+
+def _facts_filter(body: TaskFactsFilterIn) -> dict:
+    return body.model_dump(exclude={"report_date", "job_id", "report_ids"})
+
+
+@router.get("/task-facts/options")
+def get_task_facts_options(
+    report_date: date = Query(..., alias="report_date"),
+    job_id: str | None = Query(default=None),
+    _: User = Depends(require_developer_access),
+):
+    """Какие группы, культуры и фирмы есть в сохранённых фактах заданий."""
+    try:
+        return facts_options(report_date, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/task-facts/query")
+def post_task_facts_query(
+    body: TaskFactsFilterIn,
+    _: User = Depends(require_developer_access),
+):
+    """Список заданий по фильтру. Модель не вызывается."""
+    try:
+        return facts_query(
+            body.report_date,
+            body.job_id,
+            _facts_filter(body),
+            report_ids=body.report_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/task-facts/ask")
+def post_task_facts_ask(
+    body: TaskFactsAskIn,
+    _: User = Depends(require_developer_access),
+):
+    """Ответ по уже сохранённым фактам. В модель уходит только отфильтрованный срез."""
+    try:
+        flt = _facts_filter(body)
+        return facts_ask(
+            body.report_date,
+            body.job_id,
+            flt,
+            body.question,
+            report_ids=body.report_ids,
+            max_rows=body.max_rows,
+            use_llm=body.use_llm,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

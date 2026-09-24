@@ -4,6 +4,7 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 import AiMenuDialog from "./components/AiMenuDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
+import TaskFactsDialog from "./components/TaskFactsDialog";
 import GenerationQueueDrawer from "./components/GenerationQueueDrawer";
 import InterfaceMenuDialog from "./components/InterfaceMenuDialog";
 import PageModalDialog from "./components/PageModalDialog";
@@ -69,6 +70,7 @@ export default function App() {
   const [aiReportOpen, setAiReportOpen] = useState(false);
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
+  const [taskFactsOpen, setTaskFactsOpen] = useState(false);
   const [interfaceOpen, setInterfaceOpen] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -539,6 +541,7 @@ export default function App() {
         onClose={() => setAiMenuOpen(false)}
         onOpenReport={handleAiReportClick}
         onOpenPrompts={() => setAiPromptsOpen(true)}
+        onOpenTaskFacts={() => setTaskFactsOpen(true)}
       />
       {user && (
         <PageModalDialog
@@ -598,6 +601,11 @@ export default function App() {
       <AiPromptsDialog
         open={aiPromptsOpen && isDeveloper}
         onClose={() => setAiPromptsOpen(false)}
+      />
+      <TaskFactsDialog
+        open={taskFactsOpen && isDeveloper}
+        onClose={() => setTaskFactsOpen(false)}
+        summaryDate={summaryDate}
       />
     </ThemeProvider>
   );

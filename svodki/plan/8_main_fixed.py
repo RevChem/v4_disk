@@ -717,6 +717,15 @@ def _aggregate_tasks_for_firms(
 
     f_tasks_today  = _filter(tasks_today)
     f_tasks_season = _filter(tasks_season)
+    _cap = None
+    _fact_cult = (not exempt_min_count) and filter_wt_ids == CULT_WT_IDS
+    if _fact_cult:
+        try:
+            from proverka.task_facts import bind_capture
+
+            _cap = bind_capture()
+        except Exception:
+            _cap = None
 
     today_area_by_field: dict[int, float] = defaultdict(float)
     if exempt_min_count:
@@ -783,6 +792,22 @@ def _aggregate_tasks_for_firms(
                 if cov_item_total <= 0 and use_fallback_cov:
                     cov_item_total = float(item.get("covered_area") or 0.0)
                 cov += cov_item_in
+                if _cap is not None and cov_item_in > 0:
+                    fid_note = int(item.get("field_id") or 0)
+                    crop_note = ""
+                    if field_to_crop is not None and fid_note:
+                        crop_note = str(field_to_crop.get(fid_note) or "")
+                    _cap[1](
+                        ("2.11 Культивация", firm, mid),
+                        group="2.11 Культивация",
+                        firm=firm,
+                        crop=crop_note,
+                        field_id=fid_note or None,
+                        task_id=int(t["id"]) if t.get("id") is not None else None,
+                        machine_id=int(mid) if mid is not None else None,
+                        ha=cov_item_in,
+                        season=str(t.get("season") or ""),
+                    )
                 ratio = cov_item_in / cov_item_total if cov_item_total > 0 else 0.0
                 track_area       += (item.get("covered_area_by_track") or 0) * ratio
                 work_distance_km += ((item.get("work_distance") or 0) / 1000) * ratio
@@ -996,6 +1021,15 @@ def _aggregate_tasks_for_firms(
             "detail_own":          detail_own,
             "detail_hired":        detail_hired,
         }
+
+    if _cap is not None:
+        ok_pairs = {
+            (firm, mid)
+            for firm, pm in per_firm_machine.items()
+            for mid, d in pm.items()
+            if round(d["cov_total"], 2) > min_detail_area
+        }
+        _cap[2]("2.11 Культивация", ok_pairs)
 
     return result
 

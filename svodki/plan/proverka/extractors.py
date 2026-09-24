@@ -838,7 +838,7 @@ async def _extract_3(
         from report_resources_fetch import load_report_resources
 
         all_tasks = tasks_today + tasks_season
-        field_to_firm, _, implements_dict = await load_report_resources(
+        field_to_firm, machines_map, implements_dict = await load_report_resources(
             client, m.BASE_URL, sem, all_tasks, mtfmi, m.get_all_from_id, m._build_field_to_firm,
         )
     details = m.build_all_firm_stats(
@@ -862,6 +862,21 @@ async def _extract_3(
     operations = _operations_with_crop_breakdown(
         spec, firm_order, by_firm, crop_breakdown,
         work_type_ids=m.WORK_TYPE_IDS,
+    )
+    _remember_shift_facts(
+        report_id=spec.report_id,
+        group=m.WORK_TYPE_TITLE,
+        report_date=report_date,
+        tasks_today=tasks_today,
+        mtfmi_map=mtfmi,
+        field_to_firm=field_to_firm,
+        field_to_crop=field_to_crop,
+        cutoff=cutoff,
+        parse_dt=m.parse_dt,
+        crop_field_ids=crop_field_ids,
+        machines_map=machines_map,
+        hired_group_id=getattr(m, "HIRED_GROUP_ID", None),
+        min_machine_ha=m.MIN_DETAIL_AREA_HA,
     )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
@@ -967,7 +982,7 @@ async def _extract_5(
         from report_resources_fetch import load_report_resources
 
         all_tasks = tasks_today + tasks_season
-        field_to_firm, _, _ = await load_report_resources(
+        field_to_firm, machines_map, _ = await load_report_resources(
             client, m.BASE_URL, sem, all_tasks, mtfmi, m.get_all_from_id, m._build_field_to_firm,
         )
         # Разбивка «факт за сутки» по культуре (в т.ч. яровой рапс) — тем же
@@ -1024,6 +1039,23 @@ async def _extract_5(
             for gn in spec.work_groups
         }
         # machines_today_by_firm/total_machines проставит _pack (см. ниже).
+    group = spec.work_groups[0] if spec.work_groups else "4.0 Посев"
+    _remember_shift_facts(
+        report_id=spec.report_id,
+        group=group,
+        report_date=report_date,
+        tasks_today=tasks_today,
+        mtfmi_map=mtfmi,
+        field_to_firm=field_to_firm,
+        field_to_crop=field_crop_by_id,
+        cutoff=cutoff,
+        parse_dt=m.parse_dt,
+        machines_map=machines_map,
+        hired_group_id=getattr(m, "HIRED_GROUP_ID", None),
+        min_machine_ha=m.MIN_DETAIL_AREA_HA,
+        work_type_ids=set(m.ALL_WT_IDS),
+        covered_area_if_zero=True,
+    )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         season_filter=season_filter,
@@ -1167,7 +1199,7 @@ async def _extract_7_8(
         from report_resources_fetch import load_report_resources
 
         all_tasks = tasks_today + tasks_season
-        field_to_firm, _, implements_dict = await load_report_resources(
+        field_to_firm, machines_map, implements_dict = await load_report_resources(
             client, m.BASE_URL, sem, all_tasks, mtfmi, m.get_all_from_id, m._build_field_to_firm,
         )
 
@@ -1207,6 +1239,22 @@ async def _extract_7_8(
         spec, firm_order, by_firm, crop_breakdown,
         work_type_ids=m.ALL_WT_IDS,
     )
+    if module_name != "8_main_fixed":
+        group = spec.work_groups[0] if spec.work_groups else ""
+        _remember_shift_facts(
+            report_id=spec.report_id,
+            group=group,
+            report_date=report_date,
+            tasks_today=tasks_today,
+            mtfmi_map=mtfmi,
+            field_to_firm=field_to_firm,
+            field_to_crop=field_to_crop_map,
+            cutoff=cutoff,
+            parse_dt=m.parse_dt,
+            machines_map=machines_map,
+            hired_group_id=getattr(m, "HIRED_GROUP_ID", None),
+            min_machine_ha=m.MIN_DETAIL_AREA_HA,
+        )
     return _pack(
         spec, report_date, day_start, cutoff, m, by_firm,
         work_type_ids=set(m.ALL_WT_IDS),
@@ -1663,18 +1711,56 @@ EXTRACTORS: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
 }
 
 
+def _remember_shift_facts(**kwargs: Any) -> None:
+    """Повторный проход по уже загруженным заданиям. Ошибка не роняет сводку."""
+    try:
+        from proverka.task_facts import add_rows, build_shift_task_facts, capture_on
+
+        if not capture_on():
+            return
+        add_rows(build_shift_task_facts(**kwargs))
+    except Exception:
+        return
+
+
+def _store_task_facts(result: dict[str, Any], report_id: str, report_date: date, rows: list) -> None:
+    """Отдельный TSV. Не меняет area_today; сбой записи остаётся в meta."""
+    from proverka.task_facts import safe_store_task_facts
+
+    meta = safe_store_task_facts(
+        rows,
+        report_id=report_id,
+        report_date=report_date,
+        operations=result.get("operations") if isinstance(result, dict) else None,
+    )
+    if meta and isinstance(result, dict):
+        result["task_facts_meta"] = meta
+
+
 async def compute_report_facts(
     spec: ReportSpec,
     report_date: date,
     run_override: dict | None = None,
 ) -> dict[str, Any]:
+    from proverka.task_facts import begin_task_facts, discard_task_facts, take_task_facts
+
     fn = EXTRACTORS.get(spec.report_id)
     if not fn:
         raise ValueError(f"Нет экстрактора для сводки {spec.report_id}")
-    if spec.report_id == "14":
-        return await fn(spec, report_date, None, run_override)
-    with season_context(spec, report_date, run_override) as cfg:
-        reload_report_module(spec.module)
-        mod = importlib.import_module(spec.module)
-        apply_module_season_attrs(mod, report_date, cfg)
-        return await fn(spec, report_date, cfg, run_override)
+    tokens = begin_task_facts()
+    try:
+        if spec.report_id == "14":
+            result = await fn(spec, report_date, None, run_override)
+        else:
+            with season_context(spec, report_date, run_override) as cfg:
+                reload_report_module(spec.module)
+                mod = importlib.import_module(spec.module)
+                apply_module_season_attrs(mod, report_date, cfg)
+                result = await fn(spec, report_date, cfg, run_override)
+    except Exception:
+        discard_task_facts(tokens)
+        raise
+    rows = take_task_facts(tokens)
+    if isinstance(result, dict):
+        _store_task_facts(result, spec.report_id, report_date, rows)
+    return result
