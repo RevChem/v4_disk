@@ -452,9 +452,16 @@ def resolve_group_season_config(
         if not history_years:
             history_years = sorted(set(default_history_years_for_group(name, report_date)))
 
+    # Редактор (season_years) важнее одного года из batch/run_override.
+    # applies_task_season_filter ложен для 2.8: сводка не режет machine_task.season,
+    # но Cropwise всё равно должен взять оба сезона плана, как у опрыскивания.
+    # Иначе run_override или сезон сессии (часто 2026) выкидывает 2027.
+    editor_sets_task_years = has_file_override and (
+        applies_task_season_filter(name) or rule == "plow_year_plus_one"
+    )
     if "task_season_years" in group_ov:
         task_years = _normalize_years(group_ov.get("task_season_years"))
-    elif has_file_override and applies_task_season_filter(name):
+    elif editor_sets_task_years:
         task_years = merge_task_years_from_file(
             rule, report_date, file_years, has_file_override=True,
         )
@@ -462,7 +469,7 @@ def resolve_group_season_config(
         task_years = _normalize_years(run_ov.get("task_season_years"))
     else:
         task_years = _normalize_years(ov.get("task_season_years"))
-        if not task_years and applies_task_season_filter(name):
+        if not task_years and editor_sets_task_years:
             task_years = merge_task_years_from_file(
                 rule, report_date, file_years, has_file_override=has_file_override,
             )

@@ -263,6 +263,32 @@ def test_inject_writes_per_group_env_not_shared_spray() -> None:
         su.clear_season_cache()
 
 
+def test_plow_editor_keeps_both_years_for_deep_tillage() -> None:
+    """2.8 не фильтрует задания в сводке, но план «2026 и 2027» нельзя схлопнуть в 2026."""
+    store = {
+        "calendar_seasons": {},
+        "by_group": {
+            "2.4 Вспашка": {"season_years": [2026, 2027]},
+            "2.8 Глубокорыхление": {"season_years": [2026, 2027]},
+        },
+    }
+    original_loader = su.load_season_store
+    su.load_season_store = lambda rd, reload=False: store  # noqa: ARG005
+    su.clear_season_cache()
+    try:
+        for group in ("2.4 Вспашка", "2.8 Глубокорыхление"):
+            cfg = su.resolve_group_season_config(
+                group,
+                REPORT_DATE,
+                run_override={"task_season_years": [2026]},
+            )
+            assert cfg["task_season_years"] == [2026, 2027], group
+            assert cfg["history_years"] == [2026, 2027], group
+    finally:
+        su.load_season_store = original_loader
+        su.clear_season_cache()
+
+
 def test_single_season_still_equals_ui_total() -> None:
     sc = _sc()
     seasons = sc.build_seasons_for_years(
