@@ -70,7 +70,7 @@ def resolve_report_season_config(
     report_date: date,
     run_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Итоговые сезоны/диапазон: run_override > season_ranges.json > season_unified."""
+    """Итоговые сезоны: те же, что resolve_group_season_config у редактора и сводки."""
     cfg = _resolve_report_cfg(spec.work_groups, spec.season_rule, report_date, run_override)
     cfg["report_id"] = spec.report_id
     cfg["from_file"] = season_ranges_path().is_file()

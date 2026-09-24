@@ -1047,15 +1047,28 @@ async def _extract_6(
     cfg = cfg or {}
     m = importlib.import_module("6_main_3")
     day_start, cutoff = m.compute_time_range(report_date, m.DAY_START_HOUR, m.DAY_END_HOUR)
-    _load_spray_reference_data(m, cfg, report_date, run_override)
     spray_cfg = resolve_group_season("3.1 Опрыскивание", report_date, run_override)
     veg_cfg = resolve_group_season("3.2 Опрыскивание (овощи)", report_date, run_override)
     field_task_years = list(spray_cfg.get("task_season_years") or [])
     veg_task_years = list(veg_cfg.get("task_season_years") or [])
-    if not field_task_years:
-        field_task_years = list(cfg.get("task_season_years") or [])
-    if not veg_task_years:
-        veg_task_years = list(cfg.get("task_season_years") or [])
+    ref_cfg = {
+        **cfg,
+        "history_years": spray_cfg.get("history_years") or cfg.get("history_years"),
+        "task_season_years": field_task_years or cfg.get("task_season_years"),
+    }
+    _load_spray_reference_data(m, ref_cfg, report_date, run_override)
+    if field_task_years:
+        ys = ",".join(str(y) for y in field_task_years)
+        os.environ["SVODKI_SPRAY_TASK_SEASON_YEARS"] = ys
+        from season_unified import group_env_key
+
+        os.environ[group_env_key("3.1 Опрыскивание", "TASK_SEASON_YEARS")] = ys
+    if veg_task_years:
+        from season_unified import group_env_key
+
+        os.environ[group_env_key("3.2 Опрыскивание (овощи)", "TASK_SEASON_YEARS")] = ",".join(
+            str(y) for y in veg_task_years
+        )
     headers = {"X-User-Api-Token": m.API_TOKEN}
     sem = asyncio.Semaphore(m.SEMAPHORE_LIMIT)
     pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)

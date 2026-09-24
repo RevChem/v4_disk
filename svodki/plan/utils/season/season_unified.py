@@ -57,12 +57,31 @@ _GLOBAL_ENV_GROUP_PRIORITY = (
 
 _STORE_CACHE: dict[str, Any] | None = None
 _STORE_CACHE_DATE: date | None = None
+_STORE_CACHE_SIG: tuple | None = None
 
 
 def clear_season_cache() -> None:
-    global _STORE_CACHE, _STORE_CACHE_DATE
+    global _STORE_CACHE, _STORE_CACHE_DATE, _STORE_CACHE_SIG
     _STORE_CACHE = None
     _STORE_CACHE_DATE = None
+    _STORE_CACHE_SIG = None
+
+
+def _store_file_signature() -> tuple:
+    """Путь, mtime и размер season_ranges.json. Смена файла сбрасывает кэш."""
+    try:
+        from season_calendar import season_ranges_file_path
+
+        path = season_ranges_file_path()
+    except ImportError:
+        path = _season_ranges_path()
+    if not path:
+        return (None, None, None)
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return (str(path), None, None)
+    return (str(path), st.st_mtime_ns, st.st_size)
 
 
 # Общие legacy-ключи (SVODKI_SPRAY_*, SVODKI_SEEDING_*) перезаписывались последней
@@ -234,9 +253,15 @@ def _season_ranges_path() -> Path | None:
 
 def load_season_store(report_date: date | None = None, *, reload: bool = False) -> dict[str, Any]:
     """season_ranges.json + calendar_seasons."""
-    global _STORE_CACHE, _STORE_CACHE_DATE
+    global _STORE_CACHE, _STORE_CACHE_DATE, _STORE_CACHE_SIG
     rd = report_date or date.today()
-    if not reload and _STORE_CACHE is not None and _STORE_CACHE_DATE == rd:
+    sig = _store_file_signature()
+    if (
+        not reload
+        and _STORE_CACHE is not None
+        and _STORE_CACHE_DATE == rd
+        and _STORE_CACHE_SIG == sig
+    ):
         return _STORE_CACHE
 
     try:
@@ -261,6 +286,7 @@ def load_season_store(report_date: date | None = None, *, reload: bool = False) 
 
     _STORE_CACHE = store
     _STORE_CACHE_DATE = rd
+    _STORE_CACHE_SIG = sig
     return store
 
 
@@ -375,6 +401,13 @@ def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any
     return ov
 
 
+def _editor_group_override(run_override: dict[str, Any] | None, group_name: str) -> dict[str, Any]:
+    """Срез run_override.by_group для одной операции (proverka / тематические сводки)."""
+    raw = (run_override or {}).get("by_group") or {}
+    entry = raw.get(group_name) or {}
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
 def resolve_group_season_config(
     group_name: str,
     report_date: date,
@@ -385,7 +418,11 @@ def resolve_group_season_config(
 ) -> dict[str, Any]:
     """
     Итоговые сезоны и диапазон для одной группы работ.
-    Приоритет: run_override > season_ranges.json (редактор) > env > defaults.
+    Приоритет task/history: by_group[name] в run_override → season_ranges.json →
+    report-level run_override → env → defaults.
+
+    Report-level task_season_years (часто один год по season_rule) не должен
+    перебивать выбор «2026+2027» в редакторе для 3.1 Опрыскивание.
     """
     name = str(group_name or "").strip()
     rule = season_rule_for_group(name)
@@ -398,26 +435,31 @@ def resolve_group_season_config(
     has_file_override = bool(file_years)
 
     run_ov = dict(run_override or {})
+    group_ov = _editor_group_override(run_override, name)
     ov = dict(run_ov)
     env_ov = _env_override_for_group(name, report_date)
     for key, val in env_ov.items():
         ov.setdefault(key, val)
 
-    if "history_years" in run_ov:
-        history_years = _normalize_years(run_ov.get("history_years"))
+    if "history_years" in group_ov:
+        history_years = _normalize_years(group_ov.get("history_years"))
     elif has_file_override:
         history_years = list(file_years)
+    elif "history_years" in run_ov:
+        history_years = _normalize_years(run_ov.get("history_years"))
     else:
         history_years = _normalize_years(ov.get("history_years"))
         if not history_years:
             history_years = sorted(set(default_history_years_for_group(name, report_date)))
 
-    if "task_season_years" in run_ov:
-        task_years = _normalize_years(run_ov.get("task_season_years"))
+    if "task_season_years" in group_ov:
+        task_years = _normalize_years(group_ov.get("task_season_years"))
     elif has_file_override and applies_task_season_filter(name):
         task_years = merge_task_years_from_file(
             rule, report_date, file_years, has_file_override=True,
         )
+    elif "task_season_years" in run_ov:
+        task_years = _normalize_years(run_ov.get("task_season_years"))
     else:
         task_years = _normalize_years(ov.get("task_season_years"))
         if not task_years and applies_task_season_filter(name):
@@ -426,8 +468,8 @@ def resolve_group_season_config(
             )
 
     default_start = default_period_start_for_group(name, report_date)
-    period_start = run_ov.get("period_start")
-    period_end = run_ov.get("period_end")
+    period_start = group_ov.get("period_start", run_ov.get("period_start"))
+    period_end = group_ov.get("period_end", run_ov.get("period_end"))
 
     if period_start is None and period_end is None and has_file_override and history_years:
         try:
@@ -486,7 +528,7 @@ def resolve_report_season_config(
     report_date: date,
     run_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Сезоны для тематической сводки / proverka (объединение work_groups)."""
+    """Сезоны сводки: объединение resolve_group_season_config по её группам работ."""
     groups = [str(g).strip() for g in work_groups if str(g).strip()]
     store = load_season_store(report_date)
     ov = dict(run_override or {})
@@ -500,13 +542,31 @@ def resolve_report_season_config(
         _years_from_meta((store.get("by_group") or {}).get(gn)) for gn in groups
     )
 
-    task_years = _normalize_years(ov.get("task_season_years"))
+    # Тот же разбор, что у редактора планов и у генерации сводки.
+    # Report-level task_season_years (часто один год year_plus_one) не подменяет
+    # выбор «2026+2027» у группы: он уже учтён внутри resolve_group_season_config.
+    per_group = {
+        gn: resolve_group_season_config(gn, report_date, store=store, run_override=ov)
+        for gn in groups
+    }
+
+    def _union_years(key: str) -> list[int]:
+        found: list[int] = []
+        for cfg in per_group.values():
+            found.extend(_normalize_years(cfg.get(key)))
+        return sorted(set(found))
+
+    task_years = _union_years("task_season_years")
+    if not task_years:
+        task_years = _normalize_years(ov.get("task_season_years"))
     if not task_years:
         task_years = merge_task_years_from_file(
             season_rule, report_date, group_years, has_file_override=has_file_override,
         )
 
-    history_years = _normalize_years(ov.get("history_years"))
+    history_years = _union_years("history_years")
+    if not history_years:
+        history_years = _normalize_years(ov.get("history_years"))
     if not history_years:
         history_years = sorted(set(group_years or default_history_years_for_report_rule(season_rule, report_date)))
 
@@ -520,11 +580,6 @@ def resolve_report_season_config(
         else:
             period_start = period_start or report_date.replace(month=3, day=1).isoformat()
             period_end = period_end or report_date.isoformat()
-
-    per_group = {
-        gn: resolve_group_season_config(gn, report_date, store=store, run_override=ov)
-        for gn in groups
-    }
 
     return {
         "work_groups": groups,

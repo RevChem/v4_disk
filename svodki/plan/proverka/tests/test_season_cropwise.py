@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -97,6 +98,91 @@ def test_seasons_sum_ui_session_plus_api_for_other_years() -> None:
     total, by_firm = sc.merge_seasons_for_task_years(seasons, SPRAY_YEARS)
     assert total == BOTH_SEASONS_HA
     assert by_firm["Агрофирма А"] == BOTH_SEASONS_HA
+
+
+def test_editor_file_beats_report_level_single_task_year() -> None:
+    """Proverka job кладёт task_season_years сводки 6 (часто [2027]); 3.1 — [2026,2027] из редактора."""
+    store = {
+        "calendar_seasons": {},
+        "by_group": {"3.1 Опрыскивание": {"season_years": [2026, 2027]}},
+    }
+    original_loader = su.load_season_store
+    su.load_season_store = lambda rd, reload=False: store  # noqa: ARG005
+    su.clear_season_cache()
+    try:
+        cfg = su.resolve_group_season_config(
+            "3.1 Опрыскивание",
+            REPORT_DATE,
+            run_override={"task_season_years": [2027], "by_group": store["by_group"]},
+        )
+        assert cfg["task_season_years"] == [2026, 2027]
+    finally:
+        su.load_season_store = original_loader
+        su.clear_season_cache()
+
+
+def test_report_check_uses_same_group_seasons_as_editor() -> None:
+    """Сводка 6: список сезонов проверки = разбор групп, а не один год year_plus_one."""
+    store = {
+        "calendar_seasons": {},
+        "by_group": {
+            "3.1 Опрыскивание": {"season_years": [2026, 2027]},
+            "3.2 Опрыскивание (овощи)": {"season_years": [2026]},
+        },
+    }
+    original_loader = su.load_season_store
+    su.load_season_store = lambda rd, reload=False: store  # noqa: ARG005
+    su.clear_season_cache()
+    try:
+        cfg = su.resolve_report_season_config(
+            ("3.1 Опрыскивание", "3.2 Опрыскивание (овощи)"),
+            "year_plus_one",
+            REPORT_DATE,
+            {"task_season_years": [2027]},
+        )
+        assert cfg["by_group"]["3.1 Опрыскивание"]["task_season_years"] == [2026, 2027]
+        assert cfg["by_group"]["3.2 Опрыскивание (овощи)"]["task_season_years"] == [2026]
+        assert cfg["task_season_years"] == [2026, 2027]
+    finally:
+        su.load_season_store = original_loader
+        su.clear_season_cache()
+
+
+def test_season_store_reloads_when_editor_file_changes() -> None:
+    """Сохранение в редакторе в том же процессе видно следующей проверке."""
+    import json
+    import tempfile
+
+    saved = os.environ.get("SVODKI_SEASON_RANGES_PATH")
+    su.clear_season_cache()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "season_ranges.json"
+            os.environ["SVODKI_SEASON_RANGES_PATH"] = str(path)
+            path.write_text(
+                json.dumps({"by_group": {"3.1 Опрыскивание": {"season_years": [2027]}}}),
+                encoding="utf-8",
+            )
+            first = su.load_season_store(REPORT_DATE)
+            assert first["by_group"]["3.1 Опрыскивание"]["season_years"] == [2027]
+
+            path.write_text(
+                json.dumps(
+                    {"by_group": {"3.1 Опрыскивание": {"season_years": [2026, 2027]}}}
+                ),
+                encoding="utf-8",
+            )
+            os.utime(path, ns=(time.time_ns(), time.time_ns()))
+            second = su.load_season_store(REPORT_DATE)
+            assert second["by_group"]["3.1 Опрыскивание"]["season_years"] == [2026, 2027]
+            cfg = su.resolve_group_season_config("3.1 Опрыскивание", REPORT_DATE)
+            assert cfg["task_season_years"] == [2026, 2027]
+    finally:
+        if saved is None:
+            os.environ.pop("SVODKI_SEASON_RANGES_PATH", None)
+        else:
+            os.environ["SVODKI_SEASON_RANGES_PATH"] = saved
+        su.clear_season_cache()
 
 
 def test_task_season_years_set_for_spray_both_years_from_editor() -> None:

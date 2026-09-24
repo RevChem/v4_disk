@@ -59,7 +59,6 @@ from proverka.season_cropwise import (
     work_type_ids_for_report,
 )
 from proverka.season_policy import resolve_group_season_policy
-from proverka.season_runtime import resolve_report_season_config
 from season_unified import season_rule_for_group
 from proverka.svodka_facts import compute_svodka_facts
 
@@ -218,9 +217,9 @@ def fetch_work_for_operation(
     hints = list(cw_spec.fact_column_hints)
     pref = None
     if cw_spec.season_rule in ("both_years", "year_plus_one", "plow_year_plus_one"):
-        cfg = resolve_report_season_config(cw_spec, report_date, run_override)
-        task_years = cfg.get("task_season_years") or []
-        pref = preferred_ui_session(cw_spec.season_rule, task_years)
+        group_cfg = resolve_group_season_policy(group_name, report_date, run_override)
+        task_years = list(group_cfg.get("task_season_years") or [])
+        pref = preferred_ui_session(group_cfg.get("season_rule") or cw_spec.season_rule, task_years)
     return fetch_work_report_resilient(
         cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=1.5,
         preferred_ui_session=pref,
@@ -232,12 +231,13 @@ def _canonical_season_for_operation(
     report_date: date,
     run_override: dict | None,
 ) -> tuple[ReportSpec, dict[str, Any], list[int], str]:
-    """season_rule + task_years — как reconcile_one тематической сводки."""
+    """Сезоны операции — resolve_group_season_config, как редактор и сводка 6."""
     canon_rid = canonical_cropwise_report(group_name)
     canon_spec = REPORTS[canon_rid] if canon_rid and canon_rid in REPORTS else _cropwise_spec_for_group(group_name)
-    cfg = resolve_report_season_config(canon_spec, report_date, run_override)
+    cfg = resolve_group_season_policy(group_name, report_date, run_override)
     task_years = list(cfg.get("task_season_years") or [])
-    return canon_spec, cfg, task_years, canon_spec.season_rule
+    season_rule = str(cfg.get("season_rule") or canon_spec.season_rule)
+    return canon_spec, cfg, task_years, season_rule
 
 
 def _reconcile_one_operation(
