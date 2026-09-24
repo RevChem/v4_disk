@@ -460,6 +460,12 @@ def build_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
                 rows.extend(_cropwise_crop_summary_rows(rid, group_name, oc))
             continue
         rows.append(_row_from_result(rid, result))
+        groups = tuple(spec.work_groups or ()) if spec else ()
+        if len(groups) == 1 and result.get("crop_comparisons"):
+            rows.extend(_cropwise_crop_summary_rows(rid, groups[0], {
+                "crop_comparisons": result.get("crop_comparisons") or [],
+                "work_type_ids": (result.get("svodka") or {}).get("work_type_ids") or [],
+            }))
     return rows
 
 

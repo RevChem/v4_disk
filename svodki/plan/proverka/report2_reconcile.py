@@ -469,6 +469,11 @@ def _reconcile_one_operation(
         "required_ui_sessionValue": required_ui_session,
         "ui_session_blocked": ui_session_blocked,
         "cropwise_api_fallback": bool(season_cropwise.get("cropwise_api_fallback")) if season_cropwise else False,
+        "cropwise_by_firm": {
+            firm: round(float(ha), 2)
+            for firm, ha in (cropwise_by_firm or {}).items()
+            if float(ha or 0) >= 0.01
+        },
         "by_firm_diff": {
             firm: round(float(svodka_by_firm.get(firm, 0) or 0) - cropwise_by_firm.get(firm, 0), 2)
             for firm in firm_names
@@ -499,13 +504,20 @@ def _reconcile_one_operation(
 
     svodka_crop = display_op.get("area_today_by_firm_crop") or {}
     if svodka_crop and work.get("ok"):
-        from proverka.crop_compare import (
-            compare_svodka_cropwise_crops,
-            cropwise_area_by_firm_crop,
-        )
+        from proverka.crop_compare import compare_svodka_cropwise_crops
 
-        cw_crop = cropwise_area_by_firm_crop(
-            work.get("body"), firm_names, hints,
+        from proverka.cropwise_crops import cropwise_crops_all_seasons
+        from proverka.season_cropwise import _parse_dt
+
+        cw_crop = cropwise_crops_all_seasons(
+            work.get("body"),
+            firm_names,
+            hints,
+            shift_cache=shift_cache,
+            task_years=list(task_years),
+            ui_session=ui_session if isinstance(ui_session, int) else None,
+            wt_ids=wt_ids,
+            cutoff=_parse_dt(t1),
         )
         crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
         if crop_cmp:

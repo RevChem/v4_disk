@@ -84,9 +84,13 @@ def _get_all(endpoint: str, extra: dict | None = None) -> list[dict]:
         out.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", len(chunk)) < 1000:
+        # API отдаёт страницу по 100, даже если просили limit=1000.
+        # Раньше цикл останавливался на obtained_records < 1000 и карта
+        # поле→агрофирма обрывалась на первой сотне полей.
+        obtained = int(meta.get("obtained_records") or len(chunk) or 0)
+        if not last_id or obtained < 100:
             break
-        from_id = last_id + 1
+        from_id = int(last_id) + 1
     return out
 
 
@@ -145,6 +149,8 @@ def _fetch_tasks_in_window(
 
 
 _field_to_firm_cache: dict[int, str] | None = None
+# Старый кэш писался плоским словарём после одной страницы fields (100 записей).
+_FIELD_TO_FIRM_CACHE_VERSION = 2
 
 
 def _field_to_firm_cache_path() -> Path | None:
@@ -176,8 +182,9 @@ def get_cached_field_to_firm(*, refresh: bool = False) -> dict[int, str]:
     if not refresh and path is not None and path.is_file():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and raw:
-                _field_to_firm_cache = {int(k): str(v) for k, v in raw.items()}
+            loaded = _field_to_firm_from_cache_payload(raw)
+            if loaded:
+                _field_to_firm_cache = loaded
                 return _field_to_firm_cache
         except (OSError, ValueError):
             pass
@@ -186,11 +193,33 @@ def get_cached_field_to_firm(*, refresh: bool = False) -> dict[int, str]:
     if path is not None and _field_to_firm_cache:
         try:
             path.write_text(
-                json.dumps(_field_to_firm_cache, ensure_ascii=False), encoding="utf-8",
+                json.dumps(
+                    {
+                        "v": _FIELD_TO_FIRM_CACHE_VERSION,
+                        "map": {str(k): v for k, v in _field_to_firm_cache.items()},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
             )
         except OSError:
             pass
     return _field_to_firm_cache
+
+
+def _field_to_firm_from_cache_payload(raw: Any) -> dict[int, str] | None:
+    """Плоский кэш без версии собран по первой странице API и его нельзя брать."""
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("v") != _FIELD_TO_FIRM_CACHE_VERSION or not isinstance(raw.get("map"), dict):
+        return None
+    out: dict[int, str] = {}
+    for key, firm in raw["map"].items():
+        try:
+            out[int(key)] = str(firm)
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def clear_field_to_firm_cache() -> None:

@@ -289,6 +289,47 @@ def test_plow_editor_keeps_both_years_for_deep_tillage() -> None:
         su.clear_season_cache()
 
 
+def test_field_catalog_pages_and_stale_firm_cache() -> None:
+    """fields API отдаёт по 100. Старый кэш с одной страницы нельзя переиспользовать."""
+    sc = _sc()
+
+    class _Resp:
+        def __init__(self, data, last, obtained):
+            self._body = {
+                "data": data,
+                "meta": {"response": {"last_record_id": last, "obtained_records": obtained}},
+            }
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._body
+
+    calls: list[int] = []
+
+    def _fake_get(url, headers=None, params=None, timeout=None):
+        from_id = int((params or {}).get("from_id") or 0)
+        calls.append(from_id)
+        if from_id == 0:
+            return _Resp([{"id": 1}], 100, 100)
+        if from_id == 101:
+            return _Resp([{"id": 2}], 200, 100)
+        return _Resp([], None, 0)
+
+    original = sc.requests.get
+    sc.requests.get = _fake_get
+    try:
+        rows = sc._get_all("fields")
+    finally:
+        sc.requests.get = original
+    assert [r["id"] for r in rows] == [1, 2]
+    assert calls == [0, 101, 201]
+    assert sc._field_to_firm_from_cache_payload({"12": "АФ А"}) is None
+    loaded = sc._field_to_firm_from_cache_payload({"v": 2, "map": {"12": "АФ А"}})
+    assert loaded == {12: "АФ А"}
+
+
 def test_single_season_still_equals_ui_total() -> None:
     sc = _sc()
     seasons = sc.build_seasons_for_years(

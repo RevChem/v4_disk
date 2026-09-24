@@ -397,11 +397,17 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
           firm: firmRow.firm,
           values: firmRow.values || {},
           max_diff_ha: firmRow.max_diff_ha,
+          cropwise_ha: firmRow.cropwise_ha,
         });
       }
     }
     return rows;
   }, [crossCheckRows]);
+
+  const hasFirmCropwise = useMemo(
+    () => firmCheckRows.some((row) => row.cropwise_ha != null && row.cropwise_ha !== ""),
+    [firmCheckRows]
+  );
 
   return (
     <Dialog
@@ -767,9 +773,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                 Сверка по агрофирмам
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", mb: 0.5 }}>
-                Итог за смену по каждой АФ внутри операции (сводки между собой). Сводка 1 для
-                посева, опрыскивания и др. подставляет гектары с доноров — как в PDF; без
-                доноров 4–8 в проверке цифры сводки 1 могут не совпасть с Excel.
+                Итог за смену по каждой АФ внутри операции: сводки между собой и Cropwise.
+                Сводка 1 для посева, опрыскивания и др. подставляет гектары с доноров — как в PDF.
               </Typography>
               <Table size="small">
                 <TableHead>
@@ -781,6 +786,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                         {rid}
                       </TableCell>
                     ))}
+                    {hasFirmCropwise && (
+                      <TableCell align="right">Cropwise</TableCell>
+                    )}
                     <TableCell align="right">Max diff</TableCell>
                   </TableRow>
                 </TableHead>
@@ -794,6 +802,18 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                           {formatHa(row.values?.[rid])}
                         </TableCell>
                       ))}
+                      {hasFirmCropwise && (
+                        <TableCell
+                          align="right"
+                          sx={
+                            cropwiseApart(row.cropwise_ha, row.values)
+                              ? { color: "error.main" }
+                              : undefined
+                          }
+                        >
+                          {formatHa(row.cropwise_ha)}
+                        </TableCell>
+                      )}
                       <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
                     </TableRow>
                   ))}

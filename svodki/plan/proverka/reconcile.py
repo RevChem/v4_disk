@@ -465,6 +465,11 @@ def reconcile_one(
         "cropwise_api_fallback": bool(season_cropwise.get("cropwise_api_fallback")) if season_cropwise else False,
         "cropwise_ui_season_years": ui_season_years,
         "season_mismatch": season_mismatch,
+        "cropwise_by_firm": {
+            firm: round(float(ha), 2)
+            for firm, ha in (cropwise_by_firm or {}).items()
+            if float(ha or 0) >= 0.01
+        },
         "by_firm_diff": {
             firm: round(
                 svodka["area_today_by_firm"].get(firm, 0)
@@ -516,6 +521,33 @@ def reconcile_one(
         )
     if fetch_note:
         result["comparison"]["note"] += f" {fetch_note}"
+
+    groups = tuple(spec.work_groups or ())
+    svodka_ops = svodka.get("operations") or {}
+    if len(groups) == 1 and work.get("ok") and shift_cache is not None:
+        op = svodka_ops.get(groups[0]) or {}
+        svodka_crop = op.get("area_today_by_firm_crop") or {}
+        if svodka_crop:
+            from proverka.crop_compare import compare_svodka_cropwise_crops
+            from proverka.cropwise_crops import cropwise_crops_all_seasons
+            from proverka.season_cropwise import _parse_dt
+
+            cw_crop = cropwise_crops_all_seasons(
+                work.get("body"),
+                firm_names,
+                hints,
+                shift_cache=shift_cache,
+                task_years=list(task_years),
+                ui_session=ui_session if isinstance(ui_session, int) else None,
+                wt_ids=list(op.get("work_type_ids") or wt_from_groups),
+                cutoff=_parse_dt(t1),
+            )
+            crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+            if crop_cmp:
+                result["crop_comparisons"] = crop_cmp
+                result["comparison"]["crop_diff_count"] = sum(
+                    1 for c in crop_cmp if c.get("status") == "DIFF"
+                )
 
     _annotate_quality(result["comparison"], parsed, work)
 

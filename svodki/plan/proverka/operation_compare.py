@@ -80,6 +80,13 @@ def _cropwise_from_operation_comparisons(
         if not crops and total is None:
             continue
         sl = _slice_from_crop_rows(crops, total)
+        by_firm = {
+            str(firm): round(float(ha or 0), 2)
+            for firm, ha in (cmp_.get("cropwise_by_firm") or {}).items()
+            if float(ha or 0) >= 0.01
+        }
+        if by_firm:
+            sl["by_firm"] = by_firm
         if found is None or (sl["has_crops"] and not found["has_crops"]):
             found = sl
         if found["has_crops"]:
@@ -105,12 +112,31 @@ def _cropwise_from_thematic_report(
     total = cmp_.get("cropwise_fact_total_ha")
     if total is None:
         total = cmp_.get("cropwise_ui_ha")
+    stored = result.get("crop_comparisons") or []
+    if stored:
+        sl = _slice_from_crop_rows(stored, total)
+        by_firm = {
+            str(firm): round(float(ha or 0), 2)
+            for firm, ha in (cmp_.get("cropwise_by_firm") or {}).items()
+            if float(ha or 0) >= 0.01
+        }
+        if by_firm:
+            sl["by_firm"] = by_firm
+        return sl
     work = result.get("cropwise_work_report") or {}
     body = work.get("body") if work.get("ok") else None
     if not isinstance(body, dict) or not body.get("cropRows"):
         if total is None:
             return None
-        return _slice_from_crop_rows([], total)
+        sl = _slice_from_crop_rows([], total)
+        by_firm = {
+            str(firm): round(float(ha or 0), 2)
+            for firm, ha in (cmp_.get("cropwise_by_firm") or {}).items()
+            if float(ha or 0) >= 0.01
+        }
+        if by_firm:
+            sl["by_firm"] = by_firm
+        return sl
     firms = list((result.get("cropwise_parsed") or {}).get("fact_by_firm") or {})
     sv_firms = list(((result.get("svodka") or {}).get("area_today_by_firm") or {}))
     firm_names = list(dict.fromkeys([*firms, *sv_firms]))
@@ -129,7 +155,15 @@ def _cropwise_from_thematic_report(
         total = round(sum(float(c["cropwise_ha"]) for c in fake), 2)
     if not fake and total is None:
         return None
-    return _slice_from_crop_rows(fake, total)
+    sl = _slice_from_crop_rows(fake, total)
+    by_firm = {
+        str(firm): round(float(ha or 0), 2)
+        for firm, ha in (cmp_.get("cropwise_by_firm") or {}).items()
+        if float(ha or 0) >= 0.01
+    }
+    if by_firm:
+        sl["by_firm"] = by_firm
+    return sl
 
 
 def cropwise_for_cross_check(
@@ -178,6 +212,26 @@ def _attach_cropwise(row: dict[str, Any], sl: dict[str, Any] | None) -> None:
         cr["cropwise_ha"] = _cropwise_crop_ha(sl, cr["crop"])
         for fr in cr.get("firms") or []:
             fr["cropwise_ha"] = _cropwise_firm_ha(sl, cr["crop"], fr["firm"])
+    by_firm = dict((sl or {}).get("by_firm") or {})
+    if not by_firm and sl and sl.get("firms"):
+        summed: dict[str, float] = {}
+        for crop_firms in sl["firms"].values():
+            for firm, ha in crop_firms.items():
+                summed[firm] = round(summed.get(firm, 0.0) + float(ha or 0), 2)
+        by_firm = summed
+    seen = {str(fr.get("firm") or "") for fr in row.get("firms") or []}
+    for fr in row.get("firms") or []:
+        firm = str(fr.get("firm") or "")
+        fr["cropwise_ha"] = by_firm.get(firm) if firm in by_firm else None
+    for firm, ha in sorted(by_firm.items()):
+        if firm in seen or float(ha or 0) < 0.01:
+            continue
+        row.setdefault("firms", []).append({
+            "firm": firm,
+            "values": {},
+            "max_diff_ha": None,
+            "cropwise_ha": round(float(ha), 2),
+        })
 
 
 def operations_from_svodka(svodka: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -207,7 +207,10 @@ def test_cross_check_crop_row_carries_one_cropwise_figure():
                 },
                 "operation_comparisons": {
                     "4.0 Посев": {
-                        "comparison": {"cropwise_fact_total_ha": 90.0},
+                        "comparison": {
+                            "cropwise_fact_total_ha": 90.0,
+                            "cropwise_by_firm": {"АФ А": 55.0, "АФ Б": 35.0},
+                        },
                         "crop_comparisons": [
                             {
                                 "crop": "Рапс яровой",
@@ -267,3 +270,6 @@ def test_cross_check_crop_row_carries_one_cropwise_figure():
     by_firm = {fr["firm"]: fr["cropwise_ha"] for fr in rapeseed["firms"]}
     assert by_firm["АФ А"] == 30.0
     assert by_firm["АФ Б"] == 5.0
+    firm_cw = {fr["firm"]: fr["cropwise_ha"] for fr in row["firms"]}
+    assert firm_cw["АФ А"] == 55.0
+    assert firm_cw["АФ Б"] == 35.0
