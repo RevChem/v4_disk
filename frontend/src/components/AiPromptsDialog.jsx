@@ -7,13 +7,20 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 
 import { fetchProverkaAiPrompts, resetProverkaAiPrompts, saveProverkaAiPrompts } from "../api";
+
+function newPromptId() {
+  return `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
 export default function AiPromptsDialog({ open, onClose }) {
   const [loading, setLoading] = useState(false);
@@ -50,11 +57,24 @@ export default function AiPromptsDialog({ open, onClose }) {
     setSaving(true);
     setError("");
     setSuccess("");
+    const prepared = (rules || []).map((rule) => ({
+      id: String(rule.id || "").trim() || newPromptId(),
+      title: String(rule.title || "").trim(),
+      description: String(rule.description || "").trim(),
+    }));
+    const missingName = prepared.findIndex((rule) => !rule.title);
+    if (missingName >= 0) {
+      setSaving(false);
+      setError(`Укажите название промпта ${missingName + 1}.`);
+      return;
+    }
     try {
       const data = await saveProverkaAiPrompts({
         prompt_context: promptContext,
-        rules,
+        rules: prepared,
       });
+      setPromptContext(data.prompt_context || "");
+      setRules(data.rules || []);
       setIsCustom(Boolean(data.is_custom));
       setUpdatedAt(data.updated_at || null);
       setSuccess("Сохранено. Будет использовано при следующем AI-разборе.");
@@ -89,6 +109,17 @@ export default function AiPromptsDialog({ open, onClose }) {
     );
   }
 
+  function addPrompt() {
+    setSuccess("");
+    setError("");
+    setRules((prev) => [...prev, { id: newPromptId(), title: "", description: "" }]);
+  }
+
+  function removePrompt(idx) {
+    setSuccess("");
+    setRules((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -98,8 +129,9 @@ export default function AiPromptsDialog({ open, onClose }) {
       <DialogContent dividers>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
-            Этот текст добавляется в system prompt при AI-разборе proverka. Доменные проверки
-            (кукуруза/силос и т.д.) выполняются кодом; здесь — пояснения для нейросети.
+            Общий контекст и промпты ниже добавляются в system prompt при AI-разборе proverka.
+            У каждого промпта своё название. Доменные проверки (кукуруза/силос и т.д.) выполняются
+            кодом; здесь — пояснения для нейросети.
           </Typography>
           {isCustom && (
             <Alert severity="info">
@@ -124,11 +156,28 @@ export default function AiPromptsDialog({ open, onClose }) {
               key={rule.id || idx}
               sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}
             >
-              <Typography variant="subtitle2" gutterBottom>
-                {rule.title || rule.id || `Правило ${idx + 1}`}
-              </Typography>
+              <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ mb: 1 }}>
+                <TextField
+                  label="Название"
+                  value={rule.title || ""}
+                  onChange={(e) => updateRule(idx, "title", e.target.value)}
+                  fullWidth
+                  size="small"
+                  disabled={loading || saving}
+                  placeholder="Например: Проверка норм высева"
+                />
+                <IconButton
+                  aria-label="Удалить промпт"
+                  onClick={() => removePrompt(idx)}
+                  disabled={loading || saving}
+                  size="small"
+                  sx={{ mt: 0.25 }}
+                >
+                  <DeleteOutlineRoundedIcon fontSize="small" />
+                </IconButton>
+              </Stack>
               <TextField
-                label="Описание для LLM"
+                label="Текст промпта"
                 value={rule.description || ""}
                 onChange={(e) => updateRule(idx, "description", e.target.value)}
                 multiline
@@ -139,6 +188,15 @@ export default function AiPromptsDialog({ open, onClose }) {
               />
             </Box>
           ))}
+          <Box>
+            <Button
+              startIcon={<AddRoundedIcon />}
+              onClick={addPrompt}
+              disabled={loading || saving}
+            >
+              Добавить промпт
+            </Button>
+          </Box>
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between" }}>
