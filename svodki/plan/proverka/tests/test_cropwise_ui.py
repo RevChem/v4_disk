@@ -141,6 +141,68 @@ def test_group_column_work_types_are_exposed() -> None:
     assert parsed["fact_total_ha"] == 3687.64
 
 
+def test_empty_firm_list_accepts_subgroup_mapped_to_parent() -> None:
+    """Оценка work.json разбирает отчёт с пустым списком фирм."""
+    body = {
+        "regionColumns": [
+            {"key": "name", "name": "Группа полей"},
+            {"key": "f", "name": "Уборка, га"},
+        ],
+        "regionRows": [
+            {"name": "Всего", "f": "100"},
+            {
+                "name": "ЧО Полив",
+                "f": "100",
+                "children": [{"name": "Поле 1", "f": "100"}],
+            },
+        ],
+        "cropRows": [],
+        "cropColumns": [],
+    }
+    cui._SUBGROUP_TO_FIRM = {cui._normalize_name("ЧО Полив"): "АФ Чистопольская"}
+    try:
+        parsed = cui.parse_work_report_body(body, [], ["Уборка"])
+        score = cui._work_response_score({"ok": True, "body": body}, ["Уборка"])
+    finally:
+        cui._SUBGROUP_TO_FIRM = None
+    assert parsed["fact_by_firm"]["АФ Чистопольская"] == 100.0
+    assert parsed["fact_total_ha"] == 100.0
+    assert score[1] == 100.0
+
+
+def test_harvest_columns_uborka_and_kormozagotovka_are_summed() -> None:
+    body = {
+        "regionColumns": [
+            {"key": "name", "name": "Группа полей"},
+            {"key": "area", "name": "Площадь, га"},
+            {
+                "key": "Уборка",
+                "name": "Уборка, га",
+                "work_type_names": [
+                    "5.2 Уборка зерновых и зернобобовых",
+                    "5.8 Уборка рапса, горчицы, гречихи и проса",
+                ],
+            },
+            {
+                "key": "Кормозаготовка",
+                "name": "Кормозаготовка, га",
+                "work_type_names": ["6.3 Скашивание с измельчением кукурузы"],
+            },
+        ],
+        "regionRows": [
+            {"name": "Всего", "Уборка": ["349.78", "1 752.99"], "Кормозаготовка": ["95.78"]},
+            {"name": "Агрофирма А", "Уборка": ["349.78", "1 752.99"], "Кормозаготовка": ["95.78"]},
+        ],
+        "cropRows": [],
+        "cropColumns": [],
+    }
+    parsed = cui.parse_work_report_body(
+        body, FIRMS, ["Убор", "Кормозаготов", "Скашиван", "Обработ"],
+    )
+    assert parsed["fact_total_ha"] == 2198.55
+    assert "6.3 Скашивание с измельчением кукурузы" in parsed["fact_work_types"]
+
+
 def test_single_work_type_group_column_is_the_operation_total() -> None:
     # Запрос work.json по wt одной операции оставляет в группе только её вид работ.
     body = _grouped_body()

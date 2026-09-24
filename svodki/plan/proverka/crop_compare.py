@@ -4,7 +4,11 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from proverka.cropwise_ui import parse_work_report_detail_rows
+from proverka.cropwise_ui import (
+    _normalize_name,
+    parse_work_report_detail_rows,
+    subgroup_name_to_firm,
+)
 from proverka.ha_thresholds import compare_ha_status
 
 
@@ -43,6 +47,8 @@ def cropwise_area_by_firm_crop(
         firm = str(d.get("firm") or "").strip()
         if not firm and len(parts) > 1:
             firm = parts[1].strip()
+        if firm not in firm_set:
+            firm = subgroup_name_to_firm().get(_normalize_name(firm), "")
         if firm not in firm_set:
             continue
         ha = float(d.get("area_ha") or 0)

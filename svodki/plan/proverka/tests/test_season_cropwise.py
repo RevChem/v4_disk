@@ -330,6 +330,18 @@ def test_field_catalog_pages_and_stale_firm_cache() -> None:
     assert loaded == {12: "АФ А"}
 
 
+def test_editor_check_years_sums_many_and_keeps_one() -> None:
+    store = {
+        "by_group": {
+            "2.9 Дискование": {"season_years": [2026, 2027]},
+            "5.0 Уборка": {"season_years": [2026]},
+        },
+    }
+    assert su.editor_check_years("2.9 Дискование", REPORT_DATE, store=store) == [2026, 2027]
+    assert su.editor_check_years("5.0 Уборка", REPORT_DATE, store=store) == [2026]
+    assert su.editor_check_years("2.1 Боронование", REPORT_DATE, store=store) == []
+
+
 def test_single_season_still_equals_ui_total() -> None:
     sc = _sc()
     seasons = sc.build_seasons_for_years(

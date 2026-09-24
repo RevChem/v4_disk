@@ -10,6 +10,33 @@ from proverka.operation_compare import (
 from proverka.summary import _row_from_per_operation
 
 
+def test_editor_single_season_is_not_mixed_with_the_other_year():
+    from proverka.cropwise_crops import seasons_missing_from_ui
+
+    assert seasons_missing_from_ui([2026], 2026, True, seasons_in_shift=["2026", "2027"]) == []
+    assert seasons_missing_from_ui([2026, 2027], 2026, True) == ["2027"]
+    assert seasons_missing_from_ui([], 2027, False, seasons_in_shift=["2026"]) == []
+
+
+def test_subgroup_rolls_into_parent_firm_when_present():
+    """Подагрофирма учитывается в родительской агрофирме, только если в смене есть площадь."""
+    import proverka.cropwise_ui as ui
+
+    firms = ["АФ Чистопольская", "Аксу-Агро", "АгроРаздолье", "НурлатАгро"]
+    ui._SUBGROUP_TO_FIRM = {
+        ui._normalize_name('ООО "Агрофирма 4"'): "Аксу-Агро",
+        ui._normalize_name("ЧО Полив"): "АФ Чистопольская",
+        ui._normalize_name('ООО "Агрофирма 14"/ 1'): "НурлатАгро",
+    }
+    try:
+        assert ui._match_firm('ООО "Агрофирма 4"', firms) == "Аксу-Агро"
+        assert ui._match_firm("ЧО Полив", firms) == "АФ Чистопольская"
+        assert ui._match_firm('ООО "Агрофирма 14"/ 1', firms) == "НурлатАгро"
+        assert ui._match_firm("Поле АФ4-05-06", firms) is None
+    finally:
+        ui._SUBGROUP_TO_FIRM = None
+
+
 def test_proverka_display_prefers_local_over_canon():
     local = {"total_ha": 1854.68, "area_today_by_firm": {"АФ А": 1854.68}}
     canon = {"total_ha": 1893.31, "area_today_by_firm": {"АФ А": 1893.31}}

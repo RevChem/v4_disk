@@ -130,7 +130,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         "11. Уборка",
         module="11_main_harvest",
         work_groups=("5.0 Уборка",),
-        fact_column_hints=("Убор", "Обработ"),
+        fact_column_hints=("Убор", "Кормозаготов", "Скашиван", "Обработ"),
         cropwise_comparable=True,
     ),
     ReportCatalogEntry("12", "12_main_harvest_idle.py", "12. Статистика простоя при уборке урожая"),

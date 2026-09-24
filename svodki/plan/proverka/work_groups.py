@@ -3,21 +3,17 @@ from __future__ import annotations
 
 from plans import WORK_GROUPS
 
-try:
-    from task_area_shared import SILAGE_CORN_MOWING_WT_IDS
-except ImportError:
-    SILAGE_CORN_MOWING_WT_IDS = frozenset({74, 83, 84, 147, 149})
-
 _VEG_54_WT: list[int] = next(
     (list(ids) for name, ids in WORK_GROUPS if name == "5.4 Уборка картофеля, лука"),
     [75, 76, 77],
 )
 
-# plans.WORK_GROUPS «5.0 Уборка» включает wt 75–77 (овощи, 5.4). В Cropwise UI
-# зерновая уборка — это 5.2 + 5.8 + «Скашивание с измельчением кукурузы»;
-# wt 75–77 в work.json давали ~41 га овощей вместо силоса (~59 га).
+# 5.0 — список из plans.WORK_GROUPS плюс 6.3 «Скашивание с измельчением кукурузы».
+# В work.json это колонка «Кормозаготовка», work_type_id 84. Остальные виды
+# скашивания (ботва, валок, сено) в уборку не входят.
+_CORN_SILAGE_CHOP_WT = 84
 _HARVEST_GRAIN_WT: list[int] = sorted(
-    {6, 7, 111, 118, 125, 126, 145} | set(int(x) for x in SILAGE_CORN_MOWING_WT_IDS)
+    set(next(ids for name, ids in WORK_GROUPS if name == "5.0 Уборка")) | {_CORN_SILAGE_CHOP_WT}
 )
 
 WORK_GROUP_WT_OVERRIDES: dict[str, list[int]] = {

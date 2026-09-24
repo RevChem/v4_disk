@@ -629,6 +629,23 @@ def task_season_str_for_group(group_name: str, report_date: date) -> str | None:
     return None
 
 
+def editor_check_years(
+    group_name: str,
+    report_date: date,
+    *,
+    store: dict[str, Any] | None = None,
+) -> list[int]:
+    """
+    Сезоны Cropwise из редактора планов.
+
+    Несколько лет — складывать. Один год — только он, без второго сезона.
+    Пустой список: в файле плана этой операции нет, остаётся прежнее правило.
+    """
+    name = str(group_name or "").strip()
+    st = store if store is not None else load_season_store(report_date)
+    return _years_from_meta((st.get("by_group") or {}).get(name))
+
+
 def task_season_years_set_for_group(group_name: str, report_date: date) -> set[str] | None:
     cfg = resolve_group_season_config(group_name, report_date)
     ty = cfg.get("task_season_years") or []

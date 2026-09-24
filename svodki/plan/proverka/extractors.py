@@ -294,6 +294,24 @@ def _load_field_to_crop_for_proverka(
             "history_items", {"year": str(crop_year)},
         )
     skip_crops = getattr(m, "SKIP_CROPS", set()) or set()
+    by_year: dict[int, dict[int, str]] = {}
+    for crop_year, items in history_by_year.items():
+        for hi in items or []:
+            if not hi.get("active"):
+                continue
+            fid, cid = hi.get("field_id"), hi.get("crop_id")
+            if not fid or not cid:
+                continue
+            try:
+                fid_i = int(fid)
+                cid_i = int(cid)
+            except (TypeError, ValueError):
+                continue
+            name = str(crop_map_int.get(cid_i) or "").strip()
+            if not name or name in skip_crops:
+                continue
+            by_year.setdefault(fid_i, {})[int(crop_year)] = name
+    setattr(m, "_proverka_field_crops_by_year", by_year)
     return build_field_to_crop_general(
         crop_map=crop_map_int,
         history_by_year=history_by_year,
@@ -312,6 +330,7 @@ def _per_firm_area_by_crop_from_mtfmi(
     *,
     min_item_ha: float = 0.5,
     crop_field_ids: set[int] | None = None,
+    crop_of: Any | None = None,
 ) -> dict[str, dict[str, float]]:
     """Площадь за смену по культуре поля (firm → crop → ha), как area_by_crop в сводке 1."""
     per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -337,7 +356,10 @@ def _per_firm_area_by_crop_from_mtfmi(
                     cov += float(entry[1] or 0.0)
             if cov <= min_item_ha:
                 continue
-            crop = field_to_crop.get(fid_int)
+            if crop_of is not None:
+                crop = crop_of(t, fid_int)
+            else:
+                crop = field_to_crop.get(fid_int)
             if crop:
                 per_firm[firm][str(crop)] += cov
     return {
@@ -1243,8 +1265,26 @@ async def _extract_7_8(
         field_to_crop_map = field_to_crop
     else:
         field_to_crop_map = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
+    crop_of = None
+    if module_name == "7_main__4_":
+        from plans import crop_for_disk_field
+
+        crops_by_year = getattr(m, "_proverka_field_crops_by_year", {})
+
+        def crop_of(task: dict, fid: int, _map=crops_by_year, _flat=field_to_crop_map) -> str:
+            try:
+                season = int(task.get("season") or 0) or None
+            except (TypeError, ValueError):
+                season = None
+            named = crop_for_disk_field(_map.get(int(fid), {}), season)
+            if named:
+                return named
+            fallback = str(_flat.get(int(fid)) or "")
+            return "" if fallback == "Зябь" else fallback
+
     per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
         tasks_today, mtfmi, field_to_firm, field_to_crop_map, cutoff,
+        crop_of=crop_of,
     )
     crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
     operations = _operations_with_crop_breakdown(

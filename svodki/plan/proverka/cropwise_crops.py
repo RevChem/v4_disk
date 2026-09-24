@@ -22,11 +22,17 @@ def seasons_missing_from_ui(
     task_years: list[int] | None,
     ui_session: int | None,
     ui_has_crops: bool,
+    *,
+    seasons_in_shift: list[str] | None = None,
 ) -> list[str]:
     """
     work.json cropRows — только сезон открытой сессии.
     Остальные сезоны плана (и сам сезон сессии, если вкладка пустая) берём из API v3.
+
+    Годы, которых нет в плане, не добавляем: один сезон в редакторе
+    проверяется отдельно, даже если в смене встретился другой год.
     """
+    _ = seasons_in_shift
     years = [str(int(y)) for y in (task_years or [])]
     if not years:
         return []
@@ -129,6 +135,57 @@ def api_area_by_firm_crop(
             if crop and fid is not None:
                 task_field_crop[(tid, fid)] = crop
 
+    # Задание без агрооперации: культура поля в том же сезоне (history_items).
+    missing_fields: dict[int, set[str]] = defaultdict(set)
+    for t in selected:
+        tid = int(t["id"])
+        season = str(t.get("season") or "")
+        if not season:
+            continue
+        items = mtfmi_map.get(tid) or mtfmi_map.get(t["id"]) or []
+        for fid, ha in _area_by_field_in_shift(items, cutoff, cutoff).items():
+            if ha > 0 and not task_field_crop.get((tid, int(fid))):
+                missing_fields[int(fid)].add(season)
+    if missing_fields:
+        async def _history_by_field() -> list[tuple[int, str, list[dict]]]:
+            sem = asyncio.Semaphore(20)
+            headers = {"X-User-Api-Token": API_TOKEN}
+            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+                async def one(fid: int, year: str) -> tuple[int, str, list[dict]]:
+                    async with sem:
+                        response = await client.get(
+                            f"{BASE_URL}/history_items",
+                            params={"field_id": fid, "year": year, "limit": 20},
+                        )
+                        response.raise_for_status()
+                        data = response.json().get("data") or []
+                        return fid, year, data
+
+                jobs = [
+                    one(fid, year)
+                    for fid, years in missing_fields.items()
+                    for year in years
+                ]
+                return list(await asyncio.gather(*jobs))
+
+        for fid, year, items in asyncio.run(_history_by_field()):
+            name = ""
+            for hi in items:
+                if hi.get("crop_id") is None:
+                    continue
+                name = crops.get(int(hi["crop_id"]), "").strip()
+                if name:
+                    break
+            if not name:
+                continue
+            for t in selected:
+                if str(t.get("season") or "") != year:
+                    continue
+                tid = int(t["id"])
+                items_mt = mtfmi_map.get(tid) or []
+                if fid in _area_by_field_in_shift(items_mt, cutoff, cutoff):
+                    task_field_crop.setdefault((tid, fid), name)
+
     from proverka.crop_compare import _crop_label
 
     out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -164,18 +221,20 @@ def cropwise_crops_all_seasons(
     """cropRows сессии плюс культуры остальных сезонов плана из API v3."""
     ui = cropwise_area_by_firm_crop(body, firm_names, fact_hints)
     ui_has = bool(ui) and not (isinstance(body, dict) and body.get("reportBlank"))
-    missing = seasons_missing_from_ui(task_years, ui_session, ui_has)
+    wt_set = {int(x) for x in wt_ids}
+    tasks = [
+        t for t in ((shift_cache.all_tasks if shift_cache is not None else None) or [])
+        if int(t.get("work_type_id") or 0) in wt_set
+    ]
+    in_shift = sorted({str(t.get("season")) for t in tasks if t.get("season") not in (None, "")})
+    missing = seasons_missing_from_ui(
+        task_years, ui_session, ui_has, seasons_in_shift=in_shift,
+    )
     merged: dict[str, dict[str, float]] = {}
     if ui_has:
         _add_crop_areas(merged, ui)
     if not missing or shift_cache is None:
         return {c: dict(f) for c, f in merged.items()}
-
-    wt_set = {int(x) for x in wt_ids}
-    tasks = [
-        t for t in (shift_cache.all_tasks or [])
-        if int(t.get("work_type_id") or 0) in wt_set
-    ]
     api = api_area_by_firm_crop(
         tasks,
         shift_cache.mtfmi_map,
@@ -185,3 +244,63 @@ def cropwise_crops_all_seasons(
     )
     _add_crop_areas(merged, api)
     return {c: dict(f) for c, f in merged.items() if f}
+
+
+def combine_editor_seasons(
+    by_year: dict,
+    years: list[int],
+    firm_names: list[str],
+    fact_hints: list[str],
+    *,
+    shift_cache: Any | None,
+    wt_ids: list[int],
+    cutoff,
+) -> dict[str, Any]:
+    """
+    Сумма Cropwise по сезонам редактора планов.
+
+    Несколько лет складываются. Один год берётся отдельно.
+    Пустая вкладка сезона добирается из API v3 только за этот год.
+    """
+    from proverka.crop_compare import cropwise_area_by_firm_crop
+    from proverka.cropwise_ui import parse_work_report_body
+
+    crops: dict[str, dict[str, float]] = {}
+    by_firm: dict[str, float] = defaultdict(float)
+    by_year_ha: dict[int, float] = {}
+    total = 0.0
+    api_by_season: dict | None = None
+    wt_set = {int(x) for x in wt_ids}
+    for year in years:
+        work = by_year.get(year) or by_year.get(str(year)) or {}
+        body = work.get("body") if work.get("ok") else None
+        usable = isinstance(body, dict) and not body.get("reportBlank")
+        year_total = 0.0
+        if usable:
+            parsed = parse_work_report_body(body, firm_names, list(fact_hints))
+            year_total = float(parsed.get("fact_total_ha") or 0)
+            for firm, ha in (parsed.get("fact_by_firm") or {}).items():
+                by_firm[str(firm)] += float(ha or 0)
+            _add_crop_areas(crops, cropwise_area_by_firm_crop(body, firm_names, list(fact_hints)))
+        elif shift_cache is not None:
+            if api_by_season is None:
+                api_by_season, _ids = shift_cache.api_for_wt_ids(list(wt_set))
+            block = (api_by_season or {}).get(str(year)) or {}
+            year_total = float(block.get("total_ha") or 0)
+            for firm, ha in (block.get("by_firm") or {}).items():
+                by_firm[str(firm)] += float(ha or 0)
+            tasks = [
+                t for t in (shift_cache.all_tasks or [])
+                if int(t.get("work_type_id") or 0) in wt_set
+            ]
+            _add_crop_areas(crops, api_area_by_firm_crop(
+                tasks, shift_cache.mtfmi_map, shift_cache.field_to_firm, {str(year)}, cutoff,
+            ))
+        by_year_ha[int(year)] = round(year_total, 2)
+        total += year_total
+    return {
+        "total_ha": round(total, 2),
+        "by_firm": {k: round(v, 2) for k, v in by_firm.items() if v >= 0.01},
+        "crops": {c: dict(f) for c, f in crops.items() if f},
+        "by_year": by_year_ha,
+    }

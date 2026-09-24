@@ -216,11 +216,44 @@ def _prefetch_work_json(
         return prefetched, ui_session
 
     per_op_rids = [rid for rid in comparable if REPORTS[rid].cropwise_per_operation]
-    # Один work.json на операцию: у Cropwise несколько видов работ попадают в одну
-    # колонку-группу, поэтому общий запрос по тематической сводке давал операциям
-    # сумму группы вместо их собственного факта.
     per_op_fetch_groups = [gn for gn, _wt in _per_op_prefetch_groups(comparable)]
     std_rids = [rid for rid in comparable if not REPORTS[rid].cropwise_per_operation]
+    editor_groups = list(per_op_fetch_groups)
+    for rid in std_rids:
+        groups = tuple(REPORTS[rid].work_groups or ())
+        if len(groups) == 1 and groups[0] not in editor_groups:
+            editor_groups.append(groups[0])
+    packed_editor: dict[str, dict[str, Any]] = {}
+    if editor_groups:
+        from proverka.report2_reconcile import prefetch_editor_season_works
+
+        prog(
+            f"Cropwise UI: сезоны редактора планов, {len(editor_groups)} операций "
+            "(2026 и 2027 складываются, один сезон проверяется отдельно)…"
+        )
+        packed_editor = prefetch_editor_season_works(editor_groups, cookie, report_date)
+        if per_op_fetch_groups:
+            op_map = {
+                gn: packed_editor[gn]
+                for gn in per_op_fetch_groups
+                if gn in packed_editor
+            }
+            for rid in per_op_rids:
+                prefetched[rid] = op_map
+            for work in op_map.values():
+                ui_session = work.get("ui_session_seasonValue") or ui_session
+    remaining_std = []
+    for rid in std_rids:
+        groups = tuple(REPORTS[rid].work_groups or ())
+        if len(groups) == 1 and groups[0] in packed_editor:
+            prefetched[rid] = packed_editor[groups[0]]
+            ui_session = packed_editor[groups[0]].get("ui_session_seasonValue") or ui_session
+        else:
+            remaining_std.append(rid)
+    std_rids = remaining_std
+    per_op_fetch_groups = [
+        gn for gn in per_op_fetch_groups if gn not in packed_editor
+    ]
     task_count = len(std_rids) + len(per_op_fetch_groups)
     workers = _max_workers(max(task_count, 1))
 
@@ -357,6 +390,9 @@ def _refresh_work_json_after_svodka(
         work = prefetched_work.get(rid)
         if not isinstance(work, dict):
             continue
+        if work.get("editor_years"):
+            ui_session = work.get("ui_session_seasonValue") or ui_session
+            continue
         ui_session = work.get("ui_session_seasonValue") or ui_session
         spec = REPORTS[rid]
         svodka = svodka_cache.get(rid) or {}
@@ -401,6 +437,9 @@ def _refresh_work_json_after_svodka(
         for gn, wt_ids in groups:
             work = op_map.get(gn)
             if not isinstance(work, dict):
+                continue
+            if work.get("editor_years"):
+                ui_session = work.get("ui_session_seasonValue") or ui_session
                 continue
             from proverka.operation_registry import canonical_cropwise_report
 

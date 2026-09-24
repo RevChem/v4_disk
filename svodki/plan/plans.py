@@ -1312,6 +1312,25 @@ def build_field_to_crop_general(
     return field_to_crop
 
 
+def crop_for_disk_field(crops_by_year: dict[int, str], season_year: int | None) -> str:
+    """
+    Культура дискования — history сезона задания.
+
+    «Зябь» в этом сезоне не считается культурой дискования: если в другом
+    сезоне на поле есть настоящая культура, берётся она.
+    """
+    years = {int(y): str(name or "").strip() for y, name in (crops_by_year or {}).items()}
+    if season_year is not None:
+        named = years.get(int(season_year), "")
+        if named and named != "Зябь":
+            return named
+    for year in sorted(years, reverse=True):
+        named = years[year]
+        if named and named != "Зябь":
+            return named
+    return ""
+
+
 def _apply_runtime_plans_edits() -> None:
     import os
 

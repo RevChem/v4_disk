@@ -336,7 +336,9 @@ def reconcile_one(
 
     fetch_note = ""
     api_fallback = bool(season_cropwise.get("cropwise_api_fallback")) if season_cropwise else False
-    if _cropwise_looks_degraded(
+    has_editor_seasons = bool(work.get("by_year")) and bool(work.get("editor_years"))
+    if not has_editor_seasons and (
+        _cropwise_looks_degraded(
         work, svodka_total, spec.fact_column_hints,
         cropwise_total=cropwise_compare_total,
         cropwise_api_fallback=api_fallback,
@@ -347,7 +349,7 @@ def reconcile_one(
         ui_session=ui_session,
         preferred_ui=preferred_ui,
         acceptable_ui_seasons=list(task_years),
-    ):
+    )):
         retry = fetch_work_report_resilient(
             cookie, t0, t1, wt_ids, hints, attempts=4, delay_sec=5.0,
             preferred_ui_session=preferred_ui,
@@ -432,12 +434,42 @@ def reconcile_one(
         ui_session_blocked = False
         required_ui_session = None
 
+    if has_editor_seasons:
+        from proverka.cropwise_crops import combine_editor_seasons
+        from proverka.season_cropwise import _parse_dt
+
+        combined = combine_editor_seasons(
+            work.get("by_year") or {},
+            list(work.get("editor_years") or []),
+            firm_names,
+            hints,
+            shift_cache=shift_cache,
+            wt_ids=list(wt_from_groups),
+            cutoff=_parse_dt(t1),
+        )
+        cropwise_total = combined["total_ha"]
+        cropwise_by_firm = combined["by_firm"]
+        work["editor_crop_areas"] = combined["crops"]
+        editor_years = list(work.get("editor_years") or [])
+        parts = ", ".join(
+            f"{year}={float(combined['by_year'].get(year) or 0):.2f}" for year in editor_years
+        )
+        if len(editor_years) == 1:
+            ui_note = f"Cropwise: только сезон {editor_years[0]} из редактора планов ({parts})."
+        else:
+            ui_note = f"Cropwise: сумма сезонов редактора планов ({parts})."
+        task_years = editor_years
+    else:
+        ui_note = None
+
     result["cropwise_parsed"] = parsed
     if seasons:
         result["cropwise_seasons"] = seasons
 
     season_note = season.get("label") or ""
-    if len(task_years) == 1:
+    if ui_note is not None:
+        pass
+    elif len(task_years) == 1:
         ui_note = f"Cropwise: UI season {ui_session} + API season для сводки {task_years[0]}."
     elif len(task_years) > 1:
         ui_note = (
@@ -532,16 +564,18 @@ def reconcile_one(
             from proverka.cropwise_crops import cropwise_crops_all_seasons
             from proverka.season_cropwise import _parse_dt
 
-            cw_crop = cropwise_crops_all_seasons(
-                work.get("body"),
-                firm_names,
-                hints,
-                shift_cache=shift_cache,
-                task_years=list(task_years),
-                ui_session=ui_session if isinstance(ui_session, int) else None,
-                wt_ids=list(op.get("work_type_ids") or wt_from_groups),
-                cutoff=_parse_dt(t1),
-            )
+            cw_crop = work.get("editor_crop_areas")
+            if cw_crop is None:
+                cw_crop = cropwise_crops_all_seasons(
+                    work.get("body"),
+                    firm_names,
+                    hints,
+                    shift_cache=shift_cache,
+                    task_years=list(task_years),
+                    ui_session=ui_session if isinstance(ui_session, int) else None,
+                    wt_ids=list(op.get("work_type_ids") or wt_from_groups),
+                    cutoff=_parse_dt(t1),
+                )
             crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
             if crop_cmp:
                 result["crop_comparisons"] = crop_cmp

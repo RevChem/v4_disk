@@ -125,7 +125,7 @@ async def _load_canonical_svodka_ops(
 
 def _fact_hints_for_group(group_name: str) -> tuple[str, ...]:
     if group_name.startswith("5."):
-        return ("Площадь", "Убор", "Обработ")
+        return ("Убор", "Кормозаготов", "Скашиван", "Обработ")
     return ("Обработ",)
 
 
@@ -224,6 +224,61 @@ def fetch_work_for_operation(
         cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=1.5,
         preferred_ui_session=pref,
     )
+
+
+def prefetch_editor_season_works(
+    group_names: list[str],
+    cookie: str,
+    report_date: date,
+) -> dict[str, dict[str, Any]]:
+    """
+    work.json по каждому сезону редактора планов.
+
+    Сессия переключается один раз на год, затем читаются все операции этого года.
+    Несколько сезонов потом складываются, один сезон остаётся сам по себе.
+    """
+    from season_unified import editor_check_years
+    from proverka.cropwise_ui import fetch_work_report, set_ui_session_year, warm_web_session
+    from proverka.reconcile import _shift_window_iso
+
+    jobs: list[tuple[str, list[int], list[int]]] = []
+    for name in group_names:
+        years = editor_check_years(name, report_date)
+        wt_ids = work_type_ids_for_group(name)
+        if not years or not wt_ids:
+            continue
+        jobs.append((name, years, wt_ids))
+    if not jobs:
+        return {}
+    web, csrf, _years, session = warm_web_session(cookie)
+    stored: dict[str, dict[int, dict[str, Any]]] = {name: {} for name, _y, _w in jobs}
+    for year in sorted({y for _n, years, _w in jobs for y in years}):
+        if session != year:
+            session = set_ui_session_year(web, csrf, year) or session
+        for name, years, wt_ids in jobs:
+            if year not in years:
+                continue
+            spec = _cropwise_spec_for_group(name)
+            t0, t1, _ = _shift_window_iso(spec, report_date)
+            stored[name][year] = fetch_work_report(
+                web, t0, t1, wt_ids, csrf=csrf, ui_session_season=session,
+            )
+    out: dict[str, dict[str, Any]] = {}
+    for name, years, _wt in jobs:
+        chosen: dict[str, Any] | None = None
+        for year in years:
+            item = stored[name].get(year) or {}
+            body = item.get("body") if item.get("ok") else None
+            if isinstance(body, dict) and not body.get("reportBlank"):
+                chosen = item
+                break
+        if chosen is None:
+            chosen = stored[name].get(years[0]) or {"ok": False, "body": {}}
+        packed = dict(chosen)
+        packed["by_year"] = stored[name]
+        packed["editor_years"] = list(years)
+        out[name] = packed
+    return out
 
 
 def _canonical_season_for_operation(
@@ -442,7 +497,36 @@ def _reconcile_one_operation(
     if seasons:
         out["cropwise_seasons"] = seasons
 
-    if task_years:
+    from season_unified import editor_check_years
+
+    editor_years = editor_check_years(group_name, report_date)
+    by_year = work.get("by_year") or {}
+    if editor_years and by_year:
+        from proverka.cropwise_crops import combine_editor_seasons
+        from proverka.season_cropwise import _parse_dt
+
+        combined = combine_editor_seasons(
+            by_year,
+            editor_years,
+            firm_names,
+            hints,
+            shift_cache=shift_cache,
+            wt_ids=wt_ids,
+            cutoff=_parse_dt(t1),
+        )
+        cropwise_total = combined["total_ha"]
+        cropwise_by_firm = combined["by_firm"]
+        work["editor_crop_areas"] = combined["crops"]
+        work["editor_years"] = list(editor_years)
+        parts = ", ".join(
+            f"{year}={float(combined['by_year'].get(year) or 0):.2f}" for year in editor_years
+        )
+        if len(editor_years) == 1:
+            ui_note = f"Cropwise: только сезон {editor_years[0]} из редактора планов ({parts})."
+        else:
+            ui_note = f"Cropwise: сумма сезонов редактора планов ({parts})."
+        task_years = list(editor_years)
+    elif task_years:
         if len(task_years) == 1:
             ui_note = f"Cropwise: UI season {ui_session} + API season {task_years[0]}."
         else:
@@ -506,19 +590,21 @@ def _reconcile_one_operation(
     if svodka_crop and work.get("ok"):
         from proverka.crop_compare import compare_svodka_cropwise_crops
 
-        from proverka.cropwise_crops import cropwise_crops_all_seasons
-        from proverka.season_cropwise import _parse_dt
+        cw_crop = work.get("editor_crop_areas")
+        if cw_crop is None:
+            from proverka.cropwise_crops import cropwise_crops_all_seasons
+            from proverka.season_cropwise import _parse_dt
 
-        cw_crop = cropwise_crops_all_seasons(
-            work.get("body"),
-            firm_names,
-            hints,
-            shift_cache=shift_cache,
-            task_years=list(task_years),
-            ui_session=ui_session if isinstance(ui_session, int) else None,
-            wt_ids=wt_ids,
-            cutoff=_parse_dt(t1),
-        )
+            cw_crop = cropwise_crops_all_seasons(
+                work.get("body"),
+                firm_names,
+                hints,
+                shift_cache=shift_cache,
+                task_years=list(task_years),
+                ui_session=ui_session if isinstance(ui_session, int) else None,
+                wt_ids=wt_ids,
+                cutoff=_parse_dt(t1),
+            )
         crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
         if crop_cmp:
             out["crop_comparisons"] = crop_cmp
@@ -607,6 +693,8 @@ def reconcile_per_operation(
         ops[gn] = canon_ops.get(gn, op_self)
 
     op_prefetch = prefetched_work if isinstance(prefetched_work, dict) else None
+    if op_prefetch is None and cookie:
+        op_prefetch = prefetch_editor_season_works(list(ops_local), cookie, report_date)
     all_wt = _collect_all_wt_ids(ops_local)
     shift_cache = ShiftWindowCache.build(
         t0, t1, all_wt, log_prefix=f"[proverka r{spec.report_id}] ",

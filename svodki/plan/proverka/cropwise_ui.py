@@ -21,6 +21,9 @@ SKIP_REGION_GROUPS = frozenset({
 })
 
 _SUBDIVISION_RE = re.compile(r"агрофирма\s*\d", re.IGNORECASE)
+# Имя группы полей (ООО «Агрофирма 4», ЧО Полив, …) → одна из 7 агрофирм.
+# Пустой кэш не кэшируем как «нет данных»: None значит «ещё не загружали».
+_SUBGROUP_TO_FIRM: dict[str, str] | None = None
 # Любые юникод-пробелы (в т.ч. U+00A0, U+202F, U+2009) как разделители разрядов.
 _WS_RE = re.compile("[\\s\u00a0\u202f\u2009\u2007\u2007\u2060]+")
 _TOTAL_LABELS = frozenset({"всего", "итого", "total", "итог"})
@@ -124,10 +127,10 @@ def ensure_ui_session_season(
     """
     Cropwise work.json отдаёт данные только за seasonValue сессии.
 
-    Сезон сессии сменить запросом нельзя: ни `?seasonValue=`, ни параметры тела
-    work.json на него не влияют. Реально работает только cookie браузера, в
-    котором нужный сезон уже выбран (CROPWISE_SESSION_COOKIE_<год>). Поэтому
-    остальные сезоны сводки берутся из API v3, а не из UI.
+    Сезон переключается тем же запросом, что и выбор в верхнем меню:
+    GET /session_variables/set_current_year/<год>. Параметр ?seasonValue=
+    на это не влияет. Если переключение не удалось, остальные сезоны
+    сводки по-прежнему берутся из API v3.
 
     Возвращает (web, csrf, ui_years, ui_session, cookie_used).
     """
@@ -136,16 +139,9 @@ def ensure_ui_session_season(
     if ui_session == preferred:
         return web, csrf, ui_years, ui_session, cookie_used
 
-    # Попытка навигации с параметром сезона: на текущем Cropwise сессию не
-    # меняет, оставлена как безвредный запас на случай изменений на их стороне.
-    try:
-        r = web.get(f"{WORK_PAGE_URL}?seasonValue={preferred}", timeout=60)
-        r.raise_for_status()
-        ui_try = detect_ui_session_season(r.text)
-        if ui_try == preferred:
-            return web, _csrf_from_html(r.text), detect_ui_season_years(r.text), ui_try, cookie_used
-    except requests.RequestException:
-        pass
+    switched = set_ui_session_year(web, csrf, preferred)
+    if switched == preferred:
+        return web, csrf, ui_years, switched, cookie_used
 
     alt = _session_cookie_for_year(preferred)
     if alt and alt != cookie_raw:
@@ -157,6 +153,26 @@ def ensure_ui_session_season(
             pass
 
     return web, csrf, ui_years, ui_session, cookie_used
+
+
+def set_ui_session_year(web: requests.Session, csrf: str, year: int) -> int | None:
+    """Сезон открытой сессии Cropwise, как пункт «Сезон» в верхнем меню."""
+    url = f"{HOST}/session_variables/set_current_year/{int(year)}"
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "text/html,application/json",
+        "Referer": WORK_PAGE_URL,
+    }
+    if csrf:
+        headers["X-CSRF-Token"] = csrf
+    response = web.get(url, headers=headers, timeout=60, allow_redirects=True)
+    response.raise_for_status()
+    season = detect_ui_session_season(response.text)
+    if season == int(year):
+        return season
+    page = web.get(WORK_PAGE_URL, timeout=60)
+    page.raise_for_status()
+    return detect_ui_session_season(page.text)
 
 
 def warm_web_session(cookie_raw: str) -> tuple[requests.Session, str, list[int], int | None]:
@@ -433,6 +449,59 @@ def _display_name_aliases(firm_names: list[str]) -> dict[str, str]:
     return out
 
 
+def clear_subgroup_firm_cache() -> None:
+    global _SUBGROUP_TO_FIRM
+    _SUBGROUP_TO_FIRM = None
+
+
+def subgroup_name_to_firm() -> dict[str, str]:
+    """
+    Подагрофирма Cropwise → основная агрофирма.
+
+    В дереве «Культура / группа полей» на втором уровне стоят ООО «Агрофирма N»,
+    ЧО Полив и другие группы. В смене их может не быть — это нормально.
+    Если площадь есть, она относится к одной из семи агрофирм-родителей.
+    """
+    global _SUBGROUP_TO_FIRM
+    if _SUBGROUP_TO_FIRM is not None:
+        return _SUBGROUP_TO_FIRM
+    try:
+        from plans import FOLDER_TO_FIRM
+        from proverka.season_cropwise import _get_all
+    except ImportError:
+        return {}
+    try:
+        folders = _get_all("group_folders")
+        groups = _get_all("field_groups")
+    except Exception:
+        return {}
+    parent = {g.get("id"): g.get("parent_id") for g in folders if g.get("id") is not None}
+    roots = {g.get("id") for g in folders if g.get("id") is not None and not g.get("parent_id")}
+
+    def root_of(folder_id: Any) -> Any:
+        seen: set[Any] = set()
+        while folder_id and folder_id not in seen:
+            seen.add(folder_id)
+            if folder_id in roots:
+                return folder_id
+            folder_id = parent.get(folder_id)
+        return None
+
+    out: dict[str, str] = {}
+    for group in groups:
+        name = str(group.get("name") or "").strip()
+        firm = FOLDER_TO_FIRM.get(root_of(group.get("group_folder_id")))
+        if not name or not firm:
+            continue
+        key = _normalize_name(name)
+        prev = out.get(key)
+        if prev and prev != firm:
+            continue
+        out[key] = firm
+    _SUBGROUP_TO_FIRM = out
+    return out
+
+
 def _match_firm(
     row_name: str,
     firm_names: list[str],
@@ -470,6 +539,10 @@ def _match_firm(
         if len(_normalize_name(ranked[0])) > len(_normalize_name(ranked[1])):
             return ranked[0]
         return None
+    # Группа полей внутри агрофирмы (не каждый день с площадью).
+    mapped = subgroup_name_to_firm().get(rn)
+    if mapped and (not firm_names or mapped in firm_names):
+        return mapped
     # ООО «Агрофирма N» — юрлицо подразделения; привязываем к родительской агрофирме.
     if firm_ctx and _SUBDIVISION_RE.search(rn):
         return firm_ctx
@@ -524,6 +597,37 @@ def pick_fact_column(columns: list[dict], hints: list[str]) -> tuple[dict | None
     return None, "none"
 
 
+def matching_fact_columns(columns: list[dict], hints: list[str]) -> list[dict]:
+    """
+    Колонки факта.
+
+    Первая подходящая колонка — как раньше. Дополнительно суммируются
+    соседние группы той же операции («Уборка» и «Кормозаготовка»).
+    Запасные хинты «Обработ» и «Площадь» вторую колонку не добавляют.
+    """
+    primary, _conf = pick_fact_column(columns, hints)
+    matched: list[dict] = []
+    seen: set[Any] = set()
+    if primary:
+        matched.append(primary)
+        seen.add(primary.get("key"))
+    broad = {"обработ", "площадь"}
+    for hint in hints:
+        needle = str(hint or "").strip().lower()
+        if not needle or needle in broad:
+            continue
+        for col in columns:
+            if _is_label_column(col):
+                continue
+            key = col.get("key")
+            if key in seen:
+                continue
+            if needle in (col.get("name") or "").lower():
+                matched.append(col)
+                seen.add(key)
+    return matched
+
+
 def _pick_fact_column(columns: list[dict], hints: list[str]) -> dict | None:
     return pick_fact_column(columns, hints)[0]
 
@@ -542,11 +646,23 @@ def _parse_tab(
     *,
     region_groups: bool = False,
 ) -> dict[str, Any]:
-    fact_col, fact_confidence = pick_fact_column(columns, fact_hints)
+    fact_cols = matching_fact_columns(columns, fact_hints)
+    fact_col = fact_cols[0] if fact_cols else None
+    _picked, fact_confidence = pick_fact_column(columns, fact_hints)
+    if len(fact_cols) > 1:
+        fact_confidence = "hint"
+
+    def _fact_ha(row: dict) -> float:
+        return sum(_row_metric_ha(row, col) for col in fact_cols)
     area_col = next((c for c in columns if "Площадь" in (c.get("name") or "")), None)
     display_aliases = _display_name_aliases(firm_names)
 
     fact_by_firm: dict[str, float] = {f: 0.0 for f in firm_names}
+
+    def _add_firm(name: str, ha: float) -> None:
+        # Оценка ответа work.json вызывает разбор с пустым списком фирм.
+        # Сопоставление подагрофирмы тогда даёт имя родителя, которого ещё нет в словаре.
+        fact_by_firm[name] = fact_by_firm.get(name, 0.0) + ha
     # Гектары строк верхнего уровня, которые не удалось привязать к агрофирме.
     # Раньше они молча исчезали; теперь видны и входят в итог.
     unmatched_ha = 0.0
@@ -560,7 +676,7 @@ def _parse_tab(
             sub_name = (child.get("name") or "").strip()
             if _is_skip_region(sub_name):
                 continue
-            total += _row_metric_ha(child, fact_col)
+            total += _fact_ha(child)
         return total
 
     def walk(nodes: list, depth: int = 0, firm_ctx: str | None = None) -> None:
@@ -573,9 +689,9 @@ def _parse_tab(
                 # «Всего» берём ТОЛЬКО с корня: вложенные итоги групп раньше
                 # затирали общий итог (побеждала последняя встреченная строка).
                 if depth == 0:
-                    root_total = _row_metric_ha(row, fact_col)
+                    root_total = _fact_ha(row)
                 else:
-                    nested_totals.append(_row_metric_ha(row, fact_col))
+                    nested_totals.append(_fact_ha(row))
                 continue
             if _is_skip_region(name):
                 continue
@@ -588,13 +704,13 @@ def _parse_tab(
             # regionRows: верхний уровень = агрофирма, дети = подразделения (ООО «Агрофирма N»).
             if region_groups and depth == 0 and matched:
                 if children:
-                    fact_by_firm[matched] += _sum_subdivisions(children)
+                    _add_firm(matched, _sum_subdivisions(children))
                 else:
-                    fact_by_firm[matched] += _row_metric_ha(row, fact_col)
+                    _add_firm(matched, _fact_ha(row))
                 continue
 
             if region_groups and depth == 0 and not matched:
-                ha = _row_metric_ha(row, fact_col)
+                ha = _fact_ha(row)
                 if ha > 0:
                     unmatched_ha += ha
                     unmatched_rows.append(name)
@@ -611,7 +727,7 @@ def _parse_tab(
                     )
                 ]
                 if not nested:
-                    fact_by_firm[firm] += _row_metric_ha(row, fact_col)
+                    _add_firm(firm, _fact_ha(row))
             walk(children, depth + 1, firm or firm_ctx)
 
     walk(rows or [])
@@ -627,11 +743,15 @@ def _parse_tab(
         "fact_total_residual_ha": round(fact_total - sum_by_firm, 2),
         "unmatched_firm_ha": round(unmatched_ha, 2),
         "unmatched_firm_rows": unmatched_rows[:20],
-        "fact_column": (fact_col or {}).get("name"),
+        "fact_column": " + ".join(
+            str(c.get("name") or "") for c in fact_cols if c.get("name")
+        ) or (fact_col or {}).get("name"),
         "fact_column_confidence": fact_confidence,
-        # Виды работ внутри выбранной колонки-группы: если их больше одного,
-        # итог колонки — сумма нескольких операций, а не одной.
-        "fact_work_types": column_work_types(fact_col),
+        "fact_work_types": [
+            name
+            for col in fact_cols
+            for name in column_work_types(col)
+        ],
         "area_column": (area_col or {}).get("name"),
         "column_titles": [c.get("name") for c in columns],
     }
@@ -749,9 +869,12 @@ def parse_work_report_detail_rows(
     fact_hints: list[str],
 ) -> list[dict[str, Any]]:
     """Листья дерева regionRows: путь, агрофирма, метка (поле/задание), га."""
-    fact_col = _pick_fact_column(columns, fact_hints)
-    if not fact_col:
+    fact_cols = matching_fact_columns(columns, fact_hints)
+    if not fact_cols:
         return []
+
+    def _detail_ha(row: dict) -> float:
+        return sum(_row_metric_ha(row, col) for col in fact_cols)
 
     display_aliases = _display_name_aliases(firm_names)
     out: list[dict[str, Any]] = []
@@ -772,7 +895,7 @@ def parse_work_report_detail_rows(
             )
             firm = matched or firm_ctx
             path_new = path + [name]
-            fact = _row_metric_ha(row, fact_col)
+            fact = _detail_ha(row)
 
             if depth == 0 and matched and children:
                 for sub in children:
@@ -783,7 +906,7 @@ def parse_work_report_detail_rows(
                     # лист — не выводим его здесь, иначе строка задваивается.
                     if not (sub.get("children") or []):
                         continue
-                    sub_ha = _row_metric_ha(sub, fact_col)
+                    sub_ha = _detail_ha(sub)
                     if sub_ha > 0:
                         out.append({
                             "firm": matched,

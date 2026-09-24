@@ -644,6 +644,36 @@ def is_skip_crop(crop_name: str) -> bool:
     return False
 
 
+_FIELD_CROP_BY_YEAR: dict[int, dict[int, str]] = {}
+
+
+def _remember_field_crops_by_year(history_by_year: dict, crops_map: dict) -> None:
+    """field_id → год history → культура. Для дискования берётся сезон задания."""
+    global _FIELD_CROP_BY_YEAR
+    out: dict[int, dict[int, str]] = {}
+    for year, items in (history_by_year or {}).items():
+        try:
+            year_i = int(year)
+        except (TypeError, ValueError):
+            continue
+        for hi in items or []:
+            if not hi.get("active"):
+                continue
+            fid, cid = hi.get("field_id"), hi.get("crop_id")
+            if not fid or not cid:
+                continue
+            try:
+                fid_i = int(fid)
+                cid_i = int(cid)
+            except (TypeError, ValueError):
+                continue
+            name = str(crops_map.get(cid_i) or crops_map.get(cid) or "").strip()
+            if not name or name in SKIP_CROPS:
+                continue
+            out.setdefault(fid_i, {})[year_i] = name
+    _FIELD_CROP_BY_YEAR = out
+
+
 def _harvest_crop_excluded(firm: str, crop: str) -> bool:
     if crop in HARVEST_VEG_CROPS:
         return True
@@ -1374,6 +1404,7 @@ def load_reference_data() -> tuple[  # noqa: C901
         priority_year=season_year,
         skip_crops=SKIP_CROPS,
     )
+    _remember_field_crops_by_year(history_by_year, crops_map)
     # 5.0 Уборка — культура как в 10_main (history year=TODAY.year + силос по Скашиванию).
     print(f"  Строим field_to_crop_harvest (уборка, year={TODAY.year})...")
     field_to_crop_harvest = _build_field_to_crop_harvest(
@@ -2299,6 +2330,18 @@ def collect_work_data(
             return crop_
 
         def _crop_for_task_field(tid_: int, fid_i_: int, default: str = "") -> str:
+            if group_name == DISK_GROUP_NAME:
+                try:
+                    season_year = int(task_season.get(tid_) or 0) or None
+                except (TypeError, ValueError):
+                    season_year = None
+                named = crop_for_disk_field(
+                    _FIELD_CROP_BY_YEAR.get(int(fid_i_), {}), season_year,
+                )
+                if named:
+                    return named
+                fallback = active_crop_map.get(fid_i_, default)
+                return "" if fallback == "Зябь" else (fallback or default)
             # Уборка 5.0 / вспашка / дискование / посев — культура только с поля.
             if group_name in {
                 HARVEST_GROUP_NAME,
@@ -2496,6 +2539,8 @@ def collect_work_data(
                         continue
                 else:
                     crop = crop_raw or "Не определена"
+                    if group_name == DISK_GROUP_NAME and not crop_raw:
+                        crop = ""
                     if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
                         continue
                     if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
@@ -2575,6 +2620,8 @@ def collect_work_data(
                         continue
                 else:
                     crop = crop_raw or "Не определена"
+                    if group_name == DISK_GROUP_NAME and not crop_raw:
+                        crop = ""
                     if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
                         continue
                     if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
