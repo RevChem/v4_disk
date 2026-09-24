@@ -1252,6 +1252,7 @@ def build_field_to_crop_general(
     history_by_year: dict[int, list[dict]],
     priority_year: int,
     skip_crops: set | frozenset | None = None,
+    newest_year_wins: bool = False,
 ) -> dict[int, str]:
     """
     Общая мапа культур (МУ / опрыскивание / уборка): сумма лет history.
@@ -1261,13 +1262,19 @@ def build_field_to_crop_general(
     Исключение: «Рапс озимый» и «Пшеница озимая» относятся к сезону priority_year
     (например 2027) — записи history_items этих культур за priority_year-1
     (например 2026) полностью игнорируются.
+
+    newest_year_wins: для внесения МУ. Задание сезона 2027 ссылается на history
+    этого года (пшеница / соя / картофель). Активный «Рапс яровой» за 2026 на том
+    же поле — прошлая культура и не должен оставаться из‑за запрета затирания.
+    Годы идут по возрастанию, более новый заменяет более старый.
     """
     skip = set(skip_crops or ())
     field_to_crop: dict[int, str] = {}
     years = sorted(history_by_year.keys())
-    # Если передан сезон (year+1) — сначала календарный год отчёта, потом сезон.
-    if priority_year in years and (priority_year - 1) in years:
-        years = [priority_year - 1, priority_year, *[y for y in years if y not in (priority_year - 1, priority_year)]]
+    if not newest_year_wins:
+        # Если передан сезон (year+1) — сначала календарный год отчёта, потом сезон.
+        if priority_year in years and (priority_year - 1) in years:
+            years = [priority_year - 1, priority_year, *[y for y in years if y not in (priority_year - 1, priority_year)]]
     _winter_excluded = 0
     _winter_kept = 0
     for crop_year in years:
@@ -1285,17 +1292,22 @@ def build_field_to_crop_general(
             name = str(crop_map.get(cid_i) or crop_map.get(cid) or "").strip()
             if not name or name in skip:
                 continue
-            if _is_winter_rape_or_wheat(name) and crop_year != priority_year:
+            if (
+                not newest_year_wins
+                and _is_winter_rape_or_wheat(name)
+                and crop_year != priority_year
+            ):
                 _winter_excluded += 1
                 continue
             if _is_winter_rape_or_wheat(name):
                 _winter_kept += 1
-            if fid_i in field_to_crop:
+            if fid_i in field_to_crop and not newest_year_wins:
                 continue
             field_to_crop[fid_i] = name
     print(
         f"    [озимые рапс/пшеница] исключено записей за {priority_year - 1}: "
         f"{_winter_excluded}, учтено за {priority_year}: {_winter_kept}"
+        + (" (для МУ побеждает более новый год history)" if newest_year_wins else "")
     )
     return field_to_crop
 

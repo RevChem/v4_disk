@@ -228,7 +228,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
     )
     ws["A1"].font = Font(bold=True, size=11)
 
-    headers = ["Операция", "Сводки", "1, га", "2, га", "3+", "Max diff", "Статус"]
+    headers = ["Операция", "Сводки", "1, га", "2, га", "3+", "Cropwise, га", "Max diff", "Статус"]
     hr = 3
     for ci, h in enumerate(headers, 1):
         ws.cell(row=hr, column=ci, value=h)
@@ -254,6 +254,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
                 totals.get("1", ""),
                 totals.get("2", ""),
                 "; ".join(canon_vals) if canon_vals else "",
+                item.get("cropwise_ha", ""),
                 item.get("max_diff_ha", ""),
                 item.get("status"),
             ],
@@ -295,7 +296,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
     ws.cell(row=r, column=1, value="Детализация по культурам (только DIFF, сумма по всем АФ)")
     ws.cell(row=r, column=1).font = FONT_BOLD
     r += 1
-    crop_headers = ["Операция", "Культура", "Значения по сводкам", "Max diff"]
+    crop_headers = ["Операция", "Культура", "Значения по сводкам", "Cropwise, га", "Max diff"]
     for ci, h in enumerate(crop_headers, 1):
         ws.cell(row=r, column=ci, value=h)
     _style_header_row(ws, r, len(crop_headers))
@@ -313,6 +314,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
                     item.get("display_name") or item.get("group_name"),
                     cr.get("crop"),
                     val_str,
+                    cr.get("cropwise_ha", ""),
                     cr.get("max_diff_ha"),
                 ],
                 fill=FILL_BAD,
@@ -329,6 +331,7 @@ def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
                         "",
                         f"  └ {fr.get('firm')}",
                         fval_str,
+                        fr.get("cropwise_ha", ""),
                         fr.get("max_diff_ha"),
                     ],
                     fill=FILL_BAD,

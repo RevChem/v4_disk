@@ -69,3 +69,49 @@ def test_store_writes_tsv_without_touching_operations() -> None:
             os.environ.pop("PROVERKA_TASK_FACTS_DIR", None)
     assert meta["groups"]["1.1 Внесение минеральных удобрений"]["consistent"]
     assert operations["1.1 Внесение минеральных удобрений"]["area_today_by_firm"]["А"] == 12.5
+
+
+def test_dedupe_collapses_same_task_across_reports() -> None:
+    rows = []
+    for report_id, crop in (("1", "Рапс яровой"), ("10", "Рапс яровой"), ("14", "")):
+        rows.append({
+            "report_id": report_id,
+            "group": "5.0 Уборка",
+            "date": "2026-09-24",
+            "firm": "АФ Чистопольская",
+            "crop": crop,
+            "field_id": 1122,
+            "field": "",
+            "task_id": 457471,
+            "machine_id": 653,
+            "machine": "",
+            "ha": 10.71,
+        })
+        rows.append({
+            "report_id": report_id,
+            "group": "5.0 Уборка",
+            "date": "2026-09-24",
+            "firm": "АФ Чистопольская",
+            "crop": crop,
+            "field_id": 7264,
+            "task_id": 457471,
+            "machine_id": 653,
+            "ha": 0.0,
+        })
+    # другое поле того же задания остаётся отдельной строкой
+    rows.append({
+        "report_id": "10",
+        "group": "5.0 Уборка",
+        "date": "2026-09-24",
+        "firm": "АФ Чистопольская",
+        "crop": "Рапс яровой",
+        "field_id": 200,
+        "task_id": 458023,
+        "machine_id": 1,
+        "ha": 9.02,
+    })
+    out = tf.dedupe_facts(rows)
+    assert [(r["task_id"], r["field_id"], r["ha"], r["crop"]) for r in out] == [
+        (457471, 1122, 10.71, "Рапс яровой"),
+        (458023, 200, 9.02, "Рапс яровой"),
+    ]

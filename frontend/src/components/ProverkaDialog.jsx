@@ -48,12 +48,53 @@ function formatHa(value) {
   return Number.isFinite(n) ? n.toFixed(2) : String(value);
 }
 
+function cropwiseApart(cropwiseHa, values) {
+  if (cropwiseHa == null || cropwiseHa === "") return false;
+  const cw = Number(cropwiseHa);
+  if (!Number.isFinite(cw)) return false;
+  const nums = Object.values(values || {})
+    .map(Number)
+    .filter((n) => Number.isFinite(n));
+  if (!nums.length) return false;
+  const closest = Math.min(...nums.map((n) => Math.abs(n - cw)));
+  return closest >= DIFF_MIN_HA;
+}
+
+function cropwiseIndex(summaryRows) {
+  const byOp = new Map();
+  for (const row of summaryRows || []) {
+    if (!row?.operation) continue;
+    let slot = byOp.get(row.operation);
+    if (!slot) {
+      slot = { total: null, crops: new Map() };
+      byOp.set(row.operation, slot);
+    }
+    if (row.is_crop_row) {
+      if (!slot.crops.has(row.crop)) {
+        const firms = new Map();
+        for (const fr of row.crop_firms || []) {
+          if (fr?.firm) firms.set(fr.firm, fr.cropwise_ha);
+        }
+        slot.crops.set(row.crop, { ha: row.cropwise_ha, firms });
+      }
+      continue;
+    }
+    if (slot.total == null && row.cropwise_ha != null) slot.total = row.cropwise_ha;
+  }
+  return byOp;
+}
+
+function pickCropwise(primary, fallback) {
+  if (primary != null && primary !== "") return primary;
+  return fallback ?? null;
+}
+
 function cropKey(groupName, cropName) {
   return `${groupName}\0${cropName}`;
 }
 
-function CrossCheckStatusChips({ row }) {
-  const cropDiff = (row.crops || []).some((c) => c.status === "DIFF");
+function CrossCheckStatusChips({ row, cropwiseAlert }) {
+  const cropDiff = cropwiseAlert || (row.crops || []).some((c) => c.status === "DIFF");
   if (row.status === "partial") {
     return <Chip size="small" color="default" label="partial" />;
   }
@@ -254,15 +295,55 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
     [crossCheckRows]
   );
 
+  const cropwiseByOp = useMemo(
+    () => cropwiseIndex(job?.summary_rows),
+    [job?.summary_rows]
+  );
+
+  const cropwiseFor = useCallback(
+    (groupName, cropName, firmName, primary) => {
+      const slot = cropwiseByOp.get(groupName);
+      if (firmName) {
+        return pickCropwise(primary, slot?.crops.get(cropName)?.firms.get(firmName));
+      }
+      if (cropName) {
+        return pickCropwise(primary, slot?.crops.get(cropName)?.ha);
+      }
+      return pickCropwise(primary, slot?.total);
+    },
+    [cropwiseByOp]
+  );
+
+  const hasCropwiseColumn = useMemo(() => {
+    for (const row of crossCheckRows) {
+      if (cropwiseFor(row.group_name, null, null, row.cropwise_ha) != null) return true;
+      for (const cr of row.crops || []) {
+        if (cropwiseFor(row.group_name, cr.crop, null, cr.cropwise_ha) != null) return true;
+      }
+    }
+    return false;
+  }, [crossCheckRows, cropwiseFor]);
+
   const crossCheckTableRows = useMemo(() => {
     const out = [];
     for (const row of crossCheckRows) {
       out.push({ kind: "op", row });
-      const crops = (row.crops || []).filter((c) => showAllCrops || c.status === "DIFF");
+      const crops = (row.crops || []).filter(
+        (c) =>
+          showAllCrops ||
+          c.status === "DIFF" ||
+          cropwiseApart(cropwiseFor(row.group_name, c.crop, null, c.cropwise_ha), c.totals)
+      );
       for (const cr of crops) {
         const key = cropKey(row.group_name, cr.crop);
         const firmRows = (cr.firms || []).filter(
-          (fr) => showAllCrops || (fr.max_diff_ha || 0) >= DIFF_MIN_HA
+          (fr) =>
+            showAllCrops ||
+            (fr.max_diff_ha || 0) >= DIFF_MIN_HA ||
+            cropwiseApart(
+              cropwiseFor(row.group_name, cr.crop, fr.firm, fr.cropwise_ha),
+              fr.values
+            )
         );
         out.push({
           kind: "crop",
@@ -280,7 +361,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
       }
     }
     return out;
-  }, [crossCheckRows, showAllCrops, expandedCropKeys]);
+  }, [crossCheckRows, showAllCrops, expandedCropKeys, cropwiseFor]);
 
   function toggleCropFirms(key) {
     setExpandedCropKeys((prev) => {
@@ -478,8 +559,11 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
               </Stack>
               {hasCropBreakdown && (
                 <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
-                  Под операцией — сумма за смену по культуре (все АФ). Нажмите ▶ у культуры, чтобы
-                  развернуть расхождения по агрофирмам.
+                  Под операцией — сумма за смену по культуре (все АФ).
+                  {hasCropwiseColumn
+                    ? " Колонка Cropwise — факт UI по этой культуре, одна цифра на всех."
+                    : ""}{" "}
+                  Нажмите ▶ у культуры, чтобы развернуть расхождения по агрофирмам.
                 </Typography>
               )}
               <Table size="small">
@@ -492,6 +576,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                         {rid}
                       </TableCell>
                     ))}
+                    {hasCropwiseColumn && (
+                      <TableCell align="right">Cropwise</TableCell>
+                    )}
                     <TableCell align="right">Max diff</TableCell>
                     <TableCell>Статус</TableCell>
                   </TableRow>
@@ -511,9 +598,38 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                               {formatHa(row.totals?.[rid])}
                             </TableCell>
                           ))}
+                          {hasCropwiseColumn && (
+                            <TableCell
+                              align="right"
+                              sx={
+                                cropwiseApart(
+                                  cropwiseFor(row.group_name, null, null, row.cropwise_ha),
+                                  row.totals
+                                )
+                                  ? { color: "error.main", fontWeight: 600 }
+                                  : undefined
+                              }
+                            >
+                              {formatHa(cropwiseFor(row.group_name, null, null, row.cropwise_ha))}
+                            </TableCell>
+                          )}
                           <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
                           <TableCell>
-                            <CrossCheckStatusChips row={row} />
+                            <CrossCheckStatusChips
+                              row={row}
+                              cropwiseAlert={
+                                cropwiseApart(
+                                  cropwiseFor(row.group_name, null, null, row.cropwise_ha),
+                                  row.totals
+                                ) ||
+                                (row.crops || []).some((c) =>
+                                  cropwiseApart(
+                                    cropwiseFor(row.group_name, c.crop, null, c.cropwise_ha),
+                                    c.totals
+                                  )
+                                )
+                              }
+                            />
                           </TableCell>
                         </TableRow>
                       );
@@ -521,11 +637,16 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                     if (item.kind === "crop") {
                       const { op, crop: cr, key, expandable, firmCount } = item;
                       const expanded = expandedCropKeys.has(key);
+                      const cwApart = cropwiseApart(
+                        cropwiseFor(op.group_name, cr.crop, null, cr.cropwise_ha),
+                        cr.totals
+                      );
                       return (
                         <TableRow
                           key={`crop-${key}`}
                           sx={{
-                            bgcolor: cr.status === "DIFF" ? "action.selected" : "action.hover",
+                            bgcolor:
+                              cr.status === "DIFF" || cwApart ? "action.selected" : "action.hover",
                           }}
                         >
                           <TableCell sx={{ pl: 3 }}>
@@ -566,13 +687,33 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                               {formatHa(cr.totals?.[rid])}
                             </TableCell>
                           ))}
+                          {hasCropwiseColumn && (
+                            <TableCell
+                              align="right"
+                              sx={
+                                cropwiseApart(
+                                  cropwiseFor(op.group_name, cr.crop, null, cr.cropwise_ha),
+                                  cr.totals
+                                )
+                                  ? { color: "error.main", fontWeight: 600 }
+                                  : undefined
+                              }
+                            >
+                              {formatHa(cropwiseFor(op.group_name, cr.crop, null, cr.cropwise_ha))}
+                            </TableCell>
+                          )}
                           <TableCell align="right">{formatHa(cr.max_diff_ha)}</TableCell>
                           <TableCell>
-                            <Chip
-                              size="small"
-                              color={cr.status === "DIFF" ? "error" : "success"}
-                              label={cr.status}
-                            />
+                            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                              <Chip
+                                size="small"
+                                color={cr.status === "DIFF" ? "error" : "success"}
+                                label={cr.status}
+                              />
+                              {cwApart && (
+                                <Chip size="small" color="warning" variant="outlined" label="Cropwise" />
+                              )}
+                            </Stack>
                           </TableCell>
                         </TableRow>
                       );
@@ -591,6 +732,23 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                             <Typography variant="caption">{formatHa(fr.values?.[rid])}</Typography>
                           </TableCell>
                         ))}
+                        {hasCropwiseColumn && (
+                          <TableCell
+                            align="right"
+                            sx={
+                              cropwiseApart(
+                                cropwiseFor(op.group_name, cr.crop, fr.firm, fr.cropwise_ha),
+                                fr.values
+                              )
+                                ? { color: "error.main" }
+                                : undefined
+                            }
+                          >
+                            <Typography variant="caption">
+                              {formatHa(cropwiseFor(op.group_name, cr.crop, fr.firm, fr.cropwise_ha))}
+                            </Typography>
+                          </TableCell>
+                        )}
                         <TableCell align="right">
                           <Typography variant="caption">{formatHa(fr.max_diff_ha)}</Typography>
                         </TableCell>

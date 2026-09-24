@@ -1389,7 +1389,9 @@ def load_reference_data() -> tuple[  # noqa: C901
     )
     field_to_crop_report3: dict[int, str] = {}
     report3_history_years = FERT_SEASON_YEARS or [TODAY.year]
-    for hy in report3_history_years:
+    # Более новый сезон заменяет прошлый год: «Рапс яровой» 2026 не должен
+    # перекрывать пшеницу / сою / картофель history 2027 на том же поле.
+    for hy in sorted(int(y) for y in report3_history_years):
         for hi in history_by_year.get(hy, []):
             fid = hi.get("field_id")
             crop_id = hi.get("crop_id")
@@ -1693,9 +1695,11 @@ async def fetch_task_crop_via_agro_operation(
     task_ids: list[int],
     headers: dict,
     history_item_to_crop: dict[int, str],
-) -> dict[int, str]:
+) -> tuple[dict[int, str], dict[tuple[int, int], str]]:
     """
     Культура MachineTask через AgroOperation -> HistoryItem (точнее, чем поле+дата).
+    Второй словарь — (task_id, field_id) → культура: на одном задании бывают
+    пшеница, соя и картофель, и одна культура на всё задание их смешивает.
     Сезон озимых фильтруется отдельно в `_crop_for_task_field` по MachineTask.season.
     """
     if not task_ids:
@@ -1720,13 +1724,19 @@ async def fetch_task_crop_via_agro_operation(
             client, BASE_URL, "agro_operations", all_agro_op_ids, semaphore,
         )
 
-    agro_op_to_history: dict[int, int] = {
-        int(ao["id"]): int(ao["history_item_id"])
-        for ao in agro_ops
-        if ao.get("id") is not None and ao.get("history_item_id") is not None
-    }
+    agro_op_to_history: dict[int, int] = {}
+    agro_op_to_field: dict[int, int] = {}
+    for ao in agro_ops:
+        if ao.get("id") is None:
+            continue
+        aoid = int(ao["id"])
+        if ao.get("history_item_id") is not None:
+            agro_op_to_history[aoid] = int(ao["history_item_id"])
+        if ao.get("field_id") is not None:
+            agro_op_to_field[aoid] = int(ao["field_id"])
 
     task_crop: dict[int, str] = {}
+    task_field_crop: dict[tuple[int, int], str] = {}
     for tid, aoids in task_to_agro_ops.items():
         crops_found: set[str] = set()
         for aoid in aoids:
@@ -1734,12 +1744,16 @@ async def fetch_task_crop_via_agro_operation(
             if hi_id is None:
                 continue
             crop = history_item_to_crop.get(hi_id)
-            if crop:
-                crops_found.add(crop)
+            if not crop:
+                continue
+            crops_found.add(crop)
+            fid = agro_op_to_field.get(aoid)
+            if fid is not None:
+                task_field_crop[(int(tid), fid)] = crop
         if len(crops_found) == 1:
             task_crop[tid] = next(iter(crops_found))
 
-    return task_crop
+    return task_crop, task_field_crop
 
 # =============================================================================
 # СБОР ДАННЫХ
@@ -2218,6 +2232,7 @@ def collect_work_data(
             for t in all_tasks_for_mtfmi
         }
         task_crop_via_operation: dict[int, str] = {}
+        task_field_crop: dict[tuple[int, int], str] = {}
         # Уборка 5.0 / вспашка / дискование / посев — культура только с поля (без AgroOperation).
         # Диск: мапа general (2026+2027), иначе AgroOperation часто тянет только season year+1.
         if (
@@ -2232,7 +2247,7 @@ def collect_work_data(
                 VEG_SEEDING_GROUP_NAME,
             }
         ):
-            task_crop_via_operation = asyncio.run(
+            task_crop_via_operation, task_field_crop = asyncio.run(
                 fetch_task_crop_via_agro_operation(task_ids, headers, history_item_to_crop)
             )
             print(
@@ -2294,6 +2309,11 @@ def collect_work_data(
                 VEG_SEEDING_GROUP_NAME,
             }:
                 return active_crop_map.get(fid_i_, default)
+            # Сначала культура агрооперации этого поля: на одном задании
+            # пшеница, соя и картофель не должны схлопываться в одну культуру.
+            field_crop = task_field_crop.get((int(tid_), int(fid_i_)))
+            if field_crop:
+                return _apply_winter_season_filter(field_crop, tid_, default)
             crop = task_crop_via_operation.get(tid_)
             if crop:
                 return _apply_winter_season_filter(crop, tid_, default)

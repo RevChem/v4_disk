@@ -188,3 +188,82 @@ def test_spray_crop_rows_when_two_peers_have_breakdown():
     row = next(r for r in cc["operations"] if r["group_name"] == "3.1 Опрыскивание")
     rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
     assert rapeseed["status"] == "DIFF"
+
+
+def test_cross_check_crop_row_carries_one_cropwise_figure():
+    batch = {
+        "reports": {
+            "1": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 60.0, "АФ Б": 40.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 40.0, "АФ Б": 10.0},
+                            },
+                        },
+                    },
+                },
+                "operation_comparisons": {
+                    "4.0 Посев": {
+                        "comparison": {"cropwise_fact_total_ha": 90.0},
+                        "crop_comparisons": [
+                            {
+                                "crop": "Рапс яровой",
+                                "cropwise_ha": 35.0,
+                                "firms": [
+                                    {"firm": "АФ А", "cropwise_ha": 30.0},
+                                    {"firm": "АФ Б", "cropwise_ha": 5.0},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+            "2": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 60.0, "АФ Б": 40.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 40.0, "АФ Б": 10.0},
+                            },
+                        },
+                    },
+                },
+                "operation_comparisons": {
+                    "4.0 Посев": {
+                        "comparison": {"cropwise_fact_total_ha": 1.0},
+                        "crop_comparisons": [
+                            {"crop": "Рапс яровой", "cropwise_ha": 1.0, "firms": []},
+                        ],
+                    },
+                },
+            },
+            "5": {
+                "svodka": {
+                    "operations": {
+                        "4.0 Посев": {
+                            "total_ha": 100.0,
+                            "area_today_by_firm": {"АФ А": 55.0, "АФ Б": 45.0},
+                            "area_today_by_firm_crop": {
+                                "Рапс яровой": {"АФ А": 45.0, "АФ Б": 10.0},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    cc = build_cross_check(batch)
+    row = next(r for r in cc["operations"] if r["group_name"] == "4.0 Посев")
+    assert row["status"] == "OK"
+    assert row["cropwise_ha"] == 90.0
+    rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
+    assert rapeseed["status"] == "DIFF"
+    assert rapeseed["cropwise_ha"] == 35.0
+    by_firm = {fr["firm"]: fr["cropwise_ha"] for fr in rapeseed["firms"]}
+    assert by_firm["АФ А"] == 30.0
+    assert by_firm["АФ Б"] == 5.0

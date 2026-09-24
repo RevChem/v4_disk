@@ -841,6 +841,9 @@ field_to_fg:    dict[int, int]   = {}
 fg_to_folder:   dict[int, int]   = {}
 folder_to_firm: dict[int, str]   = {}
 field_to_crop:  dict[int, str]   = {}
+# Культура внесения МУ: history более нового сезона заменяет прошлый год
+# (иначе активный «Рапс яровой» 2026 перекрывает пшеницу/сою/картофель 2027).
+fert_field_to_crop: dict[int, str] = {}
 field_area_map: dict[int, float] = {}
 field_name_map: dict[int, str]   = {}  # field_id → название поля
 field_id_resolved_firm: dict[int, str] = {}
@@ -1043,6 +1046,40 @@ def load_crop_field_ids(report_year: int) -> set[int]:
     return valid_field_ids
 
 
+def _build_fert_field_to_crop(years: list[int]) -> None:
+    """Культура 1.1 — history более нового сезона поверх прошлого года."""
+    global fert_field_to_crop, crop_map
+    if not years:
+        fert_field_to_crop = {}
+        return
+    if not crop_map:
+        crops = get_all_page("crops")
+        crop_map = {c["id"]: c.get("name") or c.get("title", "") for c in crops}
+    history_by_year: dict[int, list[dict]] = {}
+    for crop_year in years:
+        history_by_year[int(crop_year)] = get_all_from_id(
+            "history_items", {"year": str(crop_year)},
+        )
+    fert_field_to_crop = build_field_to_crop_general(
+        crop_map={int(k): v for k, v in crop_map.items()},
+        history_by_year=history_by_year,
+        priority_year=max(int(y) for y in years),
+        skip_crops=SKIP_CROPS,
+        newest_year_wins=True,
+    )
+    print(
+        f"    field_to_crop для 1.1 (сезон {max(years)} заменяет прошлый): "
+        f"{len(fert_field_to_crop)} полей"
+    )
+
+
+def fert_crop_name(fid: int) -> str:
+    name = fert_field_to_crop.get(int(fid))
+    if name:
+        return name
+    return str(field_to_crop.get(int(fid)) or "")
+
+
 def load_reference_data() -> None:
     global crop_map
     global field_to_fg, fg_to_folder, folder_to_firm
@@ -1160,8 +1197,19 @@ def load_reference_data() -> None:
         print("    Все активные поля покрыты agro_operations — history_items/crops не запрашивались.")
     print(f"    Итого field_to_crop: {len(field_to_crop)} полей")
 
-    # Фильтр полей для 1.1 — как 3_main_real (active history_items года отчёта).
-    crop_field_ids = load_crop_field_ids(REPORT_DATE.year)
+    # Фильтр полей для 1.1 — active history_items сезонов группы (2026+2027),
+    # не только календарный год отчёта: поле с культурой лишь в 2027 иначе выпадает.
+    fert_years = [
+        int(y)
+        for y in (
+            resolve_group_season_config(WORK_TYPE_NAME, REPORT_DATE).get("history_years")
+            or [REPORT_DATE.year, REPORT_DATE.year + 1]
+        )
+    ]
+    crop_field_ids = set()
+    for fert_year in fert_years:
+        crop_field_ids |= load_crop_field_ids(fert_year)
+    _build_fert_field_to_crop(fert_years)
 
     _resolve_fixed_fert_ids()
 
@@ -1446,7 +1494,7 @@ async def fetch_fertilizer_11_mtfmi(
                         (WORK_TYPE_NAME, firm, mid),
                         group=WORK_TYPE_NAME,
                         firm=firm,
-                        crop=str(field_to_crop.get(int(fid)) or ""),
+                        crop=fert_crop_name(int(fid)),
                         field_id=int(fid),
                         field=str(field_name_map.get(int(fid)) or ""),
                         task_id=int(t["id"]),
@@ -1523,7 +1571,7 @@ async def fetch_fertilizer_11_mtfmi(
     for firm in AGROFIRMS:
         fact_by_crop: dict[str, float] = defaultdict(float)
         for fid, cov in season_field_cov[firm].items():
-            crop = field_to_crop.get(fid)
+            crop = fert_crop_name(fid)
             if crop:
                 fact_by_crop[crop] += cov
         fact_total[firm] = {c: round(v, 4) for c, v in fact_by_crop.items()}
@@ -1553,7 +1601,7 @@ async def fetch_fertilizer_11_mtfmi(
             if fid_cov <= 0 or get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
-            crop = field_to_crop.get(fid)
+            crop = fert_crop_name(fid)
             if crop:
                 area_by_crop[crop] += fid_cov
 
@@ -1681,7 +1729,7 @@ async def fetch_fertilizer_11_mtfmi(
             field_id = op.get("field_id")
             if not field_id:
                 continue
-            crop = field_to_crop.get(field_id)
+            crop = fert_crop_name(int(field_id))
             if crop not in FERT_TABLE_CROPS:
                 continue
             firm = get_firm_for_field(field_id)
@@ -3815,7 +3863,7 @@ def write_comparison_sheet(
         diff       = round(agro_area - mtfmi_area, 2)
 
         firm  = agro_entry["firm"] if agro_entry else get_firm_for_field(fid)
-        crop  = agro_entry["crop"] if agro_entry else field_to_crop.get(fid, "")
+        crop  = agro_entry["crop"] if agro_entry else fert_crop_name(fid)
         fname = field_name_map.get(fid, f"field_{fid}")
         farea = round(field_area_map.get(fid, 0.0), 2)
         ops_list = agro_entry.get("ops", []) if agro_entry else []

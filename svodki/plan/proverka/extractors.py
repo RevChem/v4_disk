@@ -267,8 +267,14 @@ def _load_field_to_crop_for_proverka(
     m: Any,
     cfg: dict,
     report_date: date,
+    *,
+    newest_year_wins: bool = False,
 ) -> dict[int, str]:
-    """field_id → культура (как в сводках 1/2/3 при разбивке area_by_crop)."""
+    """field_id → культура (как в сводках 1/2/3 при разбивке area_by_crop).
+
+    newest_year_wins — внесение МУ: культура сезона задания (более новый
+    history) заменяет активную культуру прошлого года на том же поле.
+    """
     from plans import build_field_to_crop_general
 
     history_years = cfg.get("history_years") or [int(report_date.year)]
@@ -293,6 +299,7 @@ def _load_field_to_crop_for_proverka(
         history_by_year=history_by_year,
         priority_year=priority_year,
         skip_crops=skip_crops,
+        newest_year_wins=newest_year_wins,
     )
 
 
@@ -853,9 +860,14 @@ async def _extract_3(
     }
     season_filter = "+".join(str(y) for y in task_years) if task_years else None
     firm_order = list(m.AGROFIRMS.keys())
-    field_to_crop = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
+    field_to_crop = _load_field_to_crop_for_proverka(
+        m, cfg or {}, report_date, newest_year_wins=True,
+    )
+    # Порог 0.5 га здесь режет куски поля и вычитает их из культуры,
+    # хотя итог операции эти гектары уже включает (соя 0.60 га).
     per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
         tasks_today, mtfmi, field_to_firm, field_to_crop, cutoff,
+        min_item_ha=0.0,
         crop_field_ids=crop_field_ids,
     )
     crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)

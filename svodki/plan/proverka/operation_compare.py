@@ -30,6 +30,156 @@ def _crop_totals(area_by_firm: dict[str, float]) -> float:
     return round(sum(area_by_firm.values()), 2)
 
 
+def _norm_crop(name: str) -> str:
+    return " ".join(str(name or "").casefold().replace("ё", "е").split())
+
+
+def _slice_from_crop_rows(
+    crops: list[dict[str, Any]],
+    total: float | None,
+) -> dict[str, Any]:
+    crop_ha: dict[str, float] = {}
+    firm_ha: dict[str, dict[str, float]] = {}
+    norm: dict[str, str] = {}
+    for cc in crops:
+        crop = str(cc.get("crop") or "").strip()
+        if not crop:
+            continue
+        crop_ha[crop] = round(float(cc.get("cropwise_ha") or 0), 2)
+        norm[_norm_crop(crop)] = crop
+        by_firm: dict[str, float] = {}
+        for fr in cc.get("firms") or []:
+            firm = str(fr.get("firm") or "").strip()
+            if firm:
+                by_firm[firm] = round(float(fr.get("cropwise_ha") or 0), 2)
+        firm_ha[crop] = by_firm
+    return {
+        "total": None if total is None else round(float(total), 2),
+        "crops": crop_ha,
+        "firms": firm_ha,
+        "norm": norm,
+        "has_crops": bool(crop_ha),
+    }
+
+
+def _cropwise_from_operation_comparisons(
+    reports: dict[str, Any],
+    group_name: str,
+) -> dict[str, Any] | None:
+    """Факт Cropwise UI по операции из сводок 1/2 (одна цифра на культуру)."""
+    found: dict[str, Any] | None = None
+    for rid in peer_reports_for_group(group_name):
+        oc = ((reports.get(rid) or {}).get("operation_comparisons") or {}).get(group_name) or {}
+        if not isinstance(oc, dict) or not oc:
+            continue
+        crops = oc.get("crop_comparisons") or []
+        cmp_ = oc.get("comparison") or {}
+        total = cmp_.get("cropwise_fact_total_ha")
+        if total is None:
+            total = cmp_.get("cropwise_ui_ha")
+        if not crops and total is None:
+            continue
+        sl = _slice_from_crop_rows(crops, total)
+        if found is None or (sl["has_crops"] and not found["has_crops"]):
+            found = sl
+        if found["has_crops"]:
+            break
+    return found
+
+
+def _cropwise_from_thematic_report(
+    reports: dict[str, Any],
+    group_name: str,
+) -> dict[str, Any] | None:
+    """Если операцию считает одна тематическая сводка — берём её work.json."""
+    from proverka.operation_registry import canonical_cropwise_report
+
+    canon = canonical_cropwise_report(group_name)
+    if not canon or canon not in reports:
+        return None
+    spec = REPORTS.get(canon)
+    if not spec or tuple(spec.work_groups or ()) != (group_name,):
+        return None
+    result = reports[canon]
+    cmp_ = result.get("comparison") or {}
+    total = cmp_.get("cropwise_fact_total_ha")
+    if total is None:
+        total = cmp_.get("cropwise_ui_ha")
+    work = result.get("cropwise_work_report") or {}
+    body = work.get("body") if work.get("ok") else None
+    if not isinstance(body, dict) or not body.get("cropRows"):
+        if total is None:
+            return None
+        return _slice_from_crop_rows([], total)
+    firms = list((result.get("cropwise_parsed") or {}).get("fact_by_firm") or {})
+    sv_firms = list(((result.get("svodka") or {}).get("area_today_by_firm") or {}))
+    firm_names = list(dict.fromkeys([*firms, *sv_firms]))
+    from proverka.crop_compare import cropwise_area_by_firm_crop
+
+    by = cropwise_area_by_firm_crop(body, firm_names, list(spec.fact_column_hints))
+    fake = [
+        {
+            "crop": crop,
+            "cropwise_ha": round(sum(by_firm.values()), 2),
+            "firms": [{"firm": firm, "cropwise_ha": ha} for firm, ha in by_firm.items()],
+        }
+        for crop, by_firm in by.items()
+    ]
+    if total is None and fake:
+        total = round(sum(float(c["cropwise_ha"]) for c in fake), 2)
+    if not fake and total is None:
+        return None
+    return _slice_from_crop_rows(fake, total)
+
+
+def cropwise_for_cross_check(
+    reports: dict[str, Any],
+    group_name: str,
+) -> dict[str, Any] | None:
+    """Один срез Cropwise на операцию. Культуры сводок 1/2 важнее тематического отчёта."""
+    primary = _cropwise_from_operation_comparisons(reports, group_name)
+    if primary and primary["has_crops"]:
+        if primary["total"] is None:
+            primary["total"] = round(sum(primary["crops"].values()), 2)
+        return primary
+    thematic = _cropwise_from_thematic_report(reports, group_name)
+    if thematic and thematic["has_crops"]:
+        if thematic["total"] is None:
+            thematic["total"] = round(sum(thematic["crops"].values()), 2)
+        return thematic
+    if primary and primary["total"] is not None:
+        return primary
+    return thematic
+
+
+def _cropwise_crop_ha(sl: dict[str, Any] | None, crop: str) -> float | None:
+    if not sl or not sl.get("has_crops"):
+        return None
+    if crop in sl["crops"]:
+        return sl["crops"][crop]
+    key = sl["norm"].get(_norm_crop(crop))
+    if key:
+        return sl["crops"][key]
+    return 0.0
+
+
+def _cropwise_firm_ha(sl: dict[str, Any] | None, crop: str, firm: str) -> float | None:
+    if not sl or not sl.get("has_crops"):
+        return None
+    key = crop if crop in sl["firms"] else sl["norm"].get(_norm_crop(crop))
+    if not key:
+        return 0.0
+    return float((sl["firms"].get(key) or {}).get(firm, 0.0))
+
+
+def _attach_cropwise(row: dict[str, Any], sl: dict[str, Any] | None) -> None:
+    row["cropwise_ha"] = sl["total"] if sl else None
+    for cr in row.get("crops") or []:
+        cr["cropwise_ha"] = _cropwise_crop_ha(sl, cr["crop"])
+        for fr in cr.get("firms") or []:
+            fr["cropwise_ha"] = _cropwise_firm_ha(sl, cr["crop"], fr["firm"])
+
+
 def operations_from_svodka(svodka: dict[str, Any]) -> dict[str, dict[str, Any]]:
     ops = svodka.get("operations")
     if isinstance(ops, dict) and ops:
@@ -149,10 +299,11 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
                 for firm, ha in area_by_firm.items():
                     crop_by_firm.setdefault(crop, {}).setdefault(firm, {})[rid] = ha
 
+        cw = cropwise_for_cross_check(reports, group_name)
         active_peers = [rid for rid in peer_ids if rid in totals]
         if len(active_peers) < 2:
             partial += 1
-            rows.append({
+            partial_row = {
                 "group_name": group_name,
                 "display_name": display_group_name(group_name),
                 "peer_reports": peer_ids,
@@ -162,7 +313,9 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
                 "max_diff_ha": None,
                 "note": "данные не во всех сводках (сводка 1 без standalone?)",
                 "crops": [],
-            })
+            }
+            _attach_cropwise(partial_row, cw)
+            rows.append(partial_row)
             continue
 
         total_vals = [totals[r] for r in active_peers]
@@ -219,7 +372,7 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
 
         canon = next((r for r in active_peers if r not in ("1", "2")), active_peers[-1])
         spec = REPORTS.get(canon)
-        rows.append({
+        op_row = {
             "group_name": group_name,
             "display_name": display_group_name(group_name),
             "canonical_report": canon,
@@ -231,7 +384,9 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             "status": status,
             "firms": firm_rows,
             "crops": crop_rows,
-        })
+        }
+        _attach_cropwise(op_row, cw)
+        rows.append(op_row)
 
     return {
         "operations": rows,

@@ -335,7 +335,45 @@ def load_task_facts(
                 if want is not None and r["report_id"] not in want:
                     continue
                 rows.append(r)
-    return rows
+    return dedupe_facts(rows)
+
+
+def dedupe_facts(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Одна и та же работа из нескольких сводок — одна строка.
+
+    Ключ: группа, дата, фирма, задание, поле, машина и га до сотых.
+    Пустые культура, поле и машина добираются из копии, где они заполнены.
+    Га, которые в файле уже округлены до 0.00, в список не попадают.
+    """
+    best: dict[tuple, dict[str, Any]] = {}
+    order: list[tuple] = []
+    for r in rows:
+        try:
+            ha = round(float(r.get("ha") or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        if ha <= 0:
+            continue
+        key = (
+            str(r.get("group") or ""),
+            str(r.get("date") or ""),
+            str(r.get("firm") or ""),
+            r.get("task_id"),
+            r.get("field_id"),
+            r.get("machine_id"),
+            ha,
+        )
+        prev = best.get(key)
+        if prev is None:
+            item = dict(r)
+            item["ha"] = ha
+            best[key] = item
+            order.append(key)
+            continue
+        for col in ("crop", "field", "machine", "own", "season", "end"):
+            if not str(prev.get(col) or "").strip() and str(r.get(col) or "").strip():
+                prev[col] = r[col]
+    return [best[k] for k in order]
 
 
 # ─────────────────────────── фильтр / агрегаты ───────────────────────────
