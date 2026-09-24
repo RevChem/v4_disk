@@ -29,6 +29,14 @@ def _reconcile_stale_generation_jobs_on_worker_start(**kwargs) -> None:
             log.info("reports.generation.stale_jobs_reconciled", count=count)
     finally:
         db.close()
+    try:
+        from app.adapters.outbound.proverka.service import reconcile_cancelled_proverka_jobs
+
+        proverka_count = reconcile_cancelled_proverka_jobs()
+        if proverka_count:
+            log.info("proverka.stale_cancels_reconciled", count=proverka_count)
+    except Exception:
+        log.exception("proverka.stale_cancels_reconcile_failed")
 
 
 @celery_app.task(name="app.adapters.inbound.celery.tasks.run_proverka_task")

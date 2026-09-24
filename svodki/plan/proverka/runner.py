@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +36,114 @@ class ProverkaCancelled(RuntimeError):
     """Пользовательская отмена проверки."""
 
 PLAN_DIR = Path(__file__).resolve().parent.parent
+
+
+def _proverka_job_dir() -> Path | None:
+    raw = os.environ.get("PROVERKA_JOB_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
+def _cancel_file_set() -> bool:
+    job = _proverka_job_dir()
+    return job is not None and (job / "CANCEL").is_file()
+
+
+def _track_pid(pid: int) -> None:
+    job = _proverka_job_dir()
+    if job is None:
+        return
+    pids = job / "pids"
+    pids.mkdir(parents=True, exist_ok=True)
+    (pids / str(pid)).write_text("", encoding="utf-8")
+
+
+def _untrack_pid(pid: int) -> None:
+    job = _proverka_job_dir()
+    if job is None:
+        return
+    try:
+        (job / "pids" / str(pid)).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _kill_proc_group(pid: int) -> None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+        if sig == signal.SIGTERM:
+            time.sleep(0.2)
+
+
+def _sleep_cancellable(seconds: float) -> None:
+    end = time.monotonic() + max(0.0, seconds)
+    while True:
+        if _cancel_file_set():
+            raise ProverkaCancelled("cancelled")
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(0.4, left))
+
+
+def _wait_proc(proc: subprocess.Popen, *, timeout: float | None) -> int:
+    """Ждёт процесс и прерывает его, как только в каталоге задачи появился файл CANCEL."""
+    _track_pid(proc.pid)
+    started = time.monotonic()
+    try:
+        while True:
+            if _cancel_file_set():
+                _kill_proc_group(proc.pid)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise ProverkaCancelled("cancelled")
+            try:
+                return proc.wait(timeout=0.4)
+            except subprocess.TimeoutExpired:
+                if timeout is not None and time.monotonic() - started > timeout:
+                    _kill_proc_group(proc.pid)
+                    raise subprocess.TimeoutExpired(proc.args, timeout) from None
+    finally:
+        _untrack_pid(proc.pid)
+
+
+def _terminate_process_pool(pool: ProcessPoolExecutor) -> None:
+    procs = [p for p in getattr(pool, "_processes", {}).values() if p is not None]
+    for proc in procs:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and any(p.is_alive() for p in procs):
+        time.sleep(0.05)
+    for proc in procs:
+        if proc.is_alive():
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _iter_done(futures: dict, *, pool: ProcessPoolExecutor | None = None, should_stop: Callable[[], bool] | None = None):
+    """Отдаёт завершённые future и не ждёт их, если проверку уже отменили."""
+    pending = set(futures)
+    while pending:
+        if _cancel_file_set() or (should_stop is not None and should_stop()):
+            if isinstance(pool, ProcessPoolExecutor):
+                _terminate_process_pool(pool)
+            for fut in pending:
+                fut.cancel()
+            raise ProverkaCancelled("cancelled")
+        finished, pending = wait(pending, timeout=0.4, return_when=FIRST_COMPLETED)
+        yield from finished
 
 
 def _bootstrap_plan_imports(plan_dir: Path | None = None) -> None:
@@ -299,7 +413,7 @@ def _prefetch_work_json(
                     preferred,
                 )] = ("per_op", gn0)
             op_map: dict[str, dict[str, Any]] = {}
-            for fut in as_completed(futures):
+            for fut in _iter_done(futures):
                 kind, key = futures[fut]
                 if kind == "rid":
                     rid, work = fut.result()
@@ -543,7 +657,7 @@ def _wait_for_cropwise_ui(
     waits = (15, 30, 45)
     for pause in waits:
         prog(f"Cropwise UI: канарейка < {min_ha:.0f} га, пауза {pause}с…")
-        time.sleep(pause)
+        _sleep_cancellable(pause)
         work = fetch_work_report_resilient(
             cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=4.0,
             preferred_ui_session=need_session,
@@ -592,21 +706,27 @@ def _activate_svodki_api_snapshot(
         env["PYTHONUNBUFFERED"] = "1"
         plan_s = str(PLAN_DIR)
         env["PYTHONPATH"] = plan_s + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        stdout_path = out_dir / ".prefetch.stdout"
+        stderr_path = out_dir / ".prefetch.stderr"
         try:
-            proc = subprocess.run(
-                [sys.executable, str(script), str(prefetch_path)],
-                env=env,
-                cwd=str(out_dir),
-                capture_output=True,
-                text=True,
-                timeout=900,
-            )
+            with stdout_path.open("w", encoding="utf-8") as so, stderr_path.open("w", encoding="utf-8") as se:
+                proc = subprocess.Popen(
+                    [sys.executable, str(script), str(prefetch_path)],
+                    env=env,
+                    cwd=str(out_dir),
+                    stdout=so,
+                    stderr=se,
+                    start_new_session=True,
+                )
+                rc = _wait_proc(proc, timeout=900)
         except subprocess.TimeoutExpired:
             prog("Prefetch JSON: timeout — live API")
             return
-        if proc.returncode != 0 or not prefetch_path.is_file():
-            tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-            hint = tail[-1][:200] if tail else f"rc={proc.returncode}"
+        out_text = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
+        err_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
+        if rc != 0 or not prefetch_path.is_file():
+            tail = (err_text or out_text).strip().splitlines()
+            hint = tail[-1][:200] if tail else f"rc={rc}"
             prog(f"Prefetch JSON: ошибка ({hint}) — live API")
             return
     os.environ["SVODKI_PREFETCH_DATA_PATH"] = str(prefetch_path)
@@ -676,13 +796,15 @@ def _prefetch_svodka_facts(
     if workers > 1 and len(rids) > 1 and _process_pool_allowed():
         prog(f"Факты сводок: {len(rids)} параллельно ({workers} процессов)…")
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            for rid, sv in pool.map(_svodka_worker, payloads, chunksize=1):
+            futures = {pool.submit(_svodka_worker, p): p[0] for p in payloads}
+            for fut in _iter_done(futures, pool=pool):
+                rid, sv = fut.result()
                 cache[rid] = sv
     elif workers > 1 and len(rids) > 1:
         prog(f"Факты сводок: {len(rids)} параллельно ({workers} subprocess)…")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_svodka_subprocess, p): p[0] for p in payloads}
-            for fut in as_completed(futures):
+            for fut in _iter_done(futures):
                 rid, sv = fut.result()
                 cache[rid] = sv
     else:
@@ -733,14 +855,23 @@ def _run_in_subprocess(
         inp = td_path / "in.json"
         out = td_path / "out.json"
         inp.write_text(json.dumps(list(payload), ensure_ascii=False, default=str), encoding="utf-8")
-        proc = subprocess.run(
-            [sys.executable, str(helper), str(inp), str(out)],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "").strip()[-800:]
-            raise RuntimeError(f"{helper_name} failed (exit {proc.returncode}): {err}")
+        log_out = td_path / "stdout.txt"
+        log_err = td_path / "stderr.txt"
+        with log_out.open("w", encoding="utf-8") as so, log_err.open("w", encoding="utf-8") as se:
+            proc = subprocess.Popen(
+                [sys.executable, str(helper), str(inp), str(out)],
+                stdout=so,
+                stderr=se,
+                start_new_session=True,
+            )
+            rc = _wait_proc(proc, timeout=None)
+        if rc != 0:
+            err = ""
+            if log_err.is_file():
+                err = log_err.read_text(encoding="utf-8", errors="replace")
+            if not err.strip() and log_out.is_file():
+                err = log_out.read_text(encoding="utf-8", errors="replace")
+            raise RuntimeError(f"{helper_name} failed (exit {rc}): {err.strip()[-800:]}")
         rid, result = json.loads(out.read_text(encoding="utf-8"))
         return rid, result
 
@@ -960,11 +1091,7 @@ def run_proverka_batch(
         with ProcessPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_reconcile_worker, p): p[0] for p in payloads}
             done = 0
-            for fut in as_completed(futures):
-                if _check_cancelled(None):
-                    for f in futures:
-                        f.cancel()
-                    raise ProverkaCancelled("cancelled")
+            for fut in _iter_done(futures, pool=pool, should_stop=lambda: _check_cancelled(None)):
                 rid, result = fut.result()
                 done += 1
                 _store_parallel(rid, result, done, total)
@@ -973,11 +1100,7 @@ def run_proverka_batch(
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_reconcile_subprocess, p): p[0] for p in payloads}
             done = 0
-            for fut in as_completed(futures):
-                if _check_cancelled(None):
-                    for f in futures:
-                        f.cancel()
-                    raise ProverkaCancelled("cancelled")
+            for fut in _iter_done(futures, should_stop=lambda: _check_cancelled(None)):
                 rid, result = fut.result()
                 done += 1
                 _store_parallel(rid, result, done, total)

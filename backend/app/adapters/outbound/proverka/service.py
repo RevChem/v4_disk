@@ -68,13 +68,42 @@ def request_proverka_cancel(job_id: str, *, report_ids: list[str] | None = None)
         ids = sorted(set(existing) | set(ids))
     st["cancel_requested"] = True
     st["cancel_report_ids"] = ids
-    if st.get("status") == "pending" and not ids:
+    st["error"] = None
+    if not ids:
+        # Полная отмена: файл виден worker-у сразу, статус — чтобы UI отпустило
+        # кнопку, не дожидаясь, пока дочерний процесс сам заметит флаг.
+        (job_dir(job_id) / "CANCEL").write_text("1", encoding="utf-8")
         st["status"] = "cancelled"
         st["progress"] = "Отменено"
     else:
         st["progress"] = st.get("progress") or "Отмена…"
     write_job_status(job_id, st)
     return st
+
+
+def reconcile_cancelled_proverka_jobs() -> int:
+    """После рестарта worker добивает задачи, которые уже просили отменить."""
+    root = proverka_jobs_root()
+    if not root.is_dir():
+        return 0
+    updated = 0
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        st = read_job_status(child.name)
+        if not st or st.get("status") not in ("pending", "running"):
+            continue
+        ids = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
+        full_cancel = bool(st.get("cancel_requested")) and not ids
+        if not full_cancel and not (child / "CANCEL").is_file():
+            continue
+        st["status"] = "cancelled"
+        st["cancel_requested"] = True
+        st["progress"] = "Отменено"
+        st["error"] = None
+        write_job_status(child.name, st)
+        updated += 1
+    return updated
 
 
 def read_job_status(job_id: str) -> dict[str, Any] | None:
@@ -546,8 +575,9 @@ def run_job(job_id: str) -> None:
     if existing.get("status") == "cancelled":
         return
 
+    os.environ["PROVERKA_JOB_DIR"] = str(d)
     is_cancelled = make_proverka_cancel_checker(job_id)
-    if is_cancelled(None):
+    if is_cancelled(None) or (d / "CANCEL").is_file():
         write_job_status(
             job_id,
             {**existing, "job_id": job_id, "status": "cancelled", "progress": "Отменено"},
@@ -563,10 +593,27 @@ def run_job(job_id: str) -> None:
     season_overrides = dict(params.get("season_overrides") or {})
 
     def on_progress(msg: str) -> None:
+        if (d / "CANCEL").is_file():
+            raise ProverkaCancelled("cancelled")
         st = read_job_status(job_id) or {}
+        if st.get("status") == "cancelled":
+            raise ProverkaCancelled("cancelled")
+        ids = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
+        if st.get("cancel_requested") and not ids:
+            raise ProverkaCancelled("cancelled")
         st["status"] = "running"
         st["progress"] = msg
+        if (d / "CANCEL").is_file():
+            raise ProverkaCancelled("cancelled")
         write_job_status(job_id, st)
+
+    if (d / "CANCEL").is_file() or is_cancelled(None):
+        write_job_status(
+            job_id,
+            {**(read_job_status(job_id) or {}), "job_id": job_id, "status": "cancelled", "progress": "Отменено"},
+        )
+        params_path.unlink(missing_ok=True)
+        return
 
     write_job_status(
         job_id,
