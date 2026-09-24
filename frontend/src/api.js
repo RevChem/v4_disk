@@ -185,6 +185,19 @@ export async function downloadGeneratedFile(summaryDate, filename) {
   return data;
 }
 
+/** Прямая отдача: браузер начинает сохранение с первых байт, не дожидаясь всего файла в JS. */
+export function startGeneratedFileDownload(summaryDate, filename) {
+  const path = `/reports/files/${summaryDate}/${encodeURIComponent(filename)}`;
+  const base = (api.defaults.baseURL || "").replace(/\/$/, "");
+  const token = getStoredTokens().access || "";
+  const url = `${base}${path}${token ? `?access_token=${encodeURIComponent(token)}` : ""}`;
+  const iframe = document.createElement("iframe");
+  iframe.hidden = true;
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  window.setTimeout(() => iframe.remove(), 60_000);
+}
+
 export async function convertXlsxToPdf(file, summaryDate = null) {
   const form = new FormData();
   form.append("file", file);

@@ -14,7 +14,7 @@ import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
 import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 
-import { deleteSummary, downloadGeneratedFile } from "../api";
+import { deleteSummary, downloadGeneratedFile, startGeneratedFileDownload } from "../api";
 
 function formatAdded(modifiedAt, generationSeconds) {
   if (!modifiedAt) return "—";
@@ -69,18 +69,8 @@ export default function PdfSummaryPanel({
     });
   }, [files]);
 
-  async function handleDownload(filename) {
-    try {
-      const blob = await downloadGeneratedFile(summaryDate, filename);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      onError?.(String(e.message || e));
-    }
+  function handleDownload(filename) {
+    startGeneratedFileDownload(summaryDate, filename);
   }
 
   async function handleDelete(item) {

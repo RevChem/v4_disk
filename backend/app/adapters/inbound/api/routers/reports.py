@@ -224,4 +224,12 @@ def download_generated_file(
     path = folder / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
-    return FileResponse(path, media_type="application/pdf", filename=filename)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "private, no-transform",
+        },
+    )
