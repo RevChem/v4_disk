@@ -25,13 +25,17 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
 import RefreshIcon from "@mui/icons-material/Refresh";
 
-import { askTaskFacts, fetchTaskFactsOptions, queryTaskFacts } from "../api";
+import { askTaskFacts, fetchProverkaAiSettings, fetchTaskFactsOptions, queryTaskFacts } from "../api";
 
 const POPPER_PROPS = { popper: { sx: { zIndex: 1600 } } };
+const FILTERS_STORAGE_KEY = "svodki_task_facts_filters_v1";
 
 const EMPTY_FILTERS = {
   reportIds: [],
@@ -43,6 +47,50 @@ const EMPTY_FILTERS = {
   minHa: "",
   exact: false,
 };
+
+const CSV_COLUMNS = [
+  ["firm", "Фирма"],
+  ["crop", "Культура"],
+  ["field", "Поле"],
+  ["field_id", "ID поля"],
+  ["machine", "Машина"],
+  ["machine_id", "ID машины"],
+  ["task_id", "Задание"],
+  ["ha", "Га"],
+  ["own", "Свои/наёмн."],
+  ["season", "Сезон"],
+  ["end", "Окончание"],
+  ["date", "Дата"],
+  ["report_id", "Сводка"],
+  ["group", "Операция"],
+  ["task_url", "Ссылка"],
+];
+
+// Подстроки из operation_registry.py — совпадение без учёта регистра, поэтому
+// достаточно короткого ключевого слова из названия группы операций.
+const QUICK_GROUPS = [
+  { label: "МУ", value: "минеральных" },
+  { label: "Боронование", value: "боронование" },
+  { label: "Культивация", value: "культивация" },
+  { label: "Посев", value: "посев" },
+  { label: "Опрыскивание", value: "опрыскивание" },
+  { label: "Вспашка", value: "вспашка" },
+  { label: "Уборка", value: "уборка" },
+];
+
+function loadStoredFilters() {
+  try {
+    const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      filters: { ...EMPTY_FILTERS, ...(parsed.filters || {}) },
+      useLlm: parsed.useLlm !== undefined ? Boolean(parsed.useLlm) : true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function formatWhen(iso) {
   if (!iso) return "";
@@ -58,40 +106,104 @@ function formatWhen(iso) {
   }
 }
 
-export default function TaskFactsDialog({ open, onClose, summaryDate }) {
+function csvEscape(value) {
+  const s = value == null ? "" : String(value);
+  return /["; \n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function rowsToCsv(rows) {
+  const lines = [CSV_COLUMNS.map(([, label]) => csvEscape(label)).join(";")];
+  for (const r of rows) {
+    lines.push(CSV_COLUMNS.map(([key]) => csvEscape(r[key])).join(";"));
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
+}
+
+function downloadTextFile(text, filename, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export default function TaskFactsDialog({ open, onClose, summaryDate, initialJobId }) {
   const [reportDate, setReportDate] = useState(summaryDate || "");
   const [jobId, setJobId] = useState("");
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filters, setFilters] = useState(() => loadStoredFilters()?.filters || EMPTY_FILTERS);
   const [question, setQuestion] = useState("");
-  const [useLlm, setUseLlm] = useState(true);
+  const [useLlm, setUseLlm] = useState(() => loadStoredFilters()?.useLlm ?? true);
 
   const [options, setOptions] = useState(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsNote, setOptionsNote] = useState("");
 
+  const [aiKeySet, setAiKeySet] = useState(true);
+
   const [result, setResult] = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState("");
 
-  const [answer, setAnswer] = useState(null);
+  const [answerHistory, setAnswerHistory] = useState([]);
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState("");
+  const [copiedId, setCopiedId] = useState(null);
 
+  // Дата подтягивается из шапки, job_id — либо явно передан (клик «Вопросы по
+  // фактам» на карточке уже готовой проверки), либо вводится вручную.
   useEffect(() => {
-    if (open) setReportDate(summaryDate || "");
-  }, [open, summaryDate]);
+    if (!open) return;
+    setReportDate(summaryDate || "");
+    if (initialJobId) setJobId(initialJobId);
+  }, [open, summaryDate, initialJobId]);
 
   useEffect(() => {
     if (!open) {
-      setFilters(EMPTY_FILTERS);
       setQuestion("");
       setResult(null);
-      setAnswer(null);
+      setAnswerHistory([]);
       setQueryError("");
       setAskError("");
       setOptions(null);
       setOptionsNote("");
     }
+  }, [open]);
+
+  // Дата или job_id сменились — старые результаты относятся к другому
+  // контексту, показывать их дальше может ввести в заблуждение.
+  useEffect(() => {
+    setResult(null);
+    setQueryError("");
+    setAnswerHistory([]);
+    setAskError("");
+  }, [reportDate, jobId]);
+
+  // Фильтры и переключатель «модель» сохраняются между открытиями диалога.
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ filters, useLlm }));
+    } catch {
+      // localStorage может быть недоступен (приватный режим и т.п.) — не критично
+    }
+  }, [filters, useLlm]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetchProverkaAiSettings()
+      .then((data) => {
+        if (!cancelled) setAiKeySet(Boolean(data?.api_key_set));
+      })
+      .catch(() => {
+        if (!cancelled) setAiKeySet(true); // не смогли проверить — не пугаем зря
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const loadOptions = useCallback(async () => {
@@ -117,6 +229,40 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
   function setFilter(key, value) {
     setFilters((f) => ({ ...f, [key]: value }));
   }
+
+  const filtersActive = useMemo(
+    () =>
+      Boolean(
+        filters.group ||
+          filters.crop ||
+          filters.firm ||
+          filters.machine ||
+          filters.field ||
+          filters.minHa !== "" ||
+          filters.exact ||
+          (filters.reportIds && filters.reportIds.length > 0)
+      ),
+    [filters]
+  );
+
+  function handleResetFilters() {
+    setFilters(EMPTY_FILTERS);
+  }
+
+  // Сумма по уже полученным в этом открытии диалога ответам — наглядно
+  // показывает эффект от фильтрации (весь смысл фичи — экономия токенов).
+  const sessionStats = useMemo(() => {
+    let tokens = 0;
+    for (const e of answerHistory) {
+      const actual = (e.usage?.input_tokens || 0) + (e.usage?.output_tokens || 0);
+      tokens += actual || e.est_input_tokens || 0;
+    }
+    return { count: answerHistory.length, tokens };
+  }, [answerHistory]);
+
+  // Явно известно (по /task-facts/options), что фактов на эту дату/job нет —
+  // не даём кликать «в пустоту».
+  const factsUnavailable = options?.available === false;
 
   const baseFilters = useMemo(
     () => ({
@@ -150,18 +296,45 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
   }
 
   async function handleAsk() {
+    if (askLoading || !reportDate || !question.trim() || factsUnavailable) return;
     setAskLoading(true);
     setAskError("");
-    setAnswer(null);
     try {
       const data = await askTaskFacts({ ...baseFilters, question, useLlm });
-      setAnswer(data);
-      if (data.available === false) setAskError(data.detail || "Данных нет.");
+      if (data.available === false) {
+        setAskError(data.detail || "Данных нет.");
+      } else {
+        setAnswerHistory((prev) => [{ id: `${Date.now()}`, question, ts: Date.now(), ...data }, ...prev]);
+        setQuestion("");
+      }
     } catch (e) {
       setAskError(String(e.message || e));
     } finally {
       setAskLoading(false);
     }
+  }
+
+  function handleQuestionKeyDown(e) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleAsk();
+    }
+  }
+
+  async function handleCopy(entry) {
+    try {
+      await navigator.clipboard.writeText(entry.answer || "");
+      setCopiedId(entry.id);
+      setTimeout(() => setCopiedId((c) => (c === entry.id ? null : c)), 1500);
+    } catch {
+      // буфер обмена недоступен (нет разрешения/не https) — просто не подтверждаем
+    }
+  }
+
+  function handleExportCsv() {
+    if (!result?.rows?.length) return;
+    const jobPart = result.job_id ? `_${result.job_id}` : "";
+    downloadTextFile(rowsToCsv(result.rows), `task_facts_${reportDate}${jobPart}.csv`, "text/csv;charset=utf-8;");
   }
 
   const groupOptions = options?.values?.group || [];
@@ -180,6 +353,13 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
       </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2}>
+          {!aiKeySet && (
+            <Alert severity="warning">
+              Ключ DeepSeek не задан — «Спросить» вернёт таблицу без ответа модели. Задать ключ можно в меню
+              AI, в разделе «DeepSeek».
+            </Alert>
+          )}
+
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
             <TextField
               label="Дата"
@@ -224,6 +404,15 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
 
           <Divider />
 
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography variant="subtitle2" color="text.secondary">
+              Фильтры
+            </Typography>
+            <Button size="small" color="inherit" onClick={handleResetFilters} disabled={!filtersActive}>
+              Сбросить фильтры
+            </Button>
+          </Stack>
+
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
             <Autocomplete
               freeSolo
@@ -257,6 +446,22 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
               slotProps={POPPER_PROPS}
               renderInput={(params) => <TextField {...params} label="Агрофирма" />}
             />
+          </Stack>
+
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center">
+            <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5 }}>
+              Часто:
+            </Typography>
+            {QUICK_GROUPS.map((g) => (
+              <Chip
+                key={g.value}
+                size="small"
+                variant={filters.group === g.value ? "filled" : "outlined"}
+                color={filters.group === g.value ? "primary" : "default"}
+                label={g.label}
+                onClick={() => setFilter("group", filters.group === g.value ? "" : g.value)}
+              />
+            ))}
           </Stack>
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
@@ -313,10 +518,26 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
             )}
           />
 
-          <Stack direction="row" spacing={1}>
-            <Button variant="outlined" onClick={handleQuery} disabled={queryLoading || !reportDate}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Button
+              variant="outlined"
+              onClick={handleQuery}
+              disabled={queryLoading || !reportDate || factsUnavailable}
+            >
               {queryLoading ? "Загрузка…" : "Показать список (0 токенов)"}
             </Button>
+            {result?.rows?.length > 0 && (
+              <Tooltip title="Скачать отфильтрованную таблицу в CSV">
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<DownloadOutlinedIcon fontSize="small" />}
+                  onClick={handleExportCsv}
+                >
+                  CSV
+                </Button>
+              </Tooltip>
+            )}
           </Stack>
 
           {queryError && <Alert severity="warning">{queryError}</Alert>}
@@ -384,12 +605,14 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
             fullWidth
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={handleQuestionKeyDown}
+            helperText="Ctrl+Enter — отправить"
           />
           <Stack direction="row" spacing={1.5} alignItems="center">
             <Button
               variant="contained"
               onClick={handleAsk}
-              disabled={askLoading || !reportDate || !question.trim()}
+              disabled={askLoading || !reportDate || !question.trim() || factsUnavailable}
             >
               {askLoading ? "Спрашиваю…" : "Спросить"}
             </Button>
@@ -399,38 +622,65 @@ export default function TaskFactsDialog({ open, onClose, summaryDate }) {
               }
               label="Использовать модель (иначе — просто таблица)"
             />
+            {answerHistory.length > 0 && (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: "auto" }}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`за сессию: ${sessionStats.count} · ~${sessionStats.tokens} ток.`}
+                />
+                <Button size="small" color="inherit" onClick={() => setAnswerHistory([])}>
+                  Очистить историю
+                </Button>
+              </Stack>
+            )}
           </Stack>
 
           {askError && <Alert severity="warning">{askError}</Alert>}
-          {answer && (
-            <Box sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                {answer.answer}
+
+          {answerHistory.map((entry) => (
+            <Box key={entry.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontStyle: "italic" }}>
+                  {entry.question} · {formatWhen(new Date(entry.ts).toISOString())}
+                </Typography>
+                <Tooltip title={copiedId === entry.id ? "Скопировано" : "Скопировать ответ"}>
+                  <IconButton size="small" onClick={() => handleCopy(entry)}>
+                    {copiedId === entry.id ? (
+                      <CheckRoundedIcon fontSize="small" color="success" />
+                    ) : (
+                      <ContentCopyOutlinedIcon fontSize="small" />
+                    )}
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>
+                {entry.answer}
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
                 <Chip
                   size="small"
-                  color={answer.llm_used ? "primary" : "default"}
-                  label={answer.llm_used ? `модель: ${answer.model}` : "без модели"}
+                  color={entry.llm_used ? "primary" : "default"}
+                  label={entry.llm_used ? `модель: ${entry.model}` : "без модели"}
                 />
-                <Chip size="small" variant="outlined" label={`строк ${answer.rows_sent}/${answer.rows_total}`} />
-                <Chip size="small" variant="outlined" label={`${answer.ha_total} га`} />
-                {answer.est_input_tokens != null && (
-                  <Chip size="small" variant="outlined" label={`оценка: ≈${answer.est_input_tokens} вх. токенов`} />
+                <Chip size="small" variant="outlined" label={`строк ${entry.rows_sent}/${entry.rows_total}`} />
+                <Chip size="small" variant="outlined" label={`${entry.ha_total} га`} />
+                {entry.est_input_tokens != null && (
+                  <Chip size="small" variant="outlined" label={`оценка: ≈${entry.est_input_tokens} вх. токенов`} />
                 )}
-                {answer.usage?.input_tokens != null && (
+                {entry.usage?.input_tokens != null && (
                   <Chip
                     size="small"
                     variant="outlined"
-                    label={`факт: ${answer.usage.input_tokens}/${answer.usage.output_tokens ?? "?"} токенов${
-                      answer.usage.cache_hit_tokens ? `, кэш ${answer.usage.cache_hit_tokens}` : ""
+                    label={`факт: ${entry.usage.input_tokens}/${entry.usage.output_tokens ?? "?"} токенов${
+                      entry.usage.cache_hit_tokens ? `, кэш ${entry.usage.cache_hit_tokens}` : ""
                     }`}
                   />
                 )}
-                {answer.error && <Chip size="small" color="warning" label={answer.error} />}
+                {entry.error && <Chip size="small" color="warning" label={entry.error} />}
               </Stack>
             </Box>
-          )}
+          ))}
         </Stack>
       </DialogContent>
       <DialogActions>

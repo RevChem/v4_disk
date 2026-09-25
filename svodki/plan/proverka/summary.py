@@ -135,6 +135,17 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
         if diff_is_significant(float(d)):
             firms_with_diff += 1
 
+    # «В файле» — пилот: то, что реально лежит на листе «Сводка» уже
+    # сохранённого .xlsx отчёта (см. proverka/file_values.py). Есть не для
+    # всех отчётов/дат (нужен сохранённый xlsx) — тогда оба поля None,
+    # и колонка «В файле» просто не показывается на фронте.
+    file_values = result.get("file_values") or {}
+    file_ha: float | None = None
+    file_diff_ha: float | None = None
+    if file_values.get("found"):
+        file_ha = float(file_values.get("file_ha") or 0)
+        file_diff_ha = round(file_ha - sv_ha, 2)
+
     return {
         "id": rid,
         "title": title,
@@ -144,6 +155,8 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
         "cropwise_api_ha": float(cmp_.get("cropwise_api_ha") or 0),
         "ui_vs_api_ha": float(cmp_.get("cropwise_ui_vs_api_ha") or 0),
         "diff_ha": diff,
+        "file_ha": file_ha,
+        "file_diff_ha": file_diff_ha,
         "status": status,
         "fact_column": cmp_.get("fact_column") or parsed.get("fact_column") or "",
         "season": (sp.get("label") or sp.get("task_season_label") or "")[:80],

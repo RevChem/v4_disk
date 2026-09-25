@@ -2172,6 +2172,19 @@ async def _fetch_tasks_and_mtfmi_like_11(
             flush=True,
         )
 
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        tasks_today = _filter_seasons(tasks_today, "5.0 Уборка", REPORT_DATE)
+        tasks_season = _filter_seasons(tasks_season, "5.0 Уборка", REPORT_DATE)
+    except Exception:
+        pass
+
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
     mtfmi_map: dict[int, list[dict]] = {}
     if all_task_ids:
@@ -3393,6 +3406,17 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         },
         log_prefix="[r10 VEG] ",
     )
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        all_tasks = _filter_seasons(all_tasks, "5.4 Уборка картофеля, лука", report_date)
+    except Exception:
+        pass
     print(f"    [VEG] заданий: {len(all_tasks)}", flush=True)
 
     tasks_in_period: list[dict] = []

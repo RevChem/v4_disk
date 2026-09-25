@@ -23,6 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
+import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
 import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
@@ -112,7 +113,7 @@ function CrossCheckStatusChips({ row, cropwiseAlert }) {
   );
 }
 
-export default function ProverkaDialog({ open, onClose, summaryDate, onComplete }) {
+export default function ProverkaDialog({ open, onClose, summaryDate, onComplete, onOpenTaskFacts }) {
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [cookie, setCookie] = useState("");
@@ -407,6 +408,11 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
   const hasFirmCropwise = useMemo(
     () => firmCheckRows.some((row) => row.cropwise_ha != null && row.cropwise_ha !== ""),
     [firmCheckRows]
+  );
+
+  const hasFileColumn = useMemo(
+    () => cropwiseRows.some((row) => row.file_ha != null && row.file_ha !== ""),
+    [cropwiseRows]
   );
 
   return (
@@ -838,6 +844,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                     <TableCell>Работа</TableCell>
                     <TableCell align="right">Сводка</TableCell>
                     <TableCell align="right">Cropwise</TableCell>
+                    {hasFileColumn && <TableCell align="right">В файле</TableCell>}
                     <TableCell align="right">API v3</TableCell>
                     <TableCell align="right">Diff</TableCell>
                     <TableCell>Статус</TableCell>
@@ -852,6 +859,18 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
                       </TableCell>
                       <TableCell align="right">{row.svodka_ha?.toFixed?.(2) ?? row.svodka_ha}</TableCell>
                       <TableCell align="right">{row.cropwise_ha?.toFixed?.(2) ?? row.cropwise_ha}</TableCell>
+                      {hasFileColumn && (
+                        <TableCell
+                          align="right"
+                          title={
+                            row.file_diff_ha != null
+                              ? `Файл − Сводка: ${row.file_diff_ha}`
+                              : undefined
+                          }
+                        >
+                          {formatHa(row.file_ha)}
+                        </TableCell>
+                      )}
                       <TableCell align="right">
                         {row.cropwise_api_ha != null && row.cropwise_api_ha !== 0
                           ? row.cropwise_api_ha?.toFixed?.(2) ?? row.cropwise_api_ha
@@ -894,6 +913,15 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete 
         {completed && (
           <Button variant="outlined" startIcon={<DownloadRoundedIcon />} onClick={handleDownload}>
             Скачать Excel
+          </Button>
+        )}
+        {completed && onOpenTaskFacts && (
+          <Button
+            variant="outlined"
+            startIcon={<QuestionAnswerOutlinedIcon />}
+            onClick={() => onOpenTaskFacts(jobId)}
+          >
+            Вопросы по фактам
           </Button>
         )}
         <Button

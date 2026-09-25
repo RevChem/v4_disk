@@ -71,6 +71,7 @@ export default function App() {
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
   const [taskFactsOpen, setTaskFactsOpen] = useState(false);
+  const [taskFactsJobId, setTaskFactsJobId] = useState("");
   const [interfaceOpen, setInterfaceOpen] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -91,6 +92,10 @@ export default function App() {
   const muiTheme = useMemo(() => createAppTheme(theme), [theme]);
 
   const isDeveloper = user?.role === "developer";
+  const openTaskFacts = useCallback((jobId) => {
+    setTaskFactsJobId(jobId || "");
+    setTaskFactsOpen(true);
+  }, []);
   const canGenerate =
     user?.role === "developer" || user?.role === "admin" || user?.role === "user";
 
@@ -520,6 +525,7 @@ export default function App() {
             setLogsFocus(focus);
             setLogsModalOpen(true);
           }}
+          onOpenTaskFacts={isDeveloper ? openTaskFacts : undefined}
         />
       </AppShell>
       <GenerationQueueDrawer
@@ -541,7 +547,8 @@ export default function App() {
         onClose={() => setAiMenuOpen(false)}
         onOpenReport={handleAiReportClick}
         onOpenPrompts={() => setAiPromptsOpen(true)}
-        onOpenTaskFacts={() => setTaskFactsOpen(true)}
+        onOpenTaskFacts={() => openTaskFacts()}
+        isDeveloper={isDeveloper}
       />
       {user && (
         <PageModalDialog
@@ -606,6 +613,7 @@ export default function App() {
         open={taskFactsOpen && isDeveloper}
         onClose={() => setTaskFactsOpen(false)}
         summaryDate={summaryDate}
+        initialJobId={taskFactsJobId}
       />
     </ThemeProvider>
   );

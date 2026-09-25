@@ -72,6 +72,28 @@ if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 SEASON_YEAR = _cropwise_season_year(REPORT_DATE.year)
 
+
+def _editor_season_strings(group_name: str) -> set[str]:
+    """Сезоны группы из редактора планов — сутки и сезонная площадь."""
+    try:
+        season_dir = Path(__file__).resolve().parent / "utils" / "season"
+        if not season_dir.is_dir():
+            season_dir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if season_dir.is_dir() and str(season_dir) not in sys.path:
+            sys.path.insert(0, str(season_dir))
+        from season_unified import task_season_years_set_for_group
+
+        years = task_season_years_set_for_group(group_name, REPORT_DATE)
+        if years:
+            return set(years)
+    except Exception:
+        pass
+    return {str(REPORT_DATE.year), str(REPORT_DATE.year + 1)}
+
+
+def _task_in_editor_seasons(task: dict, allowed: set[str]) -> bool:
+    return str(task.get("season") or task.get("year") or "").strip() in allowed
+
 DAY_START_HOUR: int = 6
 DAY_END_HOUR:   int = 6
 # TZ_MSK импортируется из plans
@@ -729,20 +751,16 @@ async def fetch_all_crop_stats(
                 all_tasks.append(t)
     print(f"  Всего уникальных заданий: {len(all_tasks)}")
 
-    season_task_year_str = str(SEASON_YEAR + 1)
+    seed_seasons = _editor_season_strings(_SEED_KEY)
     from collections import Counter
     season_counts = Counter(
         str(t.get("season") or t.get("year") or "<пусто>").strip() or "<пусто>"
         for t in all_tasks
     )
-    print(
-        f"  Сезон заданий (нужен {season_task_year_str}): {dict(season_counts)}"
-    )
-    all_tasks = [
-        t for t in all_tasks
-        if str(t.get("season") or t.get("year") or "").strip() == season_task_year_str
-    ]
-    print(f"  После фильтра season=={season_task_year_str}: {len(all_tasks)} заданий")
+    _need = "+".join(sorted(seed_seasons))
+    print(f"  Сезон заданий (нужен {_need}): {dict(season_counts)}")
+    all_tasks = [t for t in all_tasks if _task_in_editor_seasons(t, seed_seasons)]
+    print(f"  После фильтра сезонов {_need}: {len(all_tasks)} заданий")
 
     if not all_tasks:
         empty = {"fact_by_crop": {}, "today_by_crop": {}}
@@ -1101,9 +1119,13 @@ async def fetch_veg_stats(
                 out.append(t)
         return out
 
-    tasks_today  = _dedupe_tasks(today_chunks)
-    tasks_season = _dedupe_tasks(season_chunks)
-    print(f"  Овощи: заданий за сезон={len(tasks_season)}, за сутки={len(tasks_today)}")
+    veg_seasons = _editor_season_strings(_VEG_KEY)
+    tasks_today  = [t for t in _dedupe_tasks(today_chunks) if _task_in_editor_seasons(t, veg_seasons)]
+    tasks_season = [t for t in _dedupe_tasks(season_chunks) if _task_in_editor_seasons(t, veg_seasons)]
+    print(
+        f"  Овощи: заданий за сезон={len(tasks_season)}, за сутки={len(tasks_today)}"
+        f" (сезоны {'+'.join(sorted(veg_seasons))})"
+    )
 
     all_task_ids = list({int(t["id"]) for t in tasks_today + tasks_season})
     if not all_task_ids:

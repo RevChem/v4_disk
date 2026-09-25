@@ -833,6 +833,36 @@ async def fetch_all_tasks_and_mtfmi(
             flush=True,
         )
 
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        def _by_harvest_group(tasks: list[dict]) -> list[dict]:
+            grain = []
+            veg = []
+            for task in tasks:
+                try:
+                    wt = int(task.get("work_type_id"))
+                except (TypeError, ValueError):
+                    wt = None
+                if wt in VEG_WT_IDS:
+                    veg.append(task)
+                else:
+                    grain.append(task)
+            return (
+                _filter_seasons(grain, "5.0 Уборка", REPORT_DATE)
+                + _filter_seasons(veg, VEG_HARVEST_GROUP_KEY, REPORT_DATE)
+            )
+
+        tasks_today = _by_harvest_group(tasks_today)
+        tasks_season = _by_harvest_group(tasks_season)
+    except Exception:
+        pass
+
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
     mtfmi_map: dict[int, list[dict]] = {}
     if all_task_ids:

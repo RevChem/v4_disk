@@ -28,6 +28,7 @@ export default function AiMenuDialog({
   onOpenReport,
   onOpenPrompts,
   onOpenTaskFacts,
+  isDeveloper = true,
 }) {
   const [settings, setSettings] = useState(null);
   const [model, setModel] = useState("deepseek-flash");
@@ -107,17 +108,19 @@ export default function AiMenuDialog({
             </Button>
           </Stack>
 
-          <Button
-            variant="outlined"
-            fullWidth
-            startIcon={<QuestionAnswerOutlinedIcon />}
-            onClick={() => {
-              onClose();
-              onOpenTaskFacts?.();
-            }}
-          >
-            Вопросы по заданиям
-          </Button>
+          {isDeveloper && (
+            <Button
+              variant="outlined"
+              fullWidth
+              startIcon={<QuestionAnswerOutlinedIcon />}
+              onClick={() => {
+                onClose();
+                onOpenTaskFacts?.();
+              }}
+            >
+              Вопросы по заданиям
+            </Button>
+          )}
 
           <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>

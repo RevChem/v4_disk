@@ -644,15 +644,11 @@ def _resolve_group_task_season_years(group_key: str) -> list[int] | None:
         if str(entry) not in sys.path:
             sys.path.insert(0, str(entry))
     try:
-        from season_unified import resolve_group_season_config
+        from season_unified import fact_season_years_for_group
 
-        cfg = resolve_group_season_config(group_key, REPORT_DATE)
-        task_years = list(cfg.get("task_season_years") or [])
-        if task_years:
-            return task_years
-        history_years = list(cfg.get("history_years") or [])
-        if len(history_years) > 1:
-            return history_years
+        years = fact_season_years_for_group(group_key, REPORT_DATE)
+        if years:
+            return list(years)
     except Exception:
         pass
     return None
@@ -1974,12 +1970,6 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
     field_task_years = _resolve_group_task_season_years(_SPRAY_KEY)
     veg_task_years = _resolve_group_task_season_years(_VEG_SPRAY_KEY)
-    if field_task_years is None:
-        multi = os.environ.get("SVODKI_SPRAY_TASK_SEASON_YEARS", "").strip()
-        if multi:
-            field_task_years = [int(y.strip()) for y in multi.split(",") if y.strip().isdigit()]
-        elif os.environ.get("SEASON_TASK_YEAR_STR", "").strip().isdigit():
-            field_task_years = [int(os.environ["SEASON_TASK_YEAR_STR"].strip())]
 
     async with httpx.AsyncClient(headers=headers, timeout=60, limits=pool) as client:
         all_details, veg_details = await asyncio.gather(

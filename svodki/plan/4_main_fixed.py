@@ -490,6 +490,17 @@ async def fetch_all_data(
     )
 
     tasks_with_area = [t for t in all_tasks if (t.get("covered_area") or 0) > 0]
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        tasks_with_area = _filter_seasons(tasks_with_area, _WORK_TYPE_KEY, REPORT_DATE)
+    except Exception:
+        pass
     print(f"    Заданий боронования с covered_area > 0 за сезон: {len(tasks_with_area)}")
 
     if not tasks_with_area:

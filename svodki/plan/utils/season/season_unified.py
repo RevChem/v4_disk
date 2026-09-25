@@ -665,19 +665,38 @@ def editor_check_years(
 
 
 def task_season_years_set_for_group(group_name: str, report_date: date) -> set[str] | None:
-    cfg = resolve_group_season_config(group_name, report_date)
-    ty = cfg.get("task_season_years") or []
-    if len(ty) > 1:
-        return {str(y) for y in ty}
-    if len(ty) == 1 and season_rule_for_group(group_name) == "both_years":
-        return {str(y) for y in ty}
-    rule = season_rule_for_group(group_name)
-    if rule == "both_years" and ty:
-        return {str(y) for y in ty}
-    hy = cfg.get("history_years") or []
-    if rule == "both_years" and hy:
-        return {str(y) for y in hy}
-    return None
+    """Сезоны редактора планов для суточного и сезонного факта."""
+    years = fact_season_years_for_group(group_name, report_date)
+    if not years:
+        return None
+    return {str(y) for y in years}
+
+
+def task_fact_season_text(task: dict) -> str:
+    """machine_task.season. Пустое значение — задание не входит в выбранные сезоны."""
+    for key in ("season", "year", "season_year"):
+        raw = task.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return ""
+
+
+def filter_tasks_by_group_seasons(
+    tasks: list[dict],
+    group_name: str,
+    report_date: date,
+) -> list[dict]:
+    """Оставить задания сезонов группы из редактора планов.
+
+    Один и тот же список режет и сутки, и сезонную площадь.
+    """
+    allowed = task_season_years_set_for_group(group_name, report_date)
+    if not allowed:
+        return list(tasks)
+    return [task for task in tasks if task_fact_season_text(task) in allowed]
 
 
 def period_range_for_group(group_name: str, report_date: date) -> tuple[date, date]:

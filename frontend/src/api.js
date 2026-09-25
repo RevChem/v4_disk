@@ -284,11 +284,6 @@ export async function updateSchedule(config) {
   return data;
 }
 
-export async function fetchAuditLogs(limit = 100) {
-  const { data } = await api.get("/audit", { params: { limit } });
-  return data;
-}
-
 export async function fetchActivityFeed(limit = 80) {
   const { data } = await api.get("/activity/feed", { params: { limit }, timeout: 30_000 });
   return data;

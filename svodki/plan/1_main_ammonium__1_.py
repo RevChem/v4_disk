@@ -237,21 +237,10 @@ SPRAY_TASK_GROUPS = frozenset({SPRAY_GROUP_NAME, VEG_SPRAY_GROUP_NAME})
 
 
 def _allowed_task_seasons_for_group(group_name: str) -> set[str] | None:
-    """machine_task.season для опрыскивания — один или несколько лет из редактора планов."""
-    if group_name not in SPRAY_TASK_GROUPS:
-        return None
-    multi = task_season_years_set_for_group(group_name, REPORT_DATE)
-    if multi:
-        return multi
-    single = task_season_str_for_group(group_name, REPORT_DATE)
-    if single:
-        return {single}
-    env_multi = (os.environ.get("SVODKI_SPRAY_TASK_SEASON_YEARS") or "").strip()
-    if env_multi:
-        return {y.strip() for y in env_multi.split(",") if y.strip()}
-    single_env = (os.environ.get("SEASON_TASK_YEAR_STR") or "").strip()
-    if single_env:
-        return {single_env}
+    """Сезоны редактора планов: и сутки, и общая сезонная площадь."""
+    years = task_season_years_set_for_group(group_name, REPORT_DATE)
+    if years:
+        return years
     return None
 
 
@@ -1990,8 +1979,7 @@ async def fetch_day_stats_for_work_types(
     group_period_start = _group_period_start(group_name)
     area_min_ha = _detail_area_min_ha(group_name)
     is_plow = group_name == PLOW_GROUP_NAME
-    _plow_seasons = PLOW_TASK_SEASONS if is_plow else None
-    _spray_task_seasons = _allowed_task_seasons_for_group(group_name)
+    _fact_seasons = _allowed_task_seasons_for_group(group_name)
 
     def _shift_window(end_time_raw):
         end_dt = parse_dt(end_time_raw)
@@ -2171,10 +2159,8 @@ async def fetch_day_stats_for_work_types(
     for t in tasks_with_area:
         tid = t["id"]
         tseason = str(t.get("season") or t.get("year") or "").strip()
-        # Опрыскивание / вспашка: machine_task.season из season_unified (как сводки 2/6/9).
-        if _spray_task_seasons is not None and tseason not in _spray_task_seasons:
-            continue
-        if _plow_seasons is not None and tseason not in _plow_seasons:
+        # Сутки и сезон — сезоны этой операции из редактора планов.
+        if _fact_seasons is not None and tseason not in _fact_seasons:
             continue
         mid = t.get("machine_id")
         items = mtfmi_map.get(tid, [])

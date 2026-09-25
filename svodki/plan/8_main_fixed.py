@@ -715,8 +715,36 @@ def _aggregate_tasks_for_firms(
             return tasks
         return [t for t in tasks if t.get("work_type_id") in filter_wt_ids]
 
-    f_tasks_today  = _filter(tasks_today)
-    f_tasks_season = _filter(tasks_season)
+    _season_by_group: dict[str, set[str] | None] = {}
+
+    def _allowed_for(group: str) -> set[str] | None:
+        if group not in _season_by_group:
+            try:
+                _sdir = Path(__file__).resolve().parent / "utils" / "season"
+                if not _sdir.is_dir():
+                    _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+                if _sdir.is_dir() and str(_sdir) not in sys.path:
+                    sys.path.insert(0, str(_sdir))
+                from season_unified import task_season_years_set_for_group
+
+                _season_by_group[group] = task_season_years_set_for_group(group, REPORT_DATE)
+            except Exception:
+                _season_by_group[group] = None
+        return _season_by_group[group]
+
+    def _editor_season_ok(task: dict) -> bool:
+        try:
+            wt = int(task.get("work_type_id"))
+        except (TypeError, ValueError):
+            return False
+        group = FREZER_WT_TITLE if wt == FREZER_WT_ID else "2.11 Культивация"
+        allowed = _allowed_for(group)
+        if not allowed:
+            return True
+        return str(task.get("season") or task.get("year") or "").strip() in allowed
+
+    f_tasks_today  = [t for t in _filter(tasks_today) if _editor_season_ok(t)]
+    f_tasks_season = [t for t in _filter(tasks_season) if _editor_season_ok(t)]
     _cap = None
     _fact_cult = (not exempt_min_count) and filter_wt_ids == CULT_WT_IDS
     if _fact_cult:

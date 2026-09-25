@@ -611,16 +611,41 @@ def _task_season_value(task: dict) -> str:
     return str(task.get("season") or task.get("year") or "").strip()
 
 
-def _filter_tasks_by_cropwise_season(tasks: list[dict]) -> list[dict]:
-    """Только задания сезона year+1 (как вспашка/посев в 2_main_ideal_compact)."""
-    return [t for t in tasks if _task_season_value(t) == SEASON_TASK_YEAR_STR]
+def _editor_season_strings(group_name: str) -> set[str]:
+    """Сезоны группы из редактора планов — и для суток, и для сезона."""
+    try:
+        season_dir = Path(__file__).resolve().parent / "utils" / "season"
+        if not season_dir.is_dir():
+            season_dir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if season_dir.is_dir() and str(season_dir) not in sys.path:
+            sys.path.insert(0, str(season_dir))
+        from season_unified import task_season_years_set_for_group
+
+        years = task_season_years_set_for_group(group_name, REPORT_DATE)
+        if years:
+            return set(years)
+    except Exception:
+        pass
+    return {str(REPORT_DATE.year), str(REPORT_DATE.year + 1)}
 
 
-def _log_task_season_counts(tasks: list[dict], label: str) -> None:
+def _filter_tasks_by_cropwise_season(
+    tasks: list[dict],
+    allowed: set[str] | None = None,
+) -> list[dict]:
+    """Задания сезонов редактора планов (сутки и сезон — один список)."""
+    years = allowed if allowed else ({SEASON_TASK_YEAR_STR} if SEASON_TASK_YEAR_STR else set())
+    if not years:
+        return list(tasks)
+    return [t for t in tasks if _task_season_value(t) in years]
+
+
+def _log_task_season_counts(tasks: list[dict], label: str, allowed: set[str]) -> None:
     from collections import Counter
 
     counts = Counter(_task_season_value(t) or "<пусто>" for t in tasks)
-    print(f"  [{label}] сезон заданий (нужен {SEASON_TASK_YEAR_STR}): {dict(counts)}")
+    need = "+".join(sorted(allowed))
+    print(f"  [{label}] сезон заданий (нужен {need}): {dict(counts)}")
 
 
 async def fetch_all_tasks_and_mtfmi(
@@ -2091,12 +2116,14 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             ),
         )
 
-        _log_task_season_counts(tasks_today_seed + tasks_season_seed, "Посев")
-        tasks_today_seed = _filter_tasks_by_cropwise_season(tasks_today_seed)
-        tasks_season_seed = _filter_tasks_by_cropwise_season(tasks_season_seed)
-        _log_task_season_counts(tasks_today_veg + tasks_season_veg, "Овощи")
-        tasks_today_veg = _filter_tasks_by_cropwise_season(tasks_today_veg)
-        tasks_season_veg = _filter_tasks_by_cropwise_season(tasks_season_veg)
+        seed_seasons = _editor_season_strings(_SEED_KEY)
+        veg_seasons = _editor_season_strings(_VEG_KEY)
+        _log_task_season_counts(tasks_today_seed + tasks_season_seed, "Посев", seed_seasons)
+        tasks_today_seed = _filter_tasks_by_cropwise_season(tasks_today_seed, seed_seasons)
+        tasks_season_seed = _filter_tasks_by_cropwise_season(tasks_season_seed, seed_seasons)
+        _log_task_season_counts(tasks_today_veg + tasks_season_veg, "Овощи", veg_seasons)
+        tasks_today_veg = _filter_tasks_by_cropwise_season(tasks_today_veg, veg_seasons)
+        tasks_season_veg = _filter_tasks_by_cropwise_season(tasks_season_veg, veg_seasons)
 
         from report_resources_fetch import load_report_resources
 

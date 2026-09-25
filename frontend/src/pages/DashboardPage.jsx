@@ -61,6 +61,7 @@ export default function DashboardPage({
   onProverkaComplete,
   onOpenLogs,
   onHeaderToolsChange,
+  onOpenTaskFacts,
 }) {
   const [summaryDateLocal, setSummaryDateLocal] = useState(todayIso());
   const summaryDate = summaryDateProp ?? summaryDateLocal;
@@ -547,6 +548,7 @@ export default function DashboardPage({
         onClose={() => setProverkaOpen(false)}
         summaryDate={summaryDate}
         onComplete={onProverkaComplete}
+        onOpenTaskFacts={onOpenTaskFacts}
       />
       <ProverkaMachinesDialog
         open={proverkaMachinesOpen}

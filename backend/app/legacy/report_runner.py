@@ -206,13 +206,21 @@ def _report_id_from_filename(filename: str) -> str:
     return _report_id_from_title(stem)
 
 
-def _purge_same_report_files(folder: Path, report_id: str) -> None:
+def _purge_same_report_files(folder: Path, report_id: str, *, ext: str | None = None) -> None:
+    """Удаляет старые файлы отчёта report_id в folder.
+
+    Если ext не задан — чистит и .pdf, и .xlsx (обратная совместимость).
+    Если задан — чистит только файлы с этим расширением, чтобы сохранение
+    одного формата (например, .xlsx) не удаляло только что сохранённый
+    другой формат (.pdf) того же отчёта, и наоборот.
+    """
     if not report_id or not folder.is_dir():
         return
+    exts = {ext.lower()} if ext else {".pdf", ".xlsx"}
     for path in list(folder.iterdir()):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in {".pdf", ".xlsx"}:
+        if path.suffix.lower() not in exts:
             continue
         if _report_id_from_filename(path.name) == report_id:
             path.unlink(missing_ok=True)
@@ -221,7 +229,7 @@ def _purge_same_report_files(folder: Path, report_id: str) -> None:
 def _save_artifact(src: Path, summary_date: date, title: str, ext: str, report_id: str = "") -> Path:
     folder = _output_folder(summary_date)
     rid = report_id or _report_id_from_title(title)
-    _purge_same_report_files(folder, rid)
+    _purge_same_report_files(folder, rid, ext=ext)
     dest = folder / _safe_filename(title, ext)
     shutil.copy2(src, dest)
     return dest
@@ -281,6 +289,15 @@ def _execute_single_report_to_disk(
         local_logs.append(f"[{cfg.title}] Время PDF: {time.monotonic() - pdf_started:.1f} с")
         local_logs.append(f"[{cfg.title}] PDF: {saved_pdf.name}")
 
+        saved_xlsx: Path | None = None
+        try:
+            saved_xlsx = _save_artifact(xlsx_path, summary_date, storage_title, ".xlsx", report_id=cfg_id)
+            local_logs.append(f"[{cfg.title}] XLSX: {saved_xlsx.name}")
+        except Exception as exc:
+            # Наличие xlsx рядом с pdf — приятный бонус (нужен, в частности, для
+            # сверки «В файле» в proverka), но не должен ронять генерацию отчёта.
+            local_logs.append(f"[{cfg.title}] Не удалось сохранить XLSX: {exc}")
+
         if stdout.strip():
             local_logs.extend(
                 f"[{cfg.title}] {line}" for line in stdout.splitlines()[-5:] if line.strip()
@@ -294,7 +311,7 @@ def _execute_single_report_to_disk(
             report_id=cfg_id,
             title=storage_title,
             summary_date=summary_date,
-            xlsx_path=None,
+            xlsx_path=saved_xlsx,
             pdf_path=saved_pdf,
             duration_seconds=duration_seconds,
         )

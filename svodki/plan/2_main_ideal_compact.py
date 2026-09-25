@@ -92,19 +92,27 @@ SEASON_YEAR_PLUS_ONE_GROUPS = frozenset({
 
 def _fact_seasons_for_group(group_name: str) -> set[str] | None:
     """Годы machine_task.season для суток и сезонного факта группы."""
-    if group_name == PLOW_GROUP_NAME:
-        try:
-            from season_unified import fact_season_years_for_group
+    try:
+        from season_unified import fact_season_years_for_group
 
-            years = fact_season_years_for_group(group_name, TODAY)
-            if years:
-                return {str(y) for y in years}
-        except Exception:
-            pass
+        years = fact_season_years_for_group(group_name, TODAY)
+        if years:
+            return {str(y) for y in years}
+    except Exception:
+        pass
+    both = {
+        "1.1 Внесение минеральных удобрений",
+        "2.4 Вспашка",
+        "2.8 Глубокорыхление",
+        "2.9 Дискование",
+        "3.1 Опрыскивание",
+        "3.2 Опрыскивание (овощи)",
+        "4.0 Посев",
+        "4.1 Посев (овощи)",
+    }
+    if group_name in both:
         return {str(TODAY.year), str(TODAY.year + 1)}
-    if group_name in SEASON_YEAR_PLUS_ONE_GROUPS:
-        return {str(TODAY.year + 1)}
-    return None
+    return {str(TODAY.year)}
 SPRAY_GROUP_NAME = "3.1 Опрыскивание"
 VEG_SPRAY_GROUP_NAME = "3.2 Опрыскивание (овощи)"
 # Для группы "Опрыскивание": через связку AgroOperation засчитываем эти

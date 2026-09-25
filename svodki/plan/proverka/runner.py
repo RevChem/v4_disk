@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from proverka.cropwise_ui import parse_work_report_body
 from proverka.export_excel import export_excel
+from proverka.file_values import attach_file_values
 from proverka.operation_compare import build_cross_check
 from proverka.reconcile import _firm_names, load_env
 from proverka.reports_config import REPORTS, list_report_ids
@@ -1168,6 +1169,11 @@ def run_proverka_batch(
         prog("Формирование Excel…")
         xlsx_path = out_dir / f"proverka_{report_date.isoformat()}.xlsx"
         export_excel(all_results, xlsx_path)
+    # Пилот «В файле»: подмешиваем в all_results то, что реально лежит в уже
+    # сохранённом .xlsx отчёта (uploads/<дата>/), чтобы build_rows мог отдать
+    # file_ha/file_diff_ha рядом со «Сводка»/«Cropwise». Тихо не находит ничего
+    # для отчётов без сохранённого xlsx — остальной batch это не трогает.
+    attach_file_values(all_results, report_date)
     summary_rows = build_rows(all_results)
     cross_check_rows = all_results["cross_check"].get("operations") or []
     return {

@@ -113,28 +113,24 @@ def _parse_year_list(raw: str) -> list[int]:
     return sorted(set(years))
 
 
-def _plow_fact_season_years(report_date: date) -> list[int]:
-    """Сезоны факта вспашки — как чипы в редакторе планов (сутки и сезон).
-
-    Опрыскивание уже считает 2026+2027. Вспашка берёт тот же список группы
-    «2.4 Вспашка», а не один глобальный SEASON_YEAR уборки.
-    """
+def _group_fact_season_years(group_name: str, report_date: date) -> list[int]:
+    """Сезоны факта группы из редактора планов (сутки и сезон — один список)."""
     try:
         season_dir = Path(__file__).resolve().parent / "utils" / "season"
+        if not season_dir.is_dir():
+            season_dir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
         if season_dir.is_dir() and str(season_dir) not in sys.path:
             sys.path.insert(0, str(season_dir))
         from season_unified import fact_season_years_for_group
 
-        years = fact_season_years_for_group("2.4 Вспашка", report_date)
+        years = fact_season_years_for_group(group_name, report_date)
         if years:
             return list(years)
     except Exception:
         pass
-    for key in (
-        "SVODKI_GRP_2_4_Вспашка_TASK_SEASON_YEARS",
-        "SVODKI_GRP_2_4_Вспашка_HISTORY_YEARS",
-    ):
-        years = _parse_year_list(os.environ.get(key, ""))
+    slug = group_name.replace(" ", "_").replace(".", "_")
+    for suffix in ("TASK_SEASON_YEARS", "HISTORY_YEARS"):
+        years = _parse_year_list(os.environ.get(f"SVODKI_GRP_{slug}_{suffix}", ""))
         if years:
             return years
     return [report_date.year, report_date.year + 1]
@@ -153,8 +149,9 @@ def _task_season_allowed(task: dict, allowed: set[int]) -> bool:
     return False
 
 
-# Факт вспашки (сутки и сезон): все сезоны из редактора планов.
-PLOW_FACT_SEASONS: frozenset[int] = frozenset(_plow_fact_season_years(REPORT_DATE))
+# Факт вспашки и глубокорыхления (сутки и сезон): сезоны из редактора планов.
+PLOW_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.4 Вспашка", REPORT_DATE))
+DEEP_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.8 Глубокорыхление", REPORT_DATE))
 # Культура поля — год урожая (последний из выбранных), чтобы 2026 не затирал 2027.
 SEASON_YEAR: int = max(PLOW_FACT_SEASONS) if PLOW_FACT_SEASONS else REPORT_DATE.year + 1
 SVODKA9_PLOW_SEASON_FIX = "2026-08-07c"
@@ -1114,11 +1111,19 @@ def build_all_firm_stats(
         allowed = {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
         return _task_season_allowed(task, allowed)
 
+    def _task_is_deep(task: dict) -> bool:
+        try:
+            return int(task.get("work_type_id")) in DEEP_WT_IDS
+        except (TypeError, ValueError):
+            return False
+
     def _task_matches_required_year(task: dict) -> bool:
-        # Глубокорыхление — без фильтра по сезону задания.
-        if not _task_is_plow(task):
-            return True
-        return _plow_task_season_ok(task)
+        if _task_is_plow(task):
+            return _plow_task_season_ok(task)
+        if _task_is_deep(task):
+            allowed = {int(task_year)} if task_year is not None else set(DEEP_FACT_SEASONS)
+            return _task_season_allowed(task, allowed)
+        return True
 
     today_plow_by_field: dict[str, dict[int, float]] = {
         firm: defaultdict(float) for firm in FIRM_ORDER

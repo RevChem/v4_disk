@@ -525,6 +525,19 @@ async def fetch_all_tasks_and_mtfmi(
         ),
     )
 
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        tasks_today = _filter_seasons(tasks_today, WORK_TYPE_TITLE, REPORT_DATE)
+        tasks_season = _filter_seasons(tasks_season, WORK_TYPE_TITLE, REPORT_DATE)
+    except Exception:
+        pass
+
     print(f"  Заданий за сутки: {len(tasks_today)}, за сезон (с {SEASON_START.strftime('%d.%m.%Y')}): {len(tasks_season)}")
 
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
