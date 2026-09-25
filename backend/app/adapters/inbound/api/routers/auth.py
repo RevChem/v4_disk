@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -29,7 +30,7 @@ from app.adapters.outbound.auth.security import (
     verify_totp_code,
 )
 from app.adapters.outbound.auth.token_blacklist import is_revoked, revoke_jti
-from app.adapters.outbound.mail.smtp import send_email
+from app.adapters.outbound.mail.smtp import send_email, smtp_configured
 from app.adapters.outbound.persistence import repositories as repo
 from app.config import settings
 from app.database import get_db
@@ -39,6 +40,7 @@ from app.application.audit_activity import record_activity
 from app.schemas_auth import (
     ChangeMyPasswordIn,
     EmailVerifyRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     LoginResponse,
     MfaDisableRequest,
@@ -48,6 +50,7 @@ from app.schemas_auth import (
     RefreshRequest,
     RegisterRequest,
     ResendVerificationRequest,
+    ResetPasswordRequest,
     TokenPair,
     UserRead,
 )
@@ -64,6 +67,19 @@ def _normalize_time(started: float) -> None:
 
 
 log = get_logger(__name__)
+
+_FORGOT_PASSWORD_DETAIL = "Если такой email есть в системе, мы отправили письмо со ссылкой для смены пароля."
+
+
+def _app_base_url(request: Request) -> str:
+    """База ссылки в письме: явный PUBLIC_BASE_URL или адрес, с которого открыт сайт."""
+    configured = (settings.public_base_url or "").strip().rstrip("/")
+    if configured and configured != "http://127.0.0.1:8080":
+        return configured
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if origin:
+        return origin
+    return configured or "http://127.0.0.1:8080"
 
 
 @users_router.get("/me/profile")
@@ -90,7 +106,10 @@ def change_my_password(
     current_user: User = Depends(get_current_active_user),
 ):
     """Смена своего пароля (админ / пользователь / разработчик)."""
-    if not verify_password(body.current_password, current_user.password_hash):
+    user = repo.get_user_by_id(db, current_user.id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="wrong_current_password")
     try:
         hibp.assert_password_not_pwned(body.new_password)
@@ -98,16 +117,19 @@ def change_my_password(
         if str(exc) == "password_pwned":
             raise HTTPException(status_code=400, detail="password_pwned") from exc
         raise
-    current_user.password_hash = hash_password(body.new_password)
-    repo.bump_token_version(db, current_user)
+    user = repo.set_password(db, user.id, hash_password(body.new_password))
+    if not verify_password(body.new_password, user.password_hash):
+        log.error("auth.password_change.not_saved", user_id=user.id)
+        raise HTTPException(status_code=500, detail="password_not_saved")
     record_activity(
         db,
         action="users.password_changed",
-        user_id=current_user.id,
+        user_id=user.id,
         ip=get_client_ip(request),
-        target_user_id=current_user.id,
+        target_user_id=user.id,
         self_service=True,
     )
+    log.info("auth.password_changed", user_id=user.id)
 
 
 @users_router.post("/register", status_code=status.HTTP_200_OK)
@@ -289,6 +311,80 @@ def verify_email(body: EmailVerifyRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="invalid_token")
     repo.mark_email_verified(db, user, record)
     return {"detail": "Email подтверждён"}
+
+
+@auth_router.post("/forgot-password")
+def forgot_password(body: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    """Ссылка для смены пароля на email. Ответ один и тот же, есть учётка или нет."""
+    started = time.monotonic()
+    try:
+        enforce_rate_limit(f"forgot:{get_client_ip(request)}")
+        if not smtp_configured():
+            raise HTTPException(status_code=503, detail="smtp_not_configured")
+        user = repo.get_user_by_email(db, body.email)
+        if user is not None and user.is_active and user.email:
+            token = generate_opaque_token()
+            repo.create_password_reset_token(db, user.id, token)
+            link = f"{_app_base_url(request)}/?reset_token={token}"
+            sent = send_email(
+                user.email,
+                "Смена пароля — Центр PDF-сводок",
+                (
+                    "Чтобы задать новый пароль, откройте ссылку (действует 1 час):\n\n"
+                    f"{link}\n\n"
+                    "Если вы не запрашивали смену пароля, проигнорируйте это письмо."
+                ),
+            )
+            if not sent:
+                record = repo.get_valid_password_reset_token(db, token)
+                if record is not None:
+                    repo.mark_password_reset_used(db, record)
+                log.error("auth.password_reset.mail_failed", user_id=user.id)
+        return {"detail": _FORGOT_PASSWORD_DETAIL}
+    except ValueError as exc:
+        if str(exc) == "rate_limited":
+            raise HTTPException(status_code=429, detail="rate_limited") from exc
+        raise
+    finally:
+        _normalize_time(started)
+
+
+@auth_router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    started = time.monotonic()
+    try:
+        enforce_rate_limit(f"reset:{get_client_ip(request)}")
+        record = repo.get_valid_password_reset_token(db, body.token)
+        if record is None:
+            raise HTTPException(status_code=400, detail="invalid_token")
+        user = repo.get_user_by_id(db, record.user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=400, detail="invalid_token")
+        try:
+            hibp.assert_password_not_pwned(body.new_password)
+        except ValueError as exc:
+            if str(exc) == "password_pwned":
+                raise HTTPException(status_code=400, detail="password_pwned") from exc
+            raise
+        record.used_at = datetime.now(UTC)
+        user = repo.set_password(db, user.id, hash_password(body.new_password))
+        if not verify_password(body.new_password, user.password_hash):
+            log.error("auth.password_reset.not_saved", user_id=user.id)
+            raise HTTPException(status_code=500, detail="password_not_saved")
+        record_activity(
+            db,
+            action="auth.password_reset",
+            user_id=user.id,
+            ip=get_client_ip(request),
+        )
+        log.info("auth.password_reset", user_id=user.id)
+        return {"detail": "Пароль обновлён. Войдите с новым паролем."}
+    except ValueError as exc:
+        if str(exc) == "rate_limited":
+            raise HTTPException(status_code=429, detail="rate_limited") from exc
+        raise
+    finally:
+        _normalize_time(started)
 
 
 @auth_router.post("/resend-verification")

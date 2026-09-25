@@ -14,7 +14,15 @@ import { changeMyPassword } from "../api";
 const ERROR_MAP = {
   wrong_current_password: "Неверный текущий пароль",
   password_pwned: "Пароль слишком простой или был в утечках — выберите другой",
+  password_not_saved: "Пароль не сохранился. Попробуйте ещё раз.",
 };
+
+function errorMessage(err) {
+  const code = err?.response?.data?.detail;
+  if (typeof code === "string") return ERROR_MAP[code] || code;
+  if (Array.isArray(code)) return code.map((item) => item?.msg || JSON.stringify(item)).join("; ");
+  return err?.message || "Не удалось сменить пароль";
+}
 
 export default function ChangePasswordSection({ onChanged, compact = false }) {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -45,8 +53,7 @@ export default function ChangePasswordSection({ onChanged, compact = false }) {
       setSuccess("Пароль изменён. Войдите снова с новым паролем.");
       onChanged?.();
     } catch (err) {
-      const code = err?.response?.data?.detail;
-      setError(ERROR_MAP[code] || code || err?.message || String(err));
+      setError(errorMessage(err));
     } finally {
       setBusy(false);
     }

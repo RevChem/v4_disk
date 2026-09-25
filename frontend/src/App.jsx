@@ -20,6 +20,8 @@ import {
   getStoredTokens,
   login,
   logout,
+  requestPasswordReset,
+  resetPasswordWithToken,
   runProverkaAiReport,
   setStoredTokens,
   verifyMfaLogin,
@@ -60,6 +62,15 @@ export default function App() {
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaPendingToken, setMfaPendingToken] = useState("");
   const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
+  const [authView, setAuthView] = useState(() =>
+    new URLSearchParams(window.location.search).get("reset_token") ? "reset" : "login",
+  );
+  const [resetToken, setResetToken] = useState(
+    () => new URLSearchParams(window.location.search).get("reset_token") || "",
+  );
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirm, setResetConfirm] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [activeNav, setActiveNav] = useState("dashboard");
   const [generationQueue, setGenerationQueue] = useState([]);
@@ -395,10 +406,68 @@ export default function App() {
     return items;
   }, [user, isDeveloper, canGenerate]);
 
+  function clearResetTokenFromUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_token");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    setResetToken("");
+  }
+
+  function backToLogin() {
+    clearResetTokenFromUrl();
+    setAuthView("login");
+    setAuthError("");
+    setResetPassword("");
+    setResetConfirm("");
+  }
+
   async function handleAuthSubmit(e) {
     e.preventDefault();
-    setAuthBusy(true);
     setAuthError("");
+    if (authView === "forgot") {
+      setAuthBusy(true);
+      setAuthInfo("");
+      try {
+        const res = await requestPasswordReset(email.trim());
+        setAuthInfo(res?.detail || "Если такой email есть в системе, мы отправили письмо со ссылкой.");
+        setAuthView("login");
+      } catch (err) {
+        setAuthError(String(err.message || err));
+      } finally {
+        setAuthBusy(false);
+      }
+      return;
+    }
+    if (authView === "reset") {
+      if (resetPassword.length < 8) {
+        setAuthError("Новый пароль — минимум 8 символов");
+        return;
+      }
+      if (resetPassword !== resetConfirm) {
+        setAuthError("Новый пароль и подтверждение не совпадают");
+        return;
+      }
+      setAuthBusy(true);
+      setAuthInfo("");
+      try {
+        const res = await resetPasswordWithToken(resetToken, resetPassword);
+        clearResetTokenFromUrl();
+        setResetPassword("");
+        setResetConfirm("");
+        setPassword("");
+        await logout();
+        setUser(null);
+        setAuthView("login");
+        setAuthInfo(res?.detail || "Пароль обновлён. Войдите с новым паролем.");
+      } catch (err) {
+        setAuthError(String(err.message || err));
+      } finally {
+        setAuthBusy(false);
+      }
+      return;
+    }
+    setAuthBusy(true);
+    setAuthInfo("");
     try {
       if (mfaRequired) {
         const pair = await verifyMfaLogin(mfaPendingToken, mfaCode);
@@ -421,6 +490,11 @@ export default function App() {
     } finally {
       setAuthBusy(false);
     }
+  }
+
+  async function handlePasswordChanged() {
+    await handleLogout();
+    setAuthInfo("Пароль изменён. Войдите с новым паролем.");
   }
 
   async function handleLogout() {
@@ -458,23 +532,35 @@ export default function App() {
     return null;
   }
 
-  if (!user) {
+  if (!user || authView === "reset") {
     return (
       <ThemeProvider theme={muiTheme}>
         <CssBaseline />
         <LoginPage
           theme={theme}
           customBackground={customBackground}
+          view={authView}
           email={email}
           password={password}
           mfaCode={mfaCode}
           mfaRequired={mfaRequired}
           error={authError}
+          info={authInfo}
           busy={authBusy}
+          resetPassword={resetPassword}
+          resetConfirm={resetConfirm}
           onEmailChange={setEmail}
           onPasswordChange={setPassword}
           onMfaCodeChange={setMfaCode}
+          onResetPasswordChange={setResetPassword}
+          onResetConfirmChange={setResetConfirm}
           onSubmit={handleAuthSubmit}
+          onForgot={() => {
+            setAuthView("forgot");
+            setAuthError("");
+            setAuthInfo("");
+          }}
+          onBackToLogin={backToLogin}
         />
       </ThemeProvider>
     );
@@ -488,7 +574,7 @@ export default function App() {
         customBackground={customBackground}
         user={user}
         onLogout={handleLogout}
-        onPasswordChanged={handleLogout}
+        onPasswordChanged={handlePasswordChanged}
         nav={nav}
         activeNav={activeNav}
         navActiveId={navActiveId}
@@ -562,7 +648,7 @@ export default function App() {
             currentUser={user}
             manageAll={isDeveloper}
             embedded
-            onPasswordChanged={handleLogout}
+            onPasswordChanged={handlePasswordChanged}
           />
         </PageModalDialog>
       )}

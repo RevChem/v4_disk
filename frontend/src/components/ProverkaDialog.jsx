@@ -49,10 +49,23 @@ function formatHa(value) {
   return Number.isFinite(n) ? n.toFixed(2) : String(value);
 }
 
-function formatFilePair(calc, fileHa) {
-  const left = formatHa(calc);
-  if (fileHa == null || fileHa === "") return left;
-  return `${left}/${formatHa(fileHa)}`;
+function HaFileStack({ calc, fileHa }) {
+  const hasFile = fileHa != null && fileHa !== "";
+  const apart = fileApartFromCalc(calc, fileHa);
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.15 }}>
+      <span>{formatHa(calc)}</span>
+      {hasFile && (
+        <Typography
+          component="span"
+          variant="caption"
+          sx={{ color: apart ? "error.main" : "text.secondary", fontWeight: apart ? 600 : 400 }}
+        >
+          {formatHa(fileHa)}
+        </Typography>
+      )}
+    </Box>
+  );
 }
 
 function fileApartFromCalc(calc, fileHa) {
@@ -589,8 +602,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
               )}
               {crossCheckRows.some((row) => row.file_totals && Object.keys(row.file_totals).length > 0) && (
                 <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
-                  Под номером сводки через слеш: расчёт / гектары в файле этой сводки.
-                  Например, 2946.80/2946.50 — в файле сводки 2946.50 га.
+                  Под номером сводки две строки: сверху расчёт, снизу гектары в файле этой сводки.
                 </Typography>
               )}
               <Table size="small">
@@ -629,13 +641,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                                   ? `В файле сводки ${rid}: ${formatHa(row.file_totals[rid])} га`
                                   : undefined
                               }
-                              sx={
-                                fileApartFromCalc(row.totals?.[rid], row.file_totals?.[rid])
-                                  ? { color: "error.main", fontWeight: 600 }
-                                  : undefined
-                              }
+                              sx={{ whiteSpace: "nowrap", verticalAlign: "top" }}
                             >
-                              {formatFilePair(row.totals?.[rid], row.file_totals?.[rid])}
+                              <HaFileStack calc={row.totals?.[rid]} fileHa={row.file_totals?.[rid]} />
                             </TableCell>
                           ))}
                           {hasCropwiseColumn && (

@@ -46,10 +46,14 @@ function roleLabel(role) {
 }
 
 function errorText(err) {
-  const code = err?.response?.data?.detail || err?.message || String(err);
+  const detail = err?.response?.data?.detail;
+  const code = Array.isArray(detail)
+    ? detail.map((item) => item?.msg || JSON.stringify(item)).join("; ")
+    : detail || err?.message || String(err);
   const map = {
     email_taken: "Email уже занят",
     password_pwned: "Пароль слишком простой или был в утечках — выберите другой",
+    password_not_saved: "Пароль не сохранился. Попробуйте ещё раз.",
     cannot_deactivate_self: "Нельзя отключить свою учётную запись",
     cannot_change_own_role: "Нельзя сменить свою роль",
     user_not_found: "Пользователь не найден",
@@ -151,6 +155,7 @@ export default function UsersPage({
   const [profileUserId, setProfileUserId] = useState(null);
   const [passwordDialog, setPasswordDialog] = useState(null);
   const [newPassword, setNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [savingPassword, setSavingPassword] = useState(false);
 
   const load = useCallback(async () => {
@@ -216,18 +221,30 @@ export default function UsersPage({
     }
   }
 
+  function openPasswordDialog(row) {
+    setPasswordDialog(row);
+    setNewPassword("");
+    setPasswordError("");
+  }
+
   async function handlePasswordSave() {
     if (!passwordDialog || !newPassword) return;
     setSavingPassword(true);
+    setPasswordError("");
     setError("");
     setSuccess("");
     try {
-      await updateManagedUser(passwordDialog.id, { password: newPassword });
-      setSuccess(`Пароль для ${passwordDialog.email} обновлён`);
+      const target = passwordDialog;
+      await updateManagedUser(target.id, { password: newPassword });
       setPasswordDialog(null);
       setNewPassword("");
+      if (target.id === currentUserId) {
+        onPasswordChanged?.();
+        return;
+      }
+      setSuccess(`Пароль для ${target.email} обновлён`);
     } catch (err) {
-      setError(errorText(err));
+      setPasswordError(errorText(err));
     } finally {
       setSavingPassword(false);
     }
@@ -404,7 +421,7 @@ export default function UsersPage({
                         </Button>
                       </TableCell>
                       <TableCell align="right" sx={COMPACT_CELL}>
-                        <Button size="small" sx={{ minWidth: 0, px: 1, fontSize: "0.8125rem" }} onClick={() => setPasswordDialog(row)}>
+                        <Button size="small" sx={{ minWidth: 0, px: 1, fontSize: "0.8125rem" }} onClick={() => openPasswordDialog(row)}>
                           Сменить
                         </Button>
                       </TableCell>
@@ -430,6 +447,11 @@ export default function UsersPage({
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, fontSize: "0.8125rem" }}>
             {passwordDialog?.email}
           </Typography>
+          {passwordError && (
+            <Alert severity="error" sx={{ mb: 1.5 }}>
+              {passwordError}
+            </Alert>
+          )}
           <TextField
             autoFocus
             fullWidth

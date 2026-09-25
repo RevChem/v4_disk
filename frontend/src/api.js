@@ -982,6 +982,27 @@ export async function changeMyPassword(currentPassword, newPassword) {
   });
 }
 
+export async function requestPasswordReset(email) {
+  try {
+    const { data } = await api.post("/auth/forgot-password", { email });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function resetPasswordWithToken(token, newPassword) {
+  try {
+    const { data } = await api.post("/auth/reset-password", {
+      token,
+      new_password: newPassword,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchInterfaceSettings() {
   const { data } = await api.get("/interface-settings");
   return data;

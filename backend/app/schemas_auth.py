@@ -99,6 +99,15 @@ class ResendVerificationRequest(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=10)
+    new_password: str = Field(min_length=8)
+
+
 class JobStatusOut(BaseModel):
     id: str
     status: str

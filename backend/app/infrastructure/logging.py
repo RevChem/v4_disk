@@ -12,8 +12,11 @@ from app.config import settings
 
 _SENSITIVE_KEYS = {
     "password",
+    "current_password",
+    "new_password",
     "confirm_password",
     "hashed_password",
+    "reset_token",
     "smtp_password",
     "access_token",
     "refresh_token",

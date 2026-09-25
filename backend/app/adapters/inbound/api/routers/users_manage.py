@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.inbound.api.deps import get_client_ip, require_manage_users_access
 from app.adapters.outbound.auth import hibp
-from app.adapters.outbound.auth.security import hash_password
+from app.adapters.outbound.auth.security import hash_password, verify_password
 from app.adapters.outbound.persistence import repositories as repo
 from app.application.audit_activity import record_activity
 from app.application.user_profile import build_user_profile
@@ -96,8 +96,11 @@ def update_user(
             raise HTTPException(status_code=400, detail="cannot_change_own_role")
 
     if "full_name" in fields:
-        # до блока пароля: bump_token_version() делает commit
         user.full_name = (fields["full_name"] or "").strip() or None
+    if "role" in fields:
+        user.role = fields["role"]
+    if "is_active" in fields:
+        user.is_active = bool(fields["is_active"])
 
     if "password" in fields:
         try:
@@ -106,17 +109,12 @@ def update_user(
             if str(exc) == "password_pwned":
                 raise HTTPException(status_code=400, detail="password_pwned") from exc
             raise
-        user.password_hash = hash_password(fields["password"])
-        repo.bump_token_version(db, user)
-
-    if "role" in fields:
-        user.role = fields["role"]
-    if "is_active" in fields:
-        user.is_active = bool(fields["is_active"])
-
-    if "password" not in fields:
+        user = repo.set_password(db, user.id, hash_password(fields["password"]))
+        if not verify_password(fields["password"], user.password_hash):
+            raise HTTPException(status_code=500, detail="password_not_saved")
+    else:
         db.commit()
-    db.refresh(user)
+        db.refresh(user)
     record_activity(
         db,
         action="users.updated",

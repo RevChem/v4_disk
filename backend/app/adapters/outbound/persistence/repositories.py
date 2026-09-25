@@ -13,6 +13,7 @@ from app.models import (
     AuditLog,
     EmailVerificationToken,
     GenerationJob,
+    PasswordResetToken,
     RefreshToken,
     ScheduleConfig,
     ScheduleRunState,
@@ -137,6 +138,23 @@ def bump_token_version(db: Session, user: User) -> None:
     db.commit()
 
 
+def set_password(db: Session, user_id: int, password_hash: str) -> User:
+    """Пишет хеш в ту же сессию, что и запрос, и сразу коммитит.
+
+    Пользователь заново читается из ``db``, чтобы смена не осталась на
+    объекте из другой сессии (её commit не сохранит).
+    """
+    user = get_user_by_id(db, user_id)
+    if user is None:
+        raise LookupError("user_not_found")
+    user.password_hash = password_hash
+    user.token_version += 1
+    db.query(RefreshToken).filter(RefreshToken.user_id == user_id).update({"revoked": True})
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def create_email_verification_token(db: Session, user_id: int, token: str) -> None:
     db.add(
         EmailVerificationToken(
@@ -163,6 +181,39 @@ def get_valid_email_verification_token(db: Session, token: str) -> EmailVerifica
 
 def mark_email_verified(db: Session, user: User, record: EmailVerificationToken) -> None:
     user.email_verified = True
+    record.used_at = datetime.now(UTC)
+    db.commit()
+
+
+def create_password_reset_token(db: Session, user_id: int, token: str, *, hours: int = 1) -> None:
+    now = datetime.now(UTC)
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user_id,
+        PasswordResetToken.used_at.is_(None),
+    ).update({"used_at": now})
+    db.add(
+        PasswordResetToken(
+            user_id=user_id,
+            token_hash=hash_token(token),
+            expires_at=now + timedelta(hours=hours),
+        )
+    )
+    db.commit()
+
+
+def get_valid_password_reset_token(db: Session, token: str) -> PasswordResetToken | None:
+    return (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.token_hash == hash_token(token),
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > datetime.now(UTC),
+        )
+        .first()
+    )
+
+
+def mark_password_reset_used(db: Session, record: PasswordResetToken) -> None:
     record.used_at = datetime.now(UTC)
     db.commit()
 

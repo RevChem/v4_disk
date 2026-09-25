@@ -214,6 +214,8 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
             return f"{username} сменил свой пароль"
         uid = d.get("target_user_id")
         return f"{username} сменил пароль пользователя #{uid}"
+    if action == "auth.password_reset":
+        return f"{username} задал новый пароль по ссылке из письма"
     if action == "reports.generation.requested":
         rids = d.get("report_ids") or []
         labels = compact_report_ids(rids)
