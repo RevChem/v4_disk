@@ -289,11 +289,13 @@ def test_cross_check_crop_row_carries_one_cropwise_figure():
     }
     cc = build_cross_check(batch)
     row = next(r for r in cc["operations"] if r["group_name"] == "4.0 Посев")
-    assert row["status"] == "OK"
+    assert row["status"] == "DIFF"
     assert row["cropwise_ha"] == 90.0
+    assert row["max_diff_ha"] == 10.0
     rapeseed = next(c for c in row["crops"] if c["crop"] == "Рапс яровой")
     assert rapeseed["status"] == "DIFF"
     assert rapeseed["cropwise_ha"] == 35.0
+    assert rapeseed["max_diff_ha"] == 20.0
     by_firm = {fr["firm"]: fr["cropwise_ha"] for fr in rapeseed["firms"]}
     assert by_firm["АФ А"] == 30.0
     assert by_firm["АФ Б"] == 5.0

@@ -206,6 +206,39 @@ def _cropwise_firm_ha(sl: dict[str, Any] | None, crop: str, firm: str) -> float 
     return float((sl["firms"].get(key) or {}).get(firm, 0.0))
 
 
+def _gap_vs_cropwise(values: list[float], cropwise: float | None) -> float | None:
+    """Наибольший |сводка − Cropwise| по имеющимся цифрам."""
+    if cropwise is None:
+        return None
+    nums = [float(v) for v in values if v is not None]
+    if not nums:
+        return None
+    base = float(cropwise)
+    return round(max(abs(v - base) for v in nums), 2)
+
+
+def _apply_cropwise_max_diff(row: dict[str, Any]) -> None:
+    """Max diff — разница сводки с Cropwise, не разброс сводок между собой."""
+    gap = _gap_vs_cropwise(list((row.get("totals") or {}).values()), row.get("cropwise_ha"))
+    if gap is not None:
+        row["max_diff_ha"] = gap
+        if row.get("status") != "partial":
+            row["status"] = compare_ha_status(gap)
+    for fr in row.get("firms") or []:
+        fg = _gap_vs_cropwise(list((fr.get("values") or {}).values()), fr.get("cropwise_ha"))
+        if fg is not None:
+            fr["max_diff_ha"] = fg
+    for cr in row.get("crops") or []:
+        cg = _gap_vs_cropwise(list((cr.get("totals") or {}).values()), cr.get("cropwise_ha"))
+        if cg is not None:
+            cr["max_diff_ha"] = cg
+            cr["status"] = compare_ha_status(cg)
+        for fr in cr.get("firms") or []:
+            fg = _gap_vs_cropwise(list((fr.get("values") or {}).values()), fr.get("cropwise_ha"))
+            if fg is not None:
+                fr["max_diff_ha"] = fg
+
+
 def _attach_cropwise(row: dict[str, Any], sl: dict[str, Any] | None) -> None:
     row["cropwise_ha"] = sl["total"] if sl else None
     for cr in row.get("crops") or []:
@@ -369,6 +402,7 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
                 "crops": [],
             }
             _attach_cropwise(partial_row, cw)
+            _apply_cropwise_max_diff(partial_row)
             rows.append(partial_row)
             continue
 
@@ -413,16 +447,6 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             })
 
         status = compare_ha_status(max_diff)
-        if status == "OK":
-            ok += 1
-        else:
-            diff += 1
-        # Расхождение может появиться и по культуре, даже когда общий факт по
-        # операции совпал (ошибки культур компенсируют друг друга в сумме) —
-        # считаем отдельно, чтобы не потерять такие случаи.
-        crop_diff_count = sum(1 for cr in crop_rows if cr["status"] == "DIFF")
-        if crop_diff_count:
-            crop_diff += 1
 
         canon = next((r for r in active_peers if r not in ("1", "2")), active_peers[-1])
         spec = REPORTS.get(canon)
@@ -440,6 +464,17 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             "crops": crop_rows,
         }
         _attach_cropwise(op_row, cw)
+        _apply_cropwise_max_diff(op_row)
+        status = op_row["status"]
+        if status == "OK":
+            ok += 1
+        else:
+            diff += 1
+        # Расхождение по культуре считается после подстановки Cropwise:
+        # max diff культуры — это |сводка − Cropwise|, а не разброс сводок.
+        crop_diff_count = sum(1 for cr in op_row.get("crops") or [] if cr["status"] == "DIFF")
+        if crop_diff_count:
+            crop_diff += 1
         rows.append(op_row)
 
     return {

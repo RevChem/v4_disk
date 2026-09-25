@@ -355,6 +355,12 @@ def _violation_detail_cross(row: dict[str, Any]) -> str:
     parts = [f"{rid}: {ha} га" for rid, ha in sorted(totals.items())]
     md = row.get("max_diff_ha")
     name = row.get("display_name") or row.get("group_name")
+    cw = row.get("cropwise_ha")
+    if cw is not None:
+        return (
+            f"Сводка расходится с Cropwise по операции «{name}»: "
+            f"{'; '.join(parts)}; Cropwise {cw} га (max Δ {md} га)"
+        )
     return f"Сводки не совпадают по операции «{name}»: {'; '.join(parts)} (max Δ {md} га)"
 
 
@@ -364,6 +370,12 @@ def _violation_detail_cross_crop(row: dict[str, Any], crop_row: dict[str, Any]) 
     md = crop_row.get("max_diff_ha")
     name = row.get("display_name") or row.get("group_name")
     crop = crop_row.get("crop")
+    cw = crop_row.get("cropwise_ha")
+    if cw is not None:
+        return (
+            f"Сводка расходится с Cropwise по «{name}» / культуре «{crop}»: "
+            f"{'; '.join(parts)}; Cropwise {cw} га (max Δ {md} га)"
+        )
     return f"Сводки не совпадают по «{name}» / культуре «{crop}»: {'; '.join(parts)} (max Δ {md} га)"
 
 

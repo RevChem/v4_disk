@@ -606,7 +606,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                 <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
                   Под операцией — сумма за смену по культуре (все АФ).
                   {hasCropwiseColumn
-                    ? " Колонка Cropwise — факт UI по этой культуре, одна цифра на всех."
+                    ? " Max diff — наибольшая разница |сводка − Cropwise| по этой строке."
                     : ""}{" "}
                   Нажмите ▶ у культуры, чтобы развернуть расхождения по агрофирмам.
                 </Typography>
