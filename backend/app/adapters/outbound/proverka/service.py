@@ -113,6 +113,33 @@ def read_job_status(job_id: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
+    """Колонка «В файле» для уже завершённой проверки: читает сохранённые xlsx."""
+    if status.get("status") != "completed":
+        return status
+    raw_date = str(status.get("report_date") or "").strip()
+    if not raw_date:
+        return status
+    rows = status.get("cross_check_rows") or []
+    ops = ((status.get("cross_check") or {}).get("operations")) or []
+    pending = [
+        row for row in list(rows) + list(ops)
+        if isinstance(row, dict) and "file_ha" not in row
+    ]
+    if not pending:
+        return status
+    try:
+        _ensure_plan_path()
+        from datetime import date as date_cls
+
+        from proverka.file_values import apply_file_ha_to_rows
+
+        apply_file_ha_to_rows(pending, date_cls.fromisoformat(raw_date))
+    except Exception:
+        return status
+    return status
+
+
 def _job_mtime(job_id: str) -> float:
     path = job_dir(job_id) / "status.json"
     if not path.is_file():

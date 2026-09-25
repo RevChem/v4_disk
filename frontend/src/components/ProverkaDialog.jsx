@@ -410,11 +410,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     [firmCheckRows]
   );
 
-  const hasFileColumn = useMemo(
-    () => cropwiseRows.some((row) => row.file_ha != null && row.file_ha !== ""),
-    [cropwiseRows]
-  );
-
   return (
     <Dialog
       open={open}
@@ -591,6 +586,12 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                     {hasCropwiseColumn && (
                       <TableCell align="right">Cropwise</TableCell>
                     )}
+                    <TableCell
+                      align="right"
+                      title="Итого за сутки с листа «Сводка» Excel тематической сводки"
+                    >
+                      В файле
+                    </TableCell>
                     <TableCell align="right">Max diff</TableCell>
                     <TableCell>Статус</TableCell>
                   </TableRow>
@@ -625,6 +626,21 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                               {formatHa(cropwiseFor(row.group_name, null, null, row.cropwise_ha))}
                             </TableCell>
                           )}
+                          <TableCell
+                            align="right"
+                            title={
+                              row.file_ha != null
+                                ? `Excel сводки ${row.file_report_id || row.canonical_report || ""}`
+                                : "Нет сохранённого Excel с итогом за сутки"
+                            }
+                            sx={
+                              cropwiseApart(row.file_ha, row.totals)
+                                ? { color: "error.main", fontWeight: 600 }
+                                : undefined
+                            }
+                          >
+                            {formatHa(row.file_ha)}
+                          </TableCell>
                           <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
                           <TableCell>
                             <CrossCheckStatusChips
@@ -714,6 +730,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                               {formatHa(cropwiseFor(op.group_name, cr.crop, null, cr.cropwise_ha))}
                             </TableCell>
                           )}
+                          <TableCell />
                           <TableCell align="right">{formatHa(cr.max_diff_ha)}</TableCell>
                           <TableCell>
                             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
@@ -761,6 +778,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                             </Typography>
                           </TableCell>
                         )}
+                        <TableCell />
                         <TableCell align="right">
                           <Typography variant="caption">{formatHa(fr.max_diff_ha)}</Typography>
                         </TableCell>
@@ -844,7 +862,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                     <TableCell>Работа</TableCell>
                     <TableCell align="right">Сводка</TableCell>
                     <TableCell align="right">Cropwise</TableCell>
-                    {hasFileColumn && <TableCell align="right">В файле</TableCell>}
                     <TableCell align="right">API v3</TableCell>
                     <TableCell align="right">Diff</TableCell>
                     <TableCell>Статус</TableCell>
@@ -859,18 +876,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                       </TableCell>
                       <TableCell align="right">{row.svodka_ha?.toFixed?.(2) ?? row.svodka_ha}</TableCell>
                       <TableCell align="right">{row.cropwise_ha?.toFixed?.(2) ?? row.cropwise_ha}</TableCell>
-                      {hasFileColumn && (
-                        <TableCell
-                          align="right"
-                          title={
-                            row.file_diff_ha != null
-                              ? `Файл − Сводка: ${row.file_diff_ha}`
-                              : undefined
-                          }
-                        >
-                          {formatHa(row.file_ha)}
-                        </TableCell>
-                      )}
                       <TableCell align="right">
                         {row.cropwise_api_ha != null && row.cropwise_api_ha !== 0
                           ? row.cropwise_api_ha?.toFixed?.(2) ?? row.cropwise_api_ha
