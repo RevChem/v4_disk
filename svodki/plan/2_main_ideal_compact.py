@@ -726,15 +726,25 @@ def _is_harvest_combine(
     return grp in HARVESTER_GROUP_IDS or grp == HIRED_GROUP_ID
 
 
+def _as_silage_if_corn_mowing(wt: int | None, crop: str) -> str:
+    """Скашивание кукурузы — силос, даже если в истории написано «на зерно»."""
+    if wt is None or int(wt) not in SILAGE_CORN_MOWING_WT_IDS:
+        return crop
+    if crop and "кукуруза" in crop.casefold():
+        return CORN_SILAGE_CROP
+    return crop
+
+
 def _harvest_crop_for_field(
     wt: int | None,
     fid_i: int,
     active_crop_map: dict[int, str],
 ) -> str | None:
-    """Скашивание → «Кукуруза на силос» только на полях силоса (как 10_main)."""
+    """Скашивание кукурузы → «Кукуруза на силос», в том числе при подписи «на зерно»."""
     field_crop = active_crop_map.get(fid_i, "")
     if wt is not None and int(wt) in SILAGE_CORN_MOWING_WT_IDS:
-        if field_crop != CORN_SILAGE_CROP:
+        named = _as_silage_if_corn_mowing(wt, field_crop)
+        if named != CORN_SILAGE_CROP:
             return None
         return CORN_SILAGE_CROP
     return field_crop or "Не определена"
@@ -2641,6 +2651,8 @@ def collect_work_data(
                         continue
                 else:
                     crop = crop_raw or "Не определена"
+                    if is_harvest_grain:
+                        crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
                     if group_name == DISK_GROUP_NAME and not crop_raw:
                         crop = ""
                     if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
@@ -2722,6 +2734,8 @@ def collect_work_data(
                         continue
                 else:
                     crop = crop_raw or "Не определена"
+                    if is_harvest_grain:
+                        crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
                     if group_name == DISK_GROUP_NAME and not crop_raw:
                         crop = ""
                     if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:

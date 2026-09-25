@@ -510,6 +510,49 @@ async def fetch_mtfmi(
     return task_id, items
 
 
+def _machine_task_seasons(report_date: date) -> list[str]:
+    """Годы machine_task.season этой группы. Пустой список — фильтр в запросе не нужен."""
+    try:
+        _sdir = Path(__file__).resolve().parent / "utils" / "season"
+        if not _sdir.is_dir():
+            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
+        if _sdir.is_dir() and str(_sdir) not in sys.path:
+            sys.path.insert(0, str(_sdir))
+        from season_unified import task_season_years_set_for_group
+
+        years = task_season_years_set_for_group(WORK_TYPE_TITLE, report_date)
+    except Exception:
+        return []
+    return sorted(years or [], key=int)
+
+
+async def _fetch_tasks_by_seasons(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    work_type_ids: set[int],
+    time_params: dict[str, str],
+    seasons: list[str],
+) -> list[dict]:
+    """Один GET на сезон: API берёт из season=2026,2027 только первый год."""
+    from machine_tasks_batch_fetch import dedupe_rows_by_id, fetch_machine_tasks_by_wt_async
+
+    if not seasons:
+        return await fetch_machine_tasks_by_wt_async(
+            fetch_all_pages, client, BASE_URL, work_type_ids, time_params, semaphore,
+        )
+    parts = await asyncio.gather(*[
+        fetch_machine_tasks_by_wt_async(
+            fetch_all_pages, client, BASE_URL, work_type_ids,
+            {**time_params, "season": year}, semaphore,
+        )
+        for year in seasons
+    ])
+    rows: list[dict] = []
+    for part in parts:
+        rows.extend(part)
+    return dedupe_rows_by_id(rows)
+
+
 async def fetch_all_tasks_and_mtfmi(
     client:        httpx.AsyncClient,
     semaphore:     asyncio.Semaphore,
@@ -522,23 +565,28 @@ async def fetch_all_tasks_and_mtfmi(
     Загружает задания за сутки и за сезон batch-запросами по work_type_id.
     Агрофирма будет определена позже по полю из mtfmi.
     """
-    from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
     from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
 
     day_start_str    = day_start.strftime("%Y-%m-%dT%H:%M:%S")
     cutoff_str       = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     season_start_str = season_start.strftime("%Y-%m-%dT%H:%M:%S")
+    seasons = _machine_task_seasons(REPORT_DATE)
+    if seasons:
+        print(
+            f"  Фильтр machine_task.season в запросе: {', '.join(seasons)} (по году)",
+            flush=True,
+        )
 
     tasks_today, tasks_season = await asyncio.gather(
-        fetch_machine_tasks_by_wt_async(
-            fetch_all_pages, client, BASE_URL, work_type_ids,
+        _fetch_tasks_by_seasons(
+            client, semaphore, work_type_ids,
             {"end_time_gt_eq": day_start_str, "end_time_lt": cutoff_str},
-            semaphore,
+            seasons,
         ),
-        fetch_machine_tasks_by_wt_async(
-            fetch_all_pages, client, BASE_URL, work_type_ids,
+        _fetch_tasks_by_seasons(
+            client, semaphore, work_type_ids,
             {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
-            semaphore,
+            seasons,
         ),
     )
 

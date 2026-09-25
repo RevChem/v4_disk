@@ -5,7 +5,7 @@
 затем пропорциональное распределение task.covered_area по агрофирмам.
 
 Кукуруза на силос / на зерно (сводки 10, 14): «Скашивание» (SILAGE_CORN_MOWING_WT_IDS)
-учитывается в «Кукуруза на силос» только на полях с культурой «кукуруза».
+кукурузы учитывается как «Кукуруза на силос», даже если в истории написано «на зерно».
 """
 from __future__ import annotations
 
@@ -18,11 +18,11 @@ CORN_SILAGE_CROP = "Кукуруза на силос"
 
 
 def history_crop_name(item: dict, fallback: str = "", *, mowing: bool = False) -> str:
-    """Культура строки площади. Косьба кукурузы без «на зерно» — силос."""
+    """Культура строки площади. Скашивание кукурузы — всегда силос."""
     from mtfmi_batch_fetch import crop_of_item
 
     crop = crop_of_item(item, fallback or "")
-    if mowing and crop and "кукуруза" in crop.casefold() and "зерно" not in crop.casefold():
+    if mowing and crop and "кукуруза" in crop.casefold():
         return CORN_SILAGE_CROP
     return crop
 SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
