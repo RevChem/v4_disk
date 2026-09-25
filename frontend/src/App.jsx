@@ -549,6 +549,7 @@ export default function App() {
         onOpenPrompts={() => setAiPromptsOpen(true)}
         onOpenTaskFacts={() => openTaskFacts()}
         isDeveloper={isDeveloper}
+        summaryDate={summaryDate}
       />
       {user && (
         <PageModalDialog

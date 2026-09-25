@@ -49,6 +49,20 @@ function formatHa(value) {
   return Number.isFinite(n) ? n.toFixed(2) : String(value);
 }
 
+function formatFilePair(calc, fileHa) {
+  const left = formatHa(calc);
+  if (fileHa == null || fileHa === "") return left;
+  return `${left}/${formatHa(fileHa)}`;
+}
+
+function fileApartFromCalc(calc, fileHa) {
+  if (fileHa == null || fileHa === "" || calc == null || calc === "") return false;
+  const left = Number(calc);
+  const right = Number(fileHa);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) >= DIFF_MIN_HA;
+}
+
 function cropwiseApart(cropwiseHa, values) {
   if (cropwiseHa == null || cropwiseHa === "") return false;
   const cw = Number(cropwiseHa);
@@ -573,6 +587,12 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                   Нажмите ▶ у культуры, чтобы развернуть расхождения по агрофирмам.
                 </Typography>
               )}
+              {crossCheckRows.some((row) => row.file_totals && Object.keys(row.file_totals).length > 0) && (
+                <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
+                  Под номером сводки через слеш: расчёт / гектары в файле этой сводки.
+                  Например, 2946.80/2946.50 — в файле сводки 2946.50 га.
+                </Typography>
+              )}
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -586,12 +606,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                     {hasCropwiseColumn && (
                       <TableCell align="right">Cropwise</TableCell>
                     )}
-                    <TableCell
-                      align="right"
-                      title="Итого за сутки с листа «Сводка» Excel тематической сводки"
-                    >
-                      В файле
-                    </TableCell>
                     <TableCell align="right">Max diff</TableCell>
                     <TableCell>Статус</TableCell>
                   </TableRow>
@@ -607,8 +621,21 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           </TableCell>
                           <TableCell>{(row.active_reports || []).join("+")}</TableCell>
                           {crossCheckPeerIds.map((rid) => (
-                            <TableCell key={rid} align="right">
-                              {formatHa(row.totals?.[rid])}
+                            <TableCell
+                              key={rid}
+                              align="right"
+                              title={
+                                row.file_totals?.[rid] != null
+                                  ? `В файле сводки ${rid}: ${formatHa(row.file_totals[rid])} га`
+                                  : undefined
+                              }
+                              sx={
+                                fileApartFromCalc(row.totals?.[rid], row.file_totals?.[rid])
+                                  ? { color: "error.main", fontWeight: 600 }
+                                  : undefined
+                              }
+                            >
+                              {formatFilePair(row.totals?.[rid], row.file_totals?.[rid])}
                             </TableCell>
                           ))}
                           {hasCropwiseColumn && (
@@ -626,21 +653,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                               {formatHa(cropwiseFor(row.group_name, null, null, row.cropwise_ha))}
                             </TableCell>
                           )}
-                          <TableCell
-                            align="right"
-                            title={
-                              row.file_ha != null
-                                ? `Excel сводки ${row.file_report_id || row.canonical_report || ""}`
-                                : "Нет сохранённого Excel с итогом за сутки"
-                            }
-                            sx={
-                              cropwiseApart(row.file_ha, row.totals)
-                                ? { color: "error.main", fontWeight: 600 }
-                                : undefined
-                            }
-                          >
-                            {formatHa(row.file_ha)}
-                          </TableCell>
                           <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
                           <TableCell>
                             <CrossCheckStatusChips
@@ -730,7 +742,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                               {formatHa(cropwiseFor(op.group_name, cr.crop, null, cr.cropwise_ha))}
                             </TableCell>
                           )}
-                          <TableCell />
                           <TableCell align="right">{formatHa(cr.max_diff_ha)}</TableCell>
                           <TableCell>
                             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
@@ -778,7 +789,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                             </Typography>
                           </TableCell>
                         )}
-                        <TableCell />
                         <TableCell align="right">
                           <Typography variant="caption">{formatHa(fr.max_diff_ha)}</Typography>
                         </TableCell>

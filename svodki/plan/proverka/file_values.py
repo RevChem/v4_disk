@@ -72,24 +72,29 @@ def _report_id_from_filename(filename: str) -> str:
     return _report_id_from_title(stem)
 
 
-def find_report_xlsx(report_date: date, report_id: str) -> Path | None:
-    """Ищет уже сохранённый .xlsx для report_id в uploads/<дата>/."""
+def find_report_file(report_date: date, report_id: str, suffix: str) -> Path | None:
+    """Ищет сохранённый отчёт report_id в uploads/<дата>/ с заданным расширением."""
     folder = upload_dir() / report_date.isoformat()
     if not folder.is_dir():
         return None
     rid = str(report_id)
+    want = suffix.lower()
     candidates = [
         p
         for p in folder.iterdir()
         if p.is_file()
-        and p.suffix.lower() == ".xlsx"
+        and p.suffix.lower() == want
         and _report_id_from_filename(p.name) == rid
     ]
     if not candidates:
         return None
-    # На случай дублей — берём самый свежий файл.
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def find_report_xlsx(report_date: date, report_id: str) -> Path | None:
+    """Ищет уже сохранённый .xlsx для report_id в uploads/<дата>/."""
+    return find_report_file(report_date, report_id, ".xlsx")
 
 
 def _header_indexes(values: list[Any]) -> tuple[int, int] | None:
@@ -208,65 +213,426 @@ def _canonical_report_id(row: dict[str, Any]) -> str:
     return ""
 
 
-def apply_file_ha_to_rows(rows: list[Any], report_date: date) -> None:
-    """Дописывает file_ha в уже сохранённые строки сверки (старые задачи проверки)."""
-    cache: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if not isinstance(row, dict) or "file_ha" in row:
-            continue
-        rid = _canonical_report_id(row)
-        if rid not in cache:
-            try:
-                cache[rid] = read_file_total_ha(report_date, rid)
-            except Exception:
-                cache[rid] = {"found": False}
-        row["file_ha"] = file_ha_for_operation(
-            cache[rid], str(row.get("group_name") or ""), rid
-        )
-        row["file_report_id"] = rid or None
+def file_totals_for_row(
+    row: dict[str, Any],
+    by_report: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    group = str(row.get("group_name") or "")
+    peers = row.get("active_reports") or row.get("peer_reports") or []
+    totals: dict[str, float] = {}
+    for peer in peers:
+        rid = str(peer)
+        ha = (by_report.get(rid) or {}).get(group)
+        if ha is not None:
+            totals[rid] = ha
+    return totals
 
 
-def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
-    """Кладёт file_ha на строки сверки операций — колонку перед Max diff."""
-    reports = all_results.get("reports") or {}
-    rows = ((all_results.get("cross_check") or {}).get("operations")) or []
-    cache: dict[str, dict[str, Any]] = {}
+def apply_file_totals_to_rows(rows: list[Any], report_date: date) -> None:
+    """В каждую строку операции кладёт file_totals: сводка → га из её файла."""
+    try:
+        by_report = load_operation_areas(report_date)
+    except Exception:
+        return
     for row in rows:
         if not isinstance(row, dict):
             continue
-        rid = _canonical_report_id(row)
-        fv = cache.get(rid)
-        if fv is None:
-            stored = reports.get(rid) if isinstance(reports.get(rid), dict) else None
-            fv = (stored or {}).get("file_values") or {"found": False}
-            cache[rid] = fv
-        row["file_ha"] = file_ha_for_operation(fv, str(row.get("group_name") or ""), rid)
-        row["file_report_id"] = rid or None
+        row["file_totals"] = file_totals_for_row(row, by_report)
+
+
+def apply_file_ha_to_rows(rows: list[Any], report_date: date) -> None:
+    """Совместимость: колонка «В файле» больше не используется, цифры лежат в file_totals."""
+    apply_file_totals_to_rows(rows, report_date)
+
+
+def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
+    """Кладёт file_totals на строки сверки: по каждой сводке своё число из файла."""
+    reports = all_results.get("reports") or {}
+    by_report: dict[str, dict[str, float]] = {}
+    for rid, result in reports.items():
+        if isinstance(result, dict) and isinstance(result.get("file_operations"), dict):
+            by_report[str(rid)] = result["file_operations"]
+    rows = ((all_results.get("cross_check") or {}).get("operations")) or []
+    for row in rows:
+        if isinstance(row, dict):
+            row["file_totals"] = file_totals_for_row(row, by_report)
+
+
+# Сводки, у которых на первой странице PDF «Итого» устроен одинаково:
+# план, число машин, обработано за сутки. Остальные отчёты не угадываем.
+_PDF_SUMMARY_REPORTS = frozenset({"3", "4", "5", "6", "7", "8", "9"})
+_PDF_AREA_INDEX = 2
+_PDF_MERGE_GAP = 8.0
+_PDF_MIN_NUMBERS = 5
+_SECTION_LINE_RE = re.compile(r"^\d+\.\d+\s+\S.*$")
+_KNOWN_SECTION_TITLES = frozenset({
+    "культуры",
+    "опрыскивание овощных культур",
+    "посев / посадка овощных культур",
+    "3.1 опрыскивание",
+})
+
+
+def _pdf_section_title(line: str) -> str | None:
+    text = " ".join(line.split())
+    if not text or "ВИД РАБОТ" in text or "Итого" in text or "%" in text:
+        return None
+    if text.casefold() in _KNOWN_SECTION_TITLES:
+        return text
+    if "," in text or len(text) > 40:
+        return None
+    if _SECTION_LINE_RE.match(text):
+        return text
+    return None
+
+
+def _cells_from_words(words: list[tuple[float, float, str]]) -> list[str]:
+    """Склеивает «1» и «949.16», если между ними тонкий пробел разряда, а не колонка."""
+    cells: list[str] = []
+    prev_x1: float | None = None
+    for x0, x1, text in words:
+        if prev_x1 is not None and cells and x0 - prev_x1 < _PDF_MERGE_GAP:
+            cells[-1] = cells[-1] + text
+            prev_x1 = x1
+            continue
+        cells.append(text)
+        prev_x1 = x1
+    return cells
+
+
+def _total_area_from_cells(
+    cells: list[str],
+    area_index: int = _PDF_AREA_INDEX,
+) -> float | None:
+    if not any(cell == _TOTAL_LABEL for cell in cells):
+        return None
+    if any("%" in cell for cell in cells):
+        return None
+    nums: list[float] = []
+    for cell in cells:
+        if cell == _TOTAL_LABEL or ":" in cell:
+            continue
+        raw = cell.replace(" ", "").replace(",", ".")
+        try:
+            nums.append(float(raw))
+        except ValueError:
+            continue
+    if len(nums) <= area_index or len(nums) < _PDF_MIN_NUMBERS:
+        return None
+    return round(nums[area_index], 2)
+
+
+def _pdf_page_lines(page) -> list[list[tuple[float, float, str]]]:
+    buckets: dict[int, list[tuple[float, float, str]]] = {}
+    for word in page.get_text("words"):
+        y = round(word[1])
+        buckets.setdefault(y, []).append((float(word[0]), float(word[2]), str(word[4])))
+    return [sorted(buckets[y], key=lambda item: item[0]) for y in sorted(buckets)]
+
+
+def read_pdf_summary_blocks(path: Path, area_index: int = _PDF_AREA_INDEX) -> list[dict[str, Any]]:
+    """«Итого» за сутки с листа сводки PDF. Детализация по машинам не входит:
+    она начинается со второго заголовка «ВИД РАБОТ»."""
+    try:
+        import pymupdf
+    except ImportError:
+        return []
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return []
+    blocks: list[dict[str, Any]] = []
+    pending_title = ""
+    vid_headers = 0
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                if "ВИД РАБОТ" in line:
+                    vid_headers += 1
+                    if vid_headers >= 2:
+                        return blocks
+                    continue
+                title = _pdf_section_title(line)
+                if title:
+                    pending_title = title
+                    continue
+                area = _total_area_from_cells(_cells_from_words(words), area_index)
+                if area is None:
+                    continue
+                blocks.append({"title": pending_title, "file_ha": area})
+                pending_title = ""
+    except Exception:
+        return blocks
+    finally:
+        doc.close()
+    return blocks
+
+
+def _dedupe_words(text: str) -> str:
+    parts = text.split()
+    out: list[str] = []
+    for part in parts:
+        if not out or out[-1] != part:
+            out.append(part)
+    return " ".join(out)
+
+
+def _match_group(line: str) -> str | None:
+    """Имя операции из заголовка листа. Строка с двумя операциями не выбирается."""
+    from proverka.operation_registry import OPERATION_PEERS
+
+    text = _dedupe_words(line)
+    if not text or "Итого" in text or len(text) > 120:
+        return None
+    hits: list[str] = []
+    for group in OPERATION_PEERS:
+        exact = text == group or text.startswith(group + " ") or text.startswith(group + ",")
+        in_header = group in text and text.startswith("ВИД РАБОТ")
+        if exact or in_header:
+            hits.append(group)
+    if len(hits) != 1:
+        return None
+    return hits[0]
+
+
+def _page_has_daily_header(text: str) -> bool:
+    # В PDF подписи колонок рвутся на строки, поэтому ищем короткие маркеры.
+    if "Плановая" not in text:
+        return False
+    return any(phrase in text for phrase in ("Обработано", "Общий объем", "Убрано"))
+
+
+def areas_from_blocks(report_id: str, blocks: list[dict[str, Any]]) -> dict[str, float]:
+    """Блоки листа «Сводка» → гектары по операциям, которые есть в этой сводке."""
+    from proverka.operation_registry import OPERATION_PEERS
+
+    payload = {"found": True, "blocks": blocks}
+    out: dict[str, float] = {}
+    for group, peers in OPERATION_PEERS.items():
+        if str(report_id) not in peers:
+            continue
+        ha = file_ha_for_operation(payload, group, report_id)
+        if ha is not None:
+            out[group] = ha
+    return out
+
+
+def _perf_areas_from_pdf(path: Path, area_index: int = _PDF_AREA_INDEX) -> dict[str, float]:
+    """Сводка 1: на каждой странице «Выработка» своё «Итого» и свой ВИД РАБОТ."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    try:
+        for page in doc:
+            if not _page_has_daily_header(page.get_text("text")):
+                continue
+            current = ""
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                group = _match_group(line)
+                if group:
+                    current = group
+                    continue
+                if not current or current in out:
+                    continue
+                area = _total_area_from_cells(_cells_from_words(words), area_index)
+                if area is None:
+                    continue
+                out[current] = area
+                current = ""
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
+_RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _rightmost_day_x(words: list[tuple[float, float, str]]) -> float | None:
+    if not any(any(month in text.casefold() for month in _RU_MONTHS) for _x0, _x1, text in words):
+        return None
+    days = [
+        x0
+        for x0, _x1, text in words
+        if text.isdigit() and 1 <= int(text) <= 31
+    ]
+    if not days:
+        return None
+    return max(days)
+
+
+def _number_nearest_x(words: list[tuple[float, float, str]], target_x: float) -> float | None:
+    cells: list[tuple[float, str]] = []
+    prev_x1: float | None = None
+    for x0, x1, text in words:
+        if prev_x1 is not None and cells and x0 - prev_x1 < _PDF_MERGE_GAP:
+            cells[-1] = (cells[-1][0], cells[-1][1] + text)
+            prev_x1 = x1
+            continue
+        cells.append((x0, text))
+        prev_x1 = x1
+    if not any(text == _TOTAL_LABEL for _x, text in cells):
+        return None
+    best: float | None = None
+    best_dist = 10**9
+    for x0, text in cells:
+        if text == _TOTAL_LABEL or ":" in text or "%" in text:
+            continue
+        try:
+            value = float(text.replace(" ", "").replace(",", "."))
+        except ValueError:
+            continue
+        dist = abs(x0 - target_x)
+        if dist < best_dist:
+            best_dist = dist
+            best = value
+    if best is None or best_dist > 40:
+        return None
+    return round(best, 2)
+
+
+def _report2_daily_areas(path: Path) -> dict[str, float]:
+    """Сводка 2: «Итого» колонки последнего дня в таблице «Совокупная площадь»."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    current = ""
+    waiting_header = False
+    date_x: float | None = None
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                group = _match_group(line)
+                if group:
+                    current = group
+                    waiting_header = False
+                    date_x = None
+                if "СОВОКУПНАЯ" in line:
+                    waiting_header = True
+                    date_x = None
+                    continue
+                if waiting_header and date_x is None:
+                    date_x = _rightmost_day_x(words)
+                    continue
+                if not current or date_x is None or current in out:
+                    continue
+                area = _number_nearest_x(words, date_x)
+                if area is None:
+                    continue
+                out[current] = area
+                waiting_header = False
+                date_x = None
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
+def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
+    """Гектары за сутки по операциям из одного файла сводки."""
+    rid = str(report_id)
+    suffix = path.suffix.lower()
+    if suffix == ".xlsx":
+        blocks = _read_xlsx_blocks(path)
+        return areas_from_blocks(rid, blocks) if blocks else {}
+    if suffix != ".pdf":
+        return {}
+    if rid == "2":
+        return _report2_daily_areas(path)
+    if rid == "1":
+        return _perf_areas_from_pdf(path)
+    if rid == "11":
+        blocks = read_pdf_summary_blocks(path, area_index=1)
+        return areas_from_blocks(rid, blocks) if blocks else {}
+    if rid in _PDF_SUMMARY_REPORTS:
+        blocks = read_pdf_summary_blocks(path)
+        return areas_from_blocks(rid, blocks) if blocks else {}
+    return {}
+
+
+def load_operation_areas(report_date: date) -> dict[str, dict[str, float]]:
+    """report_id → операция → га из сохранённого файла. Excel перекрывает PDF."""
+    folder = upload_dir() / report_date.isoformat()
+    if not folder.is_dir():
+        return {}
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file() and path.suffix.lower() in {".pdf", ".xlsx"}
+    ]
+    files.sort(key=lambda path: (path.suffix.lower() == ".xlsx", path.name))
+    out: dict[str, dict[str, float]] = {}
+    for path in files:
+        rid = _report_id_from_filename(path.name)
+        if not rid:
+            continue
+        try:
+            areas = operation_areas_from_path(path, rid)
+        except Exception:
+            areas = {}
+        if areas:
+            out[rid] = areas
+    return out
+
+
+def _values_from_blocks(blocks: list[dict[str, Any]], path: Path) -> dict[str, Any]:
+    total = round(sum(float(block.get("file_ha") or 0) for block in blocks), 2)
+    return {"found": True, "file_ha": total, "blocks": blocks, "path": str(path)}
+
+
+def _read_xlsx_blocks(path: Path) -> list[dict[str, Any]]:
+    if load_workbook is None:
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        if _SHEET_NAME not in wb.sheetnames:
+            return []
+        return read_summary_blocks(wb[_SHEET_NAME])
+    except Exception:
+        return []
+    finally:
+        wb.close()
 
 
 def read_file_total_ha(report_date: date, report_id: str) -> dict[str, Any]:
     """{"found": False} либо {"found": True, "file_ha": .., "blocks": [...], "path": ".."}."""
-    if load_workbook is None:
+    xlsx_path = find_report_xlsx(report_date, report_id)
+    if xlsx_path is not None:
+        blocks = _read_xlsx_blocks(xlsx_path)
+        if blocks:
+            return _values_from_blocks(blocks, xlsx_path)
+    if str(report_id) not in _PDF_SUMMARY_REPORTS:
         return {"found": False}
-    path = find_report_xlsx(report_date, report_id)
-    if path is None:
+    pdf_path = find_report_file(report_date, report_id, ".pdf")
+    if pdf_path is None:
         return {"found": False}
-    try:
-        wb = load_workbook(path, read_only=True, data_only=True)
-    except Exception:
+    blocks = read_pdf_summary_blocks(pdf_path)
+    if not blocks:
         return {"found": False}
-    try:
-        if _SHEET_NAME not in wb.sheetnames:
-            return {"found": False}
-        blocks = read_summary_blocks(wb[_SHEET_NAME])
-        if not blocks:
-            return {"found": False}
-        total = round(sum(float(block.get("file_ha") or 0) for block in blocks), 2)
-        return {"found": True, "file_ha": total, "blocks": blocks, "path": str(path)}
-    except Exception:
-        return {"found": False}
-    finally:
-        wb.close()
+    return _values_from_blocks(blocks, pdf_path)
 
 
 def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
@@ -276,6 +642,10 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
     в худшем случае для этого отчёта просто не будет колонки «В файле».
     """
     reports = all_results.get("reports") or {}
+    try:
+        by_report = load_operation_areas(report_date)
+    except Exception:
+        by_report = {}
     for rid, result in reports.items():
         if not isinstance(result, dict):
             continue
@@ -283,6 +653,7 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
             result["file_values"] = read_file_total_ha(report_date, rid)
         except Exception:
             result["file_values"] = {"found": False}
+        result["file_operations"] = by_report.get(str(rid), {})
     try:
         stamp_cross_check_file_ha(all_results)
     except Exception:

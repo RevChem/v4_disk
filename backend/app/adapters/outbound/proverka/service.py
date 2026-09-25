@@ -114,7 +114,7 @@ def read_job_status(job_id: str) -> dict[str, Any] | None:
 
 
 def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
-    """Колонка «В файле» для уже завершённой проверки: читает сохранённые xlsx."""
+    """В строки сверки подмешивает гектары из файла каждой сводки."""
     if status.get("status") != "completed":
         return status
     raw_date = str(status.get("report_date") or "").strip()
@@ -122,19 +122,20 @@ def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
         return status
     rows = status.get("cross_check_rows") or []
     ops = ((status.get("cross_check") or {}).get("operations")) or []
-    pending = [
-        row for row in list(rows) + list(ops)
-        if isinstance(row, dict) and "file_ha" not in row
-    ]
-    if not pending:
+    if not rows and not ops:
         return status
     try:
         _ensure_plan_path()
+        os.environ["UPLOAD_DIR"] = str(Path(settings.upload_dir))
+        os.environ["SVODKI_UPLOAD_DIR"] = os.environ["UPLOAD_DIR"]
         from datetime import date as date_cls
 
-        from proverka.file_values import apply_file_ha_to_rows
+        from proverka.file_values import apply_file_totals_to_rows
 
-        apply_file_ha_to_rows(pending, date_cls.fromisoformat(raw_date))
+        report_day = date_cls.fromisoformat(raw_date)
+        apply_file_totals_to_rows(rows, report_day)
+        if ops is not rows:
+            apply_file_totals_to_rows(ops, report_day)
     except Exception:
         return status
     return status

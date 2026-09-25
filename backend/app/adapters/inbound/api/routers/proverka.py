@@ -30,6 +30,11 @@ from app.adapters.outbound.proverka.ai_settings import (
     save_settings,
     settings_out,
 )
+from app.adapters.outbound.proverka.cropwise_ask_service import (
+    cropwise_ask,
+    cropwise_groups,
+    cropwise_query,
+)
 from app.adapters.outbound.proverka.task_facts_service import (
     facts_ask,
     facts_options,
@@ -663,6 +668,69 @@ def post_task_facts_ask(
             body.question,
             report_ids=body.report_ids,
             max_rows=body.max_rows,
+            use_llm=body.use_llm,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class CropwiseFilterIn(BaseModel):
+    cookie: str
+    date_from: date
+    date_to: date
+    groups: list[str] = Field(min_length=1)
+    firm: str | None = None
+    crop: str | None = None
+    season: int | None = Field(default=None, ge=2020, le=2035)
+
+
+class CropwiseAskIn(CropwiseFilterIn):
+    question: str = ""
+    use_llm: bool = True
+
+
+@router.get("/cropwise/groups")
+def get_cropwise_groups(_: User = Depends(require_developer_access)):
+    """Агрооперации, которые можно запросить в Cropwise отдельно от сверки сводок."""
+    return cropwise_groups()
+
+
+@router.post("/cropwise/query")
+def post_cropwise_query(
+    body: CropwiseFilterIn,
+    _: User = Depends(require_developer_access),
+):
+    """Задания Cropwise по cookie. Модель не вызывается."""
+    try:
+        return cropwise_query(
+            body.cookie,
+            body.date_from,
+            body.date_to,
+            body.groups,
+            firm=body.firm,
+            crop=body.crop,
+            season=body.season,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/cropwise/ask")
+def post_cropwise_ask(
+    body: CropwiseAskIn,
+    _: User = Depends(require_developer_access),
+):
+    """Вопрос DeepSeek по отфильтрованным заданиям Cropwise."""
+    try:
+        return cropwise_ask(
+            body.cookie,
+            body.date_from,
+            body.date_to,
+            body.groups,
+            body.question,
+            firm=body.firm,
+            crop=body.crop,
+            season=body.season,
             use_llm=body.use_llm,
         )
     except ValueError as exc:

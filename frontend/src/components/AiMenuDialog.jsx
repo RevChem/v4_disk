@@ -12,6 +12,8 @@ import {
   MenuItem,
   Select,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
@@ -21,6 +23,7 @@ import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
 
 import { fetchProverkaAiSettings, saveProverkaAiSettings } from "../api";
+import CropwiseAskPanel from "./CropwiseAskPanel";
 
 export default function AiMenuDialog({
   open,
@@ -29,6 +32,7 @@ export default function AiMenuDialog({
   onOpenPrompts,
   onOpenTaskFacts,
   isDeveloper = true,
+  summaryDate = "",
 }) {
   const [settings, setSettings] = useState(null);
   const [model, setModel] = useState("deepseek-flash");
@@ -37,6 +41,7 @@ export default function AiMenuDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [tab, setTab] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,12 +81,24 @@ export default function AiMenuDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+    <Dialog open={open} onClose={onClose} maxWidth={tab === 1 ? "md" : "sm"} fullWidth>
+      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1 }}>
         <PsychologyOutlinedIcon color="primary" />
         AI
       </DialogTitle>
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
+        sx={{ px: 3, borderBottom: 1, borderColor: "divider" }}
+      >
+        <Tab label="Меню" />
+        <Tab label="Cropwise" />
+      </Tabs>
       <DialogContent dividers>
+        <Box sx={{ display: tab === 1 ? "block" : "none" }}>
+          <CropwiseAskPanel summaryDate={summaryDate} open={open} />
+        </Box>
+        {tab === 0 && (
         <Stack spacing={2}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
             <Button
@@ -164,6 +181,7 @@ export default function AiMenuDialog({
             </Stack>
           </Box>
         </Stack>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Закрыть</Button>

@@ -146,3 +146,34 @@ def ask_facts(
         est_input_tokens=tf.estimate_tokens(SYSTEM_PROMPT) + tf.estimate_tokens(user),
     )
     return out
+
+
+def answer_tsv(question: str, table: str, *, system: str) -> dict[str, Any]:
+    """Ответ по уже собранной TSV-таблице. Пустая таблица и пустой вопрос модель не вызывают."""
+    question = (question or "").strip()[:_MAX_QUESTION_CHARS]
+    table = table or ""
+    out: dict[str, Any] = {
+        "ok": True,
+        "llm_used": False,
+        "question": question,
+        "answer": table,
+        "usage": None,
+        "model": None,
+        "error": None,
+    }
+    if not table.strip() or not question:
+        if not table.strip():
+            out["answer"] = "По заданному фильтру данных нет."
+        return out
+    ok, why = _llm_available()
+    if not ok:
+        out["error"] = why
+        return out
+    user = f"Данные (TSV):\n{table}\n\nВопрос: {question}"
+    try:
+        text, usage = _call_llm(system, user)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return out
+    out.update(llm_used=True, answer=text, usage=usage, model=_runtime()["model"])
+    return out

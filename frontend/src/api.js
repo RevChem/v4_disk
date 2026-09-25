@@ -517,6 +517,54 @@ export async function queryTaskFacts(filters) {
   }
 }
 
+export async function fetchCropwiseGroups() {
+  try {
+    const { data } = await api.get("/proverka/cropwise/groups", { timeout: 20_000 });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+function cropwiseBody({ dateFrom, dateTo, groups, firm, crop, season, cookie }) {
+  const seasonNum = season === "" || season === undefined || season === null ? null : Number(season);
+  return {
+    cookie: cookie || "",
+    date_from: dateFrom,
+    date_to: dateTo,
+    groups: groups || [],
+    firm: firm || null,
+    crop: crop || null,
+    season: Number.isFinite(seasonNum) ? seasonNum : null,
+  };
+}
+
+/** Задания Cropwise по cookie. Модель не вызывается. */
+export async function queryCropwise(filters) {
+  try {
+    const { data } = await api.post("/proverka/cropwise/query", cropwiseBody(filters), {
+      timeout: 120_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+/** Вопрос DeepSeek по отфильтрованным заданиям Cropwise. */
+export async function askCropwise({ question, useLlm = true, ...filters }) {
+  try {
+    const { data } = await api.post(
+      "/proverka/cropwise/ask",
+      { ...cropwiseBody(filters), question: question || "", use_llm: Boolean(useLlm) },
+      { timeout: 180_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 /** Ответ DeepSeek по отфильтрованному срезу (или таблица, если useLlm=false). */
 export async function askTaskFacts({ question, useLlm = true, maxRows, ...filters }) {
   try {
