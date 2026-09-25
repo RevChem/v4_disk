@@ -824,7 +824,9 @@ def _aggregate_tasks_for_firms(
                     fid_note = int(item.get("field_id") or 0)
                     crop_note = ""
                     if field_to_crop is not None and fid_note:
-                        crop_note = str(field_to_crop.get(fid_note) or "")
+                        from mtfmi_batch_fetch import crop_of_item
+
+                        crop_note = crop_of_item(item, str(field_to_crop.get(fid_note) or ""))
                     _cap[1](
                         ("2.11 Культивация", firm, mid),
                         group="2.11 Культивация",

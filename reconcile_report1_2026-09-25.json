@@ -1,0 +1,3159 @@
+{
+  "report_id": "1",
+  "title": "СВОДКА ХК Крупно",
+  "svodka": {
+    "report_id": "1",
+    "title": "СВОДКА ХК Крупно",
+    "module": "1_main_ammonium__1_",
+    "report_date": "2026-09-25",
+    "window": {
+      "from": "2026-09-24T06:00:00+03:00",
+      "to": "2026-09-25T06:00:00+03:00"
+    },
+    "work_type_ids": [],
+    "work_groups": [],
+    "firm_order": [
+      "АФ Чистопольская",
+      "АгроРаздолье",
+      "Аксу-Агро",
+      "НурлатАгро",
+      "Дрожжаное Рассвет Агро",
+      "Актай",
+      "Лениногорская Птицефабрика"
+    ],
+    "area_today_by_firm": {
+      "АФ Чистопольская": 411.38,
+      "АгроРаздолье": 409.22,
+      "Аксу-Агро": 816.89,
+      "НурлатАгро": 641.18,
+      "Дрожжаное Рассвет Агро": 446.48,
+      "Актай": 0.0,
+      "Лениногорская Птицефабрика": 335.0
+    },
+    "total_ha": 3060.15,
+    "tasks_today_count": null,
+    "operations": {
+      "1.1 Внесение минеральных удобрений": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 411.38,
+          "АгроРаздолье": 409.22,
+          "Аксу-Агро": 816.89,
+          "НурлатАгро": 641.18,
+          "Дрожжаное Рассвет Агро": 446.48,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 335.0
+        },
+        "total_ha": 3060.15,
+        "work_type_ids": [
+          55
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 1,
+          "АгроРаздолье": 1,
+          "Аксу-Агро": 2,
+          "НурлатАгро": 2,
+          "Дрожжаное Рассвет Агро": 2,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 1
+        },
+        "total_machines": 9,
+        "area_today_by_firm_crop": {
+          "Рапс яровой": {
+            "АФ Чистопольская": 411.38,
+            "АгроРаздолье": 409.22,
+            "Аксу-Агро": 816.89,
+            "Дрожжаное Рассвет Агро": 446.48,
+            "Лениногорская Птицефабрика": 335.0
+          },
+          "Рапс озимый": {
+            "НурлатАгро": 641.18
+          }
+        }
+      },
+      "2.1 Боронование": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          12,
+          81,
+          97,
+          103
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "2.9 Дискование": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 288.73,
+          "АгроРаздолье": 558.68,
+          "Аксу-Агро": 619.92,
+          "НурлатАгро": 651.67,
+          "Дрожжаное Рассвет Агро": 243.37,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2362.37,
+        "work_type_ids": [
+          60
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 3,
+          "АгроРаздолье": 5,
+          "Аксу-Агро": 6,
+          "НурлатАгро": 6,
+          "Дрожжаное Рассвет Агро": 3,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 23
+      },
+      "2.4 Вспашка": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 29.98,
+          "НурлатАгро": 152.85,
+          "Дрожжаное Рассвет Агро": 145.51,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 328.34,
+        "work_type_ids": [
+          49,
+          57,
+          171
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 1,
+          "НурлатАгро": 5,
+          "Дрожжаное Рассвет Агро": 5,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 11
+      },
+      "2.11 Культивация": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          10,
+          50,
+          51,
+          63,
+          96
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "4.0 Посев": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 344.34,
+          "АгроРаздолье": 671.21,
+          "Аксу-Агро": 260.17,
+          "НурлатАгро": 382.47,
+          "Дрожжаное Рассвет Агро": 164.79,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 1822.98,
+        "work_type_ids": [
+          3,
+          4,
+          69,
+          70,
+          71,
+          72,
+          119,
+          120,
+          159,
+          160,
+          161,
+          163
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 2,
+          "АгроРаздолье": 3,
+          "Аксу-Агро": 2,
+          "НурлатАгро": 4,
+          "Дрожжаное Рассвет Агро": 1,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 12
+      },
+      "4.1 Посев (овощи)": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          68,
+          148,
+          172
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "3.1 Опрыскивание": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 1151.11,
+          "АгроРаздолье": 935.93,
+          "Аксу-Агро": 951.76,
+          "НурлатАгро": 1244.69,
+          "Дрожжаное Рассвет Агро": 868.6,
+          "Актай": 146.69,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 5298.78,
+        "work_type_ids": [
+          1,
+          64,
+          65,
+          66,
+          153
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 4,
+          "АгроРаздолье": 5,
+          "Аксу-Агро": 5,
+          "НурлатАгро": 7,
+          "Дрожжаное Рассвет Агро": 4,
+          "Актай": 1,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 26
+      },
+      "3.2 Опрыскивание (овощи)": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          151
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "2.12 Прикатывание": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          13,
+          67,
+          142
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "2.7 Гребнеобразование": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          62
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "2.6 Фрезерование": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          73
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "2.8 Глубокорыхление": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 18.05,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 18.05,
+        "work_type_ids": [
+          11,
+          106,
+          121,
+          150
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 1,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 1
+      },
+      "5.0 Уборка": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 313.84,
+          "АгроРаздолье": 742.02,
+          "Аксу-Агро": 593.11,
+          "НурлатАгро": 113.1,
+          "Дрожжаное Рассвет Агро": 399.02,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2161.09,
+        "work_type_ids": [
+          6,
+          7,
+          75,
+          76,
+          77,
+          84,
+          111,
+          118,
+          125,
+          126,
+          145
+        ],
+        "area_today_by_firm_crop": {
+          "Пшеница озимая": {
+            "Дрожжаное Рассвет Агро": 190.09
+          },
+          "Рапс яровой": {
+            "АФ Чистопольская": 313.84,
+            "АгроРаздолье": 742.02,
+            "Аксу-Агро": 593.11,
+            "Дрожжаное Рассвет Агро": 208.93
+          },
+          "Соя": {
+            "НурлатАгро": 113.1
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 27,
+          "АгроРаздолье": 51,
+          "Аксу-Агро": 47,
+          "НурлатАгро": 12,
+          "Дрожжаное Рассвет Агро": 25,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 162
+      },
+      "5.4 Уборка картофеля, лука": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 52.91,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 52.91,
+        "work_type_ids": [
+          75,
+          76,
+          77
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 6,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 6
+      }
+    },
+    "season_policy": {
+      "task_season_years": null,
+      "task_season_plow_only": false,
+      "history_years": [
+        2026
+      ],
+      "period_start": "2026-03-01",
+      "period_end": "2026-09-25",
+      "task_season_label": "machine_task.season — все",
+      "history_label": "history_items.year: 2026",
+      "label": "Сводка 1 · период 2026-03-01–2026-09-25 · machine_task.season — все · history_items.year: 2026",
+      "cropwise_ui_filters_season": false
+    },
+    "season_task_filter": null,
+    "task_facts_meta": {
+      "file": null,
+      "rows": 506,
+      "groups": {
+        "1.1 Внесение минеральных удобрений": {
+          "facts_ha": 3060.16,
+          "area_today_ha": 3060.15,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "АФ Чистопольская",
+          "consistent": true
+        },
+        "2.1 Боронование": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "2.9 Дискование": {
+          "facts_ha": 2362.37,
+          "area_today_ha": 2362.37,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "АгроРаздолье",
+          "consistent": true
+        },
+        "2.4 Вспашка": {
+          "facts_ha": 328.34,
+          "area_today_ha": 328.34,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "НурлатАгро",
+          "consistent": true
+        },
+        "2.11 Культивация": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "4.0 Посев": {
+          "facts_ha": 1822.97,
+          "area_today_ha": 1822.98,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "АгроРаздолье",
+          "consistent": true
+        },
+        "4.1 Посев (овощи)": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "3.1 Опрыскивание": {
+          "facts_ha": 5298.77,
+          "area_today_ha": 5298.78,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "Аксу-Агро",
+          "consistent": true
+        },
+        "3.2 Опрыскивание (овощи)": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "2.12 Прикатывание": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "2.7 Гребнеобразование": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "2.6 Фрезерование": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        },
+        "2.8 Глубокорыхление": {
+          "facts_ha": 18.05,
+          "area_today_ha": 18.05,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "Актай",
+          "consistent": true
+        },
+        "5.0 Уборка": {
+          "facts_ha": 2161.09,
+          "area_today_ha": 2161.09,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "АгроРаздолье",
+          "consistent": true
+        },
+        "5.4 Уборка картофеля, лука": {
+          "facts_ha": 52.91,
+          "area_today_ha": 52.91,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "АФ Чистопольская",
+          "consistent": true
+        }
+      }
+    }
+  },
+  "operation_comparisons": {
+    "2.1 Боронование": {
+      "group_name": "2.1 Боронование",
+      "canonical_report": "4",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          12,
+          81,
+          97,
+          103
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "4",
+        "season_policy": {
+          "group_name": "2.1 Боронование",
+          "season_rule": "none",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2026-01-01",
+          "period_end": "2026-09-25",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "2.1 Боронование · период 2026-01-01–2026-09-25 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "103,81,97,12"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.1 Боронование",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-01-01",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.1 Боронование · период 2026-01-01–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        103,
+        81,
+        97,
+        12
+      ],
+      "svodka_source_report": "4",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          12,
+          81,
+          97,
+          103
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      }
+    },
+    "2.11 Культивация": {
+      "group_name": "2.11 Культивация",
+      "canonical_report": "8",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          10,
+          50,
+          51,
+          63,
+          73,
+          96
+        ],
+        "area_today_by_firm_crop": {
+          "Пшеница озимая": {
+            "АгроРаздолье": 287.45,
+            "НурлатАгро": 128.1
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "8",
+        "season_policy": {
+          "group_name": "2.11 Культивация",
+          "season_rule": "none",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2026-03-14",
+          "period_end": "2026-09-25",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "2.11 Культивация · период 2026-03-14–2026-09-25 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "10,50,51,63,96"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.11 Культивация",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-03-14",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.11 Культивация · период 2026-03-14–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        10,
+        50,
+        51,
+        63,
+        96
+      ],
+      "svodka_source_report": "8",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          10,
+          50,
+          51,
+          63,
+          96
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      }
+    },
+    "2.12 Прикатывание": {
+      "group_name": "2.12 Прикатывание",
+      "canonical_report": null,
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          13,
+          67,
+          142
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "13,67,142"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.12 Прикатывание",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-03-14",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.12 Прикатывание · период 2026-03-14–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        13,
+        67,
+        142
+      ],
+      "svodka_source_report": "1"
+    },
+    "1.1 Внесение минеральных удобрений": {
+      "group_name": "1.1 Внесение минеральных удобрений",
+      "canonical_report": "3",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          55
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "3",
+        "season_policy": {
+          "group_name": "1.1 Внесение минеральных удобрений",
+          "season_rule": "both_years",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "1.1 Внесение минеральных удобрений · период 2025-07-01–2026-07-01 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "55"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "1.1 Внесение минеральных удобрений",
+        "season_rule": "both_years",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "1.1 Внесение минеральных удобрений · период 2025-07-01–2026-07-01 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        55
+      ],
+      "svodka_source_report": "3",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 411.38,
+          "АгроРаздолье": 409.22,
+          "Аксу-Агро": 816.89,
+          "НурлатАгро": 641.18,
+          "Дрожжаное Рассвет Агро": 446.48,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 335.0
+        },
+        "total_ha": 3060.15,
+        "work_type_ids": [
+          55
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 1,
+          "АгроРаздолье": 1,
+          "Аксу-Агро": 2,
+          "НурлатАгро": 2,
+          "Дрожжаное Рассвет Агро": 2,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 1
+        },
+        "total_machines": 9,
+        "area_today_by_firm_crop": {
+          "Рапс яровой": {
+            "АФ Чистопольская": 411.38,
+            "АгроРаздолье": 409.22,
+            "Аксу-Агро": 816.89,
+            "Дрожжаное Рассвет Агро": 446.48,
+            "Лениногорская Птицефабрика": 335.0
+          },
+          "Рапс озимый": {
+            "НурлатАгро": 641.18
+          }
+        }
+      },
+      "crop_comparisons": [
+        {
+          "crop": "Пшеница озимая",
+          "svodka_ha": 0,
+          "cropwise_ha": 2319.16,
+          "diff_ha": -2319.16,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 411.38,
+              "diff_ha": -411.38,
+              "status": "DIFF"
+            },
+            {
+              "firm": "АгроРаздолье",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 179.0,
+              "diff_ha": -179.0,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Аксу-Агро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 816.89,
+              "diff_ha": -816.89,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Дрожжаное Рассвет Агро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 446.48,
+              "diff_ha": -446.48,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Лениногорская Птицефабрика",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 335.0,
+              "diff_ha": -335.0,
+              "status": "DIFF"
+            },
+            {
+              "firm": "НурлатАгро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 130.41,
+              "diff_ha": -130.41,
+              "status": "DIFF"
+            }
+          ],
+          "group": "1.1 Внесение минеральных удобрений"
+        },
+        {
+          "crop": "Рапс озимый",
+          "svodka_ha": 641.18,
+          "cropwise_ha": 0,
+          "diff_ha": 641.18,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "НурлатАгро",
+              "svodka_ha": 641.18,
+              "cropwise_ha": 0.0,
+              "diff_ha": 641.18,
+              "status": "DIFF"
+            }
+          ],
+          "group": "1.1 Внесение минеральных удобрений"
+        },
+        {
+          "crop": "Рапс яровой",
+          "svodka_ha": 2418.97,
+          "cropwise_ha": 0,
+          "diff_ha": 2418.97,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 411.38,
+              "cropwise_ha": 0.0,
+              "diff_ha": 411.38,
+              "status": "DIFF"
+            },
+            {
+              "firm": "АгроРаздолье",
+              "svodka_ha": 409.22,
+              "cropwise_ha": 0.0,
+              "diff_ha": 409.22,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Аксу-Агро",
+              "svodka_ha": 816.89,
+              "cropwise_ha": 0.0,
+              "diff_ha": 816.89,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Дрожжаное Рассвет Агро",
+              "svodka_ha": 446.48,
+              "cropwise_ha": 0.0,
+              "diff_ha": 446.48,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Лениногорская Птицефабрика",
+              "svodka_ha": 335.0,
+              "cropwise_ha": 0.0,
+              "diff_ha": 335.0,
+              "status": "DIFF"
+            }
+          ],
+          "group": "1.1 Внесение минеральных удобрений"
+        },
+        {
+          "crop": "Соя",
+          "svodka_ha": 0,
+          "cropwise_ha": 740.98,
+          "diff_ha": -740.98,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "АгроРаздолье",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 230.21,
+              "diff_ha": -230.21,
+              "status": "DIFF"
+            },
+            {
+              "firm": "НурлатАгро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 510.77,
+              "diff_ha": -510.77,
+              "status": "DIFF"
+            }
+          ],
+          "group": "1.1 Внесение минеральных удобрений"
+        }
+      ],
+      "comparison": {
+        "crop_diff_count": 4
+      }
+    },
+    "2.7 Гребнеобразование": {
+      "group_name": "2.7 Гребнеобразование",
+      "canonical_report": null,
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          62
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "62"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.7 Гребнеобразование",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-03-14",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.7 Гребнеобразование · период 2026-03-14–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        62
+      ],
+      "svodka_source_report": "1"
+    },
+    "2.6 Фрезерование": {
+      "group_name": "2.6 Фрезерование",
+      "canonical_report": null,
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          73
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "73"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.6 Фрезерование",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-03-14",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.6 Фрезерование · период 2026-03-14–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        73
+      ],
+      "svodka_source_report": "1"
+    },
+    "2.4 Вспашка": {
+      "group_name": "2.4 Вспашка",
+      "canonical_report": "9",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 29.98,
+          "НурлатАгро": 152.85,
+          "Дрожжаное Рассвет Агро": 145.51,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 328.34,
+        "area_today_by_firm_crop": {
+          "Рапс яровой": {
+            "Аксу-Агро": 29.98,
+            "Дрожжаное Рассвет Агро": 22.27
+          },
+          "Пшеница озимая": {
+            "НурлатАгро": 152.85
+          },
+          "Соя": {
+            "Дрожжаное Рассвет Агро": 123.24
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 1,
+          "НурлатАгро": 5,
+          "Дрожжаное Рассвет Агро": 5,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 11,
+        "canonical_report_id": "9",
+        "season_policy": {
+          "group_name": "2.4 Вспашка",
+          "season_rule": "plow_year_plus_one",
+          "task_season_years": [
+            2027
+          ],
+          "task_season_plow_only": true,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "вспашка: season∈{2027}; глубокорыхление: все",
+          "history_label": "history_items.year: 2026",
+          "label": "2.4 Вспашка · период 2025-07-01–2026-07-01 · вспашка: season∈{2027}; глубокорыхление: все",
+          "cropwise_ui_filters_season": true
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "49,57,171"
+        },
+        "preferred_ui_sessionValue": 2027,
+        "ui_session_ensure_ok": false,
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.4 Вспашка",
+        "season_rule": "plow_year_plus_one",
+        "task_season_years": [
+          2027
+        ],
+        "task_season_plow_only": true,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "вспашка: season∈{2027}; глубокорыхление: все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.4 Вспашка · период 2025-07-01–2026-07-01 · вспашка: season∈{2027}; глубокорыхление: все",
+        "cropwise_ui_filters_season": true
+      },
+      "work_type_ids": [
+        49,
+        57,
+        171
+      ],
+      "svodka_source_report": "9",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 29.98,
+          "НурлатАгро": 152.85,
+          "Дрожжаное Рассвет Агро": 145.51,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 328.34,
+        "work_type_ids": [
+          49,
+          57,
+          171
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 1,
+          "НурлатАгро": 5,
+          "Дрожжаное Рассвет Агро": 5,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 11
+      }
+    },
+    "2.8 Глубокорыхление": {
+      "group_name": "2.8 Глубокорыхление",
+      "canonical_report": "9",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "area_today_by_firm_crop": {
+          "Рапс яровой": {
+            "Актай": 18.05
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "9",
+        "season_policy": {
+          "group_name": "2.8 Глубокорыхление",
+          "season_rule": "plow_year_plus_one",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "2.8 Глубокорыхление · период 2025-07-01–2026-07-01 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "11,106,121,150"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.8 Глубокорыхление",
+        "season_rule": "plow_year_plus_one",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.8 Глубокорыхление · период 2025-07-01–2026-07-01 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        11,
+        106,
+        121,
+        150
+      ],
+      "svodka_source_report": "9",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 18.05,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 18.05,
+        "work_type_ids": [
+          11,
+          106,
+          121,
+          150
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 1,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 1
+      }
+    },
+    "2.9 Дискование": {
+      "group_name": "2.9 Дискование",
+      "canonical_report": "7",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          60
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "7",
+        "season_policy": {
+          "group_name": "2.9 Дискование",
+          "season_rule": "both_years",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "2.9 Дискование · период 2025-07-01–2026-07-01 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "60"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "2.9 Дискование",
+        "season_rule": "both_years",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "2.9 Дискование · период 2025-07-01–2026-07-01 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        60
+      ],
+      "svodka_source_report": "7",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 288.73,
+          "АгроРаздолье": 558.68,
+          "Аксу-Агро": 619.92,
+          "НурлатАгро": 651.67,
+          "Дрожжаное Рассвет Агро": 243.37,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2362.37,
+        "work_type_ids": [
+          60
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 3,
+          "АгроРаздолье": 5,
+          "Аксу-Агро": 6,
+          "НурлатАгро": 6,
+          "Дрожжаное Рассвет Агро": 3,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 23
+      }
+    },
+    "3.1 Опрыскивание": {
+      "group_name": "3.1 Опрыскивание",
+      "canonical_report": "6",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 589.82,
+          "АгроРаздолье": 541.52,
+          "Аксу-Агро": 694.76,
+          "НурлатАгро": 401.23,
+          "Дрожжаное Рассвет Агро": 642.05,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2869.38,
+        "area_today_by_firm_crop": {
+          "Рапс озимый": {
+            "АФ Чистопольская": 589.82,
+            "АгроРаздолье": 541.52,
+            "Аксу-Агро": 694.76,
+            "НурлатАгро": 401.23,
+            "Дрожжаное Рассвет Агро": 642.05
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 2,
+          "АгроРаздолье": 4,
+          "Аксу-Агро": 4,
+          "НурлатАгро": 3,
+          "Дрожжаное Рассвет Агро": 2,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 15,
+        "canonical_report_id": "6",
+        "season_policy": {
+          "group_name": "3.1 Опрыскивание",
+          "season_rule": "year_plus_one",
+          "task_season_years": [
+            2027
+          ],
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season = 2027",
+          "history_label": "history_items.year: 2026",
+          "label": "3.1 Опрыскивание · период 2025-07-01–2026-07-01 · machine_task.season = 2027",
+          "cropwise_ui_filters_season": true
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "1,64,65,66,153"
+        },
+        "preferred_ui_sessionValue": 2027,
+        "ui_session_ensure_ok": false,
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "3.1 Опрыскивание",
+        "season_rule": "year_plus_one",
+        "task_season_years": [
+          2027
+        ],
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season = 2027",
+        "history_label": "history_items.year: 2026",
+        "label": "3.1 Опрыскивание · период 2025-07-01–2026-07-01 · machine_task.season = 2027",
+        "cropwise_ui_filters_season": true
+      },
+      "work_type_ids": [
+        1,
+        64,
+        65,
+        66,
+        153
+      ],
+      "svodka_source_report": "6",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 1151.11,
+          "АгроРаздолье": 935.93,
+          "Аксу-Агро": 951.76,
+          "НурлатАгро": 1244.69,
+          "Дрожжаное Рассвет Агро": 868.6,
+          "Актай": 146.69,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 5298.78,
+        "work_type_ids": [
+          1,
+          64,
+          65,
+          66,
+          153
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 4,
+          "АгроРаздолье": 5,
+          "Аксу-Агро": 5,
+          "НурлатАгро": 7,
+          "Дрожжаное Рассвет Агро": 4,
+          "Актай": 1,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 26
+      }
+    },
+    "3.2 Опрыскивание (овощи)": {
+      "group_name": "3.2 Опрыскивание (овощи)",
+      "canonical_report": "6",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "6",
+        "season_policy": {
+          "group_name": "3.2 Опрыскивание (овощи)",
+          "season_rule": "year_plus_one",
+          "task_season_years": [
+            2027
+          ],
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season = 2027",
+          "history_label": "history_items.year: 2026",
+          "label": "3.2 Опрыскивание (овощи) · период 2025-07-01–2026-07-01 · machine_task.season = 2027",
+          "cropwise_ui_filters_season": true
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "151"
+        },
+        "preferred_ui_sessionValue": 2027,
+        "ui_session_ensure_ok": false,
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "3.2 Опрыскивание (овощи)",
+        "season_rule": "year_plus_one",
+        "task_season_years": [
+          2027
+        ],
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season = 2027",
+        "history_label": "history_items.year: 2026",
+        "label": "3.2 Опрыскивание (овощи) · период 2025-07-01–2026-07-01 · machine_task.season = 2027",
+        "cropwise_ui_filters_season": true
+      },
+      "work_type_ids": [
+        151
+      ],
+      "svodka_source_report": "6",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          151
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      }
+    },
+    "4.0 Посев": {
+      "group_name": "4.0 Посев",
+      "canonical_report": "5",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 344.34,
+          "АгроРаздолье": 671.21,
+          "Аксу-Агро": 260.17,
+          "НурлатАгро": 382.47,
+          "Дрожжаное Рассвет Агро": 164.79,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 1822.98,
+        "work_type_ids": [
+          3,
+          4,
+          69,
+          70,
+          71,
+          72,
+          119,
+          120,
+          159,
+          160,
+          161,
+          163
+        ],
+        "area_today_by_firm_crop": {
+          "Пшеница озимая": {
+            "АФ Чистопольская": 344.34,
+            "АгроРаздолье": 671.21,
+            "Аксу-Агро": 260.17,
+            "НурлатАгро": 317.29,
+            "Дрожжаное Рассвет Агро": 164.79
+          },
+          "Рапс озимый": {
+            "НурлатАгро": 3.38
+          },
+          "Тритикале озимая": {
+            "НурлатАгро": 61.79
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 2,
+          "АгроРаздолье": 3,
+          "Аксу-Агро": 2,
+          "НурлатАгро": 4,
+          "Дрожжаное Рассвет Агро": 1,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 12,
+        "canonical_report_id": "5",
+        "season_policy": {
+          "group_name": "4.0 Посев",
+          "season_rule": "year_plus_one",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2025-07-01",
+          "period_end": "2026-07-01",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "4.0 Посев · период 2025-07-01–2026-07-01 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "3,4,69,70,71,72,119,120,159,160,161,163"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "4.0 Посев",
+        "season_rule": "year_plus_one",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "4.0 Посев · период 2025-07-01–2026-07-01 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        3,
+        4,
+        69,
+        70,
+        71,
+        72,
+        119,
+        120,
+        159,
+        160,
+        161,
+        163
+      ],
+      "svodka_source_report": "5",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 344.34,
+          "АгроРаздолье": 671.21,
+          "Аксу-Агро": 260.17,
+          "НурлатАгро": 382.47,
+          "Дрожжаное Рассвет Агро": 164.79,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 1822.98,
+        "work_type_ids": [
+          3,
+          4,
+          69,
+          70,
+          71,
+          72,
+          119,
+          120,
+          159,
+          160,
+          161,
+          163
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 2,
+          "АгроРаздолье": 3,
+          "Аксу-Агро": 2,
+          "НурлатАгро": 4,
+          "Дрожжаное Рассвет Агро": 1,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 12
+      }
+    },
+    "4.1 Посев (овощи)": {
+      "group_name": "4.1 Посев (овощи)",
+      "canonical_report": null,
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          68,
+          148,
+          172
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "68,148,172"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "4.1 Посев (овощи)",
+        "season_rule": "year_plus_one",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2025-07-01",
+        "period_end": "2026-07-01",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "4.1 Посев (овощи) · период 2025-07-01–2026-07-01 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        68,
+        148,
+        172
+      ],
+      "svodka_source_report": "1"
+    },
+    "5.4 Уборка картофеля, лука": {
+      "group_name": "5.4 Уборка картофеля, лука",
+      "canonical_report": "10",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 52.9,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 52.9,
+        "work_type_ids": [
+          75,
+          76,
+          77
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0,
+        "canonical_report_id": "10",
+        "season_policy": {
+          "group_name": "5.4 Уборка картофеля, лука",
+          "season_rule": "none",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2026-03-01",
+          "period_end": "2026-09-25",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "5.4 Уборка картофеля, лука · период 2026-03-01–2026-09-25 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "75,76,77"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "5.4 Уборка картофеля, лука",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-03-01",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "5.4 Уборка картофеля, лука · период 2026-03-01–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        75,
+        76,
+        77
+      ],
+      "svodka_source_report": "10",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 52.91,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 52.91,
+        "work_type_ids": [
+          75,
+          76,
+          77
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 6,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 6
+      }
+    },
+    "5.0 Уборка": {
+      "group_name": "5.0 Уборка",
+      "canonical_report": "11",
+      "svodka_op": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 313.84,
+          "АгроРаздолье": 742.02,
+          "Аксу-Агро": 593.11,
+          "НурлатАгро": 113.1,
+          "Дрожжаное Рассвет Агро": 399.02,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2161.09,
+        "work_type_ids": [
+          6,
+          7,
+          75,
+          76,
+          77,
+          84,
+          111,
+          118,
+          125,
+          126,
+          145
+        ],
+        "area_today_by_firm_crop": {
+          "Пшеница озимая": {
+            "Дрожжаное Рассвет Агро": 190.09
+          },
+          "Рапс яровой": {
+            "АФ Чистопольская": 313.84,
+            "АгроРаздолье": 742.02,
+            "Аксу-Агро": 593.11,
+            "Дрожжаное Рассвет Агро": 208.93
+          },
+          "Соя": {
+            "НурлатАгро": 113.1
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 26,
+          "АгроРаздолье": 51,
+          "Аксу-Агро": 46,
+          "НурлатАгро": 9,
+          "Дрожжаное Рассвет Агро": 24,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 156,
+        "canonical_report_id": "11",
+        "season_policy": {
+          "group_name": "5.0 Уборка",
+          "season_rule": "none",
+          "task_season_years": null,
+          "task_season_plow_only": false,
+          "history_years": [
+            2026
+          ],
+          "period_start": "2026-06-01",
+          "period_end": "2026-09-25",
+          "task_season_label": "machine_task.season — все",
+          "history_label": "history_items.year: 2026",
+          "label": "5.0 Уборка · период 2026-06-01–2026-09-25 · machine_task.season — все",
+          "cropwise_ui_filters_season": false
+        }
+      },
+      "cropwise_work_report": {
+        "ok": false,
+        "status": 401,
+        "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+        "payload": {
+          "from_time": "2026-09-24T06:00:00",
+          "to_time": "2026-09-25T06:00:00",
+          "work_type_ids": "6,7,75,76,77,84,111,118,125,126,145"
+        },
+        "fetch_meta": {
+          "attempts": 2,
+          "methods": [
+            "POST",
+            "GET"
+          ],
+          "best_task_rows": 0,
+          "best_total_ha": 0.0,
+          "winner": {
+            "attempt": 1,
+            "method": "POST",
+            "ok": false,
+            "task_rows": 0,
+            "total_ha": 0.0
+          },
+          "responses": [
+            {
+              "attempt": 1,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 1,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "POST",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            },
+            {
+              "attempt": 2,
+              "method": "GET",
+              "ok": false,
+              "task_rows": 0,
+              "total_ha": 0.0
+            }
+          ],
+          "total_spread_ha": 0.0,
+          "unstable": false
+        }
+      },
+      "season_policy": {
+        "group_name": "5.0 Уборка",
+        "season_rule": "none",
+        "task_season_years": null,
+        "task_season_plow_only": false,
+        "history_years": [
+          2026
+        ],
+        "period_start": "2026-06-01",
+        "period_end": "2026-09-25",
+        "task_season_label": "machine_task.season — все",
+        "history_label": "history_items.year: 2026",
+        "label": "5.0 Уборка · период 2026-06-01–2026-09-25 · machine_task.season — все",
+        "cropwise_ui_filters_season": false
+      },
+      "work_type_ids": [
+        6,
+        7,
+        75,
+        76,
+        77,
+        84,
+        111,
+        118,
+        125,
+        126,
+        145
+      ],
+      "svodka_source_report": "11",
+      "svodka_op_local": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 313.84,
+          "АгроРаздолье": 742.02,
+          "Аксу-Агро": 593.11,
+          "НурлатАгро": 113.1,
+          "Дрожжаное Рассвет Агро": 399.02,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 2161.09,
+        "work_type_ids": [
+          6,
+          7,
+          75,
+          76,
+          77,
+          84,
+          111,
+          118,
+          125,
+          126,
+          145
+        ],
+        "area_today_by_firm_crop": {
+          "Пшеница озимая": {
+            "Дрожжаное Рассвет Агро": 190.09
+          },
+          "Рапс яровой": {
+            "АФ Чистопольская": 313.84,
+            "АгроРаздолье": 742.02,
+            "Аксу-Агро": 593.11,
+            "Дрожжаное Рассвет Агро": 208.93
+          },
+          "Соя": {
+            "НурлатАгро": 113.1
+          }
+        },
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 27,
+          "АгроРаздолье": 51,
+          "Аксу-Агро": 47,
+          "НурлатАгро": 12,
+          "Дрожжаное Рассвет Агро": 25,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 162
+      },
+      "crop_comparisons": [
+        {
+          "crop": "Картофель",
+          "svodka_ha": 0,
+          "cropwise_ha": 51.93,
+          "diff_ha": -51.93,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 51.93,
+              "diff_ha": -51.93,
+              "status": "DIFF"
+            }
+          ],
+          "group": "5.0 Уборка"
+        },
+        {
+          "crop": "Кукуруза на зерно",
+          "svodka_ha": 0,
+          "cropwise_ha": 77.88,
+          "diff_ha": -77.88,
+          "status": "DIFF",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 18.92,
+              "diff_ha": -18.92,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Аксу-Агро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 8.27,
+              "diff_ha": -8.27,
+              "status": "DIFF"
+            },
+            {
+              "firm": "Дрожжаное Рассвет Агро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 19.67,
+              "diff_ha": -19.67,
+              "status": "DIFF"
+            },
+            {
+              "firm": "НурлатАгро",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 31.02,
+              "diff_ha": -31.02,
+              "status": "DIFF"
+            }
+          ],
+          "group": "5.0 Уборка"
+        },
+        {
+          "crop": "Морковь",
+          "svodka_ha": 0,
+          "cropwise_ha": 0.98,
+          "diff_ha": -0.98,
+          "status": "OK",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 0.0,
+              "cropwise_ha": 0.98,
+              "diff_ha": -0.98,
+              "status": "OK"
+            }
+          ],
+          "group": "5.0 Уборка"
+        },
+        {
+          "crop": "Пшеница озимая",
+          "svodka_ha": 190.09,
+          "cropwise_ha": 190.09,
+          "diff_ha": 0.0,
+          "status": "OK",
+          "firms": [
+            {
+              "firm": "Дрожжаное Рассвет Агро",
+              "svodka_ha": 190.09,
+              "cropwise_ha": 190.09,
+              "diff_ha": 0.0,
+              "status": "OK"
+            }
+          ],
+          "group": "5.0 Уборка"
+        },
+        {
+          "crop": "Рапс яровой",
+          "svodka_ha": 1857.9,
+          "cropwise_ha": 1857.9,
+          "diff_ha": 0.0,
+          "status": "OK",
+          "firms": [
+            {
+              "firm": "АФ Чистопольская",
+              "svodka_ha": 313.84,
+              "cropwise_ha": 313.84,
+              "diff_ha": 0.0,
+              "status": "OK"
+            },
+            {
+              "firm": "АгроРаздолье",
+              "svodka_ha": 742.02,
+              "cropwise_ha": 742.02,
+              "diff_ha": 0.0,
+              "status": "OK"
+            },
+            {
+              "firm": "Аксу-Агро",
+              "svodka_ha": 593.11,
+              "cropwise_ha": 593.11,
+              "diff_ha": 0.0,
+              "status": "OK"
+            },
+            {
+              "firm": "Дрожжаное Рассвет Агро",
+              "svodka_ha": 208.93,
+              "cropwise_ha": 208.93,
+              "diff_ha": 0.0,
+              "status": "OK"
+            }
+          ],
+          "group": "5.0 Уборка"
+        },
+        {
+          "crop": "Соя",
+          "svodka_ha": 113.1,
+          "cropwise_ha": 113.1,
+          "diff_ha": 0.0,
+          "status": "OK",
+          "firms": [
+            {
+              "firm": "НурлатАгро",
+              "svodka_ha": 113.1,
+              "cropwise_ha": 113.1,
+              "diff_ha": 0.0,
+              "status": "OK"
+            }
+          ],
+          "group": "5.0 Уборка"
+        }
+      ],
+      "comparison": {
+        "crop_diff_count": 2
+      }
+    }
+  },
+  "cropwise_work_report": {
+    "ok": false,
+    "per_operation": true,
+    "operations_total": 15,
+    "operations_ok": 2,
+    "operations_error": 15
+  }
+}

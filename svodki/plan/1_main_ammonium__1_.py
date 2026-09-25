@@ -293,7 +293,9 @@ def _group_period_start(group_name: str) -> date:
 
 
 def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
-    crop = field_to_crop.get(fid_i)
+    from mtfmi_batch_fetch import crop_of_field
+
+    crop = crop_of_field(fid_i, field_to_crop.get(fid_i) or "")
     if group_name == SPRAY_GROUP_NAME:
         return bool(crop and crop not in VEG_SPRAY_CROPS)
     if group_name == VEG_SPRAY_GROUP_NAME:
@@ -1090,6 +1092,11 @@ def _build_fert_field_to_crop(years: list[int]) -> None:
 
 
 def fert_crop_name(fid: int) -> str:
+    from mtfmi_batch_fetch import crop_of_field
+
+    name = crop_of_field(int(fid), "")
+    if name:
+        return name
     name = fert_field_to_crop.get(int(fid))
     if name:
         return name
@@ -2255,12 +2262,14 @@ async def fetch_day_stats_for_work_types(
                         for fid, fcov in field_cov.items():
                             pm[mid]["field_cov"][fid] += fcov
                             if _cap is not None and fcov > 0:
+                                from mtfmi_batch_fetch import crop_of_field
+
                                 mrec = machines_map.get(mid) or {}
                                 _cap[1](
                                     (group_name, firm, mid),
                                     group=group_name,
                                     firm=firm,
-                                    crop=str(field_to_crop.get(int(fid)) or ""),
+                                    crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
                                     field_id=int(fid),
                                     task_id=int(t["id"]),
                                     machine_id=int(mid) if mid is not None else None,
@@ -2414,12 +2423,14 @@ async def fetch_day_stats_for_work_types(
                 if fid_cov > 0:
                     pm[mid]["field_cov"][fid] += fid_cov
                     if _cap is not None:
+                        from mtfmi_batch_fetch import crop_of_field
+
                         mrec = machines_map.get(mid) or {}
                         _cap[1](
                             (group_name, firm, mid),
                             group=group_name,
                             firm=firm,
-                            crop=str(field_to_crop.get(int(fid)) or ""),
+                            crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
                             field_id=int(fid),
                             task_id=int(t["id"]),
                             machine_id=int(mid) if mid is not None else None,
@@ -2594,7 +2605,9 @@ async def fetch_day_stats_for_work_types(
             if get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
-            crop = field_to_crop.get(fid)
+            from mtfmi_batch_fetch import crop_of_field
+
+            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
             if crop:
                 area_by_crop[crop] += fid_cov
 

@@ -691,6 +691,12 @@ async def fetch_mtfmi_for_tasks(
             if not isinstance(res, BaseException):
                 result[tid] = res
 
+    from mtfmi_batch_fetch import remember_history_crops
+
+    try:
+        await remember_history_crops(client, BASE_URL, result, semaphore)
+    except Exception as exc:
+        print(f"  культура history_item: {exc}", flush=True)
     return result
 
 
@@ -841,7 +847,9 @@ async def fetch_all_crop_stats(
             if not firm:
                 continue
 
-            raw_crop = field_to_crop.get(fid_i, "")
+            from mtfmi_batch_fetch import crop_of_item
+
+            raw_crop = crop_of_item(item, field_to_crop.get(fid_i, ""))
             crop_season = _crop_for_seeding_fact(raw_crop, for_today=False)
             crop_today = _crop_for_seeding_fact(raw_crop, for_today=True)
 
@@ -877,7 +885,9 @@ async def fetch_all_crop_stats(
             if not firm:
                 continue
 
-            raw_crop = field_to_crop.get(fid_i, "")
+            from mtfmi_batch_fetch import crop_of_item
+
+            raw_crop = crop_of_item(item, field_to_crop.get(fid_i, ""))
             crop_season = _crop_for_seeding_fact(raw_crop, for_today=False)
             crop_today = _crop_for_seeding_fact(raw_crop, for_today=True)
 
@@ -995,7 +1005,11 @@ def _veg_label_for_item(
     fid = item.get("field_id")
     if field_to_crop is not None and fid is not None:
         try:
-            by_field = _map_veg_crop_label(field_to_crop.get(int(fid), ""))
+            from mtfmi_batch_fetch import crop_of_item
+
+            by_field = _map_veg_crop_label(
+                crop_of_item(item, field_to_crop.get(int(fid), "")),
+            )
             if by_field:
                 return by_field
         except (TypeError, ValueError):

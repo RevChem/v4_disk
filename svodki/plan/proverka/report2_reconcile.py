@@ -473,6 +473,19 @@ def _reconcile_one_operation(
                 out["svodka_r2_diff_ha"] = diff_local
 
     if not work.get("ok"):
+        from proverka.cropwise_crops import fill_crop_comparisons
+
+        fill_crop_comparisons(
+            out,
+            {group_name: display_op},
+            work=work,
+            firm_names=firm_names,
+            hints=hints,
+            shift_cache=shift_cache,
+            task_years=list(task_years or []),
+            ui_session=ui_session if isinstance(ui_session, int) else None,
+            cutoff_iso=t1,
+        )
         return out
 
     if season_cropwise:
@@ -587,7 +600,7 @@ def _reconcile_one_operation(
         out["comparison"]["note"] += f" {fetch_note}"
 
     svodka_crop = display_op.get("area_today_by_firm_crop") or {}
-    if svodka_crop and work.get("ok"):
+    if svodka_crop and (work.get("ok") or shift_cache is not None):
         from proverka.crop_compare import compare_svodka_cropwise_crops
 
         cw_crop = work.get("editor_crop_areas")

@@ -139,7 +139,15 @@ def ensure_ui_session_season(
     if ui_session == preferred:
         return web, csrf, ui_years, ui_session, cookie_used
 
-    switched = set_ui_session_year(web, csrf, preferred)
+    try:
+        switched = set_ui_session_year(web, csrf, preferred)
+    except requests.HTTPError as exc:
+        print(
+            f"  Cropwise: сезон {preferred} не переключился ({exc.response.status_code}), "
+            "факт этого сезона возьмём из API v3",
+            flush=True,
+        )
+        switched = None
     if switched == preferred:
         return web, csrf, ui_years, switched, cookie_used
 

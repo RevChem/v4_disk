@@ -1811,6 +1811,63 @@ async def fetch_task_crop_via_agro_operation(
 
     return task_crop, task_field_crop
 
+
+def _load_mtfmi_row_crops(
+    mtfmi_map: dict[int, list[dict]],
+    history_item_to_crop: dict[int, str],
+    headers: dict,
+) -> dict[int, str]:
+    """Культура строки площади: MachineTaskFieldMappingItem.history_item_id."""
+    pairs: list[tuple[int, int]] = []
+    missing: set[int] = set()
+    for items in mtfmi_map.values():
+        for item in items:
+            mid = item.get("id")
+            hid = item.get("history_item_id")
+            if mid is None or hid is None:
+                continue
+            mid_i, hid_i = int(mid), int(hid)
+            pairs.append((mid_i, hid_i))
+            if hid_i not in history_item_to_crop:
+                missing.add(hid_i)
+    extra: dict[int, str] = {}
+    if missing:
+        from mtaomi_batch_fetch import mass_request_async
+
+        crops_map = {
+            int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+            for c in get_all_from_id("crops")
+            if c.get("id") is not None
+        }
+
+        async def _fetch() -> list[dict]:
+            sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
+            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+                return await mass_request_async(
+                    client, BASE_URL, "history_items", sorted(missing), sem,
+                )
+
+        for hi in asyncio.run(_fetch()):
+            if hi.get("id") is None or hi.get("crop_id") is None:
+                continue
+            name = crops_map.get(int(hi["crop_id"]), "")
+            if not name:
+                continue
+            extra[int(hi["id"])] = name
+            if not is_skip_crop(name):
+                history_item_to_crop.setdefault(int(hi["id"]), name)
+    out: dict[int, str] = {}
+    for mid_i, hid_i in pairs:
+        name = extra.get(hid_i) or history_item_to_crop.get(hid_i) or ""
+        if name:
+            out[mid_i] = name
+    print(
+        f"  культура строки площади: {len(out)} из {len(pairs)}, "
+        f"history_item вне годовой карты: {len(missing)}",
+        flush=True,
+    )
+    return out
+
 # =============================================================================
 # СБОР ДАННЫХ
 # =============================================================================
@@ -2265,6 +2322,7 @@ def collect_work_data(
 
     all_task_ids = [tid for g in pending_groups for tid in g["task_ids"]]
     global_mtfmi = _build_global_mtfmi_map(all_task_ids, headers)
+    mtfmi_row_crop = _load_mtfmi_row_crops(global_mtfmi, history_item_to_crop, headers)
 
     for g in pending_groups:
         group_name = g["group_name"]
@@ -2353,7 +2411,18 @@ def collect_work_data(
                 return default
             return crop_
 
-        def _crop_for_task_field(tid_: int, fid_i_: int, default: str = "") -> str:
+        def _crop_for_task_field(
+            tid_: int,
+            fid_i_: int,
+            default: str = "",
+            item: dict | None = None,
+        ) -> str:
+            if item is not None:
+                raw_id = item.get("id")
+                if raw_id is not None:
+                    named = mtfmi_row_crop.get(int(raw_id), "")
+                    if named:
+                        return named
             if group_name == DISK_GROUP_NAME:
                 try:
                     season_year = int(task_season.get(tid_) or 0) or None
@@ -2451,8 +2520,16 @@ def collect_work_data(
 
                 items = mtfmi_map.get(tid, [])
 
-                def _spray_item_allowed(fid_i: int) -> bool:
-                    crop_s = _crop_for_task_field(tid, fid_i, "Не определена")
+                def _spray_row_crop(item: dict) -> str:
+                    fid = item.get("field_id")
+                    try:
+                        fid_i = int(fid) if fid is not None else 0
+                    except (TypeError, ValueError):
+                        fid_i = 0
+                    return _crop_for_task_field(tid, fid_i, "Не определена", item)
+
+                def _spray_row_ok(item: dict) -> bool:
+                    crop_s = _spray_row_crop(item)
                     if group_name == SPRAY_GROUP_NAME:
                         return crop_s not in VEG_SPRAY_CROPS
                     if group_name == VEG_SPRAY_GROUP_NAME:
@@ -2479,7 +2556,7 @@ def collect_work_data(
                     field_ok=_spray_field_ok,
                     firm_for_field=_spray_firm_for_field,
                     parse_dt=parse_dt,
-                    item_allowed=_spray_item_allowed,
+                    row_allowed=_spray_row_ok,
                 )
                 if not firm_cov:
                     continue
@@ -2496,7 +2573,8 @@ def collect_work_data(
                         firm_for_field=_spray_firm_for_field,
                         crop_for_field=lambda fid: _crop_for_task_field(tid, fid, "Не определена"),
                         parse_dt=parse_dt,
-                        item_allowed=_spray_item_allowed,
+                        row_allowed=_spray_row_ok,
+                        crop_for_item=_spray_row_crop,
                     )
                     for crop_s, crop_area in crop_cov.items():
                         if crop_area <= 0:
@@ -2509,9 +2587,9 @@ def collect_work_data(
                             fid_i = int(fid)
                             if (
                                 _spray_field_ok(fid_i)
-                                and _spray_item_allowed(fid_i)
+                                and _spray_row_ok(item)
                                 and _spray_firm_for_field(fid_i) == firm_s
-                                and _crop_for_task_field(tid, fid_i, "Не определена") == crop_s
+                                and _spray_row_crop(item) == crop_s
                             ):
                                 rep_fid = fid_i
                                 break
@@ -2556,7 +2634,7 @@ def collect_work_data(
                 )
                 if not firm:
                     continue
-                crop_raw = _crop_for_task_field(tid, fid_i)
+                crop_raw = _crop_for_task_field(tid, fid_i, item=item)
                 if is_harvest_veg:
                     crop = crop_raw or None
                     if not crop:
@@ -2637,7 +2715,7 @@ def collect_work_data(
                 )
                 if not firm:
                     continue
-                crop_raw = _crop_for_task_field(tid, fid_i)
+                crop_raw = _crop_for_task_field(tid, fid_i, item=item)
                 if is_harvest_veg:
                     crop = crop_raw or None
                     if not crop:

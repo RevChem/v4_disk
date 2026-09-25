@@ -710,6 +710,12 @@ async def fetch_mtfmi_for_tasks(
     missing = [tid for tid in task_ids if tid not in out]
     if not missing:
         print(f"  mtfmi из prefetch JSON: {len(out)} задач (без HTTP)", flush=True)
+        from mtfmi_batch_fetch import remember_history_crops
+
+        try:
+            await remember_history_crops(client, BASE_URL, out, semaphore)
+        except Exception as exc:
+            print(f"  культура history_item: {exc}", flush=True)
         return out
     from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
 
@@ -987,7 +993,12 @@ def aggregate_harvest_by_firm(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            crop = field_to_crop.get(fid_i)
+            from task_area_shared import history_crop_name
+
+            crop = history_crop_name(
+                item, field_to_crop.get(fid_i) or "",
+                mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
+            )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
                 continue
             if wt in veg_wt_ids:
@@ -1016,7 +1027,12 @@ def aggregate_harvest_by_firm(
             firm_i = field_to_firm.get(fid_i)
             if not firm_i:
                 continue
-            crop_i = field_to_crop.get(fid_i)
+            from task_area_shared import history_crop_name
+
+            crop_i = history_crop_name(
+                item, field_to_crop.get(fid_i) or "",
+                mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
+            )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop_i != CORN_SILAGE_CROP:
                 continue
             if wt in veg_wt_ids:
@@ -1122,7 +1138,12 @@ def aggregate_harvest_by_firm(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            crop = field_to_crop.get(fid_i)
+            from task_area_shared import history_crop_name
+
+            crop = history_crop_name(
+                item, field_to_crop.get(fid_i) or "",
+                mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
+            )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
                 continue
             if wt in veg_wt_ids:

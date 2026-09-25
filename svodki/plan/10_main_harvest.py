@@ -1560,6 +1560,12 @@ async def fetch_mtfmi_batch(
     out = _mtfmi_map_from_prefetch(set(task_ids))
     missing = [tid for tid in task_ids if tid not in out]
     if not missing:
+        from mtfmi_batch_fetch import remember_history_crops
+
+        try:
+            await remember_history_crops(client, BASE_URL, out, semaphore)
+        except Exception as exc:
+            print(f"  культура history_item: {exc}", flush=True)
         return out
 
     url = f"{BASE_URL}/machine_task_field_mapping_items"
@@ -1601,6 +1607,12 @@ async def fetch_mtfmi_batch(
             else:
                 _, items = res
                 out[tid] = items
+    from mtfmi_batch_fetch import remember_history_crops
+
+    try:
+        await remember_history_crops(client, BASE_URL, out, semaphore)
+    except Exception as exc:
+        print(f"  культура history_item: {exc}", flush=True)
     return out
 
 
@@ -1839,7 +1851,11 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 firm = cache.field_to_firm.get(fid_i)
                 if not firm:
                     continue
-                crop = field_to_crop.get(fid_i)
+                from task_area_shared import history_crop_name
+
+                crop = history_crop_name(
+                    item, field_to_crop.get(fid_i) or "", mowing=is_mowing,
+                )
                 if is_mowing and crop != CORN_SILAGE_CROP:
                     continue
                 cov = harvest_item_area_for_shift(

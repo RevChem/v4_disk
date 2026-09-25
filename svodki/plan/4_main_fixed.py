@@ -632,6 +632,9 @@ async def fetch_all_data(
         _cap = bind_capture()
     except Exception:
         _cap = None
+    today_crop_by_firm: dict[str, dict[str, float]] = {
+        firm: defaultdict(float) for firm in AGROFIRMS
+    }
     for t in tasks_with_area:
         tid   = t["id"]
         mid   = t["machine_id"]
@@ -660,14 +663,21 @@ async def fetch_all_data(
             if cov_item <= 0.5:
                 continue
             firm_items_map[firm].append((item, cov_item))
+            from mtfmi_batch_fetch import crop_of_item
+
+            crop_name = crop_of_item(item, str(field_to_crop.get(int(fid)) or ""))
+            if crop_name:
+                today_crop_by_firm[firm][crop_name] += cov_item
             if _cap is not None:
+                from mtfmi_batch_fetch import crop_of_item
+
                 fid_i = int(item.get("field_id") or 0)
                 mrec = machines_map.get(mid) or {}
                 _cap[1](
                     ("2.1 Боронование", firm, mid),
                     group="2.1 Боронование",
                     firm=firm,
-                    crop=field_to_crop.get(fid_i, ""),
+                    crop=crop_of_item(item, field_to_crop.get(fid_i, "")),
                     field_id=fid_i,
                     task_id=int(tid),
                     machine_id=int(mid) if mid is not None else None,
@@ -841,6 +851,11 @@ async def fetch_all_data(
             "hours_today":  hours_today,
             "detail_own":   sorted(detail_own,   key=lambda x: -x["area"]),
             "detail_hired": sorted(detail_hired, key=lambda x: -x["area"]),
+            "area_by_crop": {
+                k: round(v, 2)
+                for k, v in today_crop_by_firm[firm].items()
+                if round(v, 2) > 0
+            },
         }
 
     if _cap is not None:

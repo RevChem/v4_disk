@@ -566,7 +566,9 @@ def _veggie_crop_from_items(
             continue
         if get_firm_for_field(fid_i) != VEGGIE_FIRM:
             continue
-        crop = _map_veggie_crop(field_to_crop.get(fid_i, ""))
+        from mtfmi_batch_fetch import crop_of_item
+
+        crop = _map_veggie_crop(crop_of_item(item, field_to_crop.get(fid_i, "")))
         if not crop:
             continue
         area = _item_area_in_window(item, window_end)
@@ -590,11 +592,18 @@ def _task_implement_width(task: dict, implements_dict: dict[int, dict]) -> float
 # =============================================================================
 
 
-def _field_veggie_crop_label(field_id: int | None, task: dict) -> str | None:
-    if field_id is not None:
-        label = _normalize_veggie_crop_label(field_to_crop.get(int(field_id), ""))
-        if label:
-            return label
+def _field_veggie_crop_label(
+    field_id: int | None,
+    task: dict,
+    item: dict | None = None,
+) -> str | None:
+    from mtfmi_batch_fetch import crop_of_item
+
+    fallback = field_to_crop.get(int(field_id), "") if field_id is not None else ""
+    raw = crop_of_item(item, fallback) if item is not None else fallback
+    label = _normalize_veggie_crop_label(raw)
+    if label:
+        return label
     return _task_veggie_crop_label(task)
 
 
@@ -796,6 +805,7 @@ async def fetch_all_data(
     per_firm_machine: dict[str, dict[int, dict]] = {firm: {} for firm in agrofirms}
     veg_fact_by_firm_crop: dict[str, dict[str, float]] = {f: defaultdict(float) for f in agrofirms}
     veg_today_by_firm_crop: dict[str, dict[str, float]] = {f: defaultdict(float) for f in agrofirms}
+    spray_today_by_firm_crop: dict[str, dict[str, float]] = {f: defaultdict(float) for f in agrofirms}
     # Диагностика: поля, которые вошли в cov_total фирмы, но культура которых
     # не распозналась ни под одну из VEGGIE_CROPS (карто/лук/морков/свек) —
     # их площадь иначе молча выпадала бы из таблицы "Опрыскивание (овощи)".
@@ -847,7 +857,9 @@ async def fetch_all_data(
                         _fid_i = int(_fid)
                         if get_firm_for_field(_fid_i) != firm or not _field_ok(_fid_i):
                             continue
-                        _crop = str(field_to_crop.get(_fid_i) or "")
+                        from mtfmi_batch_fetch import crop_of_item
+
+                        _crop = crop_of_item(_item, str(field_to_crop.get(_fid_i) or ""))
                         if _crop and _crop not in crops:
                             crops.append(_crop)
                     _mrec = machines_map.get(mid) or {}
@@ -881,14 +893,23 @@ async def fetch_all_data(
                 if track_veg_crops:
                     item_cov = _item_area_in_window(item, cutoff, day_start)
                     if item_cov > 0:
-                        veg_label = _field_veggie_crop_label(fid_i, t)
+                        veg_label = _field_veggie_crop_label(fid_i, t, item)
                         if veg_label:
                             raw_crop_cov[veg_label] += item_cov
                         else:
                             raw_unmatched_cov += item_cov
+                            from mtfmi_batch_fetch import crop_of_item
+
                             veg_unmatched_today[firm].append(
-                                (fid_i, str(field_to_crop.get(fid_i, "")), round(item_cov, 2))
+                                (fid_i, crop_of_item(item, str(field_to_crop.get(fid_i, ""))), round(item_cov, 2))
                             )
+                else:
+                    from mtfmi_batch_fetch import crop_of_item
+
+                    item_cov = _item_area_in_window(item, cutoff, day_start)
+                    crop = crop_of_item(item, str(field_to_crop.get(fid_i) or ""))
+                    if crop and item_cov > 0:
+                        raw_crop_cov[crop] += item_cov
 
             if track_veg_crops:
                 raw_total = sum(raw_crop_cov.values()) + raw_unmatched_cov
@@ -896,6 +917,12 @@ async def fetch_all_data(
                     scale = cov_for_firm / raw_total
                     for veg_label, raw_cov in raw_crop_cov.items():
                         veg_today_by_firm_crop[firm][veg_label] += raw_cov * scale
+            else:
+                raw_total = sum(raw_crop_cov.values())
+                if raw_total > 0 and cov_for_firm > 0:
+                    scale = cov_for_firm / raw_total
+                    for crop, raw_cov in raw_crop_cov.items():
+                        spray_today_by_firm_crop[firm][crop] += raw_cov * scale
 
             if not pm[mid]["implement_width"]:
                 pm[mid]["implement_width"] = _task_implement_width(t, implements_dict)
@@ -974,13 +1001,15 @@ async def fetch_all_data(
                 item_cov = _item_area_in_window(item, shift_cutoff, shift_start)
                 if item_cov <= 0.5:
                     continue
-                veg_label = _field_veggie_crop_label(fid_i, t)
+                veg_label = _field_veggie_crop_label(fid_i, t, item)
                 if veg_label:
                     raw_crop_cov_season[(firm, veg_label)] += item_cov
                 else:
                     raw_unmatched_cov_season[firm] += item_cov
+                    from mtfmi_batch_fetch import crop_of_item
+
                     veg_unmatched_season[firm].append(
-                        (fid_i, str(field_to_crop.get(fid_i, "")), round(item_cov, 2))
+                        (fid_i, crop_of_item(item, str(field_to_crop.get(fid_i, ""))), round(item_cov, 2))
                     )
 
             # Группируем сырые суммы по фирме (включая неопознанную площадь
@@ -1086,6 +1115,12 @@ async def fetch_all_data(
             }
             all_stats[firm]["veg_today_by_crop"] = {
                 k: round(v, 2) for k, v in veg_today_by_firm_crop[firm].items()
+            }
+        else:
+            all_stats[firm]["today_by_crop"] = {
+                k: round(v, 2)
+                for k, v in spray_today_by_firm_crop[firm].items()
+                if round(v, 2) > 0
             }
             unmatched_today = veg_unmatched_today.get(firm, [])
             unmatched_season = veg_unmatched_season.get(firm, [])
@@ -2034,5 +2069,132 @@ def build_report(report_date: date = REPORT_DATE) -> None:
     asyncio.run(build_report_async(report_date))
 
 
+def _print_firm_crops(title: str, by_firm: dict[str, dict[str, float]]) -> None:
+    print(f"\n{title}")
+    any_row = False
+    for firm, crops in by_firm.items():
+        rows = sorted(
+            ((crop, ha) for crop, ha in crops.items() if ha >= 0.01),
+            key=lambda pair: -pair[1],
+        )
+        if not rows:
+            continue
+        any_row = True
+        print(f"  {firm}")
+        for crop, ha in rows:
+            print(f"    {crop}: {ha:.2f}")
+    if not any_row:
+        print("  нет")
+
+
+async def compare_spray_crops(report_date: date = REPORT_DATE) -> None:
+    """Культура опрыскивания за смену: поле за год и history_item строки площади."""
+    global field_to_fg
+
+    day_start, cutoff = compute_time_range(report_date, DAY_START_HOUR, DAY_END_HOUR)
+    print(f"Сравнение культуры опрыскивания  |  Дата: {report_date}")
+    print(f"  Суточный диапазон: {day_start} — {cutoff}\n")
+    load_reference_data()
+    fields = get_all_from_id("fields")
+    field_to_fg = {
+        int(f["id"]): f.get("field_group_id")
+        for f in fields
+        if f.get("id") is not None
+    }
+
+    headers = {"X-User-Api-Token": API_TOKEN}
+    semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
+    pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
+    day_start_str = day_start.strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    window = {"end_time_gt_eq": day_start_str, "end_time_lt": cutoff_str}
+
+    from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
+    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
+    from mtaomi_batch_fetch import mass_request_async
+
+    async with httpx.AsyncClient(headers=headers, timeout=120, limits=pool) as client:
+        spray_tasks, veg_tasks = await asyncio.gather(
+            fetch_machine_tasks_by_wt_async(
+                fetch_all_pages, client, BASE_URL, SPRAY_WT_IDS, window, semaphore,
+            ),
+            fetch_machine_tasks_by_wt_async(
+                fetch_all_pages, client, BASE_URL, VEGGIE_SPRAY_WT_IDS, window, semaphore,
+            ),
+        )
+        spray_tasks = _filter_tasks_by_season(
+            spray_tasks, _resolve_task_season_years(None, track_veg_crops=False),
+        )
+        veg_tasks = _filter_tasks_by_season(
+            veg_tasks, _resolve_task_season_years(None, track_veg_crops=True),
+        )
+        groups = (
+            ("3.1 Опрыскивание", [t for t in spray_tasks if (t.get("covered_area") or 0) > 0]),
+            ("3.2 Опрыскивание (овощи)", [t for t in veg_tasks if (t.get("covered_area") or 0) > 0]),
+        )
+        task_ids = sorted({t["id"] for _name, tasks in groups for t in tasks})
+        print(f"  Заданий с площадью: 3.1={len(groups[0][1])}, 3.2={len(groups[1][1])}")
+        mtfmi_map = await fetch_mtfmi_map_for_tasks(
+            client, semaphore, BASE_URL, task_ids, log_prefix="[r6] ",
+        ) if task_ids else {}
+        hist_ids = {
+            int(item["history_item_id"])
+            for items in mtfmi_map.values()
+            for item in items
+            if item.get("history_item_id") is not None
+        }
+        history = await mass_request_async(
+            client, BASE_URL, "history_items", sorted(hist_ids), semaphore,
+        )
+    hist_crop = {}
+    for hi in history:
+        if hi.get("id") is None or hi.get("crop_id") is None:
+            continue
+        name = str(crop_map.get(int(hi["crop_id"])) or crop_map.get(hi["crop_id"]) or "").strip()
+        if name:
+            hist_crop[int(hi["id"])] = name
+
+    def _accumulate(tasks: list[dict], *, veg: bool) -> tuple[dict, dict]:
+        old: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        new: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for task in tasks:
+            for item in mtfmi_map.get(task["id"], []):
+                fid = item.get("field_id")
+                if fid is None:
+                    continue
+                fid_i = int(fid)
+                if fid_i not in available_field_ids:
+                    continue
+                firm = get_firm_for_field(fid_i)
+                if not firm:
+                    continue
+                ha = _item_area_in_window(item, cutoff, day_start)
+                if ha <= 0:
+                    continue
+                old_name = str(field_to_crop.get(fid_i) or field_to_crop.get(fid) or "").strip()
+                if old_name and fid_i in field_to_crop:
+                    label = _normalize_veggie_crop_label(old_name) if veg else old_name
+                    if label:
+                        old[firm][label] += ha
+                hid = item.get("history_item_id")
+                new_name = hist_crop.get(int(hid), "") if hid is not None else ""
+                if new_name and new_name not in SKIP_CROPS:
+                    label = _normalize_veggie_crop_label(new_name) if veg else new_name
+                    if label:
+                        new[firm][label] += ha
+        return (
+            {firm: dict(crops) for firm, crops in old.items()},
+            {firm: dict(crops) for firm, crops in new.items()},
+        )
+
+    for title, tasks in groups:
+        old_ha, new_ha = _accumulate(tasks, veg=title.startswith("3.2"))
+        _print_firm_crops(f"{title} — старая (поле, активный год)", old_ha)
+        _print_firm_crops(f"{title} — новая (history_item строки площади)", new_ha)
+
+
 if __name__ == "__main__":
-    build_report()
+    if "--compare" in sys.argv:
+        asyncio.run(compare_spray_crops())
+    else:
+        build_report()

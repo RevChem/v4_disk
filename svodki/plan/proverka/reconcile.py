@@ -412,6 +412,20 @@ def reconcile_one(
     }
 
     if not work.get("ok"):
+        from proverka.cropwise_crops import fill_crop_comparisons
+
+        fill_crop_comparisons(
+            result,
+            svodka.get("operations") or {},
+            work=work,
+            firm_names=firm_names,
+            hints=hints,
+            shift_cache=shift_cache,
+            task_years=list(task_years or []),
+            ui_session=ui_session if isinstance(ui_session, int) else None,
+            cutoff_iso=t1,
+            group_names=list(spec.work_groups or ()),
+        )
         return result
 
     if season_cropwise:
@@ -556,16 +570,20 @@ def reconcile_one(
 
     groups = tuple(spec.work_groups or ())
     svodka_ops = svodka.get("operations") or {}
-    if len(groups) == 1 and work.get("ok") and shift_cache is not None:
-        op = svodka_ops.get(groups[0]) or {}
-        svodka_crop = op.get("area_today_by_firm_crop") or {}
-        if svodka_crop:
-            from proverka.crop_compare import compare_svodka_cropwise_crops
-            from proverka.cropwise_crops import cropwise_crops_all_seasons
-            from proverka.season_cropwise import _parse_dt
+    if shift_cache is not None and groups:
+        from proverka.crop_compare import compare_svodka_cropwise_crops
+        from proverka.cropwise_crops import cropwise_crops_all_seasons
+        from proverka.season_cropwise import _parse_dt
 
-            cw_crop = work.get("editor_crop_areas")
-            if cw_crop is None:
+        crop_cmp_all: list[dict] = []
+        for gn in groups:
+            op = svodka_ops.get(gn) or {}
+            svodka_crop = op.get("area_today_by_firm_crop") or {}
+            if not svodka_crop:
+                continue
+            if len(groups) == 1 and work.get("editor_crop_areas") is not None:
+                cw_crop = work.get("editor_crop_areas")
+            else:
                 cw_crop = cropwise_crops_all_seasons(
                     work.get("body"),
                     firm_names,
@@ -577,11 +595,14 @@ def reconcile_one(
                     cutoff=_parse_dt(t1),
                 )
             crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
-            if crop_cmp:
-                result["crop_comparisons"] = crop_cmp
-                result["comparison"]["crop_diff_count"] = sum(
-                    1 for c in crop_cmp if c.get("status") == "DIFF"
-                )
+            for row in crop_cmp:
+                row["group"] = gn
+            crop_cmp_all.extend(crop_cmp)
+        if crop_cmp_all:
+            result["crop_comparisons"] = crop_cmp_all
+            result["comparison"]["crop_diff_count"] = sum(
+                1 for c in crop_cmp_all if c.get("status") == "DIFF"
+            )
 
     _annotate_quality(result["comparison"], parsed, work)
 
@@ -613,6 +634,8 @@ def _print_result(spec: ReportSpec, result: dict[str, Any]) -> None:
     elif svodka.get("season_task_filter"):
         print(f"Сезон: {svodka['season_task_filter']}")
     print("=" * 72)
+
+    _print_saved_crop_comparisons(result)
 
     print(f"\n--- Сводка {spec.report_id} (area_today), га ---")
     for firm, ha in sorted(svodka["area_today_by_firm"].items(), key=lambda x: -x[1]):
@@ -658,6 +681,44 @@ def _print_result(spec: ReportSpec, result: dict[str, Any]) -> None:
             print("  ✓ Итоги совпадают (допуск ±5 га)")
         elif cmp_.get("season_policy", {}).get("task_season_years"):
             print("  ℹ Расхождение по агрофирмам возможно из-за группировки в UI Cropwise.")
+
+def _print_crop_rows(rows: list[dict]) -> None:
+    for cr in rows:
+        mark = "✓" if cr.get("status") == "OK" else "Δ"
+        firms = ", ".join(
+            f"{fr.get('firm')} сводка {fr.get('svodka_ha')} / cw {fr.get('cropwise_ha')}"
+            for fr in (cr.get("firms") or [])
+            if fr.get("status") == "DIFF"
+        )
+        extra = f" | {firms}" if firms else ""
+        print(
+            f"    {mark} {cr.get('crop')}: сводка {cr.get('svodka_ha')} га, "
+            f"Cropwise {cr.get('cropwise_ha')} га, Δ {cr.get('diff_ha')}{extra}"
+        )
+
+
+def _print_saved_crop_comparisons(result: dict[str, Any]) -> None:
+    top = result.get("crop_comparisons") or []
+    if top:
+        groups: list[str] = []
+        for cr in top:
+            g = str(cr.get("group") or "")
+            if g not in groups:
+                groups.append(g)
+        if len(groups) <= 1:
+            label = f" «{groups[0]}»" if groups and groups[0] else ""
+            print(f"\n  Культуры{label}:")
+            _print_crop_rows(top)
+        else:
+            for g in groups:
+                print(f"\n  Культуры «{g}»:")
+                _print_crop_rows([cr for cr in top if str(cr.get("group") or "") == g])
+    for op_name, oc in (result.get("operation_comparisons") or {}).items():
+        nested = oc.get("crop_comparisons") or []
+        if not nested:
+            continue
+        print(f"\n  Культуры «{op_name}»:")
+        _print_crop_rows(nested)
 
 
 def main() -> int:

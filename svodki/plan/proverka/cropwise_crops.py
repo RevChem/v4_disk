@@ -35,6 +35,8 @@ def seasons_missing_from_ui(
     _ = seasons_in_shift
     years = [str(int(y)) for y in (task_years or [])]
     if not years:
+        if not ui_has_crops and seasons_in_shift:
+            return [str(y) for y in seasons_in_shift if str(y)]
         return []
     if not ui_has_crops:
         return years
@@ -205,6 +207,54 @@ def api_area_by_firm_crop(
         crop: {firm: round(ha, 2) for firm, ha in by_firm.items() if ha >= 0.01}
         for crop, by_firm in out.items()
     }
+
+
+def fill_crop_comparisons(
+    target: dict,
+    operations: dict,
+    *,
+    work: dict | None,
+    firm_names: list[str],
+    hints: list[str],
+    shift_cache,
+    task_years: list[int],
+    ui_session: int | None,
+    cutoff_iso: str,
+    group_names: list[str] | None = None,
+) -> None:
+    """Сверка культур, когда work.json недоступен: культуры Cropwise из API v3."""
+    from proverka.crop_compare import compare_svodka_cropwise_crops
+    from proverka.season_cropwise import _parse_dt
+
+    names = list(group_names or operations.keys())
+    rows: list[dict] = []
+    body = work.get("body") if isinstance(work, dict) else None
+    for gn in names:
+        op = operations.get(gn) or {}
+        svodka_crop = op.get("area_today_by_firm_crop") or {}
+        if not svodka_crop:
+            continue
+        cw_crop = cropwise_crops_all_seasons(
+            body,
+            firm_names,
+            hints,
+            shift_cache=shift_cache,
+            task_years=list(task_years),
+            ui_session=ui_session,
+            wt_ids=list(op.get("work_type_ids") or []),
+            cutoff=_parse_dt(cutoff_iso),
+        )
+        compared = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+        for row in compared:
+            row["group"] = gn
+        rows.extend(compared)
+    if not rows:
+        return
+    target["crop_comparisons"] = rows
+    target.setdefault("comparison", {})
+    target["comparison"]["crop_diff_count"] = sum(
+        1 for row in rows if row.get("status") == "DIFF"
+    )
 
 
 def cropwise_crops_all_seasons(

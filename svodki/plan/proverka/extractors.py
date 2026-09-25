@@ -331,6 +331,7 @@ def _per_firm_area_by_crop_from_mtfmi(
     min_item_ha: float = 0.5,
     crop_field_ids: set[int] | None = None,
     crop_of: Any | None = None,
+    row_crop: dict[int, str] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Площадь за смену по культуре поля (firm → crop → ha), как area_by_crop в сводке 1."""
     per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -344,7 +345,7 @@ def _per_firm_area_by_crop_from_mtfmi(
             if fid is None:
                 continue
             fid_int = int(fid)
-            if crop_field_ids is not None and fid_int not in crop_field_ids:
+            if row_crop is None and crop_field_ids is not None and fid_int not in crop_field_ids:
                 continue
             firm = field_to_firm.get(fid_int)
             if not firm:
@@ -356,10 +357,19 @@ def _per_firm_area_by_crop_from_mtfmi(
                     cov += float(entry[1] or 0.0)
             if cov <= min_item_ha:
                 continue
-            if crop_of is not None:
-                crop = crop_of(t, fid_int)
+            if row_crop is not None:
+                raw_id = item.get("id")
+                crop = row_crop.get(int(raw_id)) if raw_id is not None else None
+                if not crop:
+                    continue
             else:
-                crop = field_to_crop.get(fid_int)
+                from mtfmi_batch_fetch import crop_of_item
+
+                if crop_of is not None:
+                    fallback = crop_of(t, fid_int)
+                else:
+                    fallback = field_to_crop.get(fid_int)
+                crop = crop_of_item(item, str(fallback or ""))
             if crop:
                 per_firm[firm][str(crop)] += cov
     return {
@@ -491,7 +501,9 @@ def _report9_deep_crop_breakdown(
             cov_h = _item_cov_before(item)
             if cov_h <= 0:
                 continue
-            crop = field_to_crop.get(fid_i)
+            from mtfmi_batch_fetch import crop_of_item
+
+            crop = crop_of_item(item, str(field_to_crop.get(fid_i) or ""))
             if crop:
                 per_firm[firm][str(crop)] += cov_h
 
@@ -870,9 +882,12 @@ async def _extract_3(
         field_to_firm, machines_map, implements_dict = await load_report_resources(
             client, m.BASE_URL, sem, all_tasks, mtfmi, m.get_all_from_id, m._build_field_to_firm,
         )
+        mtfmi_crop, _crop_diag = await m.resolve_crops_from_mtfmi(
+            client, sem, mtfmi, field_to_firm, int(report_date.year),
+        )
     details = m.build_all_firm_stats(
         tasks_today, tasks_season, mtfmi, season_start, day_start, cutoff,
-        field_to_firm, implements_dict, crop_field_ids=crop_field_ids,
+        field_to_firm, implements_dict, mtfmi_crop=mtfmi_crop,
     )
     by_firm = {firm: float(details[firm]["area_today"]) for firm in m.AGROFIRMS}
     # details[firm]["machines_today"] уже посчитан внутри build_all_firm_stats
@@ -890,7 +905,7 @@ async def _extract_3(
     per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
         tasks_today, mtfmi, field_to_firm, field_to_crop, cutoff,
         min_item_ha=0.0,
-        crop_field_ids=crop_field_ids,
+        row_crop=mtfmi_crop,
     )
     crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
     operations = _operations_with_crop_breakdown(

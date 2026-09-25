@@ -15,6 +15,16 @@ from datetime import datetime
 
 CORN_GRAIN_CROP = "Кукуруза на зерно"
 CORN_SILAGE_CROP = "Кукуруза на силос"
+
+
+def history_crop_name(item: dict, fallback: str = "", *, mowing: bool = False) -> str:
+    """Культура строки площади. Косьба кукурузы без «на зерно» — силос."""
+    from mtfmi_batch_fetch import crop_of_item
+
+    crop = crop_of_item(item, fallback or "")
+    if mowing and crop and "кукуруза" in crop.casefold() and "зерно" not in crop.casefold():
+        return CORN_SILAGE_CROP
+    return crop
 SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
 # Комбайны + кормоуборочные (скашивание кукурузы на силос) — как 11/14.
 HARVESTER_GROUP_IDS: frozenset[int] = frozenset({5, 9, 16})
@@ -170,6 +180,7 @@ def task_cov_by_firm(
     firm_for_field: Callable[[int], str],
     parse_dt: Callable[[object], datetime | None],
     item_allowed: Callable[[int], bool] | None = None,
+    row_allowed: Callable[[dict], bool] | None = None,
 ) -> dict[str, float]:
     """
     Площадь задания по агрофирмам.
@@ -193,7 +204,10 @@ def task_cov_by_firm(
             continue
         if not field_ok(fid_i):
             continue
-        if item_allowed is not None and not item_allowed(fid_i):
+        if row_allowed is not None:
+            if not row_allowed(item):
+                continue
+        elif item_allowed is not None and not item_allowed(fid_i):
             continue
         firm = firm_for_field(fid_i)
         if not firm:
@@ -234,6 +248,8 @@ def task_crop_cov_for_firm(
     crop_for_field: Callable[[int], str],
     parse_dt: Callable[[object], datetime | None],
     item_allowed: Callable[[int], bool] | None = None,
+    row_allowed: Callable[[dict], bool] | None = None,
+    crop_for_item: Callable[[dict], str] | None = None,
 ) -> dict[str, float]:
     """Распределение cov_for_firm по культурам пропорционально MTFMI в окне."""
     raw_crop: dict[str, float] = defaultdict(float)
@@ -247,7 +263,10 @@ def task_crop_cov_for_firm(
             continue
         if not field_ok(fid_i):
             continue
-        if item_allowed is not None and not item_allowed(fid_i):
+        if row_allowed is not None:
+            if not row_allowed(item):
+                continue
+        elif item_allowed is not None and not item_allowed(fid_i):
             continue
         if firm_for_field(fid_i) != firm:
             continue
@@ -256,7 +275,7 @@ def task_crop_cov_for_firm(
         )
         if item_cov <= 0:
             continue
-        crop = crop_for_field(fid_i)
+        crop = crop_for_item(item) if crop_for_item is not None else crop_for_field(fid_i)
         if crop:
             raw_crop[crop] += item_cov
 

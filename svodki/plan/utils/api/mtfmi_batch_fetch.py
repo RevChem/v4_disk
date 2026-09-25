@@ -11,6 +11,12 @@ import httpx
 
 MTFMI_BATCH_SIZE = max(1, int(os.environ.get("SVODKI_MTFMI_BATCH_SIZE", "300") or 300))
 
+# history_item_id → культура строки площади. Заполняется при загрузке mtfmi.
+_HISTORY_CROP: dict[int, str] = {}
+_CROPS_BY_ID: dict[int, str] | None = None
+# field_id → культура → сколько строк площади её подтвердили.
+_FIELD_CROP_VOTES: dict[int, dict[str, int]] = {}
+
 
 def _chunked(items: list[int], size: int) -> list[list[int]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
@@ -119,4 +125,88 @@ async def fetch_mtfmi_map_for_tasks(
                 continue
             mtfmi_map[tid] = list(res)
 
-    return dict(mtfmi_map)
+    result = dict(mtfmi_map)
+    try:
+        await remember_history_crops(client, base_url, result, sem)
+    except Exception as exc:
+        print(f"  {prefix}культура history_item: {exc}", flush=True)
+    return result
+
+
+def crop_of_item(item: dict, fallback: str = "") -> str:
+    """Культура строки площади. Если history_item ещё не загружен — fallback."""
+    hid = item.get("history_item_id")
+    if hid is not None:
+        name = _HISTORY_CROP.get(int(hid), "")
+        if name:
+            return name
+    return str(fallback or "")
+
+
+def crop_of_field(field_id: int, fallback: str = "") -> str:
+    """Самая частая культура строк площади этого поля. Иначе fallback."""
+    votes = _FIELD_CROP_VOTES.get(int(field_id)) or {}
+    if not votes:
+        return str(fallback or "")
+    return max(votes.items(), key=lambda kv: kv[1])[0]
+
+
+async def _crops_by_id(
+    client: httpx.AsyncClient,
+    base_url: str,
+    sem: asyncio.Semaphore,
+) -> dict[int, str]:
+    global _CROPS_BY_ID
+    if _CROPS_BY_ID is not None:
+        return _CROPS_BY_ID
+    rows = await _fetch_pages(client, f"{base_url.rstrip('/')}/crops", {}, sem)
+    _CROPS_BY_ID = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in rows
+        if c.get("id") is not None
+    }
+    return _CROPS_BY_ID
+
+
+async def remember_history_crops(
+    client: httpx.AsyncClient,
+    base_url: str,
+    mtfmi_map: dict,
+    sem: asyncio.Semaphore,
+) -> None:
+    """Догружает HistoryItem.crop_id для строк площади, которых ещё нет в кэше."""
+    from mtaomi_batch_fetch import mass_request_async
+
+    missing: list[int] = []
+    seen: set[int] = set()
+    for items in mtfmi_map.values():
+        for item in items:
+            hid = item.get("history_item_id")
+            if hid is None:
+                continue
+            hid_i = int(hid)
+            if hid_i in _HISTORY_CROP or hid_i in seen:
+                continue
+            seen.add(hid_i)
+            missing.append(hid_i)
+    if not missing:
+        return
+    crops = await _crops_by_id(client, base_url, sem)
+    history = await mass_request_async(client, base_url, "history_items", missing, sem)
+    for hi in history:
+        if hi.get("id") is None or hi.get("crop_id") is None:
+            continue
+        name = crops.get(int(hi["crop_id"]), "")
+        if name:
+            _HISTORY_CROP[int(hi["id"])] = name
+    for items in mtfmi_map.values():
+        for item in items:
+            fid = item.get("field_id")
+            hid = item.get("history_item_id")
+            if fid is None or hid is None:
+                continue
+            name = _HISTORY_CROP.get(int(hid), "")
+            if not name:
+                continue
+            votes = _FIELD_CROP_VOTES.setdefault(int(fid), {})
+            votes[name] = votes.get(name, 0) + 1

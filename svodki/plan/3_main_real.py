@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 from datetime import date, datetime, timezone, timedelta
@@ -362,13 +363,13 @@ def load_field_to_firm() -> dict[int, str]:
     return _build_field_to_firm(fields_all, fgs_all, gfs_all)
 
 
-def load_crop_field_ids(
+def load_year_crop_fields(
     report_year: int,
     field_to_firm: dict[int, str] | None = None,
-) -> set[int]:
+) -> tuple[set[int], dict[int, list[str]]]:
     """
-    Возвращает множество field_id с активной культурой в указанном году,
-    исключая культуры из SKIP_CROPS. Как в 4_main_fixed.load_reference_data.
+    Поля с активной культурой года и список таких культур на поле.
+    Поле попадает в множество, если хотя бы одна активная культура проходит фильтр.
     """
     print(f"  Загружаем crops и history_items year={report_year} (фильтр SKIP_CROPS)...")
     crops_map = {c["id"]: c.get("name") or c.get("title", "")
@@ -376,6 +377,7 @@ def load_crop_field_ids(
     his_all = get_all_from_id("history_items", {"year": report_year})
 
     valid_field_ids: set[int] = set()
+    field_crops: dict[int, list[str]] = defaultdict(list)
     for hi in his_all:
         fid     = hi.get("field_id")
         crop_id = hi.get("crop_id")
@@ -389,9 +391,24 @@ def load_crop_field_ids(
             firm = field_to_firm.get(int(fid))
             if firm and is_crop_omitted(WORK_TYPE_TITLE, firm, crop_name):
                 continue
-        valid_field_ids.add(int(fid))
+        fid_i = int(fid)
+        valid_field_ids.add(fid_i)
+        if crop_name not in field_crops[fid_i]:
+            field_crops[fid_i].append(crop_name)
 
     print(f"    Полей с активной культурой (не SKIP_CROPS): {len(valid_field_ids)}")
+    return valid_field_ids, dict(field_crops)
+
+
+def load_crop_field_ids(
+    report_year: int,
+    field_to_firm: dict[int, str] | None = None,
+) -> set[int]:
+    """
+    Возвращает множество field_id с активной культурой в указанном году,
+    исключая культуры из SKIP_CROPS. Как в 4_main_fixed.load_reference_data.
+    """
+    valid_field_ids, _field_crops = load_year_crop_fields(report_year, field_to_firm)
     return valid_field_ids
 
 
@@ -556,6 +573,23 @@ async def fetch_all_tasks_and_mtfmi(
 # ПОДСЧЁТ — агрофирма определяется по полю
 # =============================================================================
 
+def _mtfmi_row_in_scope(
+    item: dict,
+    field_id: int,
+    crop_field_ids: set[int] | None,
+    mtfmi_crop: dict[int, str] | None,
+) -> bool:
+    """Старый путь — поле в карте года. Новый — культура history_item этой строки."""
+    if mtfmi_crop is not None:
+        raw_id = item.get("id")
+        if raw_id is None:
+            return False
+        return int(raw_id) in mtfmi_crop
+    if crop_field_ids is not None and field_id not in crop_field_ids:
+        return False
+    return True
+
+
 def build_all_firm_stats(
     tasks_today:      list[dict],
     tasks_season:     list[dict],
@@ -566,6 +600,7 @@ def build_all_firm_stats(
     field_to_firm:    dict[int, str],
     implements_dict:  dict[int, dict],
     crop_field_ids:   set[int] | None = None,
+    mtfmi_crop:       dict[int, str] | None = None,
 ) -> dict[str, dict]:
     """
     Распределяет задания по агрофирмам на основе поля из mtfmi.
@@ -587,7 +622,7 @@ def build_all_firm_stats(
             if fid is None:
                 continue
             fid_int = int(fid)
-            if crop_field_ids is not None and fid_int not in crop_field_ids:
+            if not _mtfmi_row_in_scope(item, fid_int, crop_field_ids, mtfmi_crop):
                 continue
             firm = field_to_firm.get(fid_int)
             if firm:
@@ -692,7 +727,7 @@ def build_all_firm_stats(
             if fid is None:
                 continue
             fid_int = int(fid)
-            if crop_field_ids is not None and fid_int not in crop_field_ids:
+            if not _mtfmi_row_in_scope(item, fid_int, crop_field_ids, mtfmi_crop):
                 continue
             firm = field_to_firm.get(fid_int)
             if not firm:
@@ -1415,9 +1450,6 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     print(f"  Суточный диапазон: {day_start} — {cutoff}")
     print(f"  Сезон (средняя выработка): с {SEASON_START.strftime('%d.%m.%Y')}\n")
 
-    field_to_firm_pre = load_field_to_firm()
-    crop_field_ids = load_crop_field_ids(report_date.year, field_to_firm_pre)
-
     firm_names = list(AGROFIRMS.keys())
     headers    = {"X-User-Api-Token": API_TOKEN}
     semaphore  = asyncio.Semaphore(SEMAPHORE_LIMIT)
@@ -1436,11 +1468,18 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             client, BASE_URL, semaphore, all_tasks, mtfmi_map,
             get_all_from_id, _build_field_to_firm,
         )
+        mtfmi_crop, crop_diag = await resolve_crops_from_mtfmi(
+            client, semaphore, mtfmi_map, field_to_firm, report_date.year,
+        )
+        print(
+            f"  культура строки площади: {crop_diag.get('kept_rows', len(mtfmi_crop))} строк",
+            flush=True,
+        )
 
     print("  Распределяем задания по агрофирмам через поля...")
     all_details = build_all_firm_stats(
         tasks_today, tasks_season, mtfmi_map, season_start, day_start, cutoff,
-        field_to_firm, implements_dict, crop_field_ids=crop_field_ids,
+        field_to_firm, implements_dict, mtfmi_crop=mtfmi_crop,
     )
 
     manual_r3 = _merge_manual_report3()
@@ -1477,7 +1516,351 @@ def build_report(report_date: date = REPORT_DATE) -> None:
     asyncio.run(build_report_async(report_date))
 
 
+def _crop_label_old(field_id: int, field_crops: dict[int, list[str]]) -> str:
+    names = field_crops.get(field_id) or []
+    if not names:
+        return "—"
+    if len(names) == 1:
+        return names[0]
+    return "неоднозначно: " + " + ".join(names)
+
+
+def _covered_before(item: dict, cutoff: datetime) -> float:
+    cov = 0.0
+    for entry in (item.get("covered_area_hourly") or []):
+        h = parse_dt(entry[0])
+        if h and h < cutoff:
+            cov += float(entry[1] or 0.0)
+    return cov
+
+
+def _accumulate_crop_ha(
+    tasks_today: list[dict],
+    tasks_season: list[dict],
+    mtfmi_map: dict[int, list[dict]],
+    cutoff: datetime,
+    field_to_firm: dict[int, str],
+    *,
+    crop_field_ids: set[int] | None,
+    field_crops: dict[int, list[str]] | None,
+    mtfmi_crop: dict[int, str] | None,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """Гектары строки площади по культуре: сутки (h < cutoff отчёта) и сезон по сменам."""
+    today: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    season: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    def _label(item: dict, fid: int) -> str:
+        if mtfmi_crop is not None:
+            raw_id = item.get("id")
+            if raw_id is None:
+                return "—"
+            return mtfmi_crop.get(int(raw_id), "—")
+        return _crop_label_old(fid, field_crops or {})
+
+    for t in tasks_today:
+        for item in mtfmi_map.get(t["id"], []):
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            fid_i = int(fid)
+            if not _mtfmi_row_in_scope(item, fid_i, crop_field_ids, mtfmi_crop):
+                continue
+            firm = field_to_firm.get(fid_i)
+            if not firm:
+                continue
+            cov = _covered_before(item, cutoff)
+            if cov <= 0:
+                continue
+            today[firm][_label(item, fid_i)] += cov
+
+    for t in tasks_season:
+        end_dt = parse_dt(t.get("end_time"))
+        if not end_dt:
+            continue
+        anchor = datetime(
+            end_dt.year, end_dt.month, end_dt.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK
+        )
+        shift_cutoff = anchor if end_dt < anchor else anchor + timedelta(days=1)
+        for item in mtfmi_map.get(t["id"], []):
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            fid_i = int(fid)
+            if not _mtfmi_row_in_scope(item, fid_i, crop_field_ids, mtfmi_crop):
+                continue
+            firm = field_to_firm.get(fid_i)
+            if not firm:
+                continue
+            cov = _covered_before(item, shift_cutoff)
+            if cov <= 0:
+                continue
+            season[firm][_label(item, fid_i)] += cov
+
+    return (
+        {firm: dict(crops) for firm, crops in today.items()},
+        {firm: dict(crops) for firm, crops in season.items()},
+    )
+
+
+async def resolve_crops_from_mtfmi(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    mtfmi_map: dict[int, list[dict]],
+    field_to_firm: dict[int, str],
+    report_year: int,
+) -> tuple[dict[int, str], dict]:
+    """
+    Культура строки площади: MachineTaskFieldMappingItem.history_item_id → HistoryItem.crop_id.
+    В карту попадают только строки, чья культура проходит тот же фильтр SKIP / скрытие, что и сводка.
+    """
+    from mtaomi_batch_fetch import mass_request_async
+
+    crops_raw = await fetch_all_pages(client, f"{BASE_URL}/crops", {}, semaphore)
+    crops_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in crops_raw
+        if c.get("id") is not None
+    }
+    hist_ids: set[int] = set()
+    rows = no_id = no_hid = 0
+    for items in mtfmi_map.values():
+        for item in items:
+            rows += 1
+            if item.get("id") is None:
+                no_id += 1
+            hid = item.get("history_item_id")
+            if hid is None:
+                no_hid += 1
+            else:
+                hist_ids.add(int(hid))
+
+    history = await mass_request_async(
+        client, BASE_URL, "history_items", sorted(hist_ids), semaphore,
+    )
+    by_id = {int(hi["id"]): hi for hi in history if hi.get("id") is not None}
+
+    mtfmi_crop: dict[int, str] = {}
+    skipped = missing_hi = no_crop = 0
+    kept_inactive = kept_other_year = 0
+    for items in mtfmi_map.values():
+        for item in items:
+            raw_id = item.get("id")
+            hid = item.get("history_item_id")
+            if raw_id is None or hid is None:
+                continue
+            hi = by_id.get(int(hid))
+            if hi is None:
+                missing_hi += 1
+                continue
+            cid = hi.get("crop_id")
+            if cid is None or int(cid) not in crops_map:
+                no_crop += 1
+                continue
+            crop_name = crops_map[int(cid)]
+            fid = item.get("field_id")
+            firm = field_to_firm.get(int(fid)) if fid is not None else None
+            if not firm:
+                continue
+            if crop_name in SKIP_CROPS or is_crop_omitted(WORK_TYPE_TITLE, firm, crop_name):
+                skipped += 1
+                continue
+            mtfmi_crop[int(raw_id)] = crop_name
+            if not hi.get("active"):
+                kept_inactive += 1
+            if str(hi.get("year") or "") != str(report_year):
+                kept_other_year += 1
+
+    diag = {
+        "rows": rows,
+        "rows_without_id": no_id,
+        "rows_without_history_item": no_hid,
+        "history_ids": len(hist_ids),
+        "history_loaded": len(by_id),
+        "missing_history": missing_hi,
+        "no_crop": no_crop,
+        "skipped": skipped,
+        "kept_rows": len(mtfmi_crop),
+        "kept_inactive": kept_inactive,
+        "kept_other_year": kept_other_year,
+    }
+    return mtfmi_crop, diag
+
+
+def _firm_value_rows(stats: dict[str, dict]) -> list[tuple[str, float, float, int, float]]:
+    rows = []
+    for firm in AGROFIRMS:
+        s = stats[firm]
+        rows.append((
+            firm,
+            float(s["area_today"]),
+            float(s["season_sum"]),
+            int(s["machines_today"]),
+            float(s["avg_season"]),
+        ))
+    return rows
+
+
+def _print_crop_table(ha: dict[str, dict[str, float]], *, title: str) -> None:
+    print(f"\n{title}")
+    any_row = False
+    for firm in AGROFIRMS:
+        crops = ha.get(firm) or {}
+        rows = sorted(
+            ((crop, val) for crop, val in crops.items() if val >= 0.01),
+            key=lambda pair: -pair[1],
+        )
+        if not rows:
+            continue
+        any_row = True
+        print(f"  {firm}")
+        for crop, val in rows:
+            print(f"    {crop}: {val:.2f}")
+    if not any_row:
+        print("  нет")
+
+
+def _print_crop_delta(
+    old_ha: dict[str, dict[str, float]],
+    new_ha: dict[str, dict[str, float]],
+    *,
+    title: str,
+) -> None:
+    print(f"\n{title}")
+    firms = list(dict.fromkeys([*old_ha, *new_ha, *AGROFIRMS]))
+    any_row = False
+    for firm in firms:
+        crops = sorted(set(old_ha.get(firm, {})) | set(new_ha.get(firm, {})))
+        for crop in crops:
+            old_v = round(float(old_ha.get(firm, {}).get(crop, 0.0)), 2)
+            new_v = round(float(new_ha.get(firm, {}).get(crop, 0.0)), 2)
+            if abs(old_v - new_v) < 0.01:
+                continue
+            any_row = True
+            delta = round(new_v - old_v, 2)
+            print(f"  {firm} | {crop}: {old_v:.2f} → {new_v:.2f} ({delta:+.2f})")
+    if not any_row:
+        print("  без изменений")
+
+
+async def compare_crop_logic(report_date: date = REPORT_DATE) -> None:
+    """Один проход заданий и mtfmi, затем старая и новая культура параллельно."""
+    global machines_map
+
+    day_start, cutoff = compute_time_range(report_date, DAY_START_HOUR, DAY_END_HOUR)
+    season_start = datetime(
+        SEASON_START.year, SEASON_START.month, SEASON_START.day, tzinfo=TZ_MSK
+    )
+    print(f"Сравнение культуры '{WORK_TYPE_TITLE}'  |  Дата: {report_date}")
+    print(f"  Суточный диапазон: {day_start} — {cutoff}")
+    print(f"  Сезон: с {SEASON_START.strftime('%d.%m.%Y')}\n")
+
+    t_shared = time.perf_counter()
+    headers = {"X-User-Api-Token": API_TOKEN}
+    semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
+    pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
+    async with httpx.AsyncClient(headers=headers, timeout=120, limits=pool) as client:
+        tasks_today, tasks_season, mtfmi_map = await fetch_all_tasks_and_mtfmi(
+            client, semaphore, day_start, cutoff, season_start, WORK_TYPE_IDS,
+        )
+        all_tasks = tasks_today + tasks_season
+        from report_resources_fetch import load_report_resources
+        field_to_firm, machines_map, implements_dict = await load_report_resources(
+            client, BASE_URL, semaphore, all_tasks, mtfmi_map,
+            get_all_from_id, _build_field_to_firm,
+        )
+        shared_sec = time.perf_counter() - t_shared
+        print(f"\nОбщая загрузка заданий и mtfmi: {shared_sec:.1f} с")
+
+        async def _old():
+            t0 = time.perf_counter()
+            ids, crops = await asyncio.to_thread(
+                load_year_crop_fields, report_date.year, field_to_firm,
+            )
+            return ids, crops, time.perf_counter() - t0
+
+        async def _new():
+            t0 = time.perf_counter()
+            mapping, diag = await resolve_crops_from_mtfmi(
+                client, semaphore, mtfmi_map, field_to_firm, report_date.year,
+            )
+            return mapping, diag, time.perf_counter() - t0
+
+        print("Культура: старый год поля и history_item строки — параллельно...")
+        (crop_field_ids, field_crops, old_sec), (mtfmi_crop, diag, new_sec) = await asyncio.gather(
+            _old(), _new(),
+        )
+
+    print(f"  старая (history_items year={report_date.year}): {old_sec:.1f} с, полей {len(crop_field_ids)}")
+    print(f"  новая (mtfmi.history_item_id): {new_sec:.1f} с")
+    print(
+        "  строки mtfmi: {rows}, без history_item_id: {rows_without_history_item}, "
+        "history id: {history_ids}, загружено: {history_loaded}, "
+        "не найдены: {missing_history}, без культуры: {no_crop}, "
+        "отфильтрованы: {skipped}, оставлены: {kept_rows}".format(**diag)
+    )
+    print(
+        f"  из оставленных строк: неактивный history_item {diag['kept_inactive']}, "
+        f"год ≠ {report_date.year}: {diag['kept_other_year']}"
+    )
+
+    t0 = time.perf_counter()
+    old_stats = build_all_firm_stats(
+        tasks_today, tasks_season, mtfmi_map, season_start, day_start, cutoff,
+        field_to_firm, implements_dict, crop_field_ids=crop_field_ids,
+    )
+    old_stats_sec = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    new_stats = build_all_firm_stats(
+        tasks_today, tasks_season, mtfmi_map, season_start, day_start, cutoff,
+        field_to_firm, implements_dict, mtfmi_crop=mtfmi_crop,
+    )
+    new_stats_sec = time.perf_counter() - t0
+    print(f"\nПодсчёт фирм: старый {old_stats_sec:.2f} с, новый {new_stats_sec:.2f} с")
+
+    print("\nЗНАЧЕНИЯ СВОДКИ (сутки / сезон га / техника / средняя по сезону)")
+    print(f"{'Агрофирма':<32} {'сутки стар':>12} {'сутки нов':>12} {'сезон стар':>12} {'сезон нов':>12} {'техн':>10}")
+    changed = False
+    for firm, area_o, season_o, mach_o, avg_o in _firm_value_rows(old_stats):
+        _f, area_n, season_n, mach_n, avg_n = next(
+            row for row in _firm_value_rows(new_stats) if row[0] == firm
+        )
+        mark = ""
+        if (
+            abs(area_o - area_n) >= 0.01
+            or abs(season_o - season_n) >= 0.01
+            or mach_o != mach_n
+            or abs(avg_o - avg_n) >= 0.05
+        ):
+            changed = True
+            mark = "  *"
+        print(
+            f"{firm:<32} {area_o:12.2f} {area_n:12.2f} {season_o:12.2f} {season_n:12.2f} "
+            f"{mach_o:>4}/{mach_n:<4}{mark}"
+        )
+        _ = avg_o, avg_n
+    if not changed:
+        print("Итоги по фирмам совпали.")
+
+    old_today, old_season = _accumulate_crop_ha(
+        tasks_today, tasks_season, mtfmi_map, cutoff, field_to_firm,
+        crop_field_ids=crop_field_ids, field_crops=field_crops, mtfmi_crop=None,
+    )
+    new_today, new_season = _accumulate_crop_ha(
+        tasks_today, tasks_season, mtfmi_map, cutoff, field_to_firm,
+        crop_field_ids=None, field_crops=None, mtfmi_crop=mtfmi_crop,
+    )
+    _print_crop_table(old_today, title="КУЛЬТУРЫ ЗА СУТКИ, старая (поле, активный год)")
+    _print_crop_table(new_today, title="КУЛЬТУРЫ ЗА СУТКИ, новая (history_item строки площади)")
+    _print_crop_delta(old_today, new_today, title="КУЛЬТУРЫ ЗА СУТКИ, га строки (до порога 0.5 га на машину)")
+    _print_crop_delta(old_season, new_season, title="КУЛЬТУРЫ ЗА СЕЗОН, га строки")
+    print(
+        f"\nСкорость культуры: старая {old_sec:.1f} с, новая {new_sec:.1f} с "
+        f"(общая загрузка заданий не входит, она одинаковая: {shared_sec:.1f} с)."
+    )
 
 
 if __name__ == "__main__":
-    build_report()
+    if "--compare" in sys.argv:
+        asyncio.run(compare_crop_logic())
+    else:
+        build_report()

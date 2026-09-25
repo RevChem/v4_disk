@@ -2271,6 +2271,18 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
     # (в т.ч. ошибочная «Соя» с year+1).
     if task_crop_via_operation or field_to_crop_general:
         def _row_crop(r) -> str:
+            hid = None
+            if "history_item_id" in r.index and pd.notna(r["history_item_id"]):
+                try:
+                    hid = int(r["history_item_id"])
+                except (TypeError, ValueError):
+                    hid = None
+            if hid is not None:
+                from mtfmi_batch_fetch import crop_of_item
+
+                named = crop_of_item({"history_item_id": hid}, "")
+                if named:
+                    return named
             crop = field_to_crop_general.get(r["field_id"])
             if crop:
                 return crop
@@ -2556,6 +2568,26 @@ def main():
         flush=True,
     )
 
+    async def _bind_fmi_history_crops(rows: list[dict]) -> None:
+        from collections import defaultdict
+
+        from mtfmi_batch_fetch import remember_history_crops
+
+        grouped: dict[int, list[dict]] = defaultdict(list)
+        for item in rows:
+            tid = item.get("machine_task_id")
+            if tid is not None:
+                grouped[int(tid)].append(item)
+        if not grouped:
+            return
+        headers_cw = {"X-User-Api-Token": API_TOKEN}
+        sem_cw = asyncio.Semaphore(8)
+        async with httpx.AsyncClient(headers=headers_cw, timeout=120) as client:
+            await remember_history_crops(client, BASE_URL, grouped, sem_cw)
+
+    _step("→ культура строки площади (history_item) ...")
+    asyncio.run(_bind_fmi_history_crops(fmi_list))
+
     _step("→ fetch_task_crop_via_agro_operation() (async) ...")
     task_crop_via_operation = asyncio.run(
         fetch_task_crop_via_agro_operation(list(task_ids), history_item_to_crop)
@@ -2586,6 +2618,7 @@ def main():
         }
         veg_fmi_list = _normalize_fmi_for_shift(veg_fmi_list, report_date, veg_task_to_wt)
         print(f"  Овощи — заданий: {len(veg_tasks)}, FMI: {len(veg_fmi_list)}", flush=True)
+        asyncio.run(_bind_fmi_history_crops(veg_fmi_list))
         if veg_task_ids:
             _step("→ fetch_task_crop_via_agro_operation() (овощи) ...")
             veg_task_crop_via_operation = asyncio.run(
