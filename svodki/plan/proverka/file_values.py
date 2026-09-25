@@ -213,6 +213,10 @@ def _canonical_report_id(row: dict[str, Any]) -> str:
     return ""
 
 
+def _norm_crop_name(name: str) -> str:
+    return " ".join(str(name or "").casefold().replace("ё", "е").split())
+
+
 def file_totals_for_row(
     row: dict[str, Any],
     by_report: dict[str, dict[str, float]],
@@ -228,16 +232,53 @@ def file_totals_for_row(
     return totals
 
 
+def file_crop_totals_for_row(
+    row: dict[str, Any],
+    crop_row: dict[str, Any],
+    by_report: dict[str, dict[str, dict[str, float]]],
+) -> dict[str, float]:
+    """Сводка → га этой культуры из файла. Имя культуры сравнивается без регистра."""
+    group = str(row.get("group_name") or "")
+    crop = str(crop_row.get("crop") or "")
+    wanted = _norm_crop_name(crop)
+    peers = list(crop_row.get("active_reports") or [])
+    for peer in row.get("active_reports") or row.get("peer_reports") or []:
+        if peer not in peers:
+            peers.append(peer)
+    totals: dict[str, float] = {}
+    for peer in peers:
+        rid = str(peer)
+        crops = (by_report.get(rid) or {}).get(group) or {}
+        if crop in crops:
+            totals[rid] = crops[crop]
+            continue
+        for name, ha in crops.items():
+            if _norm_crop_name(name) == wanted:
+                totals[rid] = ha
+                break
+    return totals
+
+
+def _stamp_crop_file_totals(
+    row: dict[str, Any],
+    by_report: dict[str, dict[str, dict[str, float]]],
+) -> None:
+    for crop_row in row.get("crops") or []:
+        if isinstance(crop_row, dict):
+            crop_row["file_totals"] = file_crop_totals_for_row(row, crop_row, by_report)
+
+
 def apply_file_totals_to_rows(rows: list[Any], report_date: date) -> None:
-    """В каждую строку операции кладёт file_totals: сводка → га из её файла."""
+    """В операцию и в каждую культуру кладёт file_totals: сводка → га из её файла."""
     try:
-        by_report = load_operation_areas(report_date)
+        by_report, crops_by_report = load_saved_areas(report_date)
     except Exception:
         return
     for row in rows:
         if not isinstance(row, dict):
             continue
         row["file_totals"] = file_totals_for_row(row, by_report)
+        _stamp_crop_file_totals(row, crops_by_report)
 
 
 def apply_file_ha_to_rows(rows: list[Any], report_date: date) -> None:
@@ -249,13 +290,19 @@ def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
     """Кладёт file_totals на строки сверки: по каждой сводке своё число из файла."""
     reports = all_results.get("reports") or {}
     by_report: dict[str, dict[str, float]] = {}
+    crops_by_report: dict[str, dict[str, dict[str, float]]] = {}
     for rid, result in reports.items():
-        if isinstance(result, dict) and isinstance(result.get("file_operations"), dict):
+        if not isinstance(result, dict):
+            continue
+        if isinstance(result.get("file_operations"), dict):
             by_report[str(rid)] = result["file_operations"]
+        if isinstance(result.get("file_crops"), dict):
+            crops_by_report[str(rid)] = result["file_crops"]
     rows = ((all_results.get("cross_check") or {}).get("operations")) or []
     for row in rows:
         if isinstance(row, dict):
             row["file_totals"] = file_totals_for_row(row, by_report)
+            _stamp_crop_file_totals(row, crops_by_report)
 
 
 # Сводки, у которых на первой странице PDF «Итого» устроен одинаково:
@@ -378,6 +425,12 @@ def _dedupe_words(text: str) -> str:
     return " ".join(out)
 
 
+# Заголовок листа сводки 2 отличается от имени операции в сверке.
+_FILE_GROUP_ALIASES = {
+    "5.4 уборка овощей": "5.4 Уборка картофеля, лука",
+}
+
+
 def _match_group(line: str) -> str | None:
     """Имя операции из заголовка листа. Строка с двумя операциями не выбирается."""
     from proverka.operation_registry import OPERATION_PEERS
@@ -385,6 +438,9 @@ def _match_group(line: str) -> str | None:
     text = _dedupe_words(line)
     if not text or "Итого" in text or len(text) > 120:
         return None
+    aliased = _FILE_GROUP_ALIASES.get(text.casefold())
+    if aliased:
+        return aliased
     hits: list[str] = []
     for group in OPERATION_PEERS:
         exact = text == group or text.startswith(group + " ") or text.startswith(group + ",")
@@ -473,7 +529,12 @@ def _rightmost_day_x(words: list[tuple[float, float, str]]) -> float | None:
     return max(days)
 
 
-def _number_nearest_x(words: list[tuple[float, float, str]], target_x: float) -> float | None:
+def _number_nearest_x(
+    words: list[tuple[float, float, str]],
+    target_x: float,
+    *,
+    require_total: bool = True,
+) -> float | None:
     cells: list[tuple[float, str]] = []
     prev_x1: float | None = None
     for x0, x1, text in words:
@@ -483,7 +544,7 @@ def _number_nearest_x(words: list[tuple[float, float, str]], target_x: float) ->
             continue
         cells.append((x0, text))
         prev_x1 = x1
-    if not any(text == _TOTAL_LABEL for _x, text in cells):
+    if require_total and not any(text == _TOTAL_LABEL for _x, text in cells):
         return None
     best: float | None = None
     best_dist = 10**9
@@ -548,6 +609,137 @@ def _report2_daily_areas(path: Path) -> dict[str, float]:
     return out
 
 
+def _crop_label(words: list[tuple[float, float, str]], x_min: float, x_max: float) -> str:
+    parts: list[str] = []
+    for x0, _x1, text in words:
+        if x0 < x_min or x0 >= x_max:
+            continue
+        token = text.strip(",;")
+        if not token or token in {"№", "п/п"}:
+            continue
+        parts.append(token)
+    label = " ".join(parts)
+    folded = label.casefold()
+    if not label or folded in {"итого", "культура", "агрофирма", "агрофирмы"} or "из них" in folded:
+        return ""
+    return label
+
+
+def _add_crop_ha(bucket: dict[str, float], crop: str, ha: float) -> None:
+    bucket[crop] = round(bucket.get(crop, 0.0) + ha, 2)
+
+
+def _report2_crop_areas(path: Path) -> dict[str, dict[str, float]]:
+    """Сводка 2: сумма по фирмам колонки последнего дня в таблице культур."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    current = ""
+    in_crops = False
+    date_x: float | None = None
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                group = _match_group(line)
+                if group:
+                    current = group
+                    in_crops = False
+                    date_x = None
+                if "СОВОКУПНАЯ" in line:
+                    in_crops = False
+                    date_x = None
+                    continue
+                if "Культура" in line:
+                    found_x = _rightmost_day_x(words)
+                    if found_x is not None:
+                        date_x = found_x
+                        in_crops = True
+                        continue
+                if not current or not in_crops or date_x is None:
+                    continue
+                crop = _crop_label(words, 105, 250)
+                if not crop:
+                    continue
+                area = _number_nearest_x(words, date_x, require_total=False)
+                if area is None:
+                    continue
+                _add_crop_ha(out.setdefault(current, {}), crop, area)
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
+_CROP_SUMMARY_MARKERS = ("Сводно", "ПО КУЛЬТУРАМ", "ПО ХОЛДИНГУ", "НАМОЛОТ", "УБОРКА ОВОЩНЫХ")
+
+
+def _is_crop_summary_page(text: str) -> bool:
+    return any(marker in text for marker in _CROP_SUMMARY_MARKERS)
+
+
+def _daily_fact_x(words: list[tuple[float, float, str]]) -> float | None:
+    """Колонка «Факт за сутки, га», не валовый сбор в тоннах."""
+    for index, (x0, _x1, text) in enumerate(words):
+        if not text.casefold().lstrip().startswith("сут"):
+            continue
+        nxt = words[index + 1][2] if index + 1 < len(words) else ""
+        if nxt.casefold().lstrip().startswith("га"):
+            return x0
+    return None
+
+
+def _daily_fact_crop_areas(path: Path) -> dict[str, dict[str, float]]:
+    """Сводные страницы «Факт за сутки» (сводки 1 и 5): культура → га, уже по всем фирмам."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    try:
+        for page in doc:
+            if not _is_crop_summary_page(page.get_text("text")):
+                continue
+            lines = _pdf_page_lines(page)
+            group = ""
+            fact_x: float | None = None
+            for words in lines:
+                line = " ".join(text for _x0, _x1, text in words)
+                if not group:
+                    group = _match_group(line) or ""
+                if fact_x is None:
+                    fact_x = _daily_fact_x(words)
+            if not group or fact_x is None or group in out:
+                continue
+            crops: dict[str, float] = {}
+            for words in lines:
+                crop = _crop_label(words, 52, 165)
+                if not crop:
+                    continue
+                area = _number_nearest_x(words, fact_x, require_total=False)
+                if area is None:
+                    continue
+                crops[crop] = area
+            if crops:
+                out[group] = crops
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
 def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     """Гектары за сутки по операциям из одного файла сводки."""
     rid = str(report_id)
@@ -570,19 +762,38 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     return {}
 
 
-def load_operation_areas(report_date: date) -> dict[str, dict[str, float]]:
-    """report_id → операция → га из сохранённого файла. Excel перекрывает PDF."""
+def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
+    """Операция → культура → га за сутки из файла. Тематические сводки без культур пустые."""
+    rid = str(report_id)
+    if path.suffix.lower() != ".pdf":
+        return {}
+    if rid == "2":
+        return _report2_crop_areas(path)
+    if rid in {"1", "5"}:
+        return _daily_fact_crop_areas(path)
+    return {}
+
+
+def _saved_report_files(report_date: date) -> list[Path]:
     folder = upload_dir() / report_date.isoformat()
     if not folder.is_dir():
-        return {}
+        return []
     files = [
         path
         for path in folder.iterdir()
         if path.is_file() and path.suffix.lower() in {".pdf", ".xlsx"}
     ]
     files.sort(key=lambda path: (path.suffix.lower() == ".xlsx", path.name))
-    out: dict[str, dict[str, float]] = {}
-    for path in files:
+    return files
+
+
+def load_saved_areas(
+    report_date: date,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, dict[str, float]]]]:
+    """(операции, культуры) из сохранённых файлов. Excel перекрывает PDF по операциям."""
+    operations: dict[str, dict[str, float]] = {}
+    crops: dict[str, dict[str, dict[str, float]]] = {}
+    for path in _saved_report_files(report_date):
         rid = _report_id_from_filename(path.name)
         if not rid:
             continue
@@ -591,8 +802,20 @@ def load_operation_areas(report_date: date) -> dict[str, dict[str, float]]:
         except Exception:
             areas = {}
         if areas:
-            out[rid] = areas
-    return out
+            operations[rid] = areas
+        try:
+            by_crop = crop_areas_from_path(path, rid)
+        except Exception:
+            by_crop = {}
+        if by_crop:
+            crops[rid] = by_crop
+    return operations, crops
+
+
+def load_operation_areas(report_date: date) -> dict[str, dict[str, float]]:
+    """report_id → операция → га из сохранённого файла. Excel перекрывает PDF."""
+    operations, _crops = load_saved_areas(report_date)
+    return operations
 
 
 def _values_from_blocks(blocks: list[dict[str, Any]], path: Path) -> dict[str, Any]:
@@ -643,9 +866,9 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
     """
     reports = all_results.get("reports") or {}
     try:
-        by_report = load_operation_areas(report_date)
+        by_report, crops_by_report = load_saved_areas(report_date)
     except Exception:
-        by_report = {}
+        by_report, crops_by_report = {}, {}
     for rid, result in reports.items():
         if not isinstance(result, dict):
             continue
@@ -654,6 +877,7 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
         except Exception:
             result["file_values"] = {"found": False}
         result["file_operations"] = by_report.get(str(rid), {})
+        result["file_crops"] = crops_by_report.get(str(rid), {})
     try:
         stamp_cross_check_file_ha(all_results)
     except Exception:

@@ -153,7 +153,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState(false);
-  const [showAllCrops, setShowAllCrops] = useState(false);
+  const [showAllCrops, setShowAllCrops] = useState(true);
   const [expandedCropKeys, setExpandedCropKeys] = useState(() => new Set());
 
   const sortedCatalog = useMemo(() => sortCatalogDesc(catalog), [catalog]);
@@ -602,7 +602,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
               )}
               {crossCheckRows.some((row) => row.file_totals && Object.keys(row.file_totals).length > 0) && (
                 <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
-                  Под номером сводки две строки: сверху расчёт, снизу гектары в файле этой сводки.
+                  Под номером сводки две строки: сверху расчёт, снизу гектары в файле.
+                  Так же у каждой культуры, если в файле сводки есть разбивка.
                 </Typography>
               )}
               <Table size="small">
@@ -731,8 +732,17 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           </TableCell>
                           <TableCell>{(cr.active_reports || op.active_reports || []).join("+")}</TableCell>
                           {crossCheckPeerIds.map((rid) => (
-                            <TableCell key={rid} align="right">
-                              {formatHa(cr.totals?.[rid])}
+                            <TableCell
+                              key={rid}
+                              align="right"
+                              title={
+                                cr.file_totals?.[rid] != null
+                                  ? `В файле сводки ${rid}, ${cr.crop}: ${formatHa(cr.file_totals[rid])} га`
+                                  : undefined
+                              }
+                              sx={{ whiteSpace: "nowrap", verticalAlign: "top" }}
+                            >
+                              <HaFileStack calc={cr.totals?.[rid]} fileHa={cr.file_totals?.[rid]} />
                             </TableCell>
                           ))}
                           {hasCropwiseColumn && (
