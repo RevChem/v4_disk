@@ -50,6 +50,7 @@ from app.adapters.outbound.proverka.service import (
     latest_job_for_date,
     list_catalog,
     read_job_status,
+    session_cookie_from_env,
     platform_summary,
     refresh_dashboard_check,
     request_proverka_cancel,
@@ -89,7 +90,7 @@ log = get_logger(__name__)
 
 @router.get("/catalog", response_model=ProverkaCatalogOut)
 def get_proverka_catalog(_: User = Depends(require_developer_access)):
-    return {"items": list_catalog()}
+    return {"items": list_catalog(), "env_cookie": session_cookie_from_env()}
 
 
 @router.get("/platform-summary")
@@ -119,8 +120,12 @@ def run_proverka(
     report_ids = [str(x) for x in (payload.report_ids or [])]
     if not report_ids:
         raise HTTPException(status_code=400, detail="Выберите хотя бы одну сводку")
-    if payload.compare_mode == "cropwise" and not (payload.cookie or "").strip():
-        raise HTTPException(status_code=400, detail="Введите cookie для сравнения с Cropwise")
+    cookie = (payload.cookie or "").strip() or session_cookie_from_env()
+    if payload.compare_mode == "cropwise" and not cookie:
+        raise HTTPException(
+            status_code=400,
+            detail="Введите cookie или задайте CROPWISE_SESSION_COOKIE в .env",
+        )
 
     compare_cropwise = payload.compare_mode != "svodki_only"
     from app.adapters.outbound.proverka.service import editor_season_overrides
@@ -142,7 +147,7 @@ def run_proverka(
         report_date=payload.report_date,
         report_ids=report_ids,
         compare_cropwise=compare_cropwise,
-        cookie=(payload.cookie or "").strip(),
+        cookie=cookie,
         season_overrides=season_overrides,
         run_ai_analysis=bool(payload.ai_analysis),
         user_id=user.id,

@@ -57,6 +57,7 @@ class ProverkaCatalogItemOut(BaseModel):
 
 class ProverkaCatalogOut(BaseModel):
     items: list[ProverkaCatalogItemOut] = Field(default_factory=list)
+    env_cookie: str = ""
 
 
 class ProverkaSeasonOverride(BaseModel):

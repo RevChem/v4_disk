@@ -144,6 +144,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [cookie, setCookie] = useState("");
+  const [envCookie, setEnvCookie] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
@@ -162,6 +163,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     try {
       const data = await fetchProverkaCatalog();
       const items = sortCatalogDesc(data.items || []);
+      const saved = String(data.env_cookie || "").trim();
+      setEnvCookie(Boolean(saved));
+      if (saved) setCookie((prev) => (prev.trim() ? prev : saved));
       setCatalog(items);
       // выбор сохраняется между открытиями окна; по умолчанию — все сводки
       setSelectedIds((prev) => {
@@ -255,8 +259,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       setError("Выберите хотя бы одну сводку");
       return;
     }
-    if (!cookie.trim()) {
-      setError("Введите cookie");
+    if (!cookie.trim() && !envCookie) {
+      setError("Введите cookie или задайте CROPWISE_SESSION_COOKIE в .env");
       return;
     }
     setRunning(true);
@@ -424,6 +428,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
           display_name: row.display_name || row.group_name,
           firm: firmRow.firm,
           values: firmRow.values || {},
+          file_totals: firmRow.file_totals || {},
           max_diff_ha: firmRow.max_diff_ha,
           cropwise_ha: firmRow.cropwise_ha,
         });
@@ -456,12 +461,18 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
           </Typography>
 
           <TextField
-            placeholder="_cropio_ses=…; crossdomain_auth=…"
+            label="Cookie Cropwise"
+            placeholder={envCookie ? "Cookie из .env" : "_cropio_ses=…; crossdomain_auth=…"}
             value={cookie}
             onChange={(e) => setCookie(e.target.value)}
             fullWidth
             size="small"
             disabled={running}
+            helperText={
+              envCookie
+                ? "Подставлен из .env. Можно заменить; пустое поле снова берёт cookie сервера."
+                : "В .env нет CROPWISE_SESSION_COOKIE — вставьте cookie вручную."
+            }
             sx={{ "& .MuiInputBase-root": { fontSize: "0.8rem" } }}
           />
 
@@ -827,6 +838,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
               <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", mb: 0.5 }}>
                 Итог за смену по каждой АФ внутри операции: сводки между собой и Cropwise.
                 Сводка 1 для посева, опрыскивания и др. подставляет гектары с доноров — как в PDF.
+                Под номером сводки две строки: сверху расчёт, снизу гектары этой агрофирмы в файле.
               </Typography>
               <Table size="small">
                 <TableHead>
@@ -850,8 +862,17 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                       <TableCell>{row.display_name}</TableCell>
                       <TableCell>{row.firm}</TableCell>
                       {crossCheckPeerIds.map((rid) => (
-                        <TableCell key={rid} align="right">
-                          {formatHa(row.values?.[rid])}
+                        <TableCell
+                          key={rid}
+                          align="right"
+                          title={
+                            row.file_totals?.[rid] != null
+                              ? `В файле сводки ${rid}, ${row.firm}: ${formatHa(row.file_totals[rid])} га`
+                              : undefined
+                          }
+                          sx={{ whiteSpace: "nowrap", verticalAlign: "top" }}
+                        >
+                          <HaFileStack calc={row.values?.[rid]} fileHa={row.file_totals?.[rid]} />
                         </TableCell>
                       ))}
                       {hasFirmCropwise && (

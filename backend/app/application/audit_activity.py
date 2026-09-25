@@ -179,6 +179,40 @@ CHANGE_ACTION_AREAS: dict[str, str] = {
 }
 
 
+def event_area(action: str) -> str:
+    """Вкладка ленты «Логи»: известные правки и соседние группы действий."""
+    mapped = CHANGE_ACTION_AREAS.get(action)
+    if mapped:
+        return mapped
+    if action.startswith("plans."):
+        return "Редактор планов"
+    if action.startswith("pdf_header_labels."):
+        return "Подписи PDF"
+    if action.startswith("report1_page_order."):
+        return "Порядок страниц"
+    if action.startswith("summary.cell_edit."):
+        return "Правки ячеек"
+    if action.startswith("summary.comment."):
+        return "Комментарии"
+    if action.startswith("summary."):
+        return "Сводки"
+    if action.startswith("schedule."):
+        return "Расписание"
+    if action.startswith("proverka"):
+        return "Проверка"
+    if action.startswith("reports.generation."):
+        return "Генерация"
+    if action.startswith("auth.") or action.startswith("users."):
+        return "Пользователи"
+    if action.startswith("interface."):
+        return "Интерфейс"
+    if action.startswith("field_season."):
+        return "Поля"
+    if action.startswith("works_summary."):
+        return "Сводка по работам"
+    return "Прочее"
+
+
 def change_text(action: str, details: dict[str, Any]) -> str:
     """Текст изменения без имени пользователя."""
     text = _change_text(action, details or {})

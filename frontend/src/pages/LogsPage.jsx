@@ -18,8 +18,6 @@ import {
   Typography,
 } from "@mui/material";
 import BugReportRoundedIcon from "@mui/icons-material/BugReportRounded";
-import PersonOutlineRoundedIcon from "@mui/icons-material/PersonOutlineRounded";
-import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 
 import { fetchActivityFeed, fetchActivityJob } from "../api";
@@ -188,6 +186,72 @@ function matchesUserFilter(ev, filterUserId) {
   return String(ev.user_id) === String(filterUserId);
 }
 
+/** Вкладки ленты. areas совпадают с event_area() на бэкенде. */
+const FIXED_LOG_TABS = [
+  { id: "users", label: "Пользователи", areas: ["Пользователи", "Прочее"] },
+  { id: "reports", label: "Сводки", reports: true, areas: ["Сводки"] },
+  { id: "generation", label: "Генерация", areas: ["Генерация"] },
+  { id: "plans", label: "Редактор планов", areas: ["Редактор планов"] },
+  { id: "page_order", label: "Порядок страниц", areas: ["Порядок страниц"] },
+  { id: "pdf", label: "Подписи PDF", areas: ["Подписи PDF"] },
+  { id: "cells", label: "Правки ячеек", areas: ["Правки ячеек"] },
+  { id: "comments", label: "Комментарии", areas: ["Комментарии"] },
+  { id: "schedule", label: "Расписание", areas: ["Расписание"] },
+  { id: "proverka", label: "Проверка", areas: ["Проверка"] },
+];
+
+const FIXED_AREAS = new Set(FIXED_LOG_TABS.flatMap((tab) => tab.areas || []));
+
+function areaOf(ev) {
+  if (ev.area) return ev.area;
+  const action = String(ev.action || "");
+  if (action.startsWith("plans.")) return "Редактор планов";
+  if (action.startsWith("pdf_header_labels.")) return "Подписи PDF";
+  if (action.startsWith("report1_page_order.")) return "Порядок страниц";
+  if (action.startsWith("summary.cell_edit.")) return "Правки ячеек";
+  if (action.startsWith("summary.comment.")) return "Комментарии";
+  if (action.startsWith("summary.")) return "Сводки";
+  if (action.startsWith("schedule.")) return "Расписание";
+  if (action.startsWith("proverka")) return "Проверка";
+  if (action.startsWith("reports.generation.")) return "Генерация";
+  if (action.startsWith("auth.") || action.startsWith("users.")) return "Пользователи";
+  if (action.startsWith("interface.")) return "Интерфейс";
+  if (action.startsWith("field_season.")) return "Поля";
+  if (action.startsWith("works_summary.")) return "Сводка по работам";
+  return "Прочее";
+}
+
+function eventsInAreas(events, areas) {
+  const wanted = new Set(areas || []);
+  return events.filter((ev) => wanted.has(areaOf(ev)));
+}
+
+function UserEventList({ events, emptyText, onOpenReport }) {
+  if (!events.length) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        {emptyText}
+      </Typography>
+    );
+  }
+  return (
+    <Stack spacing={0.75}>
+      {events.map((ev) => (
+        <Box key={ev.id} className="log-event-card log-event-card--compact">
+          <LogEventLine
+            when={formatWhen(ev.created_at)}
+            username={ev.username}
+            message={displayMessage(ev)}
+            reports={ev.reports}
+            durationSeconds={ev.duration_seconds}
+            onErrorClick={ev.job_id ? (rid) => onOpenReport(ev.job_id, rid) : undefined}
+          />
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
 export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = false }) {
   const [tab, setTab] = useState(canViewUserEvents ? "users" : "reports");
   const [feed, setFeed] = useState({ user_events: [], report_events: [], users: [] });
@@ -217,7 +281,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
   }, [loadFeed]);
 
   useEffect(() => {
-    if (!canViewUserEvents && tab === "users") {
+    if (!canViewUserEvents && tab !== "reports") {
       setTab("reports");
     }
   }, [canViewUserEvents, tab]);
@@ -281,10 +345,42 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
     [feed.report_events, userFilter]
   );
 
+  const summaryChangeEvents = useMemo(
+    () => eventsInAreas(filteredUserEvents, ["Сводки"]),
+    [filteredUserEvents]
+  );
+
+  const logTabs = useMemo(() => {
+    const extras = [];
+    const seen = new Set();
+    for (const ev of filteredUserEvents) {
+      const area = areaOf(ev);
+      if (FIXED_AREAS.has(area) || seen.has(area)) continue;
+      seen.add(area);
+      extras.push({ id: `area:${area}`, label: area, areas: [area] });
+    }
+    extras.sort((a, b) => a.label.localeCompare(b.label, "ru"));
+    return [...FIXED_LOG_TABS, ...extras];
+  }, [filteredUserEvents]);
+
+  useEffect(() => {
+    if (!logTabs.some((item) => item.id === tab)) {
+      setTab(canViewUserEvents ? "users" : "reports");
+    }
+  }, [logTabs, tab, canViewUserEvents]);
+
+  const activeTab = logTabs.find((item) => item.id === tab);
+  const activeEvents =
+    activeTab && !activeTab.reports ? eventsInAreas(filteredUserEvents, activeTab.areas) : [];
+
   const errorCount = useMemo(
     () => filteredReportEvents.filter((r) => r.status === "error").length,
     [filteredReportEvents]
   );
+
+  const emptyForFilter = userFilter
+    ? "Нет записей для выбранного пользователя."
+    : "Пока нет записей.";
 
   return (
     <Card className="hero-card" elevation={0}>
@@ -320,7 +416,9 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
               </Select>
             </FormControl>
             <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
-              Действия и ошибки по сводкам. Клик по красной сводке — технический лог.
+              {canViewUserEvents
+                ? "Правки разложены по вкладкам. Клик по красной сводке — технический лог."
+                : "Ошибки по сводкам. Клик по красной сводке — технический лог."}
             </Typography>
           </Stack>
 
@@ -331,21 +429,27 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
           )}
 
           {canViewUserEvents ? (
-            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ minHeight: 40 }}>
-              <Tab
-                value="users"
-                icon={<PersonOutlineRoundedIcon sx={{ fontSize: 18 }} />}
-                iconPosition="start"
-                label="Пользователи"
-                sx={{ minHeight: 40, py: 0.5 }}
-              />
-              <Tab
-                value="reports"
-                icon={<DescriptionOutlinedIcon sx={{ fontSize: 18 }} />}
-                iconPosition="start"
-                label="Сводки"
-                sx={{ minHeight: 40, py: 0.5 }}
-              />
+            <Tabs
+              value={logTabs.some((item) => item.id === tab) ? tab : "users"}
+              onChange={(_, v) => setTab(v)}
+              variant="scrollable"
+              scrollButtons="auto"
+              allowScrollButtonsMobile
+              sx={{ minHeight: 40 }}
+            >
+              {logTabs.map((item) => {
+                const count = item.reports
+                  ? filteredReportEvents.length + summaryChangeEvents.length
+                  : eventsInAreas(filteredUserEvents, item.areas).length;
+                return (
+                  <Tab
+                    key={item.id}
+                    value={item.id}
+                    label={count > 0 ? `${item.label} (${count})` : item.label}
+                    sx={{ minHeight: 40, py: 0.5, textTransform: "none", fontSize: "0.8125rem" }}
+                  />
+                );
+              })}
             </Tabs>
           ) : (
             <Typography variant="subtitle2" fontWeight={700}>
@@ -362,32 +466,17 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
             </Stack>
           )}
 
-          {tab === "users" && !loading && (
-            <Stack spacing={0.75}>
-              {filteredUserEvents.length === 0 && (
-                <Typography variant="body2" color="text.secondary">
-                  {userFilter ? "Нет записей для выбранного пользователя." : "Пока нет записей."}
-                </Typography>
-              )}
-              {filteredUserEvents.map((ev) => (
-                <Box key={ev.id} className="log-event-card log-event-card--compact">
-                  <LogEventLine
-                    when={formatWhen(ev.created_at)}
-                    username={ev.username}
-                    message={displayMessage(ev)}
-                    reports={ev.reports}
-                    durationSeconds={ev.duration_seconds}
-                    onErrorClick={ev.job_id ? (rid) => openReport(ev.job_id, rid) : undefined}
-                  />
-                </Box>
-              ))}
-            </Stack>
+          {tab !== "reports" && !loading && canViewUserEvents && (
+            <UserEventList events={activeEvents} emptyText={emptyForFilter} onOpenReport={openReport} />
           )}
 
           {tab === "reports" && !loading && (
             <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="stretch">
               <Stack spacing={0.75} sx={{ flex: 1, minWidth: 0 }}>
-                {filteredReportEvents.length === 0 && (
+                {summaryChangeEvents.length > 0 && (
+                  <UserEventList events={summaryChangeEvents} emptyText="" onOpenReport={openReport} />
+                )}
+                {filteredReportEvents.length === 0 && summaryChangeEvents.length === 0 && (
                   <Typography variant="body2" color="text.secondary">
                     {userFilter ? "Нет ошибок для выбранного пользователя." : "Ошибок по сводкам нет."}
                   </Typography>

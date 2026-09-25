@@ -12,6 +12,14 @@ def test_harvest_wt_includes_plans_list_and_corn_chop() -> None:
     assert 149 not in wt
 
 
+def test_cultivation_wt_matches_report8() -> None:
+    wt = work_type_ids_for_group("2.11 Культивация")
+    assert wt == [10, 50, 51, 63, 96]
+    assert 20 not in wt
+    assert 52 not in wt
+    assert 73 not in wt
+
+
 def test_veg_harvest_wt_unchanged() -> None:
     wt = work_type_ids_for_group("5.4 Уборка картофеля, лука")
     assert set(wt) == {75, 76, 77}

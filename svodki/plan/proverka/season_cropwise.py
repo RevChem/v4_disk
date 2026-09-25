@@ -25,9 +25,9 @@ from proverka.work_groups import work_group_wt_map
 
 _WORK_GROUP_MAP: dict[str, list[int]] = work_group_wt_map()
 
-REPORT_WT_EXTRAS: dict[str, list[int]] = {
-    "8": [73],
-}
+# 73 — фрезерование, отдельная операция 2.6. В запрос культивации его не добавляем:
+# иначе колонка «Обработка почвы» смешивает два вида работ.
+REPORT_WT_EXTRAS: dict[str, list[int]] = {}
 
 
 def work_type_ids_for_report(report_id: str) -> list[int]:

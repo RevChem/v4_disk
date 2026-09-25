@@ -130,8 +130,8 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
   return (
     <Stack spacing={1.5}>
       <Typography variant="body2" color="text.secondary">
-        Запрос в Cropwise по cookie, без сверки со сводкой. В модель уходят задания выбранного периода.
-        Техника указана в подписи задания.
+        Запрос в Cropwise по cookie, без сверки со сводкой. В модель уходят задания выбранного
+        периода и карточка каждого: исполнитель, техника, орудие, поле и расход топлива.
       </Typography>
       <TextField
         label="Cookie Cropwise"
@@ -227,15 +227,26 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
             {result.session ? `, сезон сессии ${result.session}` : ""}. Заданий {result.rows_total},{" "}
             {result.ha_total} га
             {result.truncated ? ` (показаны первые ${result.rows?.length || 0})` : ""}.
+            {result.details_note ? ` ${result.details_note}` : ""}
           </Typography>
-          <Box sx={{ maxHeight: 240, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 1 }}>
-            <Table size="small" stickyHeader>
+          {result.details_error && (
+            <Alert severity="warning" sx={{ mb: 0.5 }}>
+              {result.details_error}
+            </Alert>
+          )}
+          <Box sx={{ maxHeight: 320, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 1 }}>
+            <Table size="small" stickyHeader sx={{ minWidth: 1100 }}>
               <TableHead>
                 <TableRow>
                   <TableCell>Задание</TableCell>
                   <TableCell>Фирма</TableCell>
+                  <TableCell>Исполнитель</TableCell>
+                  <TableCell>Техника</TableCell>
+                  <TableCell>Орудие</TableCell>
+                  <TableCell>Поле</TableCell>
                   <TableCell>Культура</TableCell>
                   <TableCell align="right">Га</TableCell>
+                  <TableCell>Топливо</TableCell>
                   <TableCell>Подпись</TableCell>
                 </TableRow>
               </TableHead>
@@ -244,8 +255,13 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
                   <TableRow key={r.task_id} hover>
                     <TableCell>#{r.task_id}</TableCell>
                     <TableCell>{r.firm}</TableCell>
+                    <TableCell>{r.driver}</TableCell>
+                    <TableCell>{r.machine}</TableCell>
+                    <TableCell>{r.implement}</TableCell>
+                    <TableCell>{r.field}</TableCell>
                     <TableCell>{r.crop}</TableCell>
                     <TableCell align="right">{r.ha}</TableCell>
+                    <TableCell>{r.fuel}</TableCell>
                     <TableCell>{r.label}</TableCell>
                   </TableRow>
                 ))}
@@ -256,7 +272,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
       )}
       <TextField
         label="Вопрос для DeepSeek"
-        placeholder="Например: какие задания были на опрыскивании и какая техника в подписи?"
+        placeholder="Например: кто выполнял работы, на какой технике, на каких полях и с каким расходом топлива?"
         multiline
         minRows={2}
         fullWidth

@@ -268,10 +268,49 @@ def _stamp_crop_file_totals(
             crop_row["file_totals"] = file_crop_totals_for_row(row, crop_row, by_report)
 
 
+def _norm_firm_name(name: str) -> str:
+    return "".join(
+        ch for ch in str(name or "").casefold().replace("ё", "е") if ch.isalnum()
+    )
+
+
+def file_firm_totals_for_row(
+    row: dict[str, Any],
+    firm_row: dict[str, Any],
+    by_report: dict[str, dict[str, dict[str, float]]],
+) -> dict[str, float]:
+    """Сводка → га этой агрофирмы из файла. «Нурлат Агро» и «НурлатАгро» — одно имя."""
+    group = str(row.get("group_name") or "")
+    firm = str(firm_row.get("firm") or "")
+    wanted = _norm_firm_name(firm)
+    peers = list(row.get("active_reports") or row.get("peer_reports") or [])
+    totals: dict[str, float] = {}
+    for peer in peers:
+        rid = str(peer)
+        firms = (by_report.get(rid) or {}).get(group) or {}
+        if firm in firms:
+            totals[rid] = firms[firm]
+            continue
+        for name, ha in firms.items():
+            if _norm_firm_name(name) == wanted:
+                totals[rid] = ha
+                break
+    return totals
+
+
+def _stamp_firm_file_totals(
+    row: dict[str, Any],
+    by_report: dict[str, dict[str, dict[str, float]]],
+) -> None:
+    for firm_row in row.get("firms") or []:
+        if isinstance(firm_row, dict):
+            firm_row["file_totals"] = file_firm_totals_for_row(row, firm_row, by_report)
+
+
 def apply_file_totals_to_rows(rows: list[Any], report_date: date) -> None:
-    """В операцию и в каждую культуру кладёт file_totals: сводка → га из её файла."""
+    """В операцию, культуру и агрофирму кладёт file_totals: сводка → га из её файла."""
     try:
-        by_report, crops_by_report = load_saved_areas(report_date)
+        by_report, crops_by_report, firms_by_report = load_saved_areas(report_date)
     except Exception:
         return
     for row in rows:
@@ -279,6 +318,7 @@ def apply_file_totals_to_rows(rows: list[Any], report_date: date) -> None:
             continue
         row["file_totals"] = file_totals_for_row(row, by_report)
         _stamp_crop_file_totals(row, crops_by_report)
+        _stamp_firm_file_totals(row, firms_by_report)
 
 
 def apply_file_ha_to_rows(rows: list[Any], report_date: date) -> None:
@@ -291,6 +331,7 @@ def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
     reports = all_results.get("reports") or {}
     by_report: dict[str, dict[str, float]] = {}
     crops_by_report: dict[str, dict[str, dict[str, float]]] = {}
+    firms_by_report: dict[str, dict[str, dict[str, float]]] = {}
     for rid, result in reports.items():
         if not isinstance(result, dict):
             continue
@@ -298,11 +339,14 @@ def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
             by_report[str(rid)] = result["file_operations"]
         if isinstance(result.get("file_crops"), dict):
             crops_by_report[str(rid)] = result["file_crops"]
+        if isinstance(result.get("file_firms"), dict):
+            firms_by_report[str(rid)] = result["file_firms"]
     rows = ((all_results.get("cross_check") or {}).get("operations")) or []
     for row in rows:
         if isinstance(row, dict):
             row["file_totals"] = file_totals_for_row(row, by_report)
             _stamp_crop_file_totals(row, crops_by_report)
+            _stamp_firm_file_totals(row, firms_by_report)
 
 
 # Сводки, у которых на первой странице PDF «Итого» устроен одинаково:
@@ -740,6 +784,249 @@ def _daily_fact_crop_areas(path: Path) -> dict[str, dict[str, float]]:
     return out
 
 
+def _numeric_cells(words: list[tuple[float, float, str]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, str]] = []
+    prev_x1: float | None = None
+    for x0, x1, text in words:
+        if prev_x1 is not None and merged and x0 - prev_x1 < _PDF_MERGE_GAP:
+            merged[-1] = (merged[-1][0], merged[-1][1] + text)
+            prev_x1 = x1
+            continue
+        merged.append((x0, text))
+        prev_x1 = x1
+    out: list[tuple[float, float]] = []
+    for x0, text in merged:
+        if text == _TOTAL_LABEL or ":" in text or "%" in text:
+            continue
+        try:
+            out.append((x0, float(text.replace(" ", "").replace(",", "."))))
+        except ValueError:
+            continue
+    return out
+
+
+def _area_x_from_total(words: list[tuple[float, float, str]], area_index: int) -> float | None:
+    if _total_area_from_cells(_cells_from_words(words), area_index) is None:
+        return None
+    nums = _numeric_cells(words)
+    if len(nums) <= area_index:
+        return None
+    return nums[area_index][0]
+
+
+_FIRM_NORMS: list[tuple[str, str]] | None = None
+
+
+def _firm_norms() -> list[tuple[str, str]]:
+    global _FIRM_NORMS
+    if _FIRM_NORMS is None:
+        from plans import FIRM_ORDER
+
+        pairs = [(_norm_firm_name(name), name) for name in FIRM_ORDER]
+        pairs.sort(key=lambda item: len(item[0]), reverse=True)
+        _FIRM_NORMS = pairs
+    return _FIRM_NORMS
+
+
+def _firm_from_line(line: str) -> str | None:
+    if not line or _TOTAL_LABEL in line or "ВИД РАБОТ" in line:
+        return None
+    norm = _norm_firm_name(line)
+    if not norm:
+        return None
+    for key, name in _firm_norms():
+        if key and key in norm:
+            return name
+    return None
+
+
+def _group_for_title(title: str) -> str | None:
+    folded = " ".join(title.split()).casefold()
+    for group, aliases in _GROUP_BLOCK_TITLES.items():
+        names = {group.casefold(), *(alias.casefold() for alias in aliases)}
+        if folded in names:
+            return group
+    return _match_group(title)
+
+
+def _sole_work_group(report_id: str) -> str:
+    from proverka.reports_config import REPORTS
+
+    spec = REPORTS.get(str(report_id))
+    groups = tuple(spec.work_groups) if spec else ()
+    if len(groups) == 1:
+        return groups[0]
+    return ""
+
+
+def _apply_pending_firms(
+    bucket: dict[str, float],
+    pending: list[tuple[str, list[tuple[float, float, str]]]],
+    area_x: float,
+) -> None:
+    for firm, words in pending:
+        area = _number_nearest_x(words, area_x, require_total=False)
+        if area is not None:
+            bucket[firm] = area
+
+
+def _summary_firm_areas(
+    path: Path,
+    area_index: int,
+    report_id: str,
+) -> dict[str, dict[str, float]]:
+    """Фирмы с листа «Сводка» до второго «ВИД РАБОТ» (дальше идёт техника)."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    done: set[str] = set()
+    group = _sole_work_group(report_id)
+    pending: list[tuple[str, list[tuple[float, float, str]]]] = []
+    vid_headers = 0
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                if "ВИД РАБОТ" in line:
+                    vid_headers += 1
+                    if vid_headers >= 2:
+                        return out
+                    matched = _match_group(line)
+                    if matched:
+                        group = matched
+                    pending = []
+                    continue
+                title = _pdf_section_title(line)
+                mapped = _group_for_title(title) if title else None
+                if mapped:
+                    group = mapped
+                    pending = []
+                    continue
+                area_x = _area_x_from_total(words, area_index)
+                if area_x is not None:
+                    if group and group not in done:
+                        bucket: dict[str, float] = {}
+                        _apply_pending_firms(bucket, pending, area_x)
+                        if bucket:
+                            out[group] = bucket
+                        done.add(group)
+                    pending = []
+                    continue
+                firm = _firm_from_line(line)
+                if firm and group and group not in done:
+                    pending.append((firm, words))
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
+def _perf_firm_areas(path: Path, area_index: int = _PDF_AREA_INDEX) -> dict[str, dict[str, float]]:
+    """Сводка 1: фирмы на странице выработки, до первого «Итого» этой операции."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    done: set[str] = set()
+    try:
+        for page in doc:
+            if not _page_has_daily_header(page.get_text("text")):
+                continue
+            group = ""
+            pending: list[tuple[str, list[tuple[float, float, str]]]] = []
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                matched = _match_group(line)
+                if matched:
+                    if matched != group:
+                        group = matched
+                        pending = []
+                    continue
+                if not group or group in done:
+                    continue
+                area_x = _area_x_from_total(words, area_index)
+                if area_x is not None:
+                    bucket: dict[str, float] = {}
+                    _apply_pending_firms(bucket, pending, area_x)
+                    if bucket:
+                        out[group] = bucket
+                    done.add(group)
+                    pending = []
+                    continue
+                firm = _firm_from_line(line)
+                if firm:
+                    pending.append((firm, words))
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
+def _report2_firm_areas(path: Path) -> dict[str, dict[str, float]]:
+    """Сводка 2: строка фирмы в «Совокупная площадь», колонка последнего дня."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    done: set[str] = set()
+    current = ""
+    waiting = False
+    date_x: float | None = None
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                group = _match_group(line)
+                if group:
+                    current = group
+                    waiting = False
+                    date_x = None
+                if "СОВОКУПНАЯ" in line:
+                    waiting = True
+                    date_x = None
+                    continue
+                if waiting and date_x is None:
+                    date_x = _rightmost_day_x(words)
+                    continue
+                if not current or date_x is None or current in done:
+                    continue
+                if _TOTAL_LABEL in line:
+                    done.add(current)
+                    waiting = False
+                    date_x = None
+                    continue
+                firm = _firm_from_line(line)
+                if not firm:
+                    continue
+                area = _number_nearest_x(words, date_x, require_total=False)
+                if area is None:
+                    continue
+                out.setdefault(current, {})[firm] = area
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
 def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     """Гектары за сутки по операциям из одного файла сводки."""
     rid = str(report_id)
@@ -774,6 +1061,22 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
     return {}
 
 
+def firm_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
+    """Операция → агрофирма → га за сутки из файла."""
+    rid = str(report_id)
+    if path.suffix.lower() != ".pdf":
+        return {}
+    if rid == "2":
+        return _report2_firm_areas(path)
+    if rid == "1":
+        return _perf_firm_areas(path)
+    if rid == "11":
+        return _summary_firm_areas(path, 1, rid)
+    if rid in _PDF_SUMMARY_REPORTS:
+        return _summary_firm_areas(path, _PDF_AREA_INDEX, rid)
+    return {}
+
+
 def _saved_report_files(report_date: date) -> list[Path]:
     folder = upload_dir() / report_date.isoformat()
     if not folder.is_dir():
@@ -789,10 +1092,15 @@ def _saved_report_files(report_date: date) -> list[Path]:
 
 def load_saved_areas(
     report_date: date,
-) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, dict[str, float]]]]:
-    """(операции, культуры) из сохранённых файлов. Excel перекрывает PDF по операциям."""
+) -> tuple[
+    dict[str, dict[str, float]],
+    dict[str, dict[str, dict[str, float]]],
+    dict[str, dict[str, dict[str, float]]],
+]:
+    """(операции, культуры, агрофирмы) из сохранённых файлов."""
     operations: dict[str, dict[str, float]] = {}
     crops: dict[str, dict[str, dict[str, float]]] = {}
+    firms: dict[str, dict[str, dict[str, float]]] = {}
     for path in _saved_report_files(report_date):
         rid = _report_id_from_filename(path.name)
         if not rid:
@@ -809,12 +1117,18 @@ def load_saved_areas(
             by_crop = {}
         if by_crop:
             crops[rid] = by_crop
-    return operations, crops
+        try:
+            by_firm = firm_areas_from_path(path, rid)
+        except Exception:
+            by_firm = {}
+        if by_firm:
+            firms[rid] = by_firm
+    return operations, crops, firms
 
 
 def load_operation_areas(report_date: date) -> dict[str, dict[str, float]]:
     """report_id → операция → га из сохранённого файла. Excel перекрывает PDF."""
-    operations, _crops = load_saved_areas(report_date)
+    operations, _crops, _firms = load_saved_areas(report_date)
     return operations
 
 
@@ -866,9 +1180,9 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
     """
     reports = all_results.get("reports") or {}
     try:
-        by_report, crops_by_report = load_saved_areas(report_date)
+        by_report, crops_by_report, firms_by_report = load_saved_areas(report_date)
     except Exception:
-        by_report, crops_by_report = {}, {}
+        by_report, crops_by_report, firms_by_report = {}, {}, {}
     for rid, result in reports.items():
         if not isinstance(result, dict):
             continue
@@ -878,6 +1192,7 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
             result["file_values"] = {"found": False}
         result["file_operations"] = by_report.get(str(rid), {})
         result["file_crops"] = crops_by_report.get(str(rid), {})
+        result["file_firms"] = firms_by_report.get(str(rid), {})
     try:
         stamp_cross_check_file_ha(all_results)
     except Exception:

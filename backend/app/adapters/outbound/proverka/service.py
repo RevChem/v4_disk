@@ -205,8 +205,9 @@ def latest_job_for_date(report_date: date) -> dict[str, Any] | None:
 
 def session_cookie_from_env() -> str:
     _ensure_plan_path()
-    from proverka.reconcile import session_cookie
+    from proverka.reconcile import load_env, session_cookie
 
+    load_env()
     return session_cookie()
 
 

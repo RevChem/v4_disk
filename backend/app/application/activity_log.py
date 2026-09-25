@@ -1,4 +1,4 @@
-"""Сборка ленты «Пользователи» и «Сводки» для UI."""
+"""Сборка ленты «Логи»: действия по вкладкам и ошибки по сводкам."""
 from __future__ import annotations
 
 import json
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.adapters.outbound.persistence import repositories as repo
 from app.application.audit_activity import (
     compact_report_ids,
+    event_area,
     format_action_message,
     report_title,
     user_label,
@@ -145,6 +146,7 @@ def build_activity_feed(
             "summary_date": details.get("summary_date") or details.get("report_date"),
             "report_ids": details.get("report_ids") or [],
             "details": details,
+            "area": event_area(row.action),
         }
 
         if category == "report" or row.action == "reports.generation.report_failed":
@@ -258,6 +260,7 @@ def build_activity_feed(
                 "has_error": has_error,
                 "job_status": job.status,
                 "duration_seconds": job_total_seconds(job, result),
+                "area": event_area("reports.generation.job"),
             })
 
     user_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)

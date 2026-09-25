@@ -26,10 +26,21 @@ _EXTRA_HINTS: dict[str, tuple[str, ...]] = {
 }
 
 SYSTEM_PROMPT = (
-    "Ты помощник агронома. Отвечай только по таблице заданий Cropwise "
-    "(строка = задание, ha — гектары). Техника и госномер написаны в колонке label, "
-    "отдельной колонки машины нет. Не выдумывай задания и числа. Если таблица усечена, "
-    "суммы бери из строки «Итого». Отвечай кратко, по-русски."
+    "Ты помощник агронома. Отвечай только по таблице заданий Cropwise. "
+    "Строка — одно задание. ha — гектары из отчёта. driver — ФИО исполнителя, "
+    "machine — техника, implement — орудие, field — поля из карточки задания "
+    "(площадь в скобках — по карточке, она может отличаться от ha). "
+    "fuel — расход топлива в литрах; «остаток N%» — уровень бака, а не расход. "
+    "label — подпись строки отчёта. Пустая ячейка значит, что в карточке этого нет: "
+    "так и скажи, не выдумывай. Если в шапке есть cards_error, пустые driver/machine/"
+    "field/fuel могли не загрузиться, а не отсутствовать в Cropwise. "
+    "Если таблица усечена, суммы и строки «По …» и «Топливо» "
+    "посчитаны по всем загруженным заданиям, а не только по видимым строкам. "
+    "Отвечай кратко, по-русски."
+)
+
+_TSV_COLUMNS = (
+    "firm", "crop", "task_id", "ha", "driver", "machine", "implement", "field", "fuel", "label",
 )
 
 
@@ -189,17 +200,122 @@ def filter_tasks(
     return picked
 
 
+def _tsv_cell(value: Any) -> str:
+    return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _ha_rollup(rows: list[dict[str, Any]], key: str, title: str, *, limit: int = 12) -> str | None:
+    bucket: dict[str, float] = defaultdict(float)
+    missing = 0.0
+    for row in rows:
+        ha = float(row.get("ha") or 0)
+        name = str(row.get(key) or "").strip()
+        if not name:
+            missing += ha
+            continue
+        bucket[name] += ha
+    if not bucket and missing <= 0:
+        return None
+    parts = [f"{name}={ha:.2f}" for name, ha in sorted(bucket.items(), key=lambda kv: -kv[1])[:limit]]
+    if len(bucket) > limit:
+        parts.append(f"ещё {len(bucket) - limit}")
+    if missing > 0.009:
+        parts.append(f"без данных={missing:.2f}")
+    return f"{title}: " + "; ".join(parts)
+
+
+def _field_rollup(rows: list[dict[str, Any]], *, limit: int = 20) -> str | None:
+    bucket: dict[str, float] = defaultdict(float)
+    missing = 0.0
+    for row in rows:
+        items = row.get("field_items") or []
+        if items:
+            named = False
+            for item in items:
+                name = str(item.get("name") or "").strip()
+                ha = float(item.get("ha") or 0)
+                if not name:
+                    missing += ha
+                    continue
+                named = True
+                bucket[name] += ha
+            if not named:
+                missing += float(row.get("ha") or 0)
+            continue
+        name = str(row.get("field") or "").strip()
+        if name:
+            bucket[name] += float(row.get("ha") or 0)
+        else:
+            missing += float(row.get("ha") or 0)
+    if not bucket and missing <= 0:
+        return None
+    parts = [f"{name}={ha:.2f}" for name, ha in sorted(bucket.items(), key=lambda kv: -kv[1])[:limit]]
+    if len(bucket) > limit:
+        parts.append(f"ещё {len(bucket) - limit}")
+    if missing > 0.009:
+        parts.append(f"без данных={missing:.2f}")
+    return "По полям, га по карточке: " + "; ".join(parts)
+
+
+def _fuel_lines(rows: list[dict[str, Any]]) -> list[str]:
+    enriched = bool(rows) and "fuel" in rows[0]
+    if not enriched:
+        return []
+    by_driver: dict[str, float] = defaultdict(float)
+    total = 0.0
+    with_liters = 0
+    remainders = 0
+    for row in rows:
+        if str(row.get("fuel") or "").startswith("остаток"):
+            remainders += 1
+        liters = row.get("fuel_l")
+        if liters is None:
+            continue
+        with_liters += 1
+        amount = float(liters)
+        total += amount
+        name = str(row.get("driver") or "").strip() or "без ФИО"
+        by_driver[name] += amount
+    lines: list[str] = []
+    if with_liters:
+        lines.append(f"Топливо: {total:.1f} л по {with_liters} заданиям из {len(rows)}")
+        parts = [
+            f"{name}={amount:.1f}"
+            for name, amount in sorted(by_driver.items(), key=lambda kv: -kv[1])[:12]
+        ]
+        if len(by_driver) > 12:
+            parts.append(f"ещё {len(by_driver) - 12}")
+        lines.append("Топливо по исполнителям, л: " + "; ".join(parts))
+        if remainders:
+            lines.append(
+                f"Ещё у {remainders} заданий в карточке только остаток бака, не расход."
+            )
+    elif remainders:
+        lines.append(
+            "Расход топлива в литрах в карточках не найден. "
+            f"Остаток бака (не расход) есть у {remainders} заданий."
+        )
+    else:
+        lines.append("Расход топлива: в карточках заданий нет.")
+    return lines
+
+
 def format_tsv(rows: list[dict[str, Any]], *, header: str, max_rows: int) -> tuple[str, dict[str, Any]]:
     shown = rows[:max_rows]
-    lines = [header, "firm\tcrop\ttask_id\tha\tlabel"]
+    lines = [header, "\t".join(_TSV_COLUMNS)]
     for row in shown:
         lines.append(
             "\t".join([
-                str(row.get("firm") or ""),
-                str(row.get("crop") or ""),
+                _tsv_cell(row.get("firm")),
+                _tsv_cell(row.get("crop")),
                 str(row.get("task_id") or ""),
                 f"{float(row.get('ha') or 0):.2f}",
-                str(row.get("label") or "").replace("\t", " "),
+                _tsv_cell(row.get("driver")),
+                _tsv_cell(row.get("machine")),
+                _tsv_cell(row.get("implement")),
+                _tsv_cell(row.get("field")),
+                _tsv_cell(row.get("fuel")),
+                _tsv_cell(row.get("label")),
             ])
         )
     total = round(sum(float(r.get("ha") or 0) for r in rows), 2)
@@ -213,6 +329,15 @@ def format_tsv(rows: list[dict[str, Any]], *, header: str, max_rows: int) -> tup
     if len(by_firm) > 1:
         parts = [f"{name}={ha:.2f}" for name, ha in sorted(by_firm.items(), key=lambda kv: -kv[1])[:12]]
         lines.append("По фирмам: " + "; ".join(parts))
+    if rows and "driver" in rows[0]:
+        for extra in (
+            _ha_rollup(rows, "driver", "По исполнителям, га отчёта"),
+            _ha_rollup(rows, "machine", "По технике, га отчёта"),
+            _field_rollup(rows),
+        ):
+            if extra:
+                lines.append(extra)
+        lines.extend(_fuel_lines(rows))
     return "\n".join(lines), {
         "rows_total": len(rows),
         "rows_sent": len(shown),
@@ -329,27 +454,41 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
         "firm": row.get("firm") or "",
         "crop": row.get("crop") or "",
         "ha": row.get("ha"),
+        "driver": row.get("driver") or "",
+        "machine": row.get("machine") or "",
+        "implement": row.get("implement") or "",
+        "field": row.get("field") or "",
+        "fuel": row.get("fuel") or "",
         "label": row.get("label") or "",
     }
 
 
-def query_tasks(
+def _with_cards(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    from proverka.cropwise_task_cards import enrich_rows
+
+    if not rows:
+        return {"details_error": None, "details_note": "", "details_loaded": 0}
+    return enrich_rows(rows)
+
+
+def _select(
     cookie: str,
     date_from: date,
     date_to: date,
     groups: list[str],
     *,
-    firm: str | None = None,
-    crop: str | None = None,
-    season: int | None = None,
-) -> dict[str, Any]:
+    firm: str | None,
+    crop: str | None,
+    season: int | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     snap = load_snapshot(cookie, date_from, date_to, groups, season)
     all_rows = snap["rows"]
     firms = sorted({str(r.get("firm") or "") for r in all_rows if r.get("firm")})
     crops = sorted({c for r in all_rows for c in (r.get("crops") or []) if c})
     picked = filter_tasks(all_rows, firm=firm, crop=crop)
+    details = _with_cards(picked)
     shown = [_public_row(r) for r in picked[:_PREVIEW_ROWS]]
-    return {
+    public = {
         "ok": True,
         "available": True,
         "from_time": snap["from_time"],
@@ -363,7 +502,27 @@ def query_tasks(
         "crops": crops,
         "rows": shown,
         "truncated": len(picked) > len(shown),
+        "details_error": details.get("details_error"),
+        "details_note": details.get("details_note") or "",
+        "details_loaded": details.get("details_loaded") or 0,
     }
+    return snap, picked, public
+
+
+def query_tasks(
+    cookie: str,
+    date_from: date,
+    date_to: date,
+    groups: list[str],
+    *,
+    firm: str | None = None,
+    crop: str | None = None,
+    season: int | None = None,
+) -> dict[str, Any]:
+    _, _, public = _select(
+        cookie, date_from, date_to, groups, firm=firm, crop=crop, season=season,
+    )
+    return public
 
 
 def ask_tasks(
@@ -378,15 +537,17 @@ def ask_tasks(
     season: int | None = None,
     use_llm: bool = True,
 ) -> dict[str, Any]:
-    base = query_tasks(
+    snap, picked, base = _select(
         cookie, date_from, date_to, groups, firm=firm, crop=crop, season=season,
     )
-    snap = load_snapshot(cookie, date_from, date_to, groups, season)
-    picked = filter_tasks(snap["rows"], firm=firm, crop=crop)
     header = (
         f"# period={snap['from_time']}..{snap['to_time']}; "
         f"session={snap['session']}; groups={', '.join(snap['groups'])}"
     )
+    if base.get("details_error"):
+        header += f"; cards_error={base['details_error']}"
+    if base.get("details_note"):
+        header += f"; {base['details_note']}"
     table, meta = format_tsv(picked, header=header, max_rows=_max_rows())
     if not use_llm or not (question or "").strip():
         answer = {
