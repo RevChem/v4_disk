@@ -98,10 +98,33 @@ if os.environ.get("REPORT_DATE"):
 # НЕ совпадает с календарным годом отчёта: посев озимых осенью 2026 относится
 # к сезону/году урожая 2027, поэтому историю культур запрашиваем именно за
 # этот год, а не за REPORT_DATE.year.
+def _plow_task_season_year(report_date: date) -> int:
+    """Год machine_task.season для вспашки (год урожая, обычно year+1).
+
+    Сайт кладёт в SEASON_YEAR календарный год отчёта: его пишет «5.0 Уборка»
+    раньше «2.4 Вспашка». Задания вспашки сезона year+1 тогда отбрасываются,
+    и «Обработано за сутки, га» становится 0. Локальный Excel этот env не ставит.
+    Берём годы группы 2.4, иначе year+1. Глобальный SEASON_YEAR не используем.
+    """
+    raw = (os.environ.get("SVODKI_GRP_2_4_Вспашка_TASK_SEASON_YEARS") or "").strip()
+    years: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            year = int(part)
+        except ValueError:
+            continue
+        if 1990 <= year <= 2100:
+            years.append(year)
+    if years:
+        return max(years)
+    return report_date.year + 1
+
+
 # Вспашка (факт): только machine_task.season == SEASON_YEAR (как 2_main).
-SEASON_YEAR: int = REPORT_DATE.year + 1
-if os.environ.get("SEASON_YEAR"):
-    SEASON_YEAR = int(os.environ["SEASON_YEAR"])
+SEASON_YEAR: int = _plow_task_season_year(REPORT_DATE)
 SVODKA9_PLOW_SEASON_FIX = "2026-08-07c"
 
 SEASON_START = date(REPORT_DATE.year, 3, 14)
