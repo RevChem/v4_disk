@@ -98,17 +98,9 @@ if os.environ.get("REPORT_DATE"):
 # НЕ совпадает с календарным годом отчёта: посев озимых осенью 2026 относится
 # к сезону/году урожая 2027, поэтому историю культур запрашиваем именно за
 # этот год, а не за REPORT_DATE.year.
-def _plow_task_season_year(report_date: date) -> int:
-    """Год machine_task.season для вспашки (год урожая, обычно year+1).
-
-    Сайт кладёт в SEASON_YEAR календарный год отчёта: его пишет «5.0 Уборка»
-    раньше «2.4 Вспашка». Задания вспашки сезона year+1 тогда отбрасываются,
-    и «Обработано за сутки, га» становится 0. Локальный Excel этот env не ставит.
-    Берём годы группы 2.4, иначе year+1. Глобальный SEASON_YEAR не используем.
-    """
-    raw = (os.environ.get("SVODKI_GRP_2_4_Вспашка_TASK_SEASON_YEARS") or "").strip()
+def _parse_year_list(raw: str) -> list[int]:
     years: list[int] = []
-    for part in raw.split(","):
+    for part in (raw or "").split(","):
         part = part.strip()
         if not part:
             continue
@@ -118,13 +110,53 @@ def _plow_task_season_year(report_date: date) -> int:
             continue
         if 1990 <= year <= 2100:
             years.append(year)
-    if years:
-        return max(years)
-    return report_date.year + 1
+    return sorted(set(years))
 
 
-# Вспашка (факт): только machine_task.season == SEASON_YEAR (как 2_main).
-SEASON_YEAR: int = _plow_task_season_year(REPORT_DATE)
+def _plow_fact_season_years(report_date: date) -> list[int]:
+    """Сезоны факта вспашки — как чипы в редакторе планов (сутки и сезон).
+
+    Опрыскивание уже считает 2026+2027. Вспашка берёт тот же список группы
+    «2.4 Вспашка», а не один глобальный SEASON_YEAR уборки.
+    """
+    try:
+        season_dir = Path(__file__).resolve().parent / "utils" / "season"
+        if season_dir.is_dir() and str(season_dir) not in sys.path:
+            sys.path.insert(0, str(season_dir))
+        from season_unified import fact_season_years_for_group
+
+        years = fact_season_years_for_group("2.4 Вспашка", report_date)
+        if years:
+            return list(years)
+    except Exception:
+        pass
+    for key in (
+        "SVODKI_GRP_2_4_Вспашка_TASK_SEASON_YEARS",
+        "SVODKI_GRP_2_4_Вспашка_HISTORY_YEARS",
+    ):
+        years = _parse_year_list(os.environ.get(key, ""))
+        if years:
+            return years
+    return [report_date.year, report_date.year + 1]
+
+
+def _task_season_allowed(task: dict, allowed: set[int]) -> bool:
+    """machine_task.season входит в выбранные сезоны. Без season — пропуск."""
+    for key in ("season", "year", "season_year"):
+        raw_value = task.get(key)
+        if raw_value is None:
+            continue
+        try:
+            return int(raw_value) in allowed
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+# Факт вспашки (сутки и сезон): все сезоны из редактора планов.
+PLOW_FACT_SEASONS: frozenset[int] = frozenset(_plow_fact_season_years(REPORT_DATE))
+# Культура поля — год урожая (последний из выбранных), чтобы 2026 не затирал 2027.
+SEASON_YEAR: int = max(PLOW_FACT_SEASONS) if PLOW_FACT_SEASONS else REPORT_DATE.year + 1
 SVODKA9_PLOW_SEASON_FIX = "2026-08-07c"
 
 SEASON_START = date(REPORT_DATE.year, 3, 14)
@@ -889,7 +921,9 @@ def build_plow_stats_by_crop(
     Факт вспашки по культурам PLOW_SEASON_CROPS — один проход по заданиям.
     Культура — только field_to_crop_plow (history_items year=SEASON_YEAR).
     """
-    required_season = int(task_year) if task_year is not None else int(SEASON_YEAR)
+    allowed_seasons = (
+        {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
+    )
     report_day = cutoff.date()
 
     by_firm_crop: dict[str, dict[str, dict]] = {
@@ -904,15 +938,7 @@ def build_plow_stats_by_crop(
     }
 
     def _plow_season_ok(task: dict) -> bool:
-        for key in ("season", "year", "season_year"):
-            raw = task.get(key)
-            if raw is None:
-                continue
-            try:
-                return int(raw) == required_season
-            except (TypeError, ValueError):
-                continue
-        return False
+        return _task_season_allowed(task, allowed_seasons)
 
     def _item_cov_before(cutoff_dt: datetime, item: dict) -> float:
         hourly = item.get("covered_area_hourly") or []
@@ -1084,17 +1110,9 @@ def build_all_firm_stats(
             return False
 
     def _plow_task_season_ok(task: dict) -> bool:
-        """Вспашка: только season == year+1 (как 2_main). Без season — пропуск."""
-        required = int(task_year) if task_year is not None else int(SEASON_YEAR)
-        for key in ("season", "year", "season_year"):
-            raw_value = task.get(key)
-            if raw_value is None:
-                continue
-            try:
-                return int(raw_value) == required
-            except (TypeError, ValueError):
-                continue
-        return False
+        """Вспашка: season из редактора планов (сутки и сезон — один список)."""
+        allowed = {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
+        return _task_season_allowed(task, allowed)
 
     def _task_matches_required_year(task: dict) -> bool:
         # Глубокорыхление — без фильтра по сезону задания.
@@ -2313,7 +2331,8 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     global machines_map
 
     print(f"Отчёт: {WORK_TYPE_TITLE}")
-    print(f"Дата: {report_date}  |  сезон вспашки (task.season): {SEASON_YEAR}  |  fix={SVODKA9_PLOW_SEASON_FIX}")
+    plow_seasons = "+".join(str(y) for y in sorted(PLOW_FACT_SEASONS))
+    print(f"Дата: {report_date}  |  сезоны вспашки (task.season): {plow_seasons}  |  fix={SVODKA9_PLOW_SEASON_FIX}")
     print(f"Период: с {SEASON_START}  |  смена {DAY_START_HOUR}:00–{DAY_END_HOUR}:00")
 
     day_start, cutoff = compute_time_range(report_date, DAY_START_HOUR, DAY_END_HOUR)

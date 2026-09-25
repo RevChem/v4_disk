@@ -79,12 +79,29 @@ VEG_SEEDING_GROUP_NAME = "4.1 Посев (овощи)"
 CULTIVATION_GROUP_NAME = "2.11 Культивация"
 DISK_GROUP_NAME = "2.9 Дискование"
 PLOW_GROUP_NAME = "2.4 Вспашка"
-# Вспашка / посев: факт только machine_tasks с season == year+1.
+# Вспашка: сезоны из редактора планов. Посев: только year+1.
 SEASON_YEAR_PLUS_ONE_GROUPS = frozenset({
     PLOW_GROUP_NAME,
     SEEDING_GROUP_NAME,
     VEG_SEEDING_GROUP_NAME,
 })
+
+
+def _fact_seasons_for_group(group_name: str) -> set[str] | None:
+    """Годы machine_task.season для суток и сезонного факта группы."""
+    if group_name == PLOW_GROUP_NAME:
+        try:
+            from season_unified import fact_season_years_for_group
+
+            years = fact_season_years_for_group(group_name, TODAY)
+            if years:
+                return {str(y) for y in years}
+        except Exception:
+            pass
+        return {str(TODAY.year), str(TODAY.year + 1)}
+    if group_name in SEASON_YEAR_PLUS_ONE_GROUPS:
+        return {str(TODAY.year + 1)}
+    return None
 SPRAY_GROUP_NAME = "3.1 Опрыскивание"
 VEG_SPRAY_GROUP_NAME = "3.2 Опрыскивание (овощи)"
 # Для группы "Опрыскивание": через связку AgroOperation засчитываем эти
@@ -2143,18 +2160,16 @@ def collect_work_data(
             SPRAY_WINTER_CROPS_SEASON_ONLY if group_name == SPRAY_GROUP_NAME else frozenset()
         )
         _season_year_str = str(TODAY.year + 1) if _winter_season_only else None
-        # Вспашка / посев: только machine_tasks с season == year+1.
-        _season_task_str = (
-            str(TODAY.year + 1) if group_name in SEASON_YEAR_PLUS_ONE_GROUPS else None
-        )
+        _season_task_seasons = _fact_seasons_for_group(group_name)
 
-        if _season_task_str is not None:
+        if _season_task_seasons is not None:
             from collections import Counter
             _season_task_counts = Counter(
                 task_season.get(t["id"], "<пусто>") or "<пусто>" for t in all_tasks
             )
+            _need = "+".join(sorted(_season_task_seasons))
             print(
-                f"    [{group_name}] сезон заданий (нужен {_season_task_str}): "
+                f"    [{group_name}] сезон заданий (нужен {_need}): "
                 f"{dict(_season_task_counts)}"
             )
 
@@ -2229,7 +2244,7 @@ def collect_work_data(
             if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
                 continue
             # Вспашка / посев: только machine_tasks с season == year+1.
-            if _season_task_str is not None and task_season.get(tid) != _season_task_str:
+            if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
                 continue
             shift_info = task_shift.get(tid)
             if not shift_info:
@@ -2410,7 +2425,7 @@ def collect_work_data(
                 continue
             if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid_ns, machine_group):
                 continue
-            if _season_task_str is not None and task_season.get(tid) != _season_task_str:
+            if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
                 continue
             for item in mtfmi_map.get(tid, []):
                 fid = item.get("field_id")
@@ -2971,9 +2986,11 @@ def write_report_sheet(
         ws.row_dimensions[row].height = 18
         row += 1
 
-        # Вспашка / посев: season==year+1 — в шапке тоже year+1.
+        # Вспашка: сезоны редактора. Посев: year+1.
         # Дискование: history 2026+2027 (field_to_crop_general).
-        if group_name in SEASON_YEAR_PLUS_ONE_GROUPS:
+        if group_name == PLOW_GROUP_NAME:
+            season_y = "+".join(sorted(_fact_seasons_for_group(group_name) or []))
+        elif group_name in SEASON_YEAR_PLUS_ONE_GROUPS:
             season_y = str(TODAY.year + 1)
         elif group_name == DISK_GROUP_NAME:
             season_y = f"{TODAY.year}+{TODAY.year + 1}"

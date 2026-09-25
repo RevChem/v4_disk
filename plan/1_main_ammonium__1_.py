@@ -144,8 +144,6 @@ DETAIL_AREA_NO_THRESHOLD_GROUPS: frozenset[str] = frozenset({
 })
 # Период сезона для вспашки — как START_DATE во 2-й сводке (по умолчанию 14.03).
 PLOW_PERIOD_START = date(REPORT_DATE.year, 3, 14)
-# Факт вспашки: только machine_task.season == year+1 (как 2_main / сводка 9).
-PLOW_TASK_SEASON = str(REPORT_DATE.year + 1)
 SVODKA1_PLOW_SEASON_FIX = "2026-08-06b"
 _season_start_raw = (
     os.environ.get("SVODKI_SEASON_START_DATE")
@@ -157,9 +155,39 @@ if _season_start_raw:
         PLOW_PERIOD_START = date.fromisoformat(_season_start_raw)
     except ValueError:
         pass
-_plow_season_raw = (os.environ.get("SEASON_YEAR") or "").strip()
-if _plow_season_raw:
-    PLOW_TASK_SEASON = _plow_season_raw
+
+
+def _plow_task_seasons(report_date: date) -> set[str]:
+    """Сезоны факта вспашки из редактора планов: и сутки, и сезон.
+
+    Как опрыскивание: если выбраны 2026 и 2027, считаются оба.
+    """
+    try:
+        from season_unified import fact_season_years_for_group
+
+        years = fact_season_years_for_group("2.4 Вспашка", report_date)
+        if years:
+            return {str(y) for y in years}
+    except Exception:
+        pass
+    raw = (
+        os.environ.get("SVODKI_GRP_2_4_Вспашка_TASK_SEASON_YEARS")
+        or os.environ.get("SVODKI_GRP_2_4_Вспашка_HISTORY_YEARS")
+        or ""
+    )
+    found: set[str] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            found.add(part)
+    if found:
+        return found
+    return {str(report_date.year), str(report_date.year + 1)}
+
+
+# Факт вспашки: сезоны из редактора планов (сутки и сезон).
+PLOW_TASK_SEASONS = _plow_task_seasons(REPORT_DATE)
+PLOW_TASK_SEASON = "+".join(sorted(PLOW_TASK_SEASONS))
 # Быстрый первичный источник field_to_crop — agro_operations (без полной выгрузки history_items).
 _CROP_LOOKUP_WT_IDS: frozenset[int] = frozenset({6, 7, 111, 118, 125, 126, WORK_TYPE_ID}) | VEG_HARVEST_WT_IDS
 SPRAY_TASK_GROUPS = frozenset({SPRAY_GROUP_NAME, VEG_SPRAY_GROUP_NAME})
@@ -1808,7 +1836,7 @@ async def fetch_day_stats_for_work_types(
     group_period_start = _group_period_start(group_name)
     area_min_ha = _detail_area_min_ha(group_name)
     is_plow = group_name == PLOW_GROUP_NAME
-    _plow_season_str = PLOW_TASK_SEASON if is_plow else None
+    _plow_seasons = PLOW_TASK_SEASONS if is_plow else None
 
     def _shift_window(end_time_raw):
         end_dt = parse_dt(end_time_raw)
@@ -1968,16 +1996,16 @@ async def fetch_day_stats_for_work_types(
             for t in tasks_with_area
         )
         print(
-            f"    [вспашка] сезон заданий (нужен {_plow_season_str}): "
+            f"    [вспашка] сезон заданий (нужен {PLOW_TASK_SEASON}): "
             f"{dict(_plow_season_counts)}"
         )
 
     for t in tasks_with_area:
         tid = t["id"]
-        # Вспашка: только machine_tasks с season == year+1 (как 2_main).
-        if _plow_season_str is not None:
+        # Вспашка: сезоны из редактора планов (сутки и сезон — один список).
+        if _plow_seasons is not None:
             tseason = str(t.get("season") or t.get("year") or "").strip()
-            if tseason != _plow_season_str:
+            if tseason not in _plow_seasons:
                 continue
         mid = t.get("machine_id")
         items = mtfmi_map.get(tid, [])

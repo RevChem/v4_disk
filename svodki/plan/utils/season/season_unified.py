@@ -378,7 +378,6 @@ def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any
 
     rule = season_rule_for_group(name)
     task_str = (os.environ.get("SEASON_TASK_YEAR_STR") or "").strip()
-    season_year_raw = (os.environ.get("SEASON_YEAR") or "").strip()
     if applies_task_season_filter(name) and "task_season_years" not in ov:
         if rule == "both_years":
             # МУ/диск: 2026+2027 — не подменять одиночным SEASON_TASK_YEAR_STR из batch env.
@@ -386,10 +385,11 @@ def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any
             if len(hist) >= 2:
                 ov["task_season_years"] = list(hist)
         elif rule in ("year_plus_one", "plow_year_plus_one"):
+            # SEASON_TASK_YEAR_STR — явный сезон группы. Глобальный SEASON_YEAR
+            # на сайте — календарный год уборки; подставлять его сюда нельзя:
+            # вспашка, опрыскивание и посев (year+1) отбрасываются и факт = 0.
             if task_str:
                 ov["task_season_years"] = _normalize_years([task_str])
-            elif season_year_raw:
-                ov["task_season_years"] = _normalize_years([season_year_raw])
 
     global_years = _normalize_years(
         [p.strip() for p in os.environ.get("SVODKI_SEASON_YEARS", "").split(",") if p.strip()]
@@ -603,6 +603,24 @@ def resolve_report_season_config(
         ),
         "by_group": per_group,
     }
+
+
+def fact_season_years_for_group(group_name: str, report_date: date) -> list[int]:
+    """Годы machine_task.season для суток и сезонного факта.
+
+    Это чипы «Сезоны» в редакторе планов: сохранённый выбор, иначе годы,
+    которые редактор показывает для группы (history_years, для вспашки
+    и опрыскивания обычно год отчёта и следующий).
+    """
+    cfg = resolve_group_season_config(group_name, report_date)
+    task_years = _normalize_years(cfg.get("task_season_years"))
+    if task_years:
+        return task_years
+    history = _normalize_years(cfg.get("history_years"))
+    if history:
+        return history
+    defaults = default_history_years_for_group(group_name, report_date)
+    return defaults or [report_date.year + 1]
 
 
 def season_label_for_group(group_name: str, report_date: date) -> str:

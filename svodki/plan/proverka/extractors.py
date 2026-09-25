@@ -430,7 +430,7 @@ def _report9_plow_crop_breakdown(
     )
     by_firm_crop = m.build_plow_stats_by_crop(
         today_task_ids, tasks_season, mtfmi, cutoff,
-        field_to_firm, field_to_crop_plow, task_year=task_year,
+        field_to_firm, field_to_crop_plow,
     )
     per_firm: dict[str, dict[str, float]] = {}
     for firm in firm_order:
