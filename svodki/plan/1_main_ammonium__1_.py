@@ -4540,6 +4540,117 @@ def _write_group_perf_sheet(
     )
 
 
+def _hhmmss_to_hours(value) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    parts = str(value or "").strip().split(":")
+    if len(parts) < 2:
+        return 0.0
+    try:
+        hours = int(parts[0]) + int(parts[1]) / 60.0
+        if len(parts) > 2:
+            hours += int(parts[2]) / 3600.0
+        return hours
+    except ValueError:
+        return 0.0
+
+
+def _harvest_today_ha_by_firm(cache) -> dict[str, float] | None:
+    """Сутки по агрофирмам — тот же area_by_firm_total, что «Факт за сутки» в «Общий намолот»."""
+    totals = getattr(cache, "area_by_firm_total", None)
+    if not totals:
+        return None
+    out: dict[str, float] = {}
+    for firm in AGROFIRMS:
+        pair = totals.get(firm) or (0.0, 0.0)
+        try:
+            out[firm] = round(float(pair[1]), 2)
+        except (TypeError, ValueError, IndexError):
+            out[firm] = 0.0
+    return out
+
+
+def _sync_harvest_perf_sheet(wb: openpyxl.Workbook, cache) -> None:
+    """
+    «Обработано за сутки» на «Выраб. — 5.0 Уборка» = «Факт за сутки» «Общий намолот».
+
+    Лист выработки считается своим проходом machine_tasks и занижает итог
+    (часть площади есть только в кэше сводки 10). Сверка с Cropwise берёт
+    этот кэш, поэтому в PDF обе цифры должны совпасть с ним.
+    """
+    by_firm = _harvest_today_ha_by_firm(cache)
+    if not by_firm:
+        return
+    title = f"Выраб. — {HARVEST_GRAIN_GROUP_NAME}"[:31]
+    if title not in wb.sheetnames:
+        return
+    ws = wb[title]
+    headers = [ws.cell(1, col).value for col in range(1, (ws.max_column or 1) + 1)]
+
+    def _col(name: str) -> int | None:
+        try:
+            return headers.index(name) + 1
+        except ValueError:
+            return None
+
+    firm_col = _col("Агрофирмы")
+    area_col = _col("Обработано за сутки, га")
+    rate_col = _col("Выработка за сутки, га/1 ед агрегата")
+    mach_col = _col("Количество задействованной техники в т.ч. Прицепных")
+    hours_col = _col("Общее время работы на полях, час")
+    hour_rate_col = _col("Часовая выработка в расчете на 1 агрегат, га")
+    if not all((firm_col, area_col, rate_col, mach_col, hours_col, hour_rate_col)):
+        return
+
+    def _num(value) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _paint_rate(row: int, rate: float, n_mach: float, firm: str, *, total: bool) -> None:
+        plan = get_plan_rate_for_group(HARVEST_GRAIN_GROUP_NAME, firm)
+        alert = bool(n_mach) and rate < plan
+        color = _COLOR_ALERT_PROD if alert else (_COLOR_TOTAL if total else _COLOR_DATA)
+        ws.cell(row, rate_col).fill = PatternFill("solid", fgColor=color)
+
+    old_total = None
+    total_row = None
+    for row in range(2, (ws.max_row or 1) + 1):
+        label = str(ws.cell(row, firm_col).value or "").strip()
+        if not label:
+            continue
+        if label == "Итого":
+            total_row = row
+            old_total = ws.cell(row, area_col).value
+            break
+        if label not in by_firm:
+            continue
+        area = by_firm[label]
+        n_mach = _num(ws.cell(row, mach_col).value)
+        hours = _hhmmss_to_hours(ws.cell(row, hours_col).value)
+        rate = round(area / n_mach, 2) if n_mach else 0.0
+        ws.cell(row, area_col).value = area
+        ws.cell(row, rate_col).value = rate
+        ws.cell(row, hour_rate_col).value = round(area / hours, 1) if hours else 0.0
+        _paint_rate(row, rate, n_mach, label, total=False)
+
+    total = round(sum(by_firm.values()), 2)
+    if total_row is not None:
+        n_mach = _num(ws.cell(total_row, mach_col).value)
+        hours = _hhmmss_to_hours(ws.cell(total_row, hours_col).value)
+        rate = round(total / n_mach, 2) if n_mach else 0.0
+        ws.cell(total_row, area_col).value = total
+        ws.cell(total_row, rate_col).value = rate
+        ws.cell(total_row, hour_rate_col).value = round(total / hours, 1) if hours else 0.0
+        plan_firm = next(iter(AGROFIRMS), "")
+        _paint_rate(total_row, rate, n_mach, plan_firm, total=True)
+    print(
+        f"  Выраб. 5.0: «Обработано за сутки» {old_total} → {total} га "
+        f"(как «Факт за сутки» в «Общий намолот»)."
+    )
+
+
 async def _append_harvest_block_async(
     wb: openpyxl.Workbook,
     all_group_stats: dict[str, dict[str, dict]],
@@ -4601,6 +4712,8 @@ async def _append_harvest_block_async(
     except Exception:
         print("Лист «Общий намолот»: ошибка построения, лист пропущен:")
         traceback.print_exc()
+
+    _sync_harvest_perf_sheet(wb, harvest_cache)
 
     try:
         import asyncio as _asyncio
@@ -4710,6 +4823,7 @@ async def _append_harvest_tail_sheets(wb: openpyxl.Workbook) -> None:
             print("Лист «Общий намолот» добавлен (данные сводки 10).")
         else:
             print("Намolot: нет данных зерновых, лист пропущен.")
+        _sync_harvest_perf_sheet(wb, cache)
 
         vegetables = await asyncio.to_thread(mod10.build_vegetables_report, REPORT_DATE)
         if not vegetables.empty:
