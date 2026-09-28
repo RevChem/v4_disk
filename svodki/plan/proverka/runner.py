@@ -1167,6 +1167,9 @@ def run_proverka_batch(
     from proverka.file_consistency import build_sheet_checks
 
     all_results["sheet_checks"] = build_sheet_checks(report_date, report_ids)
+    from proverka.report_views import build_report_views
+
+    all_results["report_views"] = build_report_views(all_results, report_date, report_ids)
 
     xlsx_path: Path | None = None
     if write_excel:
@@ -1189,4 +1192,5 @@ def run_proverka_batch(
         "cross_check": all_results["cross_check"],
         "cross_check_rows": cross_check_rows,
         "sheet_checks": all_results.get("sheet_checks") or [],
+        "report_views": all_results.get("report_views") or {},
     }

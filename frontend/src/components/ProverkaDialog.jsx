@@ -19,6 +19,8 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
@@ -325,6 +327,19 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     const ids = job?.report_ids || [];
     return ids.some((id) => String(id) === "1" || String(id) === "2");
   }, [job?.report_ids]);
+
+  const reportViews = job?.report_views ?? {};
+  const reportViewIds = useMemo(
+    () => Object.keys(reportViews).sort((a, b) => Number(a) - Number(b)),
+    [reportViews]
+  );
+  const [reportViewTab, setReportViewTab] = useState("3");
+  useEffect(() => {
+    if (reportViewIds.length && !reportViewIds.includes(reportViewTab)) {
+      setReportViewTab(reportViewIds[0]);
+    }
+  }, [reportViewIds, reportViewTab]);
+  const activeReportView = reportViews[reportViewTab];
   const cropwiseRows = useMemo(() => job?.summary_rows || [], [job?.summary_rows]);
 
   useEffect(() => {
@@ -581,6 +596,112 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
 
           {job?.status === "cancelled" && (
             <Alert severity="info">Проверка отменена.</Alert>
+          )}
+
+          {completed && reportViewIds.length > 0 && activeReportView && (
+            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
+              <Typography variant="subtitle2" sx={{ p: 1, pb: 0 }}>
+                Детализация по сводке
+              </Typography>
+              {reportViewIds.length > 1 && (
+                <Tabs
+                  value={reportViewTab}
+                  onChange={(_e, v) => setReportViewTab(v)}
+                  variant="scrollable"
+                  scrollButtons="auto"
+                  sx={{ px: 1 }}
+                >
+                  {reportViewIds.map((rid) => (
+                    <Tab
+                      key={rid}
+                      value={rid}
+                      label={`Сводка ${rid}${reportViews[rid]?.title ? `: ${reportViews[rid].title.slice(0, 28)}` : ""}`}
+                    />
+                  ))}
+                </Tabs>
+              )}
+              {reportViewIds.length === 1 && (
+                <Typography variant="body2" sx={{ px: 1, pb: 1 }} color="text.secondary">
+                  Сводка {activeReportView.report_id}: {activeReportView.display_name || activeReportView.group_name}
+                </Typography>
+              )}
+              {activeReportView.note && (
+                <Alert severity="info" sx={{ mx: 1, mb: 1 }}>
+                  {activeReportView.note}
+                </Alert>
+              )}
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block" }}>
+                Сравнение расчёта, файла (uploads), Cropwise и peer-сводок. Max diff — по колонкам расчёт + Cropwise.
+              </Typography>
+              <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
+                По культурам
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Культура</TableCell>
+                    {(activeReportView.columns || []).map((col) => (
+                      <TableCell key={col.key} align="right">
+                        {col.label}
+                      </TableCell>
+                    ))}
+                    <TableCell align="right">Max diff</TableCell>
+                    <TableCell>Статус</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(activeReportView.crops || []).map((row) => (
+                    <TableRow
+                      key={row.crop}
+                      sx={row.status === "DIFF" ? { backgroundColor: "rgba(252, 228, 214, 0.45)" } : undefined}
+                    >
+                      <TableCell>{row.crop}</TableCell>
+                      {(activeReportView.columns || []).map((col) => (
+                        <TableCell key={col.key} align="right">
+                          {formatHa(row.values?.[col.key])}
+                        </TableCell>
+                      ))}
+                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                      <TableCell>{row.status}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
+                По агрофирмам
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Агрофирма</TableCell>
+                    {(activeReportView.columns || []).map((col) => (
+                      <TableCell key={col.key} align="right">
+                        {col.label}
+                      </TableCell>
+                    ))}
+                    <TableCell align="right">Max diff</TableCell>
+                    <TableCell>Статус</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(activeReportView.firms || []).map((row) => (
+                    <TableRow
+                      key={row.firm}
+                      sx={row.status === "DIFF" ? { backgroundColor: "rgba(252, 228, 214, 0.45)" } : undefined}
+                    >
+                      <TableCell>{row.firm}</TableCell>
+                      {(activeReportView.columns || []).map((col) => (
+                        <TableCell key={col.key} align="right">
+                          {formatHa(row.values?.[col.key])}
+                        </TableCell>
+                      ))}
+                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                      <TableCell>{row.status}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
           )}
 
           {completed && sheetCheckEligible && (

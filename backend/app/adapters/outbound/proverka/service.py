@@ -705,6 +705,7 @@ def run_job(job_id: str) -> None:
             "cross_check": result.get("cross_check") or {},
             "cross_check_rows": result.get("cross_check_rows") or [],
             "sheet_checks": result.get("sheet_checks") or [],
+            "report_views": result.get("report_views") or {},
             "exit_code": result.get("exit_code", 0),
         }
         if final_status != "cancelled":
