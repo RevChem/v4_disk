@@ -22,6 +22,13 @@ import { askCropwise, fetchCropwiseGroups, queryCropwise } from "../api";
 
 const POPPER_PROPS = { popper: { sx: { zIndex: 1600 } } };
 
+/** На 2px меньше стандартных подписей MUI small. */
+const FIELD_LABEL_SX = {
+  "& .MuiInputLabel-root": { fontSize: "0.625rem" },
+  "& .MuiFormHelperText-root": { fontSize: "0.625rem" },
+  "& .MuiInputBase-input": { fontSize: "0.8125rem" },
+};
+
 function shiftDate(iso, days) {
   const d = new Date(`${iso}T12:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
@@ -129,7 +136,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="body2" color="text.secondary">
+      <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.8125rem" }}>
         Запрос в Cropwise по cookie, без сверки со сводкой. В модель уходят задания выбранного
         периода и карточка каждого: исполнитель, техника, орудие, поле и расход топлива.
       </Typography>
@@ -140,6 +147,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
         onChange={(e) => setCookie(e.target.value)}
         fullWidth
         size="small"
+        sx={FIELD_LABEL_SX}
         helperText={
           envCookie
             ? "Подставлен из .env. Можно заменить; пустое поле снова берёт cookie сервера."
@@ -155,6 +163,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           onChange={(e) => setDateFrom(e.target.value)}
           InputLabelProps={{ shrink: true }}
           fullWidth
+          sx={FIELD_LABEL_SX}
           helperText="смена с 06:00"
         />
         <TextField
@@ -165,6 +174,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           onChange={(e) => setDateTo(e.target.value)}
           InputLabelProps={{ shrink: true }}
           fullWidth
+          sx={FIELD_LABEL_SX}
           helperText="день включительно"
         />
         <TextField
@@ -173,7 +183,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={season}
           onChange={(e) => setSeason(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
           placeholder="2027"
-          sx={{ minWidth: 110 }}
+          sx={{ minWidth: 110, ...FIELD_LABEL_SX }}
           helperText="пусто — из cookie"
         />
       </Stack>
@@ -190,7 +200,9 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
             return <Chip key={key} size="small" label={option} {...tagProps} />;
           })
         }
-        renderInput={(params) => <TextField {...params} label="Агрооперации" />}
+        renderInput={(params) => (
+          <TextField {...params} label="Агрооперации" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
+        )}
       />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
         <Autocomplete
@@ -199,7 +211,9 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={firm || null}
           onChange={(_, v) => setFirm(v || "")}
           slotProps={POPPER_PROPS}
-          renderInput={(params) => <TextField {...params} label="Агрофирма" />}
+          renderInput={(params) => (
+            <TextField {...params} label="Агрофирма" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
+          )}
           fullWidth
         />
         <Autocomplete
@@ -208,7 +222,9 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={crop || null}
           onChange={(_, v) => setCrop(v || "")}
           slotProps={POPPER_PROPS}
-          renderInput={(params) => <TextField {...params} label="Культура" />}
+          renderInput={(params) => (
+            <TextField {...params} label="Культура" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
+          )}
           fullWidth
         />
       </Stack>
@@ -234,7 +250,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
               {result.details_error}
             </Alert>
           )}
-          <Box sx={{ maxHeight: 320, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 1 }}>
+          <Box sx={{ maxHeight: 280, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 1 }}>
             <Table size="small" stickyHeader sx={{ minWidth: 1100 }}>
               <TableHead>
                 <TableRow>
@@ -274,8 +290,11 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
         label="Вопрос для DeepSeek"
         placeholder="Например: кто выполнял работы, на какой технике, на каких полях и с каким расходом топлива?"
         multiline
-        minRows={2}
+        minRows={5}
+        maxRows={14}
         fullWidth
+        size="small"
+        sx={FIELD_LABEL_SX}
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
         onKeyDown={(e) => {

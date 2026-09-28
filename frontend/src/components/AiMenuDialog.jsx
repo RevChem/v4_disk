@@ -81,7 +81,13 @@ export default function AiMenuDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth={tab === 1 ? "md" : "sm"} fullWidth>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth={tab === 1 ? "lg" : "sm"}
+      fullWidth
+      PaperProps={tab === 1 ? { sx: { minHeight: "min(88vh, 920px)" } } : undefined}
+    >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1 }}>
         <PsychologyOutlinedIcon color="primary" />
         AI
@@ -94,8 +100,8 @@ export default function AiMenuDialog({
         <Tab label="Меню" />
         <Tab label="Cropwise" />
       </Tabs>
-      <DialogContent dividers>
-        <Box sx={{ display: tab === 1 ? "block" : "none" }}>
+      <DialogContent dividers sx={tab === 1 ? { pt: 1.5, pb: 2 } : undefined}>
+        <Box sx={{ display: tab === 1 ? "block" : "none", minHeight: tab === 1 ? 480 : undefined }}>
           <CropwiseAskPanel summaryDate={summaryDate} open={open} />
         </Box>
         {tab === 0 && (

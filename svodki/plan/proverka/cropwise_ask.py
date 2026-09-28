@@ -443,7 +443,7 @@ def load_snapshot(
 
 def _max_rows() -> int:
     try:
-        return max(1, int(os.environ.get("PROVERKA_FACTS_MAX_ROWS", "120")))
+        return max(1, int(os.environ.get("PROVERKA_FACTS_MAX_ROWS", "360")))
     except ValueError:
         return 120
 

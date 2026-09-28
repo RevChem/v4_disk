@@ -1153,8 +1153,6 @@ def run_proverka_batch(
             )
 
     batch_path = out_dir / f"reconcile_all_{report_date.isoformat()}.json"
-    if write_json:
-        batch_path.write_text(json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8")
 
     _inject_canonical_svodka_for_cross_check(
         all_results, report_date, overrides_map, svodka_cache, prog,
@@ -1170,6 +1168,9 @@ def run_proverka_batch(
     from proverka.report_views import build_report_views
 
     all_results["report_views"] = build_report_views(all_results, report_date, report_ids)
+
+    if write_json:
+        batch_path.write_text(json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8")
 
     xlsx_path: Path | None = None
     if write_excel:

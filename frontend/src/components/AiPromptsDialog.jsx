@@ -126,7 +126,17 @@ export default function AiPromptsDialog({ open, onClose }) {
         <EditNoteRoundedIcon color="primary" />
         Промпты DeepSeek
       </DialogTitle>
-      <DialogContent dividers>
+      <DialogContent
+        dividers
+        sx={{
+          "& .MuiInputLabel-root": { fontSize: "0.625rem" },
+          "& .MuiFormHelperText-root": { fontSize: "0.625rem" },
+          "& .MuiInputBase-input": { fontSize: "0.8125rem" },
+          "& .MuiTypography-body2": { fontSize: "0.8125rem" },
+          "& .MuiTypography-subtitle2": { fontSize: "0.8125rem" },
+          "& .MuiButton-root": { fontSize: "0.8125rem" },
+        }}
+      >
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
             Общий контекст и промпты ниже добавляются в system prompt при AI-разборе proverka.
