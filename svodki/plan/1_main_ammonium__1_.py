@@ -40,8 +40,11 @@ except ImportError:
 
 from task_area_shared import (
     CORN_SILAGE_CROP,
+    CUTOFF_BUFFER_HOURS,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
+    harvest_item_area_for_shift,
+    history_crop_name,
 )
 from plans import (
     API_TOKEN,
@@ -368,12 +371,14 @@ def _harvest_perf_10_style(
     cutoff: datetime,
     machines_map: dict[int, dict],
     *,
+    day_start: datetime,
     field_to_crop_map: dict[int, str] | None = None,
     field_to_firm_map: dict[int, str] | None = None,
 ) -> tuple[
     dict[str, float],
     dict[str, set[int]],
     dict[str, dict[int, float]],
+    dict[int, float],
 ]:
     """Площадь и комбайны за сутки — как _populate_harvest_cache_tables (10_main)."""
     ftc = field_to_crop_map if field_to_crop_map is not None else field_to_crop
@@ -386,11 +391,14 @@ def _harvest_perf_10_style(
     per_firm_area: dict[str, float] = defaultdict(float)
     per_firm_machines: dict[str, set[int]] = defaultdict(set)
     per_firm_mid_area: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    today_by_field: dict[int, float] = defaultdict(float)
 
     for t in tasks_with_area:
         if t["id"] not in today_task_ids:
             continue
         mid = t.get("machine_id")
+        if mid is None:
+            continue
         wt = t.get("work_type_id")
         if wt not in AREA_TASK_WT_IDS:
             continue
@@ -404,19 +412,28 @@ def _harvest_perf_10_style(
             firm = _firm_for_field(fid_i)
             if not firm:
                 continue
-            crop = ftc.get(fid_i)
+            crop = history_crop_name(
+                item, ftc.get(fid_i) or "", mowing=is_mowing,
+            )
             if is_mowing and crop != CORN_SILAGE_CROP:
                 continue
-            cov = _item_area_upto_cutoff(item, cutoff)
+            cov = harvest_item_area_for_shift(
+                item,
+                cutoff,
+                day_start=day_start,
+                work_type_id=wt_i,
+                parse_dt=parse_dt,
+            )
             if cov <= 0:
                 continue
             per_firm_area[firm] += cov
-            if mid is not None and _is_harvest_combine(mid, machines_map):
+            today_by_field[fid_i] += cov
+            if _is_harvest_combine(mid, machines_map):
                 mid_i = int(mid)
                 per_firm_machines[firm].add(mid_i)
                 per_firm_mid_area[firm][mid_i] += cov
 
-    return per_firm_area, per_firm_machines, per_firm_mid_area
+    return per_firm_area, per_firm_machines, per_firm_mid_area, dict(today_by_field)
 
 
 def _is_hired_machine_group(group) -> bool:
@@ -1971,12 +1988,15 @@ async def fetch_fertilizer_11_mtfmi(
 # =============================================================================
 
 def _harvest_cutoff_buffer_hours() -> int:
-    """Как CUTOFF_BUFFER_HOURS в 10_main_harvest (по умолчанию 12 ч)."""
-    raw = (os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS") or "12").strip()
+    """Как CUTOFF_BUFFER_HOURS в 10_main_harvest (env или task_area_shared, по умолчанию +2 ч)."""
+    raw = (
+        os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS")
+        or str(CUTOFF_BUFFER_HOURS)
+    ).strip()
     try:
         return max(0, int(raw))
     except ValueError:
-        return 12
+        return CUTOFF_BUFFER_HOURS
 
 
 async def fetch_day_stats_for_work_types(
@@ -2529,25 +2549,57 @@ async def fetch_day_stats_for_work_types(
             if day_area > 0:
                 season_daily_area[firm][day_key] = day_area
 
-    # Суточная площадь по полям — из машин, прошедших порог площади.
+    harvest_perf_10: tuple[
+        dict[str, float],
+        dict[str, set[int]],
+        dict[str, dict[int, float]],
+        dict[int, float],
+    ] | None = None
+    harvest_ftc: dict[int, str] = field_to_crop
+    if is_harvest:
+        harvest_maps = _load_harvest_maps_from_main10()
+        if harvest_maps:
+            harvest_ftc, harvest_f2f = harvest_maps
+            print(
+                f"    [{group_name}] field_to_crop/field_to_firm (10_main): "
+                f"{len(harvest_ftc)} / {len(harvest_f2f)} полей"
+            )
+        else:
+            harvest_f2f = None
+        harvest_perf_10 = _harvest_perf_10_style(
+            tasks_with_area,
+            mtfmi_map,
+            today_task_ids,
+            cutoff,
+            machines_map,
+            day_start=day_start,
+            field_to_crop_map=harvest_ftc,
+            field_to_firm_map=harvest_f2f,
+        )
+
+    # Суточная площадь по полям — как 10_main (в т.ч. кукуруза на силос).
     today_area_by_field: dict[int, float] = defaultdict(float)
-    for firm in AGROFIRMS:
-        for mid, d in per_firm_machine[firm].items():
-            if is_plow:
-                for fid, fid_cov in d["field_cov"].items():
-                    if fid_cov > 0:
-                        today_area_by_field[int(fid)] += float(fid_cov)
-            elif is_harvest:
-                # Выраб. 5.0 — grain_area (11_main), без порога.
-                if float(d.get("grain_area") or 0) <= 0:
-                    continue
-                for fid, fid_cov in d["field_cov"].items():
-                    if fid_cov > 0:
-                        today_area_by_field[int(fid)] += float(fid_cov)
-            elif _machine_qualifies_for_area(d["cov_total"], area_min_ha):
-                for fid, fid_cov in d["field_cov"].items():
-                    if fid_cov > 0:
-                        today_area_by_field[int(fid)] += float(fid_cov)
+    if is_harvest and harvest_perf_10 is not None:
+        for fid, fid_cov in harvest_perf_10[3].items():
+            if fid_cov > 0:
+                today_area_by_field[int(fid)] += float(fid_cov)
+    else:
+        for firm in AGROFIRMS:
+            for mid, d in per_firm_machine[firm].items():
+                if is_plow:
+                    for fid, fid_cov in d["field_cov"].items():
+                        if fid_cov > 0:
+                            today_area_by_field[int(fid)] += float(fid_cov)
+                elif is_harvest:
+                    if float(d.get("grain_area") or 0) <= 0:
+                        continue
+                    for fid, fid_cov in d["field_cov"].items():
+                        if fid_cov > 0:
+                            today_area_by_field[int(fid)] += float(fid_cov)
+                elif _machine_qualifies_for_area(d["cov_total"], area_min_ha):
+                    for fid, fid_cov in d["field_cov"].items():
+                        if fid_cov > 0:
+                            today_area_by_field[int(fid)] += float(fid_cov)
     if _cap is not None:
         if is_plow:
             _cap[2](group_name, None)
@@ -2561,31 +2613,6 @@ async def fetch_day_stats_for_work_types(
                     if _machine_qualifies_for_area(d["cov_total"], area_min_ha)
                 },
             )
-
-    harvest_perf_10: tuple[
-        dict[str, float],
-        dict[str, set[int]],
-        dict[str, dict[int, float]],
-    ] | None = None
-    if is_harvest:
-        harvest_maps = _load_harvest_maps_from_main10()
-        if harvest_maps:
-            harvest_ftc, harvest_f2f = harvest_maps
-            print(
-                f"    [{group_name}] field_to_crop/field_to_firm (10_main): "
-                f"{len(harvest_ftc)} / {len(harvest_f2f)} полей"
-            )
-        else:
-            harvest_ftc, harvest_f2f = field_to_crop, None
-        harvest_perf_10 = _harvest_perf_10_style(
-            tasks_with_area,
-            mtfmi_map,
-            today_task_ids,
-            cutoff,
-            machines_map,
-            field_to_crop_map=harvest_ftc,
-            field_to_firm_map=harvest_f2f,
-        )
 
     # --- Собираем результат ---
     result: dict[str, dict] = {}
@@ -2617,6 +2644,7 @@ async def fetch_day_stats_for_work_types(
 
         area_by_crop:   dict[str, float] = defaultdict(float)
         today_by_field: dict[int, float] = defaultdict(float)
+        crop_map_today = harvest_ftc if is_harvest else field_to_crop
         for fid, fid_cov in today_area_by_field.items():
             if fid_cov <= 0:
                 continue
@@ -2625,7 +2653,7 @@ async def fetch_day_stats_for_work_types(
             today_by_field[fid] += fid_cov
             from mtfmi_batch_fetch import crop_of_field
 
-            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
+            crop = crop_of_field(fid, crop_map_today.get(fid) or "")
             if crop:
                 area_by_crop[crop] += fid_cov
 
@@ -3568,7 +3596,13 @@ def write_perf_sheet(
         row += 1
 
     avg_total = round(t_season_sum / t_machine_days, 1) if t_machine_days else 0.0
-    t_area_total = _today_area_total_ha(day_stats, target_firms)
+    if group_name == HARVEST_GRAIN_GROUP_NAME:
+        t_area_total = round(
+            sum(float(day_stats.get(f, _empty_stats()).get("area_today") or 0) for f in target_firms),
+            2,
+        )
+    else:
+        t_area_total = _today_area_total_ha(day_stats, target_firms)
     tot_rate = round(t_area_total / t_mach, 2) if t_mach else 0.0
     tot_eff_h = round(t_hours / t_mach, 4) if t_mach else 0.0
     totals = [
