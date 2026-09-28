@@ -66,6 +66,8 @@ from plans import (
     MIN_DETAIL_AREA_HA,
     FIELD_NAME_FORCE_RULES,
     WORK_GROUPS,
+    SEEDING_CROP_ORDER,
+    build_field_to_crop,
     build_field_to_crop_general,
 )
 
@@ -222,7 +224,9 @@ PLOW_TASK_SEASON = "+".join(sorted(PLOW_TASK_SEASONS))
 def refresh_season_config() -> None:
     """Перечитать season_ranges.json (редактор планов / proverka env)."""
     global PERIOD_START_DATE, PERIOD_START_STR, PLOW_PERIOD_START, PLOW_TASK_SEASON, PLOW_TASK_SEASONS
+    global _seeding_sowing_cache
     clear_season_cache()
+    _seeding_sowing_cache = None
     fert = resolve_group_season_config(WORK_TYPE_NAME, REPORT_DATE, reload=True)
     PERIOD_START_DATE = date.fromisoformat(fert["period_start"])
     PERIOD_START_STR = PERIOD_START_DATE.strftime("%Y-%m-%d")
@@ -275,6 +279,42 @@ def _machine_qualifies_for_area(total: float, min_ha: float) -> bool:
     return tc >= min_ha
 
 
+_SEEDING_DISPLAY_CROPS = frozenset(SEEDING_CROP_ORDER)
+_seeding_sowing_cache: tuple[date, dict[int, str]] | None = None
+
+
+def _seeding_crop_for_field(fid: int, sowing: dict[int, str]) -> str:
+    """Культура посеянного поля. Только озимые строки «4.0 Посев», как во 2 сводке."""
+    crop = str(sowing.get(int(fid)) or "").strip()
+    return crop if crop in _SEEDING_DISPLAY_CROPS else ""
+
+
+def _seeding_sowing_field_crops() -> dict[int, str]:
+    """Поле → культура озимого сева: build_field_to_crop(season_year=год+1), как во 2 сводке."""
+    global _seeding_sowing_cache
+    if _seeding_sowing_cache is not None and _seeding_sowing_cache[0] == REPORT_DATE:
+        return _seeding_sowing_cache[1]
+    crops = get_all_from_id("crops")
+    crop_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in crops if c.get("id")
+    }
+    season_year = REPORT_DATE.year + 1
+    history: list[dict] = []
+    for crop_year in (season_year, REPORT_DATE.year):
+        history.extend(get_all_from_id("history_items", {"year": str(crop_year)}))
+    field_crops = build_field_to_crop(
+        crop_map=crop_map,
+        history_items=history,
+        report_date=REPORT_DATE,
+        period_start=PLOW_PERIOD_START,
+        skip_crops=SKIP_CROPS,
+        season_year=season_year,
+    )
+    _seeding_sowing_cache = (REPORT_DATE, field_crops)
+    return field_crops
+
+
 def _group_period_start(group_name: str) -> date:
     """Нижняя граница смен — единый season_unified (редактор планов)."""
     try:
@@ -296,9 +336,7 @@ def _group_period_start(group_name: str) -> date:
 
 
 def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
-    from mtfmi_batch_fetch import crop_of_field
-
-    crop = crop_of_field(fid_i, field_to_crop.get(fid_i) or "")
+    crop = str(field_to_crop.get(fid_i) or "")
     if group_name == SPRAY_GROUP_NAME:
         return bool(crop and crop not in VEG_SPRAY_CROPS)
     if group_name == VEG_SPRAY_GROUP_NAME:
@@ -1109,11 +1147,6 @@ def _build_fert_field_to_crop(years: list[int]) -> None:
 
 
 def fert_crop_name(fid: int) -> str:
-    from mtfmi_batch_fetch import crop_of_field
-
-    name = crop_of_field(int(fid), "")
-    if name:
-        return name
     name = fert_field_to_crop.get(int(fid))
     if name:
         return name
@@ -2300,14 +2333,12 @@ async def fetch_day_stats_for_work_types(
                         for fid, fcov in field_cov.items():
                             pm[mid]["field_cov"][fid] += fcov
                             if _cap is not None and fcov > 0:
-                                from mtfmi_batch_fetch import crop_of_field
-
                                 mrec = machines_map.get(mid) or {}
                                 _cap[1](
                                     (group_name, firm, mid),
                                     group=group_name,
                                     firm=firm,
-                                    crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
+                                    crop=str(field_to_crop.get(int(fid)) or ""),
                                     field_id=int(fid),
                                     task_id=int(t["id"]),
                                     machine_id=int(mid) if mid is not None else None,
@@ -2461,14 +2492,12 @@ async def fetch_day_stats_for_work_types(
                 if fid_cov > 0:
                     pm[mid]["field_cov"][fid] += fid_cov
                     if _cap is not None:
-                        from mtfmi_batch_fetch import crop_of_field
-
                         mrec = machines_map.get(mid) or {}
                         _cap[1](
                             (group_name, firm, mid),
                             group=group_name,
                             firm=firm,
-                            crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
+                            crop=str(field_to_crop.get(int(fid)) or ""),
                             field_id=int(fid),
                             task_id=int(t["id"]),
                             machine_id=int(mid) if mid is not None else None,
@@ -2616,6 +2645,10 @@ async def fetch_day_stats_for_work_types(
 
     # --- Собираем результат ---
     result: dict[str, dict] = {}
+    # 4.0 Посев: культура поля из карты озимого сева, а не из голосов mtfmi.
+    seeding_sowing = (
+        _seeding_sowing_field_crops() if group_name == SEEDING_GROUP_NAME else None
+    )
 
     for firm in AGROFIRMS:
         pm = per_firm_machine[firm]
@@ -2650,10 +2683,13 @@ async def fetch_day_stats_for_work_types(
                 continue
             if get_firm_for_field(fid) != firm:
                 continue
+            if seeding_sowing is not None:
+                crop = _seeding_crop_for_field(fid, seeding_sowing)
+                if not crop:
+                    continue
+            else:
+                crop = str(crop_map_today.get(fid) or "")
             today_by_field[fid] += fid_cov
-            from mtfmi_batch_fetch import crop_of_field
-
-            crop = crop_of_field(fid, crop_map_today.get(fid) or "")
             if crop:
                 area_by_crop[crop] += fid_cov
 

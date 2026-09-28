@@ -14,8 +14,6 @@ MTFMI_BATCH_SIZE = max(1, int(os.environ.get("SVODKI_MTFMI_BATCH_SIZE", "300") o
 # history_item_id → культура строки площади. Заполняется при загрузке mtfmi.
 _HISTORY_CROP: dict[int, str] = {}
 _CROPS_BY_ID: dict[int, str] | None = None
-# field_id → культура → сколько строк площади её подтвердили.
-_FIELD_CROP_VOTES: dict[int, dict[str, int]] = {}
 
 
 def _chunked(items: list[int], size: int) -> list[list[int]]:
@@ -143,14 +141,6 @@ def crop_of_item(item: dict, fallback: str = "") -> str:
     return str(fallback or "")
 
 
-def crop_of_field(field_id: int, fallback: str = "") -> str:
-    """Самая частая культура строк площади этого поля. Иначе fallback."""
-    votes = _FIELD_CROP_VOTES.get(int(field_id)) or {}
-    if not votes:
-        return str(fallback or "")
-    return max(votes.items(), key=lambda kv: kv[1])[0]
-
-
 async def _crops_by_id(
     client: httpx.AsyncClient,
     base_url: str,
@@ -199,14 +189,3 @@ async def remember_history_crops(
         name = crops.get(int(hi["crop_id"]), "")
         if name:
             _HISTORY_CROP[int(hi["id"])] = name
-    for items in mtfmi_map.values():
-        for item in items:
-            fid = item.get("field_id")
-            hid = item.get("history_item_id")
-            if fid is None or hid is None:
-                continue
-            name = _HISTORY_CROP.get(int(hid), "")
-            if not name:
-                continue
-            votes = _FIELD_CROP_VOTES.setdefault(int(fid), {})
-            votes[name] = votes.get(name, 0) + 1

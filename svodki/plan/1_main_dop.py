@@ -239,43 +239,48 @@ def _crop_for_seeding_fact(raw: str, *, for_today: bool) -> str | None:
     return None
 
 
+def _display_seeding_crop(raw: str) -> str | None:
+    label = _crop_label_for_stats(raw)
+    if label in _DISPLAY_SEEDING_CROP_SET:
+        return label
+    return None
+
+
 def _apply_seeding_today_from_perf(
     firm_stats: dict[str, dict],
     seeding_day_stats: dict[str, dict] | None,
 ) -> None:
     """
-    Подставляет «Факт за сутки» из листа «Выраб. — 4.0 Посев»,
-    чтобы итоги совпадали байт-в-байт (одна и та же суточная площадь).
+    «Факт за сутки» в «Итого (все АФ)» — гектары полей, на которых реально сеяли.
 
-    Важно (озимый сев): area_by_crop в сводке 1 строится из общего field_to_crop
-    (agro_operations / year_now) и часто даёт «Рапс яровой» на тех же полях, где
-    озимый оверлей уже дал «Пшеница озимая». Если затереть today такой разбивкой,
-    строки озимых в таблице показывают 0 (яровые в CROP_ORDER не выводятся).
-    Поэтому берём только культуры из _DISPLAY_SEEDING_CROP_SET; если их нет —
-    оставляем today из mtfmi (как сводка 5 без area_by_crop).
+    Культура берётся из карты озимого сева (как во 2 сводке): рапс озимый,
+    пшеница озимая, тритикале озимая. Яровые и поля без культуры в эту таблицу
+    не попадают и не размазываются по озимым строкам.
     """
     if not seeding_day_stats:
         return
     for firm in AGROFIRMS:
         st = seeding_day_stats.get(firm) or {}
         by_crop_raw = st.get("area_by_crop") or {}
-        # Без разбивки по культурам не затираем today_by_crop из mtfmi —
-        # иначе весь суточный факт уходит в «Рапс озимый» (см. 5_main_fixed).
-        if not by_crop_raw:
-            continue
         display: dict[str, float] = defaultdict(float)
         for crop, val in by_crop_raw.items():
             v = float(val or 0.0)
             if v <= 0:
                 continue
-            label = _crop_label_for_stats(crop)
-            if label in _DISPLAY_SEEDING_CROP_SET:
+            label = _display_seeding_crop(str(crop))
+            if label:
                 display[label] += v
-        # Яровые/прочие культуры из Выраб. не должны обнулять озимый today (mtfmi).
         if not display:
             continue
+        rounded = {k: round(v, 2) for k, v in display.items() if v > 0}
+        if not rounded:
+            continue
+        drift = round(round(sum(display.values()), 2) - sum(rounded.values()), 2)
+        if drift:
+            top = max(rounded, key=rounded.get)
+            rounded[top] = round(rounded[top] + drift, 2)
         bucket = firm_stats.setdefault(firm, {"fact_by_crop": {}, "today_by_crop": {}})
-        bucket["today_by_crop"] = {k: round(v, 2) for k, v in display.items()}
+        bucket["today_by_crop"] = rounded
 
 
 def _sum_crop_from_map(crop_map: dict[str, float], crop: str) -> float:

@@ -254,10 +254,8 @@ def _seeding_perf_day_stats_from_tasks(
     *,
     min_ha: float = 0.5,
 ) -> dict[str, dict]:
-    """Статистика «Выраб. — 4.0 Посев»: area_by_crop по полям (как 1_main_ammonium)."""
+    """Статистика «Выраб. — 4.0 Посев»: area_by_crop по карте культуры поля."""
     from collections import defaultdict
-
-    from mtfmi_batch_fetch import crop_of_field
 
     today_by_field: dict[int, float] = defaultdict(float)
     for t in tasks_today:
@@ -281,7 +279,7 @@ def _seeding_perf_day_stats_from_tasks(
         for fid, fid_cov in today_by_field.items():
             if field_to_firm.get(fid) != firm:
                 continue
-            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
+            crop = str(field_to_crop.get(fid) or "")
             if crop:
                 by_crop[crop] += fid_cov
         out[firm] = {
