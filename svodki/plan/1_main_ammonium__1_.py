@@ -2662,7 +2662,7 @@ async def fetch_day_stats_for_work_types(
             harvest_mids = harvest_perf_10[1].get(firm, set())
 
         if is_harvest and harvest_perf_10 is not None:
-            h_area, _, _ = harvest_perf_10
+            h_area = harvest_perf_10[0]
             area_today = round(h_area.get(firm, 0.0), 2)
         elif is_harvest:
             area_today = round(
@@ -2736,7 +2736,7 @@ async def fetch_day_stats_for_work_types(
                 detail_own.append(row_data)
 
         if is_harvest and harvest_perf_10 is not None:
-            _, _, h_mid_area = harvest_perf_10
+            h_mid_area = harvest_perf_10[2]
             seen_mids = {r["machine_id"] for r in detail_own + detail_hired}
             for mid in harvest_mids:
                 if mid in seen_mids:
