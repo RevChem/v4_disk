@@ -872,6 +872,95 @@ def _apply_pending_firms(
             bucket[firm] = area
 
 
+def _apply_pending_crops(
+    bucket: dict[str, float],
+    pending: list[tuple[str, list[tuple[float, float, str]]]],
+    area_x: float,
+) -> None:
+    for crop, words in pending:
+        area = _number_nearest_x(words, area_x, require_total=False)
+        if area is not None:
+            _add_crop_ha(bucket, crop, area)
+
+
+def _summary_crop_areas(
+    path: Path,
+    area_index: int,
+    report_id: str,
+) -> dict[str, dict[str, float]]:
+    """Культуры с первой страницы PDF (таблица до таблицы агрофирм)."""
+    try:
+        import pymupdf
+    except ImportError:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    firm_done: set[str] = set()
+    crop_flushed: set[str] = set()
+    group = _sole_work_group(report_id)
+    table = "crop"
+    pending_crops: list[tuple[str, list[tuple[float, float, str]]]] = []
+    pending_firms: list[tuple[str, list[tuple[float, float, str]]]] = []
+    vid_headers = 0
+    try:
+        for page in doc:
+            for words in _pdf_page_lines(page):
+                line = " ".join(text for _x0, _x1, text in words)
+                if "ВИД РАБОТ" in line:
+                    vid_headers += 1
+                    if vid_headers >= 2:
+                        return out
+                    matched = _match_group(line)
+                    if matched:
+                        group = matched
+                    table = "crop"
+                    pending_crops = []
+                    pending_firms = []
+                    continue
+                title = _pdf_section_title(line)
+                mapped = _group_for_title(title) if title else None
+                if mapped:
+                    group = mapped
+                    table = "crop"
+                    pending_crops = []
+                    pending_firms = []
+                    continue
+                area_x = _area_x_from_total(words, area_index)
+                if area_x is not None and group:
+                    if table == "crop" and group not in crop_flushed:
+                        bucket: dict[str, float] = {}
+                        _apply_pending_crops(bucket, pending_crops, area_x)
+                        if bucket:
+                            out[group] = bucket
+                        crop_flushed.add(group)
+                        pending_crops = []
+                        table = "firm"
+                        continue
+                    if table == "firm" and group not in firm_done:
+                        firm_bucket: dict[str, float] = {}
+                        _apply_pending_firms(firm_bucket, pending_firms, area_x)
+                        pending_firms = []
+                        firm_done.add(group)
+                        continue
+                firm = _firm_from_line(line)
+                if firm and group and group not in firm_done:
+                    table = "firm"
+                    pending_firms.append((firm, words))
+                    continue
+                if table == "crop" and group and group not in crop_flushed:
+                    crop = _crop_label(words, 35, 220)
+                    if crop:
+                        pending_crops.append((crop, words))
+    except Exception:
+        return out
+    finally:
+        doc.close()
+    return out
+
+
 def _summary_firm_areas(
     path: Path,
     area_index: int,
@@ -1058,7 +1147,7 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
 
 
 def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
-    """Операция → культура → га за сутки из файла. Тематические сводки без культур пустые."""
+    """Операция → культура → га за сутки из файла."""
     rid = str(report_id)
     if path.suffix.lower() == ".xlsx":
         if rid == "2":
@@ -1072,6 +1161,8 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
         return _report2_crop_areas(path)
     if rid in {"1", "5"}:
         return _daily_fact_crop_areas(path)
+    if rid in _PDF_SUMMARY_REPORTS:
+        return _summary_crop_areas(path, _PDF_AREA_INDEX, rid)
     return {}
 
 

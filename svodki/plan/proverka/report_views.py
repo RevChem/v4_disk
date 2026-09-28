@@ -1,6 +1,6 @@
-"""Детализация proverka «от лица одной сводки» (пилот: сводка 3).
+"""Детализация proverka «от лица одной сводки» (тематические 3–9).
 
-Таблицы по культурам и по агрофирмам: расчёт модуля, файл (uploads), Cropwise, peer-сводки.
+Таблицы по культурам и по агрофирмам: расчёт модуля, файл (uploads), Cropwise, peer 1/2.
 """
 from __future__ import annotations
 
@@ -8,13 +8,7 @@ from typing import Any
 
 from proverka.ha_thresholds import compare_ha_status
 
-# Пилот: только сводка 3; позже — 4, 5, …
-PILOT_FOCUS_REPORTS = frozenset({"3"})
-
-# Не показываем peer-колонку сводки 1 для этих операций (локальный факт 1 по МУ не сверяем).
-PEER_SKIP: frozenset[tuple[str, str]] = frozenset({
-    ("1", "1.1 Внесение минеральных удобрений"),
-})
+FOCUS_REPORT_IDS = frozenset({"3", "4", "5", "6", "7", "8", "9"})
 
 
 def _norm_crop(name: str) -> str:
@@ -82,12 +76,14 @@ def _peers_for_view(
     for rid in peer_reports_for_group(group):
         if rid not in present:
             continue
-        if rid != focus_rid and (rid, group) in PEER_SKIP:
-            continue
         out.append(str(rid))
     if focus_rid not in out and focus_rid in present:
         out.append(focus_rid)
     return sorted(set(out), key=lambda x: (x != focus_rid, int(x) if x.isdigit() else x))
+
+
+def _report_order(focus_rid: str, peer_ids: list[str]) -> list[str]:
+    return [focus_rid] + [r for r in peer_ids if r != focus_rid]
 
 
 def _spread(values: dict[str, float | None]) -> tuple[float, str]:
@@ -99,14 +95,10 @@ def _spread(values: dict[str, float | None]) -> tuple[float, str]:
 
 
 def _column_defs(focus_rid: str, peer_ids: list[str]) -> list[dict[str, str]]:
-    cols: list[dict[str, str]] = [
-        {"key": f"m_{focus_rid}", "label": f"Сводка {focus_rid} (расчёт)", "kind": "module"},
-        {"key": f"f_{focus_rid}", "label": f"Сводка {focus_rid} (файл)", "kind": "file"},
-    ]
-    for rid in peer_ids:
-        if rid == focus_rid:
-            continue
+    cols: list[dict[str, str]] = []
+    for rid in _report_order(focus_rid, peer_ids):
         cols.append({"key": f"m_{rid}", "label": f"Сводка {rid} (расчёт)", "kind": "module"})
+        cols.append({"key": f"f_{rid}", "label": f"Сводка {rid} (файл)", "kind": "file"})
     cols.append({"key": "cropwise", "label": "Cropwise", "kind": "cropwise"})
     return cols
 
@@ -120,10 +112,10 @@ def _values_for_crop(
     cw_ha: float | None,
 ) -> dict[str, float | None]:
     vals: dict[str, float | None] = {}
-    for rid in peer_ids:
+    for rid in _report_order(focus_rid, peer_ids):
         op = _module_op(reports, rid, group)
         vals[f"m_{rid}"] = _crop_ha_from_op(op, crop)
-    vals[f"f_{focus_rid}"] = _file_crop(reports, focus_rid, group, crop)
+        vals[f"f_{rid}"] = _file_crop(reports, rid, group, crop)
     vals["cropwise"] = cw_ha
     return vals
 
@@ -137,31 +129,24 @@ def _values_for_firm(
     cw_ha: float | None,
 ) -> dict[str, float | None]:
     vals: dict[str, float | None] = {}
-    for rid in peer_ids:
+    for rid in _report_order(focus_rid, peer_ids):
         op = _module_op(reports, rid, group)
         vals[f"m_{rid}"] = _firm_ha_from_op(op, firm)
-    vals[f"f_{focus_rid}"] = _file_firm(reports, focus_rid, group, firm)
+        vals[f"f_{rid}"] = _file_firm(reports, rid, group, firm)
     vals["cropwise"] = cw_ha
     return vals
 
 
-def build_focus_report_view(
+def _build_operation_section(
     focus_rid: str,
     batch: dict[str, Any],
+    group: str,
 ) -> dict[str, Any] | None:
     from proverka.operation_registry import display_group_name
-    from proverka.reports_config import REPORTS
 
     reports = batch.get("reports") or {}
     if focus_rid not in reports:
         return None
-    spec = REPORTS.get(focus_rid)
-    if not spec or not spec.work_groups:
-        return None
-    group = spec.work_groups[0]
-    if len(spec.work_groups) > 1:
-        # пилот — одна операция на сводку
-        group = spec.work_groups[0]
     present = set(reports.keys())
     peer_ids = _peers_for_view(focus_rid, group, present)
     result = reports[focus_rid]
@@ -190,6 +175,9 @@ def build_focus_report_view(
             crop_names.add(str(c))
     file_crops = ((result.get("file_crops") or {}).get(group)) or {}
     crop_names.update(str(c) for c in file_crops.keys())
+    for rid in peer_ids:
+        peer_crops = ((reports.get(rid) or {}).get("file_crops") or {}).get(group) or {}
+        crop_names.update(str(c) for c in peer_crops.keys())
 
     columns = _column_defs(focus_rid, peer_ids)
     crop_rows: list[dict[str, Any]] = []
@@ -201,7 +189,7 @@ def build_focus_report_view(
                     cw = v
                     break
         values = _values_for_crop(crop, focus_rid, peer_ids, reports, group, cw)
-        compare_vals = {k: v for k, v in values.items() if k.startswith("m_") or k == "cropwise"}
+        compare_vals = {k: v for k, v in values.items() if v is not None}
         max_diff, status = _spread(compare_vals)
         if max(abs(v or 0) for v in values.values() if v is not None) < 0.01 and not compare_vals:
             continue
@@ -218,6 +206,9 @@ def build_focus_report_view(
         firm_names.update(str(f) for f in (op.get("area_today_by_firm") or {}).keys())
     file_firms = ((result.get("file_firms") or {}).get(group)) or {}
     firm_names.update(str(f) for f in file_firms.keys())
+    for rid in peer_ids:
+        peer_firms = ((reports.get(rid) or {}).get("file_firms") or {}).get(group) or {}
+        firm_names.update(str(f) for f in peer_firms.keys())
     for cc in result.get("crop_comparisons") or []:
         for fr in cc.get("firms") or []:
             if fr.get("firm"):
@@ -237,7 +228,7 @@ def build_focus_report_view(
     for firm in sorted(firm_names, key=lambda f: f.casefold()):
         cw_f = cropwise_by_firm_total.get(firm)
         values = _values_for_firm(firm, focus_rid, peer_ids, reports, group, cw_f)
-        compare_vals = {k: v for k, v in values.items() if k.startswith("m_") or k == "cropwise"}
+        compare_vals = {k: v for k, v in values.items() if v is not None}
         max_diff, status = _spread(compare_vals)
         if max(abs(v or 0) for v in values.values() if v is not None) < 0.01:
             continue
@@ -248,10 +239,11 @@ def build_focus_report_view(
             "status": status,
         })
 
+    if not crop_rows and not firm_rows:
+        return None
+
     op_total = round(float(focus_op.get("total_ha") or 0), 2)
     return {
-        "report_id": focus_rid,
-        "title": spec.title,
         "group_name": group,
         "display_name": display_group_name(group),
         "peer_ids": peer_ids,
@@ -259,11 +251,43 @@ def build_focus_report_view(
         "operation_total_ha": op_total,
         "crops": crop_rows,
         "firms": firm_rows,
-        "note": (
-            "Сводка 1 для этой операции в пилоте не показывается (факт по МУ на листах 1 не сверяем)."
-            if ("1", group) in PEER_SKIP
-            else ""
-        ),
+    }
+
+
+def build_focus_report_view(
+    focus_rid: str,
+    batch: dict[str, Any],
+) -> dict[str, Any] | None:
+    from proverka.reports_config import REPORTS
+
+    spec = REPORTS.get(focus_rid)
+    if not spec or not spec.work_groups:
+        return None
+
+    sections: list[dict[str, Any]] = []
+    for group in spec.work_groups:
+        sec = _build_operation_section(focus_rid, batch, group)
+        if sec:
+            sections.append(sec)
+
+    if not sections:
+        return None
+
+    base = {
+        "report_id": focus_rid,
+        "title": spec.title,
+    }
+    if len(sections) == 1:
+        sec = sections[0]
+        return {
+            **base,
+            **sec,
+            "sections": sections,
+        }
+    return {
+        **base,
+        "sections": sections,
+        **sections[0],
     }
 
 
@@ -272,17 +296,17 @@ def build_report_views(
     report_date: Any,
     report_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """report_id → вид «карточки сводки». Пилот: только id из PILOT_FOCUS_REPORTS."""
+    """report_id → вид «карточки сводки» для тематических сводок 3–9."""
     _ = report_date
     wanted = {str(x) for x in (report_ids or [])}
     out: dict[str, Any] = {}
-    for rid in PILOT_FOCUS_REPORTS:
+    for rid in sorted(FOCUS_REPORT_IDS, key=lambda x: int(x)):
         if rid not in wanted:
             continue
         try:
             view = build_focus_report_view(rid, batch)
         except Exception:
             continue
-        if view and (view.get("crops") or view.get("firms")):
+        if view and (view.get("crops") or view.get("firms") or view.get("sections")):
             out[rid] = view
     return out

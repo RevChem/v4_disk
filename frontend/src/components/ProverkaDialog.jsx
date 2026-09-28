@@ -333,22 +333,25 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     () => Object.keys(reportViews).sort((a, b) => Number(a) - Number(b)),
     [reportViews]
   );
-  const [reportViewTab, setReportViewTab] = useState("3");
   const [proverkaMainTab, setProverkaMainTab] = useState("overview");
   useEffect(() => {
-    if (reportViewIds.length && !reportViewIds.includes(reportViewTab)) {
-      setReportViewTab(reportViewIds[0]);
+    if (proverkaMainTab !== "overview" && reportViewIds.length && !reportViewIds.includes(proverkaMainTab)) {
+      setProverkaMainTab(reportViewIds[0]);
     }
-  }, [reportViewIds, reportViewTab]);
-  const activeReportView = reportViews[reportViewTab];
-  const reportViewDiffCount = useMemo(() => {
+  }, [reportViewIds, proverkaMainTab]);
+  const activeReportView =
+    proverkaMainTab !== "overview" ? reportViews[proverkaMainTab] : null;
+
+  function reportViewDiffCountFor(view) {
+    if (!view) return 0;
+    const sections = view.sections?.length ? view.sections : [view];
     let n = 0;
-    for (const view of Object.values(reportViews)) {
-      n += (view.crops || []).filter((r) => r.status === "DIFF").length;
-      n += (view.firms || []).filter((r) => r.status === "DIFF").length;
+    for (const sec of sections) {
+      n += (sec.crops || []).filter((r) => r.status === "DIFF").length;
+      n += (sec.firms || []).filter((r) => r.status === "DIFF").length;
     }
     return n;
-  }, [reportViews]);
+  }
   const cropwiseRows = useMemo(() => job?.summary_rows || [], [job?.summary_rows]);
 
   useEffect(() => {
@@ -616,136 +619,128 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                 scrollButtons="auto"
               >
                 <Tab value="overview" label="Общая сверка" />
-                <Tab
-                  value="by_report"
-                  label={
-                    <Stack direction="row" alignItems="center" spacing={0.75}>
-                      <span>Детализация по сводкам</span>
-                      {reportViewDiffCount > 0 && (
-                        <Chip size="small" color="error" label={reportViewDiffCount} />
-                      )}
-                    </Stack>
-                  }
-                />
+                {reportViewIds.map((rid) => {
+                  const diffN = reportViewDiffCountFor(reportViews[rid]);
+                  return (
+                    <Tab
+                      key={rid}
+                      value={rid}
+                      label={
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <span>{rid} Сводка</span>
+                          {diffN > 0 && <Chip size="small" color="error" label={diffN} />}
+                        </Stack>
+                      }
+                    />
+                  );
+                })}
               </Tabs>
             </Box>
           )}
 
-          {completed && proverkaMainTab === "by_report" && (
+          {completed && proverkaMainTab !== "overview" && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto", minHeight: 120 }}>
-              {reportViewIds.length === 0 || !activeReportView ? (
+              {!activeReportView ? (
                 <Alert severity="info" sx={{ m: 1 }}>
-                  Пока доступна детализация для тематических сводок пилота (сейчас:{" "}
-                  <strong>сводка 3</strong>). Отметьте её в списке выше, peer-сводку{" "}
-                  <strong>2</strong>, включите Cropwise и перезапустите проверку после обновления backend
-                  и frontend.
+                  Нет детализации для сводки {proverkaMainTab}. Отметьте её в списке выше, сводки{" "}
+                  <strong>1</strong> и <strong>2</strong>, задайте cookie Cropwise и запустите проверку
+                  заново (нужны сохранённые pdf/xlsx в uploads за эту дату).
                 </Alert>
               ) : (
                 <>
-                  {reportViewIds.length > 1 ? (
-                    <Tabs
-                      value={reportViewTab}
-                      onChange={(_e, v) => setReportViewTab(v)}
-                      variant="scrollable"
-                      scrollButtons="auto"
-                      sx={{ px: 1, pt: 0.5 }}
-                    >
-                      {reportViewIds.map((rid) => (
-                        <Tab key={rid} value={rid} label={`Сводка ${rid}`} />
-                      ))}
-                    </Tabs>
-                  ) : (
-                    <Typography variant="subtitle2" sx={{ p: 1, pb: 0 }}>
-                      Сводка {activeReportView.report_id}: {activeReportView.title}
-                    </Typography>
-                  )}
-                  <Typography variant="body2" sx={{ px: 1, pb: 1 }} color="text.secondary">
-                    {activeReportView.display_name || activeReportView.group_name}
+                  <Typography variant="subtitle2" sx={{ p: 1, pb: 0 }}>
+                    {activeReportView.title}
                   </Typography>
-                  {activeReportView.note && (
-                    <Alert severity="info" sx={{ mx: 1, mb: 1 }}>
-                      {activeReportView.note}
-                    </Alert>
-                  )}
-                  <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block" }}>
-                    Расчёт модуля, файл из uploads, Cropwise и peer-сводки. Max diff — расчёт + Cropwise.
+                  <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", pb: 1 }}>
+                    Расчёт и файл (uploads) по сводкам 1, 2 и тематической; Cropwise. Max diff — по всем
+                    заполненным колонкам строки.
                   </Typography>
-                  <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
-                    По культурам
-                  </Typography>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Культура</TableCell>
-                        {(activeReportView.columns || []).map((col) => (
-                          <TableCell key={col.key} align="right">
-                            {col.label}
-                          </TableCell>
-                        ))}
-                        <TableCell align="right">Max diff</TableCell>
-                        <TableCell>Статус</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {(activeReportView.crops || []).map((row) => (
-                        <TableRow
-                          key={row.crop}
-                          sx={
-                            row.status === "DIFF"
-                              ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
-                              : undefined
-                          }
-                        >
-                          <TableCell>{row.crop}</TableCell>
-                          {(activeReportView.columns || []).map((col) => (
-                            <TableCell key={col.key} align="right">
-                              {formatHa(row.values?.[col.key])}
-                            </TableCell>
+                  {(activeReportView.sections?.length
+                    ? activeReportView.sections
+                    : [activeReportView]
+                  ).map((sec) => (
+                    <Box key={sec.group_name || sec.display_name} sx={{ pb: 2 }}>
+                      <Typography variant="body2" sx={{ px: 1, fontWeight: 600 }}>
+                        {sec.display_name || sec.group_name}
+                      </Typography>
+                      <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
+                        По культурам
+                      </Typography>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Культура</TableCell>
+                            {(sec.columns || []).map((col) => (
+                              <TableCell key={col.key} align="right">
+                                {col.label}
+                              </TableCell>
+                            ))}
+                            <TableCell align="right">Max diff</TableCell>
+                            <TableCell>Статус</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {(sec.crops || []).map((row) => (
+                            <TableRow
+                              key={row.crop}
+                              sx={
+                                row.status === "DIFF"
+                                  ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
+                                  : undefined
+                              }
+                            >
+                              <TableCell>{row.crop}</TableCell>
+                              {(sec.columns || []).map((col) => (
+                                <TableCell key={col.key} align="right">
+                                  {formatHa(row.values?.[col.key])}
+                                </TableCell>
+                              ))}
+                              <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                              <TableCell>{row.status}</TableCell>
+                            </TableRow>
                           ))}
-                          <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                          <TableCell>{row.status}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                  <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
-                    По агрофирмам
-                  </Typography>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Агрофирма</TableCell>
-                        {(activeReportView.columns || []).map((col) => (
-                          <TableCell key={col.key} align="right">
-                            {col.label}
-                          </TableCell>
-                        ))}
-                        <TableCell align="right">Max diff</TableCell>
-                        <TableCell>Статус</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {(activeReportView.firms || []).map((row) => (
-                        <TableRow
-                          key={row.firm}
-                          sx={
-                            row.status === "DIFF"
-                              ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
-                              : undefined
-                          }
-                        >
-                          <TableCell>{row.firm}</TableCell>
-                          {(activeReportView.columns || []).map((col) => (
-                            <TableCell key={col.key} align="right">
-                              {formatHa(row.values?.[col.key])}
-                            </TableCell>
+                        </TableBody>
+                      </Table>
+                      <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
+                        По агрофирмам
+                      </Typography>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Агрофирма</TableCell>
+                            {(sec.columns || []).map((col) => (
+                              <TableCell key={col.key} align="right">
+                                {col.label}
+                              </TableCell>
+                            ))}
+                            <TableCell align="right">Max diff</TableCell>
+                            <TableCell>Статус</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {(sec.firms || []).map((row) => (
+                            <TableRow
+                              key={row.firm}
+                              sx={
+                                row.status === "DIFF"
+                                  ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
+                                  : undefined
+                              }
+                            >
+                              <TableCell>{row.firm}</TableCell>
+                              {(sec.columns || []).map((col) => (
+                                <TableCell key={col.key} align="right">
+                                  {formatHa(row.values?.[col.key])}
+                                </TableCell>
+                              ))}
+                              <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                              <TableCell>{row.status}</TableCell>
+                            </TableRow>
                           ))}
-                          <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                          <TableCell>{row.status}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                        </TableBody>
+                      </Table>
+                    </Box>
+                  ))}
                 </>
               )}
             </Box>
