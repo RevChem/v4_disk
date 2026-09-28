@@ -316,6 +316,58 @@ def _read_general_sheet(ws: Any) -> dict[str, Any] | None:
     return {"total": total, "crops": crops, "nonzero_rows": nonzero}
 
 
+_SEEDING_SUMMARY_TITLE = "Посев — Сводно по всем агрофирмам"
+_SEEDING_GROUP = "4.0 Посев"
+
+
+def read_report1_seeding_crops(path: Path) -> dict[str, dict[str, float]]:
+    """Таблица «Посев — Сводно…» из xlsx сводки 1 → культура → га за сутки."""
+    if load_workbook is None:
+        return {}
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    try:
+        for ws in wb.worksheets:
+            rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
+            title_row = None
+            for i, r in enumerate(rows[:8]):
+                if any(_SEEDING_SUMMARY_TITLE in _text(c) for c in r):
+                    title_row = i
+                    break
+            if title_row is None:
+                continue
+            hdr_idx = crop_col = val_col = None
+            for i in range(title_row, min(title_row + 6, len(rows))):
+                texts = [_text(c).replace("\n", " ") for c in rows[i]]
+                if _GENERAL_CROP_HEADER in texts and _GENERAL_VALUE_HEADER in texts:
+                    hdr_idx = i
+                    crop_col = texts.index(_GENERAL_CROP_HEADER)
+                    val_col = texts.index(_GENERAL_VALUE_HEADER)
+                    break
+            if hdr_idx is None:
+                continue
+            for r in rows[hdr_idx + 1:]:
+                crop = _text(r[crop_col]) if crop_col < len(r) else ""
+                if not crop or crop == _TOTAL_LABEL:
+                    if crop == _TOTAL_LABEL:
+                        break
+                    continue
+                value = _num(r[val_col]) if val_col < len(r) else None
+                if value is None:
+                    continue
+                out[crop] = round(out.get(crop, 0.0) + value, 2)
+            if out:
+                break
+    except Exception:
+        return {}
+    finally:
+        wb.close()
+    return {_SEEDING_GROUP: out} if out else {}
+
+
 def read_report1_workbook(path: Path) -> dict[str, Any]:
     out: dict[str, Any] = {"perf": {}, "general": None}
     if load_workbook is None:

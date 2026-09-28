@@ -1154,6 +1154,12 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
             from proverka.file_consistency import report2_xlsx_crop_areas
 
             return report2_xlsx_crop_areas(path)
+        if rid in {"1", "5"}:
+            from proverka.file_consistency import read_report1_seeding_crops
+
+            seeded = read_report1_seeding_crops(path)
+            if seeded:
+                return seeded
         return {}
     if path.suffix.lower() != ".pdf":
         return {}

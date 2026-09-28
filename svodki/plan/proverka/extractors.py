@@ -243,6 +243,53 @@ async def _seeding_area_today_by_firm_crop_dop(
     return area_today_by_firm_crop
 
 
+def _seeding_perf_day_stats_from_tasks(
+    tasks_today: list[dict],
+    mtfmi_map: dict[int, list[dict]],
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+    cutoff: datetime,
+    firm_order: list[str],
+    parse_dt: Any,
+    *,
+    min_ha: float = 0.5,
+) -> dict[str, dict]:
+    """Статистика «Выраб. — 4.0 Посев»: area_by_crop по полям (как 1_main_ammonium)."""
+    from collections import defaultdict
+
+    from mtfmi_batch_fetch import crop_of_field
+
+    today_by_field: dict[int, float] = defaultdict(float)
+    for t in tasks_today:
+        for item in mtfmi_map.get(int(t["id"]), []):
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            cov = 0.0
+            for entry in item.get("covered_area_hourly") or []:
+                h = parse_dt(entry[0])
+                if h and h < cutoff:
+                    cov += float(entry[1] or 0)
+            if cov <= 0 and not (item.get("covered_area_hourly") or []):
+                cov = float(item.get("covered_area") or 0)
+            if cov > min_ha:
+                today_by_field[int(fid)] += cov
+
+    out: dict[str, dict] = {}
+    for firm in firm_order:
+        by_crop: dict[str, float] = defaultdict(float)
+        for fid, fid_cov in today_by_field.items():
+            if field_to_firm.get(fid) != firm:
+                continue
+            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
+            if crop:
+                by_crop[crop] += fid_cov
+        out[firm] = {
+            "area_by_crop": {k: round(v, 2) for k, v in by_crop.items()},
+        }
+    return out
+
+
 def _crop_breakdown_seeding_from_today_by_field(
     day_stats: dict[str, dict],
     firm_order: list[str],
@@ -1050,6 +1097,20 @@ async def _extract_5(
                 report_date=report_date,
                 field_to_firm_all=field_to_firm,
             )
+            firm_order_seed = list(m.AGROFIRMS.keys())
+            seeding_perf = _seeding_perf_day_stats_from_tasks(
+                tasks_today,
+                mtfmi,
+                field_to_firm,
+                field_crop_by_id,
+                cutoff,
+                firm_order_seed,
+                m.parse_dt,
+                min_ha=float(m.MIN_DETAIL_AREA_HA),
+            )
+            # Как таблица «Посев — Сводно» в сводке 1: today из «Выраб. — 4.0 Посев»,
+            # а не сырой mtfmi fetch_all_crop_stats (иначе пшеница ~×2).
+            dop_mod._apply_seeding_today_from_perf(crop_firm_stats, seeding_perf)
             for firm, st in (crop_firm_stats or {}).items():
                 for crop, val in (st.get("today_by_crop") or {}).items():
                     v = round(float(val or 0), 2)
