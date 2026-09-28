@@ -432,10 +432,12 @@ def get_proverka_job(job_id: str, _: User = Depends(require_developer_access)):
     st = read_job_status(job_id)
     if st is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
-    if st.get("status") == "completed":
-        from app.adapters.outbound.proverka.service import enrich_job_file_column
+    if st.get("status") == "completed" and not st.get("file_enriched"):
+        from app.adapters.outbound.proverka.service import enrich_job_file_column, write_job_status
 
         st = enrich_job_file_column(st)
+        if st.get("file_enriched"):
+            write_job_status(job_id, st)
     if st.get("status") == "completed" and "violation_count" not in st:
         from app.adapters.outbound.proverka.service import _attach_violations
 

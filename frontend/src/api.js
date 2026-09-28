@@ -421,7 +421,7 @@ export async function fetchProverkaDashboard(reportDate) {
 export async function fetchLatestProverkaJob(reportDate) {
   const { data } = await api.get("/proverka/latest-job", {
     params: { report_date: reportDate },
-    timeout: 15_000,
+    timeout: 30_000,
   });
   return data;
 }
@@ -436,7 +436,7 @@ export async function fetchLatestProverkaMachinesJob(reportDate) {
 }
 
 export async function fetchProverkaJob(jobId) {
-  const { data } = await api.get(`/proverka/jobs/${jobId}`, { timeout: 15_000 });
+  const { data } = await api.get(`/proverka/jobs/${jobId}`, { timeout: 120_000 });
   return data;
 }
 
@@ -444,7 +444,7 @@ export async function cancelProverkaJob(jobId, reportIds = null) {
   try {
     const body = reportIds?.length ? { report_ids: reportIds } : {};
     const { data } = await api.post(`/proverka/jobs/${encodeURIComponent(jobId)}/cancel`, body, {
-      timeout: 15_000,
+      timeout: 30_000,
     });
     return data;
   } catch (e) {

@@ -787,6 +787,31 @@ async def _extract_1(
             crop_breakdown = _crop_breakdown_from_day_stats(st, firm_order)
             if crop_breakdown:
                 operations[gn]["area_today_by_firm_crop"] = crop_breakdown
+    seeding_gn = getattr(m, "SEEDING_GROUP_NAME", SEEDING_WORK_GROUP)
+    if seeding_gn in operations and seeding_gn in all_stats:
+        try:
+            dop_mod = _load_dop_module_for_crops()
+            seed_crop_bd: dict[str, dict[str, float]] = {}
+            seed_st = all_stats[seeding_gn]
+            for firm in firm_order:
+                by_crop_raw = (seed_st.get(firm) or {}).get("area_by_crop") or {}
+                if not by_crop_raw:
+                    continue
+                for crop, val in by_crop_raw.items():
+                    v = round(float(val or 0), 2)
+                    if v <= 0:
+                        continue
+                    label = dop_mod._crop_label_for_stats(crop)
+                    if label not in dop_mod._DISPLAY_SEEDING_CROP_SET:
+                        continue
+                    seed_crop_bd.setdefault(label, {})
+                    seed_crop_bd[label][firm] = round(
+                        seed_crop_bd[label].get(firm, 0.0) + v, 2,
+                    )
+            if seed_crop_bd:
+                operations[seeding_gn]["area_today_by_firm_crop"] = seed_crop_bd
+        except Exception:
+            pass
     harvest_gn = getattr(m, "HARVEST_GRAIN_GROUP_NAME", HARVEST_GRAIN_GROUP)
     if harvest_gn in operations:
         prev = operations[harvest_gn]

@@ -115,6 +115,8 @@ def read_job_status(job_id: str) -> dict[str, Any] | None:
 
 def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
     """В строки сверки подмешивает гектары из файла каждой сводки."""
+    if status.get("file_enriched"):
+        return status
     if status.get("status") != "completed":
         return status
     raw_date = str(status.get("report_date") or "").strip()
@@ -137,6 +139,7 @@ def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
         if ops is not rows:
             apply_file_totals_to_rows(ops, report_day)
         _refresh_sheet_checks(status, report_day)
+        status["file_enriched"] = True
     except Exception:
         return status
     return status
@@ -710,6 +713,7 @@ def run_job(job_id: str) -> None:
         }
         if final_status != "cancelled":
             completed = _attach_violations(completed)
+            completed = enrich_job_file_column(completed)
         write_job_status(job_id, completed)
 
         if params.get("run_ai_analysis") and final_status != "cancelled":
