@@ -334,12 +334,21 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     [reportViews]
   );
   const [reportViewTab, setReportViewTab] = useState("3");
+  const [proverkaMainTab, setProverkaMainTab] = useState("overview");
   useEffect(() => {
     if (reportViewIds.length && !reportViewIds.includes(reportViewTab)) {
       setReportViewTab(reportViewIds[0]);
     }
   }, [reportViewIds, reportViewTab]);
   const activeReportView = reportViews[reportViewTab];
+  const reportViewDiffCount = useMemo(() => {
+    let n = 0;
+    for (const view of Object.values(reportViews)) {
+      n += (view.crops || []).filter((r) => r.status === "DIFF").length;
+      n += (view.firms || []).filter((r) => r.status === "DIFF").length;
+    }
+    return n;
+  }, [reportViews]);
   const cropwiseRows = useMemo(() => job?.summary_rows || [], [job?.summary_rows]);
 
   useEffect(() => {
@@ -598,113 +607,151 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             <Alert severity="info">Проверка отменена.</Alert>
           )}
 
-          {completed && reportViewIds.length > 0 && activeReportView && (
-            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
-              <Typography variant="subtitle2" sx={{ p: 1, pb: 0 }}>
-                Детализация по сводке
-              </Typography>
-              {reportViewIds.length > 1 && (
-                <Tabs
-                  value={reportViewTab}
-                  onChange={(_e, v) => setReportViewTab(v)}
-                  variant="scrollable"
-                  scrollButtons="auto"
-                  sx={{ px: 1 }}
-                >
-                  {reportViewIds.map((rid) => (
-                    <Tab
-                      key={rid}
-                      value={rid}
-                      label={`Сводка ${rid}${reportViews[rid]?.title ? `: ${reportViews[rid].title.slice(0, 28)}` : ""}`}
-                    />
-                  ))}
-                </Tabs>
-              )}
-              {reportViewIds.length === 1 && (
-                <Typography variant="body2" sx={{ px: 1, pb: 1 }} color="text.secondary">
-                  Сводка {activeReportView.report_id}: {activeReportView.display_name || activeReportView.group_name}
-                </Typography>
-              )}
-              {activeReportView.note && (
-                <Alert severity="info" sx={{ mx: 1, mb: 1 }}>
-                  {activeReportView.note}
-                </Alert>
-              )}
-              <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block" }}>
-                Сравнение расчёта, файла (uploads), Cropwise и peer-сводок. Max diff — по колонкам расчёт + Cropwise.
-              </Typography>
-              <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
-                По культурам
-              </Typography>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Культура</TableCell>
-                    {(activeReportView.columns || []).map((col) => (
-                      <TableCell key={col.key} align="right">
-                        {col.label}
-                      </TableCell>
-                    ))}
-                    <TableCell align="right">Max diff</TableCell>
-                    <TableCell>Статус</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(activeReportView.crops || []).map((row) => (
-                    <TableRow
-                      key={row.crop}
-                      sx={row.status === "DIFF" ? { backgroundColor: "rgba(252, 228, 214, 0.45)" } : undefined}
-                    >
-                      <TableCell>{row.crop}</TableCell>
-                      {(activeReportView.columns || []).map((col) => (
-                        <TableCell key={col.key} align="right">
-                          {formatHa(row.values?.[col.key])}
-                        </TableCell>
-                      ))}
-                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                      <TableCell>{row.status}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
-                По агрофирмам
-              </Typography>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Агрофирма</TableCell>
-                    {(activeReportView.columns || []).map((col) => (
-                      <TableCell key={col.key} align="right">
-                        {col.label}
-                      </TableCell>
-                    ))}
-                    <TableCell align="right">Max diff</TableCell>
-                    <TableCell>Статус</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(activeReportView.firms || []).map((row) => (
-                    <TableRow
-                      key={row.firm}
-                      sx={row.status === "DIFF" ? { backgroundColor: "rgba(252, 228, 214, 0.45)" } : undefined}
-                    >
-                      <TableCell>{row.firm}</TableCell>
-                      {(activeReportView.columns || []).map((col) => (
-                        <TableCell key={col.key} align="right">
-                          {formatHa(row.values?.[col.key])}
-                        </TableCell>
-                      ))}
-                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                      <TableCell>{row.status}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+          {completed && (
+            <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+              <Tabs
+                value={proverkaMainTab}
+                onChange={(_e, v) => setProverkaMainTab(v)}
+                variant="scrollable"
+                scrollButtons="auto"
+              >
+                <Tab value="overview" label="Общая сверка" />
+                <Tab
+                  value="by_report"
+                  label={
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      <span>Детализация по сводкам</span>
+                      {reportViewDiffCount > 0 && (
+                        <Chip size="small" color="error" label={reportViewDiffCount} />
+                      )}
+                    </Stack>
+                  }
+                />
+              </Tabs>
             </Box>
           )}
 
-          {completed && sheetCheckEligible && (
+          {completed && proverkaMainTab === "by_report" && (
+            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto", minHeight: 120 }}>
+              {reportViewIds.length === 0 || !activeReportView ? (
+                <Alert severity="info" sx={{ m: 1 }}>
+                  Пока доступна детализация для тематических сводок пилота (сейчас:{" "}
+                  <strong>сводка 3</strong>). Отметьте её в списке выше, peer-сводку{" "}
+                  <strong>2</strong>, включите Cropwise и перезапустите проверку после обновления backend
+                  и frontend.
+                </Alert>
+              ) : (
+                <>
+                  {reportViewIds.length > 1 ? (
+                    <Tabs
+                      value={reportViewTab}
+                      onChange={(_e, v) => setReportViewTab(v)}
+                      variant="scrollable"
+                      scrollButtons="auto"
+                      sx={{ px: 1, pt: 0.5 }}
+                    >
+                      {reportViewIds.map((rid) => (
+                        <Tab key={rid} value={rid} label={`Сводка ${rid}`} />
+                      ))}
+                    </Tabs>
+                  ) : (
+                    <Typography variant="subtitle2" sx={{ p: 1, pb: 0 }}>
+                      Сводка {activeReportView.report_id}: {activeReportView.title}
+                    </Typography>
+                  )}
+                  <Typography variant="body2" sx={{ px: 1, pb: 1 }} color="text.secondary">
+                    {activeReportView.display_name || activeReportView.group_name}
+                  </Typography>
+                  {activeReportView.note && (
+                    <Alert severity="info" sx={{ mx: 1, mb: 1 }}>
+                      {activeReportView.note}
+                    </Alert>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block" }}>
+                    Расчёт модуля, файл из uploads, Cropwise и peer-сводки. Max diff — расчёт + Cropwise.
+                  </Typography>
+                  <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
+                    По культурам
+                  </Typography>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Культура</TableCell>
+                        {(activeReportView.columns || []).map((col) => (
+                          <TableCell key={col.key} align="right">
+                            {col.label}
+                          </TableCell>
+                        ))}
+                        <TableCell align="right">Max diff</TableCell>
+                        <TableCell>Статус</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {(activeReportView.crops || []).map((row) => (
+                        <TableRow
+                          key={row.crop}
+                          sx={
+                            row.status === "DIFF"
+                              ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
+                              : undefined
+                          }
+                        >
+                          <TableCell>{row.crop}</TableCell>
+                          {(activeReportView.columns || []).map((col) => (
+                            <TableCell key={col.key} align="right">
+                              {formatHa(row.values?.[col.key])}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                          <TableCell>{row.status}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
+                    По агрофирмам
+                  </Typography>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Агрофирма</TableCell>
+                        {(activeReportView.columns || []).map((col) => (
+                          <TableCell key={col.key} align="right">
+                            {col.label}
+                          </TableCell>
+                        ))}
+                        <TableCell align="right">Max diff</TableCell>
+                        <TableCell>Статус</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {(activeReportView.firms || []).map((row) => (
+                        <TableRow
+                          key={row.firm}
+                          sx={
+                            row.status === "DIFF"
+                              ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
+                              : undefined
+                          }
+                        >
+                          <TableCell>{row.firm}</TableCell>
+                          {(activeReportView.columns || []).map((col) => (
+                            <TableCell key={col.key} align="right">
+                              {formatHa(row.values?.[col.key])}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                          <TableCell>{row.status}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </>
+              )}
+            </Box>
+          )}
+
+          {completed && proverkaMainTab === "overview" && sheetCheckEligible && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
               <Typography variant="subtitle2" sx={{ p: 1 }}>
                 Согласованность листов (сводки 1 и 2)
@@ -768,7 +815,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             </Box>
           )}
 
-          {completed && crossCheckRows.length > 0 && (
+          {completed && proverkaMainTab === "overview" && crossCheckRows.length > 0 && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
               <Stack
                 direction="row"
@@ -1024,7 +1071,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             </Box>
           )}
 
-          {completed && firmCheckRows.length > 0 && (
+          {completed && proverkaMainTab === "overview" && firmCheckRows.length > 0 && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
               <Typography variant="subtitle2" sx={{ p: 1 }}>
                 Сверка по агрофирмам
@@ -1089,7 +1136,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             </Box>
           )}
 
-          {completed && cropwiseRows.length > 0 && (
+          {completed && proverkaMainTab === "overview" && cropwiseRows.length > 0 && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
               <Typography variant="subtitle2" sx={{ p: 1 }}>
                 Сводки ↔ Cropwise UI
@@ -1133,7 +1180,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             </Box>
           )}
 
-          {completed && job?.ai_status && job.ai_status !== "skipped" && (
+          {completed && proverkaMainTab === "overview" && job?.ai_status && job.ai_status !== "skipped" && (
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 2 }}>
               <Typography variant="subtitle2" gutterBottom>
                 Отчёт AI
