@@ -1,14 +1,56 @@
-"""Детализация proverka «от лица одной сводки» (тематические 3–9).
+"""Детализация proverka «от лица одной сводки».
 
-Таблицы по культурам и по агрофирмам: расчёт модуля, файл (uploads), Cropwise, peer 1/2.
+Таблицы по культурам и по агрофирмам: расчёт модуля, файл (uploads), Cropwise, peer-сводки.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
 from proverka.ha_thresholds import compare_ha_status
 
-FOCUS_REPORT_IDS = frozenset({"3", "4", "5", "6", "7", "8", "9"})
+
+def _operation_total_ha(op: dict[str, Any] | None) -> float:
+    if not op:
+        return 0.0
+    if op.get("total_ha") is not None:
+        return float(op.get("total_ha") or 0)
+    area = op.get("area_today_by_firm") or {}
+    return round(sum(float(v or 0) for v in area.values()), 2)
+
+
+def _work_groups_for_focus(
+    focus_rid: str,
+    batch: dict[str, Any],
+    spec: Any,
+) -> tuple[str, ...]:
+    """Операции карточки: из каталога или из фактических operations сводки."""
+    if spec.work_groups:
+        return tuple(spec.work_groups)
+    from proverka.operation_registry import peer_reports_for_group
+
+    reports = batch.get("reports") or {}
+    result = reports.get(focus_rid) or {}
+    ops = (result.get("svodka") or {}).get("operations") or {}
+    out: list[str] = []
+    for group in sorted(ops.keys()):
+        if focus_rid not in peer_reports_for_group(group):
+            continue
+        if _operation_total_ha(ops[group]) < 0.01:
+            continue
+        out.append(group)
+    return tuple(out)
+
+
+def _crop_comparisons_for_group(result: dict[str, Any], group: str) -> Iterator[dict[str, Any]]:
+    for cc in result.get("crop_comparisons") or []:
+        g = cc.get("group")
+        if g and g != group:
+            continue
+        yield cc
+    oc = (result.get("operation_comparisons") or {}).get(group) or {}
+    for cc in oc.get("crop_comparisons") or []:
+        if isinstance(cc, dict):
+            yield cc
 
 
 def _norm_crop(name: str) -> str:
@@ -153,9 +195,7 @@ def _build_operation_section(
 
     cropwise_by_crop: dict[str, float] = {}
     cropwise_firms: dict[str, dict[str, float]] = {}
-    for cc in result.get("crop_comparisons") or []:
-        if cc.get("group") and cc.get("group") != group:
-            continue
+    for cc in _crop_comparisons_for_group(result, group):
         crop = str(cc.get("crop") or "")
         if not crop:
             continue
@@ -164,6 +204,16 @@ def _build_operation_section(
             firm = str(fr.get("firm") or "")
             if firm:
                 cropwise_firms.setdefault(crop, {})[firm] = round(float(fr.get("cropwise_ha") or 0), 2)
+    if not cropwise_by_crop:
+        from proverka.operation_compare import cropwise_for_cross_check
+
+        sl = cropwise_for_cross_check(reports, group)
+        if sl and sl.get("has_crops"):
+            for crop, ha in (sl.get("crops") or {}).items():
+                cropwise_by_crop[str(crop)] = round(float(ha), 2)
+            for crop, by_f in (sl.get("firms") or {}).items():
+                for firm, ha in by_f.items():
+                    cropwise_firms.setdefault(str(crop), {})[str(firm)] = round(float(ha), 2)
 
     crop_names: set[str] = set(cropwise_by_crop.keys())
     focus_op = _module_op(reports, focus_rid, group)
@@ -209,7 +259,7 @@ def _build_operation_section(
     for rid in peer_ids:
         peer_firms = ((reports.get(rid) or {}).get("file_firms") or {}).get(group) or {}
         firm_names.update(str(f) for f in peer_firms.keys())
-    for cc in result.get("crop_comparisons") or []:
+    for cc in _crop_comparisons_for_group(result, group):
         for fr in cc.get("firms") or []:
             if fr.get("firm"):
                 firm_names.add(str(fr["firm"]))
@@ -261,11 +311,14 @@ def build_focus_report_view(
     from proverka.reports_config import REPORTS
 
     spec = REPORTS.get(focus_rid)
-    if not spec or not spec.work_groups:
+    if not spec:
+        return None
+    groups = _work_groups_for_focus(focus_rid, batch, spec)
+    if not groups:
         return None
 
     sections: list[dict[str, Any]] = []
-    for group in spec.work_groups:
+    for group in groups:
         sec = _build_operation_section(focus_rid, batch, group)
         if sec:
             sections.append(sec)
@@ -291,18 +344,25 @@ def build_focus_report_view(
     }
 
 
+def _sort_report_id(rid: str) -> tuple:
+    try:
+        return (0, int(rid), rid)
+    except ValueError:
+        return (1, 0, rid)
+
+
 def build_report_views(
     batch: dict[str, Any],
     report_date: Any,
     report_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """report_id → вид «карточки сводки» для тематических сводок 3–9."""
+    """report_id → карточка сводки для каждой выбранной сводки из proverka REPORTS."""
     _ = report_date
+    from proverka.reports_config import REPORTS
+
     wanted = {str(x) for x in (report_ids or [])}
     out: dict[str, Any] = {}
-    for rid in sorted(FOCUS_REPORT_IDS, key=lambda x: int(x)):
-        if rid not in wanted:
-            continue
+    for rid in sorted((wanted & set(REPORTS.keys())), key=_sort_report_id):
         try:
             view = build_focus_report_view(rid, batch)
         except Exception:

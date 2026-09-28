@@ -156,7 +156,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState(false);
-  const [showAllCrops, setShowAllCrops] = useState(true);
+  /** false — скрыть строки OK / без существенного diff (как «только расхождения»). */
+  const [showAllRows, setShowAllRows] = useState(false);
   const [expandedCropKeys, setExpandedCropKeys] = useState(() => new Set());
 
   const sortedCatalog = useMemo(() => sortCatalogDesc(catalog), [catalog]);
@@ -329,10 +330,23 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   }, [job?.report_ids]);
 
   const reportViews = job?.report_views ?? {};
-  const reportViewIds = useMemo(
-    () => Object.keys(reportViews).sort((a, b) => Number(a) - Number(b)),
-    [reportViews]
-  );
+  const reportViewIds = useMemo(() => {
+    const sortKey = (id) => {
+      const n = Number(id);
+      return Number.isFinite(n) ? [0, n, id] : [1, 0, id];
+    };
+    return Object.keys(reportViews).sort((a, b) => {
+      const ka = sortKey(a);
+      const kb = sortKey(b);
+      for (let i = 0; i < 3; i += 1) {
+        if (ka[i] !== kb[i]) {
+          if (typeof ka[i] === "string") return ka[i].localeCompare(kb[i], undefined, { numeric: true });
+          return ka[i] - kb[i];
+        }
+      }
+      return 0;
+    });
+  }, [reportViews]);
   const [proverkaMainTab, setProverkaMainTab] = useState("overview");
   useEffect(() => {
     if (proverkaMainTab !== "overview" && reportViewIds.length && !reportViewIds.includes(proverkaMainTab)) {
@@ -395,18 +409,25 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const crossCheckTableRows = useMemo(() => {
     const out = [];
     for (const row of crossCheckRows) {
-      out.push({ kind: "op", row });
       const crops = (row.crops || []).filter(
         (c) =>
-          showAllCrops ||
+          showAllRows ||
           c.status === "DIFF" ||
           cropwiseApart(cropwiseFor(row.group_name, c.crop, null, c.cropwise_ha), c.totals)
       );
+      const opDiff =
+        row.status === "DIFF" ||
+        crops.length > 0 ||
+        (row.max_diff_ha || 0) >= DIFF_MIN_HA;
+      if (!showAllRows && !opDiff) {
+        continue;
+      }
+      out.push({ kind: "op", row });
       for (const cr of crops) {
         const key = cropKey(row.group_name, cr.crop);
         const firmRows = (cr.firms || []).filter(
           (fr) =>
-            showAllCrops ||
+            showAllRows ||
             (fr.max_diff_ha || 0) >= DIFF_MIN_HA ||
             cropwiseApart(
               cropwiseFor(row.group_name, cr.crop, fr.firm, fr.cropwise_ha),
@@ -429,7 +450,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       }
     }
     return out;
-  }, [crossCheckRows, showAllCrops, expandedCropKeys, cropwiseFor]);
+  }, [crossCheckRows, showAllRows, expandedCropKeys, cropwiseFor]);
 
   function toggleCropFirms(key) {
     setExpandedCropKeys((prev) => {
@@ -472,6 +493,27 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     }
     return rows;
   }, [crossCheckRows]);
+
+  const firmCheckRowsVisible = useMemo(() => {
+    if (showAllRows) return firmCheckRows;
+    return firmCheckRows.filter(
+      (row) =>
+        (row.max_diff_ha || 0) >= DIFF_MIN_HA ||
+        cropwiseApart(row.cropwise_ha, row.values)
+    );
+  }, [firmCheckRows, showAllRows]);
+
+  const sheetCheckRowsVisible = useMemo(() => {
+    if (showAllRows) return sheetCheckRows;
+    return sheetCheckRows.filter((r) => r.status === "DIFF");
+  }, [sheetCheckRows, showAllRows]);
+
+  const cropwiseRowsVisible = useMemo(() => {
+    if (showAllRows) return cropwiseRows;
+    return cropwiseRows.filter(
+      (row) => row.status === "DIFF" || (row.diff_ha != null && Math.abs(row.diff_ha) >= DIFF_MIN_HA)
+    );
+  }, [cropwiseRows, showAllRows]);
 
   const hasFirmCropwise = useMemo(
     () => firmCheckRows.some((row) => row.cropwise_ha != null && row.cropwise_ha !== ""),
@@ -617,8 +659,26 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                 onChange={(_e, v) => setProverkaMainTab(v)}
                 variant="scrollable"
                 scrollButtons="auto"
+                sx={{
+                  minHeight: 34,
+                  "& .MuiTab-root": {
+                    minHeight: 34,
+                    py: 0.5,
+                    px: 1.25,
+                    minWidth: "auto",
+                    textTransform: "none",
+                    fontSize: "0.8125rem",
+                    fontWeight: 500,
+                    color: "text.secondary",
+                  },
+                  "& .Mui-selected": {
+                    fontWeight: 600,
+                    color: "text.primary",
+                  },
+                  "& .MuiTabs-indicator": { height: 2 },
+                }}
               >
-                <Tab value="overview" label="Общая сверка" />
+                <Tab value="overview" label="Общая" />
                 {reportViewIds.map((rid) => {
                   const diffN = reportViewDiffCountFor(reportViews[rid]);
                   return (
@@ -626,15 +686,48 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                       key={rid}
                       value={rid}
                       label={
-                        <Stack direction="row" alignItems="center" spacing={0.75}>
-                          <span>{rid} Сводка</span>
-                          {diffN > 0 && <Chip size="small" color="error" label={diffN} />}
+                        <Stack direction="row" alignItems="center" spacing={0.5}>
+                          <Typography component="span" variant="caption" sx={{ fontWeight: "inherit", lineHeight: 1.2 }}>
+                            {rid}
+                          </Typography>
+                          <Typography
+                            component="span"
+                            variant="caption"
+                            sx={{ fontSize: "0.68rem", opacity: 0.85, lineHeight: 1.2 }}
+                          >
+                            сводка
+                          </Typography>
+                          {diffN > 0 && (
+                            <Chip
+                              size="small"
+                              color="error"
+                              label={diffN}
+                              sx={{ height: 16, "& .MuiChip-label": { px: 0.6, fontSize: "0.65rem" } }}
+                            />
+                          )}
                         </Stack>
                       }
                     />
                   );
                 })}
               </Tabs>
+              <Stack direction="row" justifyContent="flex-end" sx={{ px: 0.5, py: 0.25 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={showAllRows}
+                      onChange={(e) => setShowAllRows(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="caption" color="text.secondary">
+                      Показать строки без расхождений
+                    </Typography>
+                  }
+                  sx={{ mr: 0 }}
+                />
+              </Stack>
             </Box>
           )}
 
@@ -642,9 +735,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto", minHeight: 120 }}>
               {!activeReportView ? (
                 <Alert severity="info" sx={{ m: 1 }}>
-                  Нет детализации для сводки {proverkaMainTab}. Отметьте её в списке выше, сводки{" "}
-                  <strong>1</strong> и <strong>2</strong>, задайте cookie Cropwise и запустите проверку
-                  заново (нужны сохранённые pdf/xlsx в uploads за эту дату).
+                  Нет детализации для сводки {proverkaMainTab}. Отметьте её и peer-сводки (обычно{" "}
+                  <strong>1</strong>, <strong>2</strong> и тематическую), задайте cookie Cropwise и
+                  перезапустите проверку. Нужны pdf/xlsx в uploads за дату отчёта.
                 </Alert>
               ) : (
                 <>
@@ -652,20 +745,39 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                     {activeReportView.title}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", pb: 1 }}>
-                    Расчёт и файл (uploads) по сводкам 1, 2 и тематической; Cropwise. Max diff — по всем
+                    Расчёт и файл (uploads) по peer-сводкам и выбранной сводке; Cropwise. Max diff — по всем
                     заполненным колонкам строки.
                   </Typography>
                   {(activeReportView.sections?.length
                     ? activeReportView.sections
                     : [activeReportView]
-                  ).map((sec) => (
+                  ).map((sec) => {
+                    const cropsVisible = showAllRows
+                      ? sec.crops || []
+                      : (sec.crops || []).filter(
+                          (r) => r.status === "DIFF" || (r.max_diff_ha || 0) >= DIFF_MIN_HA
+                        );
+                    const firmsVisible = showAllRows
+                      ? sec.firms || []
+                      : (sec.firms || []).filter(
+                          (r) => r.status === "DIFF" || (r.max_diff_ha || 0) >= DIFF_MIN_HA
+                        );
+                    return (
                     <Box key={sec.group_name || sec.display_name} sx={{ pb: 2 }}>
                       <Typography variant="body2" sx={{ px: 1, fontWeight: 600 }}>
                         {sec.display_name || sec.group_name}
                       </Typography>
                       <Typography variant="subtitle2" sx={{ px: 1, pt: 1 }}>
                         По культурам
+                        {!showAllRows && cropsVisible.length < (sec.crops || []).length
+                          ? ` (${cropsVisible.length} из ${(sec.crops || []).length})`
+                          : ""}
                       </Typography>
+                      {cropsVisible.length === 0 ? (
+                        <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block" }}>
+                          {showAllRows ? "Нет данных" : "Нет расхождений — включите «Показать строки без расхождений»"}
+                        </Typography>
+                      ) : (
                       <Table size="small">
                         <TableHead>
                           <TableRow>
@@ -680,7 +792,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {(sec.crops || []).map((row) => (
+                          {cropsVisible.map((row) => (
                             <TableRow
                               key={row.crop}
                               sx={
@@ -701,9 +813,18 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           ))}
                         </TableBody>
                       </Table>
+                      )}
                       <Typography variant="subtitle2" sx={{ px: 1, pt: 2 }}>
                         По агрофирмам
+                        {!showAllRows && firmsVisible.length < (sec.firms || []).length
+                          ? ` (${firmsVisible.length} из ${(sec.firms || []).length})`
+                          : ""}
                       </Typography>
+                      {firmsVisible.length === 0 ? (
+                        <Typography variant="caption" color="text.secondary" sx={{ px: 1, display: "block", pb: 1 }}>
+                          {showAllRows ? "Нет данных" : "Нет расхождений"}
+                        </Typography>
+                      ) : (
                       <Table size="small">
                         <TableHead>
                           <TableRow>
@@ -718,7 +839,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {(sec.firms || []).map((row) => (
+                          {firmsVisible.map((row) => (
                             <TableRow
                               key={row.firm}
                               sx={
@@ -739,8 +860,10 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           ))}
                         </TableBody>
                       </Table>
+                      )}
                     </Box>
-                  ))}
+                    );
+                  })}
                 </>
               )}
             </Box>
@@ -777,7 +900,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {sheetCheckRows.map((row) => (
+                    {sheetCheckRowsVisible.map((row) => (
                       <TableRow
                         key={`${row.report_id}-${row.group_name}`}
                         sx={
@@ -821,22 +944,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                 sx={{ p: 1, gap: 1 }}
               >
                 <Typography variant="subtitle2">Сверка операций между сводками</Typography>
-                {hasCropBreakdown && (
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        size="small"
-                        checked={showAllCrops}
-                        onChange={(e) => setShowAllCrops(e.target.checked)}
-                      />
-                    }
-                    label={
-                      <Typography variant="body2">
-                        Показать все культуры (не только расхождения)
-                      </Typography>
-                    }
-                  />
-                )}
               </Stack>
               {hasCropBreakdown && (
                 <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
@@ -1093,7 +1200,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {firmCheckRows.map((row, idx) => (
+                  {firmCheckRowsVisible.map((row, idx) => (
                     <TableRow key={`${row.group_name}-${row.firm}-${idx}`}>
                       <TableCell>{row.display_name}</TableCell>
                       <TableCell>{row.firm}</TableCell>
@@ -1153,7 +1260,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {cropwiseRows.map((row) => (
+                  {cropwiseRowsVisible.map((row) => (
                     <TableRow key={`${row.id}-${row.operation || row.title}`}>
                       <TableCell>{row.id}</TableCell>
                       <TableCell title={(row.warnings || []).join("\n") || undefined}>

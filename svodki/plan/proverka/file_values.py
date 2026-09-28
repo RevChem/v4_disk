@@ -353,7 +353,7 @@ def stamp_cross_check_file_ha(all_results: dict[str, Any]) -> None:
 
 # Сводки, у которых на первой странице PDF «Итого» устроен одинаково:
 # план, число машин, обработано за сутки. Остальные отчёты не угадываем.
-_PDF_SUMMARY_REPORTS = frozenset({"3", "4", "5", "6", "7", "8", "9"})
+_PDF_SUMMARY_REPORTS = frozenset({"3", "4", "5", "6", "7", "8", "9", "10"})
 _PDF_AREA_INDEX = 2
 _PDF_MERGE_GAP = 8.0
 _PDF_MIN_NUMBERS = 5
@@ -1167,6 +1167,8 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
         return _report2_crop_areas(path)
     if rid in {"1", "5"}:
         return _daily_fact_crop_areas(path)
+    if rid == "11":
+        return _summary_crop_areas(path, 1, rid)
     if rid in _PDF_SUMMARY_REPORTS:
         return _summary_crop_areas(path, _PDF_AREA_INDEX, rid)
     return {}
