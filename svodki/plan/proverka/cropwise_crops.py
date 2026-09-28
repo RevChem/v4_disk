@@ -199,6 +199,18 @@ def api_area_by_firm_crop(
             if ha <= 0:
                 continue
             crop = task_field_crop.get((tid, int(fid)), "")
+            wt = t.get("work_type_id")
+            if wt is not None:
+                try:
+                    from utils.shared.task_area_shared import (
+                        CORN_SILAGE_CROP,
+                        SILAGE_CORN_MOWING_WT_IDS,
+                    )
+
+                    if int(wt) in SILAGE_CORN_MOWING_WT_IDS and crop and "кукуруза" in crop.casefold():
+                        crop = CORN_SILAGE_CROP
+                except ImportError:
+                    pass
             firm = field_to_firm.get(int(fid), "")
             if not crop or not firm:
                 continue

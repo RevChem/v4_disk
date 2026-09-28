@@ -1342,10 +1342,10 @@ async def _extract_7_8(
         from report_resources_fetch import collect_report_resource_ids
 
         field_ids, _, _ = collect_report_resource_ids(all_tasks, mtfmi)
-        field_to_crop, available_field_ids = m.load_field_filters(report_date, field_ids)
+        _field_to_crop, _available_field_ids = m.load_field_filters(report_date, field_ids)
         cult_details, _ = m.build_all_firm_stats(
             tasks_today, tasks_season, mtfmi, season_start, day_start, cutoff,
-            field_to_firm, field_to_crop, available_field_ids, implements_dict,
+            field_to_firm, None, None, implements_dict,
         )
         details = cult_details
     else:
@@ -1363,7 +1363,7 @@ async def _extract_7_8(
     firm_order = list(m.AGROFIRMS.keys())
     field_to_crop_map: dict[int, str] = {}
     if module_name == "8_main_fixed":
-        field_to_crop_map = field_to_crop
+        field_to_crop_map = _field_to_crop
     else:
         field_to_crop_map = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
     crop_of = None

@@ -43,7 +43,7 @@ def main() -> int:
         print("ERROR: нет CROPWISE_SESSION_COOKIE", flush=True)
         return 1
 
-    out_dir = upload / "proverka" / f"cli_{REPORT_DATE.isoformat()}_after_gen"
+    out_dir = upload / "proverka" / f"cli_{REPORT_DATE.isoformat()}_fix"
     out_dir.mkdir(parents=True, exist_ok=True)
     rids = list_report_ids()
     print(f"=== Proverka {REPORT_DATE.isoformat()} ({len(rids)} сводок) ===", flush=True)

@@ -22,13 +22,6 @@ import { askCropwise, fetchCropwiseGroups, queryCropwise } from "../api";
 
 const POPPER_PROPS = { popper: { sx: { zIndex: 1600 } } };
 
-/** На 2px меньше стандартных подписей MUI small. */
-const FIELD_LABEL_SX = {
-  "& .MuiInputLabel-root": { fontSize: "0.625rem" },
-  "& .MuiFormHelperText-root": { fontSize: "0.625rem" },
-  "& .MuiInputBase-input": { fontSize: "0.8125rem" },
-};
-
 function shiftDate(iso, days) {
   const d = new Date(`${iso}T12:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
@@ -136,7 +129,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.8125rem" }}>
+      <Typography variant="body2" color="text.secondary">
         Запрос в Cropwise по cookie, без сверки со сводкой. В модель уходят задания выбранного
         периода и карточка каждого: исполнитель, техника, орудие, поле и расход топлива.
       </Typography>
@@ -147,7 +140,6 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
         onChange={(e) => setCookie(e.target.value)}
         fullWidth
         size="small"
-        sx={FIELD_LABEL_SX}
         helperText={
           envCookie
             ? "Подставлен из .env. Можно заменить; пустое поле снова берёт cookie сервера."
@@ -163,7 +155,6 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           onChange={(e) => setDateFrom(e.target.value)}
           InputLabelProps={{ shrink: true }}
           fullWidth
-          sx={FIELD_LABEL_SX}
           helperText="смена с 06:00"
         />
         <TextField
@@ -174,7 +165,6 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           onChange={(e) => setDateTo(e.target.value)}
           InputLabelProps={{ shrink: true }}
           fullWidth
-          sx={FIELD_LABEL_SX}
           helperText="день включительно"
         />
         <TextField
@@ -183,7 +173,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={season}
           onChange={(e) => setSeason(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
           placeholder="2027"
-          sx={{ minWidth: 110, ...FIELD_LABEL_SX }}
+          sx={{ minWidth: 110 }}
           helperText="пусто — из cookie"
         />
       </Stack>
@@ -200,9 +190,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
             return <Chip key={key} size="small" label={option} {...tagProps} />;
           })
         }
-        renderInput={(params) => (
-          <TextField {...params} label="Агрооперации" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
-        )}
+        renderInput={(params) => <TextField {...params} label="Агрооперации" />}
       />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
         <Autocomplete
@@ -211,9 +199,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={firm || null}
           onChange={(_, v) => setFirm(v || "")}
           slotProps={POPPER_PROPS}
-          renderInput={(params) => (
-            <TextField {...params} label="Агрофирма" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
-          )}
+          renderInput={(params) => <TextField {...params} label="Агрофирма" />}
           fullWidth
         />
         <Autocomplete
@@ -222,9 +208,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
           value={crop || null}
           onChange={(_, v) => setCrop(v || "")}
           slotProps={POPPER_PROPS}
-          renderInput={(params) => (
-            <TextField {...params} label="Культура" sx={{ ...FIELD_LABEL_SX, ...params.sx }} />
-          )}
+          renderInput={(params) => <TextField {...params} label="Культура" />}
           fullWidth
         />
       </Stack>
@@ -293,8 +277,6 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
         minRows={5}
         maxRows={14}
         fullWidth
-        size="small"
-        sx={FIELD_LABEL_SX}
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
         onKeyDown={(e) => {

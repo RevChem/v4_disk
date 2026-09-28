@@ -1354,6 +1354,18 @@ async def fetch_fertilizer_11_mtfmi(
         f"за сезон (с {PERIOD_START_DATE}): {len(tasks_season)}"
     )
 
+    try:
+        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
+
+        tasks_today = _filter_seasons(tasks_today, WORK_TYPE_NAME, REPORT_DATE)
+        tasks_season = _filter_seasons(tasks_season, WORK_TYPE_NAME, REPORT_DATE)
+        print(
+            f"    [1.1] После фильтра сезона ({WORK_TYPE_NAME}): "
+            f"сутки {len(tasks_today)}, сезон {len(tasks_season)}"
+        )
+    except Exception:
+        pass
+
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
     if not all_task_ids:
         empty_day_stats = {firm: _empty_stats() for firm in AGROFIRMS}
@@ -1416,7 +1428,12 @@ async def fetch_fertilizer_11_mtfmi(
     today_task_ids = {t["id"] for t in tasks_today}
     print(f"    [1.1] Заданий за текущую смену (API end_time): {len(today_task_ids)}")
 
+    from mtfmi_batch_fetch import crop_of_item
+
     per_firm_machine: dict[str, dict[int, dict]] = {firm: {} for firm in AGROFIRMS}
+    firm_today_crop: dict[str, dict[str, float]] = {
+        firm: defaultdict(float) for firm in AGROFIRMS
+    }
     season_daily_area: dict[str, dict[str, float]] = {firm: defaultdict(float) for firm in AGROFIRMS}
     season_daily_machines: dict[str, dict[str, set[int]]] = {
         firm: defaultdict(set) for firm in AGROFIRMS
@@ -1474,7 +1491,11 @@ async def fetch_fertilizer_11_mtfmi(
                 cov += cov_item_in
                 fid = item.get("field_id")
                 if fid and cov_item_in > 0:
-                    field_cov_today[int(fid)] += cov_item_in
+                    fid_i = int(fid)
+                    field_cov_today[fid_i] += cov_item_in
+                    crop_name = crop_of_item(item, fert_crop_name(fid_i))
+                    if crop_name:
+                        firm_today_crop[firm][crop_name] += cov_item_in
                 ratio = cov_item_in / cov_item_total if cov_item_total > 0 else 0.0
                 track_area += (item.get("covered_area_by_track") or 0) * ratio
                 work_distance_km += ((item.get("work_distance") or 0) / 1000) * ratio
@@ -1618,15 +1639,12 @@ async def fetch_fertilizer_11_mtfmi(
         )
         avg_season = round(season_sum / machine_days, 1) if machine_days else 0.0
 
-        area_by_crop: dict[str, float] = defaultdict(float)
+        area_by_crop: dict[str, float] = dict(firm_today_crop.get(firm) or {})
         today_by_field: dict[int, float] = defaultdict(float)
         for fid, fid_cov in today_area_by_field.items():
             if fid_cov <= 0 or get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
-            crop = fert_crop_name(fid)
-            if crop:
-                area_by_crop[crop] += fid_cov
 
         if not pm:
             empty = _empty_stats()

@@ -99,8 +99,10 @@ DAY_END_HOUR:   int = 6
 # Основные типы работ (культивация) — входят в общую сводку
 WORK_TYPES: dict[int, str] = {
     10:  "Культивация",
+    20:  "2.11 Культивация",
     50:  "Культивация междурядная",
     51:  "2.10 Лущение и дискование, культивация стерни",
+    52:  "2.11 Культивация",
     63:  "Культивация 11 км/ч 8-10 см",
     96:  "2.11 Культивация",
 }
@@ -704,7 +706,11 @@ def _aggregate_tasks_for_firms(
       площадь за сутки по полям, без порога 10 га на технику/время.
     """
     use_field_filters = field_to_crop is not None or available_field_ids is not None
-    use_fallback_cov = exempt_min_count or use_field_filters
+    use_fallback_cov = (
+        exempt_min_count
+        or use_field_filters
+        or filter_wt_ids == CULT_WT_IDS
+    )
     min_detail_area = FREZER_MIN_DETAIL_AREA_HA if exempt_min_count else MIN_DETAIL_AREA_HA
     count_threshold = (
         MIN_COUNT_AREA_HA if min_count_area_ha is None else float(min_count_area_ha)
@@ -741,7 +747,13 @@ def _aggregate_tasks_for_firms(
         allowed = _allowed_for(group)
         if not allowed:
             return True
-        return str(task.get("season") or task.get("year") or "").strip() in allowed
+        season = str(task.get("season") or task.get("year") or "").strip()
+        if season in allowed:
+            return True
+        # Культивация под озимые: в Cropwise season=year+1 при отчёте за осень.
+        if group == "2.11 Культивация" and season == str(REPORT_DATE.year + 1):
+            return True
+        return False
 
     f_tasks_today  = [t for t in _filter(tasks_today) if _editor_season_ok(t)]
     f_tasks_season = [t for t in _filter(tasks_season) if _editor_season_ok(t)]
@@ -1089,8 +1101,8 @@ def build_all_firm_stats(
         season_start, day_start, cutoff, field_to_firm, implements_dict,
         filter_wt_ids=CULT_WT_IDS,
         min_count_area_ha=MIN_COUNT_AREA_HA,
-        field_to_crop=field_to_crop,
-        available_field_ids=available_field_ids,
+        field_to_crop=None,
+        available_field_ids=None,
     )
     frezer_details = _aggregate_tasks_for_firms(
         tasks_today, tasks_season, mtfmi_map,
@@ -1666,12 +1678,15 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         )
 
     field_to_crop, available_field_ids = load_field_filters(report_date, field_ids)
+    # Как сводка 2 (ветка 2.11): факт по полям с культурой в history_items,
+    # без обязательного inventory available — иначе 0 га при факте в Cropwise.
+    available_for_cult = None
 
     print("  Распределяем задания по агрофирмам через поля...")
     cult_details, frezer_details = build_all_firm_stats(
         tasks_today, tasks_season, mtfmi_map,
         season_start, day_start, cutoff, field_to_firm,
-        field_to_crop, available_field_ids, implements_dict,
+        field_to_crop, available_for_cult, implements_dict,
     )
 
     manual_r8 = _merge_manual_report8()
