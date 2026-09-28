@@ -484,3 +484,70 @@ def build_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             "crop_diff": crop_diff,
         },
     }
+
+
+def _spread(values: dict[str, float] | None) -> float | None:
+    nums = [float(v) for v in (values or {}).values() if v is not None]
+    if len(nums) < 2:
+        return None
+    return round(max(nums) - min(nums), 2)
+
+
+def _mark_file_diff(item: dict[str, Any]) -> bool:
+    """file_max_diff_ha / file_status по file_totals; True, если разброс значим."""
+    gap = _spread(item.get("file_totals"))
+    if gap is None:
+        return False
+    item["file_max_diff_ha"] = gap
+    item["file_status"] = compare_ha_status(gap)
+    return item["file_status"] == "DIFF"
+
+
+def apply_file_checks(all_results: dict[str, Any]) -> None:
+    """Разброс file_totals между сводками влияет на status; file_internal — только справочно."""
+    cross = all_results.get("cross_check") or {}
+    rows = cross.get("operations") or []
+    reports = all_results.get("reports") or {}
+    internal_all: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reasons: list[str] = []
+        if _mark_file_diff(row):
+            reasons.append("file_totals")
+        for fr in row.get("firms") or []:
+            if isinstance(fr, dict):
+                _mark_file_diff(fr)
+        for cr in row.get("crops") or []:
+            if not isinstance(cr, dict):
+                continue
+            if _mark_file_diff(cr) and cr.get("status") != "DIFF":
+                cr["status"] = "DIFF"
+            for fr in cr.get("firms") or []:
+                if isinstance(fr, dict):
+                    _mark_file_diff(fr)
+        group = str(row.get("group_name") or "")
+        internal: list[dict[str, Any]] = []
+        for rid in row.get("peer_reports") or []:
+            found = ((reports.get(rid) or {}).get("file_internal") or {}).get(group) or []
+            for issue in found:
+                internal.append({"report": str(rid), **issue})
+        if internal:
+            row["file_internal"] = internal
+            internal_all.extend({"group_name": group, **i} for i in internal)
+        if reasons:
+            row["status_reason"] = reasons
+            if row.get("status") == "OK":
+                row["status"] = "DIFF"
+    summary = cross.get("summary")
+    if isinstance(summary, dict):
+        summary["ok"] = sum(1 for r in rows if r.get("status") == "OK")
+        summary["diff"] = sum(1 for r in rows if r.get("status") == "DIFF")
+        summary["partial"] = sum(1 for r in rows if r.get("status") == "partial")
+        summary["crop_diff"] = sum(
+            1 for r in rows if any(c.get("status") == "DIFF" for c in r.get("crops") or [])
+        )
+        summary["file_diff"] = sum(1 for r in rows if r.get("file_status") == "DIFF")
+        summary["file_internal"] = len(internal_all)
+    if internal_all:
+        cross["file_internal"] = internal_all

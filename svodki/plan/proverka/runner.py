@@ -1163,17 +1163,16 @@ def run_proverka_batch(
 
     apply_report1_donor_area_graft(all_results)
     all_results["cross_check"] = build_cross_check(all_results)
+    attach_file_values(all_results, report_date)
+    from proverka.file_consistency import build_sheet_checks
+
+    all_results["sheet_checks"] = build_sheet_checks(report_date, report_ids)
 
     xlsx_path: Path | None = None
     if write_excel:
         prog("Формирование Excel…")
         xlsx_path = out_dir / f"proverka_{report_date.isoformat()}.xlsx"
         export_excel(all_results, xlsx_path)
-    # Пилот «В файле»: подмешиваем в all_results то, что реально лежит в уже
-    # сохранённом .xlsx отчёта (uploads/<дата>/), чтобы build_rows мог отдать
-    # file_ha/file_diff_ha рядом со «Сводка»/«Cropwise». Тихо не находит ничего
-    # для отчётов без сохранённого xlsx — остальной batch это не трогает.
-    attach_file_values(all_results, report_date)
     summary_rows = build_rows(all_results)
     cross_check_rows = all_results["cross_check"].get("operations") or []
     return {
@@ -1189,4 +1188,5 @@ def run_proverka_batch(
         "summary_rows": summary_rows,
         "cross_check": all_results["cross_check"],
         "cross_check_rows": cross_check_rows,
+        "sheet_checks": all_results.get("sheet_checks") or [],
     }

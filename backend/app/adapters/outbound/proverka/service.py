@@ -136,9 +136,24 @@ def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
         apply_file_totals_to_rows(rows, report_day)
         if ops is not rows:
             apply_file_totals_to_rows(ops, report_day)
+        _refresh_sheet_checks(status, report_day)
     except Exception:
         return status
     return status
+
+
+def _refresh_sheet_checks(status: dict[str, Any], report_day: Any) -> None:
+    """Листы сводок 1/2 из файлов (как «В файле»), нарушения пересчитываются."""
+    from proverka.file_consistency import build_sheet_checks
+
+    ids = [str(x) for x in (status.get("report_ids") or [])]
+    if not ids:
+        return
+    fresh = build_sheet_checks(report_day, ids)
+    if fresh == (status.get("sheet_checks") or []):
+        return
+    status["sheet_checks"] = fresh
+    _attach_violations(status)
 
 
 def _job_mtime(job_id: str) -> float:
@@ -154,7 +169,12 @@ def _attach_violations(payload: dict[str, Any]) -> dict[str, Any]:
 
     summary = payload.get("summary_rows") or []
     cross = payload.get("cross_check_rows") or []
-    v = compute_violations(summary, cross, job_error=payload.get("error"))
+    v = compute_violations(
+        summary,
+        cross,
+        job_error=payload.get("error"),
+        sheet_checks=payload.get("sheet_checks") or [],
+    )
     payload.update(v)
     return payload
 
@@ -684,6 +704,7 @@ def run_job(job_id: str) -> None:
             "summary_rows": result.get("summary_rows") or [],
             "cross_check": result.get("cross_check") or {},
             "cross_check_rows": result.get("cross_check_rows") or [],
+            "sheet_checks": result.get("sheet_checks") or [],
             "exit_code": result.get("exit_code", 0),
         }
         if final_status != "cancelled":

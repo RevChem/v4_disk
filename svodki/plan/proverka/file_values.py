@@ -38,6 +38,8 @@ _FIRM_HEADERS = ("Агрофирма", "Агрофирмы")
 _VALUE_HEADERS = (
     "Общий объем выполненной работы за сутки, га",
     "Обработано за сутки, га",
+    # Сводка 11 (уборка): лист «Сводка», одна таблица, без заголовка секции.
+    "Убрано за сутки, га",
 )
 _SHEET_NAME = "Сводка"
 
@@ -1033,7 +1035,13 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
         blocks = _read_xlsx_blocks(path)
-        return areas_from_blocks(rid, blocks) if blocks else {}
+        if blocks:
+            return areas_from_blocks(rid, blocks)
+        if rid == "2":
+            from proverka.file_consistency import report2_xlsx_areas
+
+            return report2_xlsx_areas(path)
+        return {}
     if suffix != ".pdf":
         return {}
     if rid == "2":
@@ -1052,6 +1060,12 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
 def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
     """Операция → культура → га за сутки из файла. Тематические сводки без культур пустые."""
     rid = str(report_id)
+    if path.suffix.lower() == ".xlsx":
+        if rid == "2":
+            from proverka.file_consistency import report2_xlsx_crop_areas
+
+            return report2_xlsx_crop_areas(path)
+        return {}
     if path.suffix.lower() != ".pdf":
         return {}
     if rid == "2":
@@ -1061,9 +1075,53 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
     return {}
 
 
+def _xlsx_summary_firm_areas(path: Path, group: str) -> dict[str, dict[str, float]]:
+    """Лист «Сводка» одной таблицей (сводка 11): агрофирма → га за сутки."""
+    if load_workbook is None:
+        return {}
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    try:
+        if _SHEET_NAME not in wb.sheetnames:
+            return {}
+        firm_idx = value_idx = None
+        firms: dict[str, float] = {}
+        for row in wb[_SHEET_NAME].iter_rows(values_only=True):
+            values = list(row)
+            header = _header_indexes(values)
+            if header:
+                firm_idx, value_idx = header
+                firms = {}
+                continue
+            if firm_idx is None or value_idx is None or max(firm_idx, value_idx) >= len(values):
+                continue
+            name = str(values[firm_idx] or "").strip()
+            if not name or name == _TOTAL_LABEL:
+                continue
+            try:
+                firms[name] = round(float(values[value_idx] or 0), 2)
+            except (TypeError, ValueError):
+                continue
+        return {group: firms} if firms else {}
+    except Exception:
+        return {}
+    finally:
+        wb.close()
+
+
 def firm_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
     """Операция → агрофирма → га за сутки из файла."""
     rid = str(report_id)
+    if path.suffix.lower() == ".xlsx":
+        if rid == "2":
+            from proverka.file_consistency import report2_xlsx_firm_areas
+
+            return report2_xlsx_firm_areas(path)
+        if rid == "11":
+            return _xlsx_summary_firm_areas(path, "5.0 Уборка")
+        return {}
     if path.suffix.lower() != ".pdf":
         return {}
     if rid == "2":
@@ -1172,6 +1230,19 @@ def read_file_total_ha(report_date: date, report_id: str) -> dict[str, Any]:
     return _values_from_blocks(blocks, pdf_path)
 
 
+def _internal_issues_for_report(report_date: date, report_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Операция → расхождения внутри листа (пока только xlsx сводки 2)."""
+    if str(report_id) != "2":
+        return {}
+    try:
+        from proverka.file_consistency import report2_xlsx_internal_issues
+
+        path = find_report_xlsx(report_date, report_id)
+        return report2_xlsx_internal_issues(path) if path is not None else {}
+    except Exception:
+        return {}
+
+
 def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
     """Дополняет all_results["reports"][rid]["file_values"] для каждого отчёта.
 
@@ -1193,7 +1264,13 @@ def attach_file_values(all_results: dict[str, Any], report_date: date) -> None:
         result["file_operations"] = by_report.get(str(rid), {})
         result["file_crops"] = crops_by_report.get(str(rid), {})
         result["file_firms"] = firms_by_report.get(str(rid), {})
+        result["file_internal"] = _internal_issues_for_report(report_date, str(rid))
     try:
         stamp_cross_check_file_ha(all_results)
+        from proverka.operation_compare import apply_file_checks
+
+        apply_file_checks(all_results)
     except Exception:
-        return
+        import logging
+
+        logging.getLogger(__name__).exception("proverka: сверка по файлам не применена")
