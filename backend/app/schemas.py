@@ -155,11 +155,13 @@ class ProverkaJobOut(BaseModel):
     summary_rows: list[dict[str, Any]] = Field(default_factory=list)
     cross_check: dict[str, Any] = Field(default_factory=dict)
     cross_check_rows: list[dict[str, Any]] = Field(default_factory=list)
+    sheet_checks: list[dict[str, Any]] = Field(default_factory=list)
     exit_code: int | None = None
     violation_count: int = 0
     cropwise_diff_count: int = 0
     cropwise_violation_count: int = 0
     cross_check_violation_count: int = 0
+    sheet_consistency_violation_count: int = 0
     violations: list[dict[str, Any]] = Field(default_factory=list)
     error_logs: list[dict[str, str]] = Field(default_factory=list)
     checked_at: str | None = None

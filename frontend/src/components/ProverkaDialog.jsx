@@ -321,6 +321,10 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     () => sheetCheckRows.filter((r) => r.status === "DIFF"),
     [sheetCheckRows]
   );
+  const sheetCheckEligible = useMemo(() => {
+    const ids = job?.report_ids || [];
+    return ids.some((id) => String(id) === "1" || String(id) === "2");
+  }, [job?.report_ids]);
   const cropwiseRows = useMemo(() => job?.summary_rows || [], [job?.summary_rows]);
 
   useEffect(() => {
@@ -577,6 +581,70 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
 
           {job?.status === "cancelled" && (
             <Alert severity="info">Проверка отменена.</Alert>
+          )}
+
+          {completed && sheetCheckEligible && (
+            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
+              <Typography variant="subtitle2" sx={{ p: 1 }}>
+                Согласованность листов (сводки 1 и 2)
+                {sheetCheckDiffRows.length > 0 ? ` — расхождений: ${sheetCheckDiffRows.length}` : ""}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
+                «Обработано за сутки» на листе выработки ↔ «Общий намолот» / таблицы сводки 2.
+                Данные берутся из xlsx или pdf в uploads за дату проверки (не из расчёта proverka).
+              </Typography>
+              {sheetCheckRows.length === 0 ? (
+                <Alert severity="warning" sx={{ m: 1, mt: 0 }}>
+                  Нет данных по файлам: сохраните сводки 1/2 (xlsx или pdf) в uploads на{" "}
+                  {summaryDate} и перезапустите проверку. Если API не обновлён — перезапустите backend.
+                </Alert>
+              ) : (
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Сводка</TableCell>
+                      <TableCell>Операция</TableCell>
+                      <TableCell align="right">Выработка, га</TableCell>
+                      <TableCell align="right">Σ АФ, га</TableCell>
+                      <TableCell align="right">Намолот, га</TableCell>
+                      <TableCell align="right">Σ культур, га</TableCell>
+                      <TableCell align="right">Max diff</TableCell>
+                      <TableCell>Статус</TableCell>
+                      <TableCell>Что не сходится</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {sheetCheckRows.map((row) => (
+                      <TableRow
+                        key={`${row.report_id}-${row.group_name}`}
+                        sx={
+                          row.status === "DIFF"
+                            ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
+                            : undefined
+                        }
+                      >
+                        <TableCell>{row.report_id}</TableCell>
+                        <TableCell>{row.display_name || row.group_name}</TableCell>
+                        <TableCell align="right">{formatHa(row.total_ha)}</TableCell>
+                        <TableCell align="right">{formatHa(row.firms_ha)}</TableCell>
+                        <TableCell align="right">{formatHa(row.general_ha)}</TableCell>
+                        <TableCell align="right">{formatHa(row.crops_ha)}</TableCell>
+                        <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
+                        <TableCell>{row.status}</TableCell>
+                        <TableCell sx={{ maxWidth: 280 }}>
+                          {(row.issues || [])
+                            .map(
+                              (i) =>
+                                `${i.label || i.kind}: ${i.expected} ↔ ${i.actual} (Δ ${i.diff_ha} га)`
+                            )
+                            .join("; ") || "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </Box>
           )}
 
           {completed && crossCheckRows.length > 0 && (
@@ -893,59 +961,6 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                         </TableCell>
                       )}
                       <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Box>
-          )}
-
-          {completed && sheetCheckRows.length > 0 && (
-            <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "auto" }}>
-              <Typography variant="subtitle2" sx={{ p: 1 }}>
-                Согласованность листов (сводки 1 и 2)
-                {sheetCheckDiffRows.length > 0 ? ` — расхождений: ${sheetCheckDiffRows.length}` : ""}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ px: 1, pb: 1, display: "block" }}>
-                Выработка по АФ («Обработано за сутки») должна совпадать с «Общий намолот» / суммой культур
-                и с итогами на листах сводки 2. Читается из сохранённых xlsx/pdf в uploads.
-              </Typography>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Сводка</TableCell>
-                    <TableCell>Операция</TableCell>
-                    <TableCell align="right">Выработка, га</TableCell>
-                    <TableCell align="right">Σ АФ, га</TableCell>
-                    <TableCell align="right">Намолот, га</TableCell>
-                    <TableCell align="right">Σ культур, га</TableCell>
-                    <TableCell align="right">Max diff</TableCell>
-                    <TableCell>Статус</TableCell>
-                    <TableCell>Что не сходится</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {sheetCheckRows.map((row) => (
-                    <TableRow
-                      key={`${row.report_id}-${row.group_name}`}
-                      sx={row.status === "DIFF" ? { backgroundColor: "rgba(252, 228, 214, 0.45)" } : undefined}
-                    >
-                      <TableCell>{row.report_id}</TableCell>
-                      <TableCell>{row.display_name || row.group_name}</TableCell>
-                      <TableCell align="right">{formatHa(row.total_ha)}</TableCell>
-                      <TableCell align="right">{formatHa(row.firms_ha)}</TableCell>
-                      <TableCell align="right">{formatHa(row.general_ha)}</TableCell>
-                      <TableCell align="right">{formatHa(row.crops_ha)}</TableCell>
-                      <TableCell align="right">{formatHa(row.max_diff_ha)}</TableCell>
-                      <TableCell>{row.status}</TableCell>
-                      <TableCell sx={{ maxWidth: 280 }}>
-                        {(row.issues || [])
-                          .map(
-                            (i) =>
-                              `${i.label || i.kind}: ${i.expected} ↔ ${i.actual} (Δ ${i.diff_ha} га)`
-                          )
-                          .join("; ") || "—"}
-                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
