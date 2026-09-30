@@ -192,6 +192,34 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ),
 )
 
+# Имена файлов / записей Summary при генерации (панель выбора — поле title выше).
+REPORT_ARTIFACT_TITLES: dict[str, str] = {
+    "1": "1. ХК Крупно",
+    "2": "2. ХК Детальная",
+    "3": "3. Внесение МУ",
+    "4": "4. Боронование",
+    "5": "5. Посев",
+    "6": "6. Опрыскивание",
+    "7": "7. Дискование",
+    "8": "8. Культивация",
+    "9": "9. Вспашка и глубокорыхление",
+    "10": "10. Уборка культур",
+    "11": "11. Уборка",
+    "12": "12. Статистика простоя",
+    "13": "13. Обзор ХК",
+    "14": "14. Выработка комбайнов",
+    "22": "22. Дневная",
+    "24": "24. Менее 0.5",
+}
+
+
+def artifact_title_for_report(report_id: str, fallback: str = "") -> str:
+    rid = str(report_id or "").strip()
+    if not rid:
+        return fallback
+    return REPORT_ARTIFACT_TITLES.get(rid) or fallback
+
+
 REPORT_ID_ALIASES: dict[str, str] = {"01": "0.1"}
 
 EXPLICIT_ONLY_REPORT_IDS: frozenset[str] = frozenset(

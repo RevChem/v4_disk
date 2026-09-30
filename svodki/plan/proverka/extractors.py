@@ -431,6 +431,68 @@ def _crop_breakdown_from_firm_area_by_crop(
     return _crop_breakdown_from_day_stats(day_stats, firm_order)
 
 
+def _merge_harvest_veg_from_veg_op(
+    grain_op: dict[str, Any],
+    veg_op: dict[str, Any] | None,
+    *,
+    veg_crops: frozenset[str] | None = None,
+) -> None:
+    """Cropwise UI: картофель в колонке 5.0; у нас он на листе 5.4."""
+    if not grain_op or not veg_op:
+        return
+    allowed = veg_crops or frozenset({"Картофель", "Морковь"})
+    crop_bd = dict(grain_op.get("area_today_by_firm_crop") or {})
+    veg_crops_bd = veg_op.get("area_today_by_firm_crop") or {}
+    for crop, by_firm in veg_crops_bd.items():
+        if crop not in allowed and _crop_label(crop) not in allowed:
+            continue
+        label = _crop_label(crop)
+        for firm, ha in (by_firm or {}).items():
+            v = round(float(ha or 0), 2)
+            if v <= 0:
+                continue
+            existing = float((crop_bd.get(label) or {}).get(firm) or 0)
+            if existing >= v - 0.01:
+                continue
+            crop_bd.setdefault(label, {})
+            crop_bd[label][firm] = v
+    if crop_bd:
+        grain_op["area_today_by_firm_crop"] = crop_bd
+
+
+def _merge_harvest_veg_from_compact(
+    grain_op: dict[str, Any],
+    harvest_group: dict[str, Any] | None,
+    shift_date: date,
+    *,
+    veg_crops: frozenset[str] | None = None,
+) -> None:
+    """
+    Cropwise в колонке 5.0 показывает картофель с зерновыми WT; namolot/10_main
+    без кэша дают 0 — подставляем факт из сводки 2 (mtfmi), если есть.
+    """
+    if not harvest_group or not grain_op:
+        return
+    allowed = veg_crops or frozenset({"Картофель", "Морковь"})
+    crop_bd = grain_op.get("area_today_by_firm_crop") or {}
+    crops_by_firm = harvest_group.get("crops") or {}
+    for firm, by_crop in crops_by_firm.items():
+        for crop, cdata in (by_crop or {}).items():
+            if crop not in allowed:
+                continue
+            ha = round(float((cdata.get("by_date") or {}).get(shift_date, 0) or 0), 2)
+            if ha <= 0:
+                continue
+            label = _crop_label(crop)
+            existing = float((crop_bd.get(label) or {}).get(firm) or 0)
+            if existing >= ha - 0.01:
+                continue
+            crop_bd.setdefault(label, {})
+            crop_bd[label][firm] = ha
+    if crop_bd:
+        grain_op["area_today_by_firm_crop"] = crop_bd
+
+
 def _harvest_crop_breakdown_from_main10(m: Any, cache: Any | None) -> dict[str, dict[str, float]]:
     """
     Факт уборки за смену по культурам — как листы культур сводки 10
@@ -511,8 +573,10 @@ def _report9_deep_crop_breakdown(
     cutoff: datetime,
     field_to_firm: dict[int, str],
     field_to_crop: dict[int, str],
+    field_to_crop_plow: dict[int, str] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Глубокорыхление за смену по культуре поля (как сумма по полям в сводке 9)."""
+    crop_fallback_map = field_to_crop_plow if field_to_crop_plow else field_to_crop
     per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     deep_wt = set(getattr(m, "DEEP_WT_IDS", set()) or set())
 
@@ -548,7 +612,10 @@ def _report9_deep_crop_breakdown(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            crop = crop_of_item(item, str(field_to_crop.get(fid_i) or ""))
+            crop = crop_of_item(
+                item,
+                str(crop_fallback_map.get(fid_i) or field_to_crop.get(fid_i) or ""),
+            )
             if crop:
                 per_firm[firm][str(crop)] += cov_h
 
@@ -819,6 +886,17 @@ async def _extract_1(
             grain_op["machines_today_by_firm"].values()
         )
         operations[harvest_gn] = grain_op
+        veg_gn = getattr(
+            m, "HARVEST_VEG_PLAN_KEY", "5.4 Уборка картофеля, лука",
+        )
+        if veg_gn in operations and veg_gn in all_stats:
+            veg_crop_bd = _crop_breakdown_from_day_stats(all_stats[veg_gn], firm_order)
+            if veg_crop_bd:
+                operations[veg_gn]["area_today_by_firm_crop"] = veg_crop_bd
+        _merge_harvest_veg_from_veg_op(
+            operations[harvest_gn],
+            operations.get(veg_gn),
+        )
     main_area = operations.get(m.WORK_TYPE_NAME, {}).get("area_today_by_firm") or {}
     by_firm = {f: float(main_area.get(f, 0) or 0) for f in firm_order}
     return _pack(
@@ -897,6 +975,18 @@ async def _extract_2(
             grain_op["machines_today_by_firm"].values()
         )
         operations[m.HARVEST_GROUP_NAME] = grain_op
+        _merge_harvest_veg_from_compact(
+            operations[m.HARVEST_GROUP_NAME],
+            work_data.get(m.HARVEST_GROUP_NAME),
+            shift_date,
+        )
+        veg_gn = getattr(
+            m, "HARVEST_VEG_PLAN_KEY", "5.4 Уборка картофеля, лука",
+        )
+        _merge_harvest_veg_from_veg_op(
+            operations[m.HARVEST_GROUP_NAME],
+            operations.get(veg_gn),
+        )
     total_by_firm = {
         f: round(sum(operations.get(gn, {}).get("area_today_by_firm", {}).get(f, 0) for gn in operations), 2)
         for f in firm_order
@@ -1469,13 +1559,19 @@ async def _extract_9(
         f: int(details.get(f, {}).get("deep_machines_today") or 0) for f in firm_order
     }
     task_year = int(task_years[-1]) if task_years else int(getattr(m, "SEASON_YEAR", report_date.year + 1))
+    crops_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in m.get_all_from_id("crops")
+        if c.get("id") is not None
+    }
+    field_to_crop_plow = m._build_field_to_crop_plow(crops_map, season_year=task_year)
     plow_crop_bd = _report9_plow_crop_breakdown(
         m, firm_order, today_task_ids, tasks_season, mtfmi, cutoff,
         field_to_firm, task_year,
     )
     deep_crop_bd = _report9_deep_crop_breakdown(
         m, firm_order, today_task_ids, tasks_season, mtfmi, cutoff,
-        field_to_firm, field_to_crop,
+        field_to_firm, field_to_crop, field_to_crop_plow=field_to_crop_plow,
     )
     op_plow = _op_from_firm_dict(
         firm_order, plow, area_today_by_firm_crop=plow_crop_bd or None,
@@ -1678,6 +1774,24 @@ def _grain_harvest_op_main10(
 
     wt_ids = work_type_ids_for_group(HARVEST_GRAIN_GROUP)
     crop_breakdown = _harvest_crop_breakdown_from_main10(m, cache)
+    # Картофель в Cropwise в колонке 5.0; в сводке 10 он на листе овощей (5.4).
+    try:
+        veg_df = m.build_vegetables_report(report_date)
+        if veg_df is not None and not veg_df.empty and "Культура" in veg_df.columns:
+            for _, row in veg_df.iterrows():
+                if str(row.get("Культура") or "").strip() != "Картофель":
+                    continue
+                firm = str(row.get("Агрофирма") or "").strip()
+                if firm == "Итого" or not firm:
+                    continue
+                ha = round(float(row.get("Факт за сутки, га") or 0), 2)
+                if ha <= 0:
+                    continue
+                label = _crop_label("Картофель")
+                crop_breakdown.setdefault(label, {})
+                crop_breakdown[label][firm] = ha
+    except Exception:
+        pass
     op = _op_from_firm_dict(
         firm_order, by_firm, work_type_ids=wt_ids or None,
         area_today_by_firm_crop=crop_breakdown or None,

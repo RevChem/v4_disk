@@ -72,23 +72,56 @@ def _drop_layer_bases(item: Summary) -> None:
         saver(store)
 
 
-def reapply_layers_after_page_order(item: Summary) -> str | None:
+def reapply_layers_after_page_order(
+    item: Summary,
+    *,
+    page_remap: dict[int, int | None] | None = None,
+    report_id: str | None = None,
+) -> str | None:
     """Рабочий PDF только что заменён «чистой» версией (новый порядок страниц или сброс).
 
     Снимки слоёв устарели (другой порядок страниц) — сбрасываем их и заново накладываем
-    правки ячеек и комментарии. Без этого следующая правка комментария возвращала
-    старый порядок страниц, а смена порядка стирала комментарии.
+    правки ячеек и комментарии. Перед этим, если передан page_remap, переносим
+    привязки со старых ordinal-страниц на новые (вместе с содержимым).
 
-    Возвращает предупреждение для пользователя, если у сводки есть слои.
+    Возвращает заметку для пользователя, если у сводки есть слои.
     """
-    if not summary_has_pdf_layers(item):
+    if not summary_has_pdf_layers(item) and not page_remap:
         return None
+
+    stats = None
+    if page_remap:
+        from app.application.page_layer_remap import remap_is_identity, remap_summary_pdf_layer_pages
+
+        if not remap_is_identity(page_remap):
+            rid = report_id or report_id_from_title(item.title)
+            stats = remap_summary_pdf_layer_pages(int(item.id), page_remap, report_id=rid)
+
+    if stats and (
+        stats.get("comments_moved")
+        or stats.get("edits_moved")
+        or stats.get("comments_dropped")
+        or stats.get("edits_dropped")
+    ):
+        parts = []
+        moved = int(stats.get("comments_moved") or 0) + int(stats.get("edits_moved") or 0)
+        dropped = int(stats.get("comments_dropped") or 0) + int(stats.get("edits_dropped") or 0)
+        if moved:
+            parts.append(f"перенесено {moved}")
+        if dropped:
+            parts.append(f"снято со скрытых страниц {dropped}")
+        detail = ", ".join(parts) if parts else "обновлены"
+        note = f"Комментарии и правки ячеек {detail} вместе со страницами."
+    else:
+        note = "Комментарии и правки ячеек переложены на новый порядок страниц."
+
+    if not summary_has_pdf_layers(item):
+        _drop_layer_bases(item)
+        return note if stats else None
+
     _drop_layer_bases(item)
     rebuild_summary_pdf_layers(item)
-    return (
-        "У сводки есть комментарии или правки ячеек: они привязаны к номерам страниц "
-        "итогового PDF, поэтому после смены порядка страниц проверьте, что они на нужных страницах."
-    )
+    return note
 
 
 def _existing_base(store: dict, summary_id: int, key: str) -> Path | None:

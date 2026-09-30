@@ -15,6 +15,7 @@ from app.adapters.inbound.api.deps import (
     require_page_order_access,
 )
 from app.application.audit_activity import record_activity
+from app.application.page_layer_remap import build_working_page_remap
 from app.application.summary_pdf_layers import (
     pristine_pdf_for_summary,
     reapply_layers_after_page_order,
@@ -69,6 +70,7 @@ def update_page_order_editor(
     user: User = Depends(require_page_order_access),
 ):
     rid = _page_order_report_id_or_400(report_id)
+    old_state = get_report1_page_order_state(rid)
     try:
         state = save_page_order(
             list(payload.page_slots),
@@ -115,8 +117,32 @@ def update_page_order_editor(
                     else:
                         applied = restore_page_order_base_pdf(rid, int(item.id), path)
                     if applied:
-                        # порядок страниц — нижний слой: накладываем комментарии и правки заново
-                        layers_note = reapply_layers_after_page_order(item)
+                        # порядок страниц — нижний слой: переносим привязки и накладываем слои
+                        n_source = (
+                            payload.page_count
+                            or old_state.get("source_page_count")
+                            or state.get("source_page_count")
+                        )
+                        if not n_source:
+                            try:
+                                from pypdf import PdfReader
+
+                                seed = pristine_pdf_for_summary(item)
+                                n_source = len(PdfReader(str(seed)).pages)
+                            except Exception:
+                                n_source = None
+                        old_slots = old_state.get("page_slots") if old_state.get("has_custom_order") else None
+                        new_slots = state.get("page_slots") if state.get("has_custom_order") else None
+                        page_remap = build_working_page_remap(
+                            old_slots,
+                            new_slots,
+                            n_source=int(n_source) if n_source else None,
+                        )
+                        layers_note = reapply_layers_after_page_order(
+                            item,
+                            page_remap=page_remap,
+                            report_id=rid,
+                        )
                 except Exception as exc:
                     apply_error = str(exc)
                     log.warning(
@@ -168,7 +194,20 @@ def reset_page_order_editor(
         if item is not None and Path(item.file_path).is_file():
             try:
                 if restore_page_order_base_pdf(rid, int(item.id), Path(item.file_path)):
-                    layers_note = reapply_layers_after_page_order(item)
+                    n_source = state_before.get("source_page_count")
+                    old_slots = (
+                        state_before.get("page_slots") if state_before.get("has_custom_order") else None
+                    )
+                    page_remap = build_working_page_remap(
+                        old_slots,
+                        None,
+                        n_source=int(n_source) if n_source else None,
+                    )
+                    layers_note = reapply_layers_after_page_order(
+                        item,
+                        page_remap=page_remap,
+                        report_id=rid,
+                    )
             except Exception as exc:
                 apply_error = str(exc)
                 log.warning(

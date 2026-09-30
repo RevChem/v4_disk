@@ -1454,25 +1454,20 @@ def load_reference_data() -> tuple[  # noqa: C901
         history_year_items=history_by_year.get(season_year, []),
         season_year=season_year,
     )
-    field_to_crop_report3: dict[int, str] = {}
-    report3_history_years = FERT_SEASON_YEARS or [TODAY.year]
-    # Более новый сезон заменяет прошлый год: «Рапс яровой» 2026 не должен
-    # перекрывать пшеницу / сою / картофель history 2027 на том же поле.
-    for hy in sorted(int(y) for y in report3_history_years):
-        for hi in history_by_year.get(hy, []):
-            fid = hi.get("field_id")
-            crop_id = hi.get("crop_id")
-            if not (fid and crop_id and hi.get("active")):
-                continue
-            try:
-                cid_i = int(crop_id)
-                fid_i = int(fid)
-            except (TypeError, ValueError):
-                continue
-            crop_name = str(crops_map.get(cid_i) or crops_map.get(crop_id) or "").strip()
-            if not crop_name or crop_name in SKIP_CROPS:
-                continue
-            field_to_crop_report3[fid_i] = crop_name
+    report3_history_years = [int(y) for y in (FERT_SEASON_YEARS or [TODAY.year])]
+    # Как сводка 1 / 3_main: build_field_to_crop_general + newest_year_wins.
+    fert_history = {
+        y: history_by_year.get(y, [])
+        for y in report3_history_years
+        if y in history_by_year
+    }
+    field_to_crop_report3 = build_field_to_crop_general(
+        crop_map=crops_map,
+        history_by_year=fert_history,
+        priority_year=max(report3_history_years) if report3_history_years else season_year,
+        skip_crops=SKIP_CROPS,
+        newest_year_wins=True,
+    )
     crop_field_ids_report3 = set(field_to_crop_report3.keys())
     print(
         f"    {len(crop_field_ids_report3)} полей для 1.1 (history_items "
@@ -2428,6 +2423,19 @@ def collect_work_data(
             default: str = "",
             item: dict | None = None,
         ) -> str:
+            # 1.1 МУ: как fetch_fertilizer_11 — crop_of_item(history_item) с fallback
+            # на fert_field_to_crop (active_crop_map / newest_year_wins).
+            if group_name == FERT_GROUP_NAME:
+                from mtfmi_batch_fetch import crop_of_item
+
+                fallback = active_crop_map.get(fid_i_, default) or default
+                if item is not None:
+                    named = crop_of_item(item, fallback)
+                    if named:
+                        return _apply_winter_season_filter(named, tid_, default)
+                if fallback:
+                    return _apply_winter_season_filter(fallback, tid_, default)
+                return default
             if item is not None:
                 raw_id = item.get("id")
                 if raw_id is not None:
@@ -2705,6 +2713,13 @@ def collect_work_data(
                     machine_day_items[firm][t_date][mid].append(
                         (fid_i, crop_for_agg, float(cov))
                     )
+                elif (
+                    is_harvest_grain
+                    and crop in HARVEST_VEG_CROPS
+                ):
+                    # Cropwise UI: картофель в колонке 5.0, не только 5.4.
+                    agg[firm][crop][t_date] += float(cov)
+                    firm_crop_fields[firm][crop].add(fid_i)
                 if use_report17_area_logic:
                     field_day_area[firm][t_date][int(fid)] += float(cov)
 

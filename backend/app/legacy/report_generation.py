@@ -234,6 +234,31 @@ def _load_report_catalog_module():
     return mod
 
 
+def _artifact_title_for_report_id(report_id: str, fallback: str = "") -> str:
+    rid = str(report_id or "").strip()
+    if not rid:
+        return fallback
+    try:
+        cat = _load_report_catalog_module()
+        fn = getattr(cat, "artifact_title_for_report", None)
+        if callable(fn):
+            title = fn(rid, fallback)
+            if title:
+                return title
+        titles = getattr(cat, "REPORT_ARTIFACT_TITLES", None) or {}
+        if rid in titles:
+            return str(titles[rid])
+    except Exception:
+        pass
+    return fallback
+
+
+def _artifact_base_title(cfg: ResolvedReportConfig) -> str:
+    cfg_id = _cfg_id_norm(cfg)
+    titled = _artifact_title_for_report_id(cfg_id, cfg.title)
+    return titled or cfg.title
+
+
 def _build_report_configs_base() -> tuple[ReportConfig, ...]:
     cat = _load_report_catalog_module()
     return tuple(ReportConfig(e.id, e.script, e.title) for e in cat.REPORT_CATALOG)
@@ -3131,6 +3156,7 @@ def _resolve_storage_title(
     report27_date_to: date | None = None,
 ) -> str:
     cfg_id = _cfg_id_norm(cfg)
+    base_title = _artifact_base_title(cfg)
     r25_mode = _normalize_report25_mode(report25_mode) if cfg_id == "25" else None
     r22_cutoff = _normalize_report22_cutoff(report22_cutoff) if cfg_id == "22" else None
     r22_time_from = _normalize_report22_cutoff(report22_time_from) if cfg_id == "22" else None
@@ -3146,21 +3172,21 @@ def _resolve_storage_title(
     r27_date_to = report27_date_to if _is_report27_family(cfg_id) else None
 
     if cfg_id == "25":
-        storage_title = _report25_storage_title(cfg.title, r25_mode)
+        storage_title = _report25_storage_title(base_title, r25_mode)
     elif cfg_id == "22" and (r22_cutoff or r22_time_from or r22_date_from or r22_date_to):
         storage_title = _report22_storage_title(
-            cfg.title, r22_cutoff, r22_time_from, r22_date_from, r22_date_to
+            base_title, r22_cutoff, r22_time_from, r22_date_from, r22_date_to
         )
     elif cfg_id == "2" and (r2_cutoff or r2_time_from or r2_date_from or r2_date_to):
         storage_title = _report22_storage_title(
-            cfg.title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
+            base_title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
         )
     elif _is_report27_family(cfg_id) and (r27_cutoff or r27_time_from or r27_date_from or r27_date_to):
         storage_title = _report22_storage_title(
-            cfg.title, r27_cutoff, r27_time_from, r27_date_from, r27_date_to
+            base_title, r27_cutoff, r27_time_from, r27_date_from, r27_date_to
         )
     else:
-        storage_title = cfg.title
+        storage_title = base_title
     storage_title = _title_with_report_day(storage_title, summary_date)
     report2_excel_only = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
     report27_excel_only = _is_report27_family(cfg_id)

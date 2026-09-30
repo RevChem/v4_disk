@@ -6,6 +6,8 @@
   - НАЕМНЫЕ: та же структура; техника machine_group_id == HIRED_GROUP_ID (7)
     с заданиями уборки на полях фирмы. Если наёмных нет — секция не выводится
     (без пустых строк-заглушек).
+  - КОРМОЗАГОТОВКА: после наёмных (если их нет — сразу после собственных).
+    Кукуруза на силос и тритикале озимая, собственные и наёмные в одной таблице.
 
 СОБСТВЕННЫЕ / НАЕМНЫЕ — данные из API (machine_task_field_mapping_items, machines).
 Использует: machines, machine_tasks, machine_task_field_mapping_items,
@@ -40,12 +42,7 @@ from plans import (
     TZ_MSK,
     WORK_GROUPS,
 )
-from task_area_shared import (
-    CUTOFF_BUFFER_HOURS,
-    HARVESTER_GROUP_IDS,
-    SILAGE_CORN_MOWING_WT_IDS,
-    harvest_item_area_for_shift,
-)
+from task_area_shared import HARVESTER_GROUP_IDS, SILAGE_CORN_MOWING_WT_IDS
 
 # =============================================================================
 # КОНФИГУРАЦИЯ
@@ -59,7 +56,7 @@ API_TOKEN = (
     or API_TOKEN
 )
 BASE_URL = (os.environ.get("CROPWISE_BASE_URL") or "").strip() or BASE_URL
-REPORT_DATE = date(2026, 9, 14)
+REPORT_DATE = date(2026, 9, 17)
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
@@ -73,12 +70,17 @@ PLANNED_OUTPUT: float = PLAN_RATE_PER_GROUP[SUMMARY_WORK_GROUP]
 # это данные с 2026-07-16 06:00 по 2026-07-17 05:59.
 DAY_START_HOUR: int = 6
 
+# Буфер end_time после cutoff смены — как в 11_main_harvest (+2 ч), не 12 ч как в 10.
+# Иначе в смену 17.09 попадали задания следующей смены (end ~18:00), и на сводке
+# появлялся лишний комбайн (Нурлат JAGUAR 0029ТТ 0.02 га → Итого 81 вместо 80).
 try:
     CUTOFF_BUFFER_HOURS: int = int(
-        (os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS") or str(CUTOFF_BUFFER_HOURS)).strip()
+        (os.environ.get("SVODKI_REPORT14_CUTOFF_BUFFER_HOURS")
+         or os.environ.get("SVODKI_REPORT11_CUTOFF_BUFFER_HOURS")
+         or "2").strip()
     )
 except ValueError:
-    pass
+    CUTOFF_BUFFER_HOURS = 2
 
 
 def _shift_datetimes(
@@ -125,23 +127,49 @@ def _parse_dt(value) -> datetime | None:
     return dt.astimezone(TZ_MSK)
 
 
+def _fmi_area_upto_cutoff(item: dict, cutoff_dt: datetime) -> float:
+    """Площадь FMI по hourly-записям с меткой < cutoff (как 10_main_harvest)."""
+    hourly = item.get("covered_area_hourly") or []
+    if not hourly:
+        return float(item.get("covered_area") or 0.0)
+    cov = 0.0
+    for entry in hourly:
+        h = _parse_dt(entry[0])
+        if h and h < cutoff_dt:
+            cov += float(entry[1] or 0.0)
+    return cov
+
+
+def _fmi_area_upto_cutoff_no_spillover(item: dict, cutoff_dt: datetime) -> float:
+    """Как 10_main / 6.3: item с hourly >= cutoff не учитываем (хвосты скашивания)."""
+    hourly = item.get("covered_area_hourly") or []
+    if not hourly:
+        return float(item.get("covered_area") or 0.0)
+    for entry in hourly:
+        h = _parse_dt(entry[0])
+        if h is not None and h >= cutoff_dt:
+            return 0.0
+    return _fmi_area_upto_cutoff(item, cutoff_dt)
+
+
 def _normalize_fmi_for_shift(
     fmi_list: list[dict],
     report_date: date,
-    task_wt: dict[int, int] | None = None,
+    *,
+    task_to_wt: dict[int, int] | None = None,
 ) -> list[dict]:
-    """Оставляет FMI с площадью за смену; covered_area — как 10/11."""
-    day_start_dt, cutoff_dt = _shift_datetimes(report_date)
+    """Оставляет FMI с площадью за смену; covered_area — по hourly до cutoff."""
+    _, cutoff_dt = _shift_datetimes(report_date)
     out: list[dict] = []
     for row in fmi_list:
         tid = row.get("machine_task_id")
-        wt = task_wt.get(int(tid)) if task_wt and tid is not None else None
-        area = harvest_item_area_for_shift(
-            row, cutoff_dt,
-            day_start=day_start_dt,
-            work_type_id=wt,
-            parse_dt=_parse_dt,
-        )
+        wt = None
+        if task_to_wt is not None and tid is not None:
+            wt = task_to_wt.get(int(tid))
+        if wt is not None and int(wt) in SILAGE_CORN_MOWING_WT_IDS:
+            area = _fmi_area_upto_cutoff_no_spillover(row, cutoff_dt)
+        else:
+            area = _fmi_area_upto_cutoff(row, cutoff_dt)
         if area <= 0:
             continue
         new_row = dict(row)
@@ -183,11 +211,31 @@ VEG_HARVEST_WORK_TYPE_IDS: tuple[int, ...] = tuple(
     for wt_id in wt_ids
 )
 
+# Овощной лист — только овощные культуры (как VEG_CROPS в text_svodka_2 + Лук).
+# Строки с другими культурами не выводим: на утренней генерации FMI по активным
+# заданиям бывает недозаписан, и через резервную карту полей (field_to_crop_general)
+# в овощной лист просачивались «Кукуруза на зерно», «Многолетние травы 2025 года»
+# и «—» по тракторам, реально работавшим на уборке овощей.
+VEG_CROPS_ALLOWED: frozenset[str] = frozenset({
+    "Картофель", "Морковь", "Свекла столовая", "Свекла", "Лук",
+})
+
+# Кормозаготовка на листе агрофирмы — отдельная секция после НАЕМНЫЕ.
+# Эти культуры не остаются в СОБСТВЕННЫЕ / НАЕМНЫЕ. В самой секции
+# собственные и наёмные не разделяются.
+FORAGE_SECTION_TITLE = "КОРМОЗАГОТОВКА"
+FORAGE_CROPS: frozenset[str] = frozenset({
+    "Кукуруза на силос",
+    "Тритикале озимая",
+})
+
 # work_type_id уборки для листа «Сводка» (зерновые/масличные/кукуруза/бобовые/свекла/рапс).
 # Состав — из plans.WORK_GROUPS["5.0 Уборка"] (как GRAIN_WT_IDS в 11_main_harvest.py):
-# все виды уборки группы 5.0, кроме овощей (5.4) и обобщённых wt=6/7.
-# «Количество собственных комбайнов на полях» на слайде 1 должно совпадать
-# с числом строк СОБСТВЕННЫЕ на листе фирмы (комбайны групп 5/9, covered_area > 0).
+# все виды уборки группы 5.0, кроме овощей (5.4) и обобщённых wt=6/7,
+# плюс скашивание кукурузы на силос (SILAGE_CORN_MOWING_WT_IDS — как ALL_WT_IDS
+# в 11_main_harvest и догрузка _merge_silage_harvest_tasks в 2_main_ideal_compact).
+# «Количество комбайнов на полях» — только комбайны (5/9) и наёмные (7),
+# как machines_grain в 11_main_harvest после фильтра _is_harvest_combine.
 _ALL_HARVEST_5_0_WT_IDS: set[int] = {
     wt for gname, wt_ids in WORK_GROUPS if gname == WORK_TYPE_DISPLAY for wt in wt_ids
 }
@@ -248,11 +296,14 @@ _LAT_TO_CYR_PLATE_LETTERS: dict[str, str] = {
 # Ручное сопоставление: combine_harvester_id в Namolot → registration_number в Cropwise.
 # Используется, когда автоматическая нормализация не может связать записи:
 #   — серийный/внутренний номер в Namolot vs госномер в Cropwise (R0ACR5950331 → 3175);
-#   — разные госномера одной и той же машины (1114 АО → 2966АМ);
 #   — явное закрепление пары при нестандартном формате (АМ 2963 16 → 2963АМ и т.п.).
+# "1114 АО" → "2966АМ" удалён: раньше это был один и тот же комбайн с двумя
+# номерами, но с 2026 года в Cropwise это две разные машины (RSM 161 2966АМ
+# ДРА0601 и JOHN DEERE 9560 1114АО ЛПФ0601), и Namolot ведёт их раздельно
+# ("АМ 2966 16" — поля ДРА, "1114 АО" — поля ЛПФ). Маппинг перехватывал массу
+# 1114АО под сигнатуру 2966АМ, из-за чего у 1114АО масса была 0.
 NAMOLOT_TO_CROPWISE_REG: dict[str, str] = {
     "R0ACR5950331": "3175",
-    "1114 АО": "2966АМ",
     "АМ 2963 16": "2963АМ",
     "АМ 2964 16": "2964АМ",
     "ОУ 3156": "3156ОУ",
@@ -330,6 +381,12 @@ def _reg_source_for_namolot(raw_id: str | None) -> str:
 
 
 _FIELD_CODE_RE = re.compile(r"^[^\s(]+")
+# Хвостовые служебные пометки в коде поля Cropwise, которых нет в Namolot:
+# в Cropwise поле называется "АИ-02-66 (АА)", а Namolot присылает в "spp"
+# просто "АИ-02-66". Без снятия пометки код поля не сопоставляется с
+# агрофирмой и масса таких записей теряется целиком (пример: наёмные
+# комбайны Аксу-Агро на полях АИ-02-*).
+_FIELD_CODE_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 def _namolot_field_code(spp: str | None) -> str:
@@ -344,6 +401,20 @@ def _namolot_field_code(spp: str | None) -> str:
         return ""
     m = _FIELD_CODE_RE.match(s)
     return m.group(0) if m else ""
+
+
+def _cropwise_field_code(name: str | None) -> str:
+    """Код поля из названия поля Cropwise: снимает хвостовые служебные пометки
+    вида "АИ-02-66 (АА)" → "АИ-02-66" (см. _FIELD_CODE_SUFFIX_RE)."""
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    while True:
+        stripped = _FIELD_CODE_SUFFIX_RE.sub("", s).strip()
+        if stripped == s or not stripped:
+            break
+        s = stripped
+    return s
 
 
 def _norm_field_code(code: str | None) -> str:
@@ -369,13 +440,90 @@ def _namolot_proxy_env() -> dict[str, str]:
 
 
 def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
-    """Сырые записи «Намолот» — только через namolot_client (без повторного live GET)."""
-    _namolot_log(f"=== запрос {date_begin} .. {date_end} ===")
-    from namolot_client import fetch_namolot_records as _fetch_with_cache
+    """Сырые записи отчёта «Намолот» за период [date_begin, date_end].
 
-    records = _fetch_with_cache(date_begin, date_end)
-    _namolot_log(f"namolot_client: {len(records)} записей")
-    return records
+    Как в 10_main_harvest.py: сначала namolot_client (кэш + live с proxies=None),
+    при пустом ответе — прямой запрос с отключённым прокси.
+    """
+    _namolot_log(f"=== запрос {date_begin} .. {date_end} ===")
+    _namolot_log(f"NAMOLOT_BASE_URL={NAMOLOT_BASE_URL!r}")
+    _namolot_log(
+        f"auth={'Basic ***' if NAMOLOT_USERNAME and NAMOLOT_PASSWORD else 'НЕ ЗАДАН (пустой заголовок)'}"
+    )
+    proxies_env = _namolot_proxy_env()
+    if proxies_env:
+        _namolot_log(
+            f"прокси в окружении (live-запросы идут с proxies=None): {proxies_env}"
+        )
+    else:
+        _namolot_log("прокси в окружении не заданы")
+
+    _fetch_with_cache = None
+    try:
+        from namolot_client import fetch_namolot_records as _fetch_with_cache
+        _namolot_log("namolot_client: модуль найден, пробуем кэш / live API…")
+    except ImportError as exc:
+        _namolot_log(f"namolot_client: не импортируется ({exc}) — только прямой HTTP")
+
+    if _fetch_with_cache is not None:
+        records = _fetch_with_cache(date_begin, date_end)
+        if records:
+            _namolot_log(f"namolot_client: получено {len(records)} записей — используем их")
+            sample = records[0]
+            _namolot_log(
+                f"пример записи: combine_harvester_id={sample.get('combine_harvester_id')!r}, "
+                f"crop={sample.get('crop')!r}, date={sample.get('date')!r}, "
+                f"quantity={sample.get('quantity')!r}"
+            )
+            return records
+        try:
+            import namolot_client as _nc
+            cache_path = _nc._cache_path()
+            _namolot_log(
+                "namolot_client: 0 записей — "
+                f"cache_file={cache_path or 'не найден'}, "
+                f"prefer_cache={_nc._prefer_cache()}, "
+                f"NAMOLOT_CACHE_FILE={os.environ.get('NAMOLOT_CACHE_FILE') or '(не задан)'}, "
+                f"UPLOAD_DIR={os.environ.get('UPLOAD_DIR') or '(не задан)'}, "
+                f"NAMOLOT_LIVE_TIMEOUT_SEC={os.environ.get('NAMOLOT_LIVE_TIMEOUT_SEC') or '60 (default)'}"
+            )
+        except Exception as exc:
+            _namolot_log(f"namolot_client: 0 записей (диагностика кэша: {exc})")
+        _namolot_log("namolot_client: пробуем прямой HTTP (fallback)")
+
+    params = {
+        "date_begin": date_begin.isoformat(),
+        "date_end": date_end.isoformat(),
+    }
+    _namolot_log(f"прямой GET params={params}")
+    try:
+        resp = requests.get(
+            NAMOLOT_BASE_URL, params=params,
+            headers=_namolot_auth_header(), timeout=60,
+            # Namolot — внутренний адрес (10.0.1.5). requests по умолчанию
+            # подхватывает HTTP_PROXY/HTTPS_PROXY из окружения и пытается
+            # завернуть запрос через внешний прокси, откуда внутренний IP
+            # недостижим — запрос тихо падает по таймауту/ошибке соединения
+            # и данные Namolot не тянутся. Отключаем прокси явно.
+            proxies={"http": None, "https": None},
+        )
+        _namolot_log(f"прямой GET: HTTP {resp.status_code}, тело {len(resp.content)} байт")
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        _namolot_log(f"прямой GET FAILED: {type(e).__name__}: {e}")
+        _namolot_log(
+            "типичные причины: нет маршрута до 10.0.1.5 из контейнера, "
+            "таймаут, неверный логин/пароль, Namolot-сервис недоступен"
+        )
+        return []
+    if not isinstance(data, list):
+        _namolot_log(f"прямой GET: неожиданный формат ответа {type(data).__name__}, ожидался list")
+        return []
+    _namolot_log(f"прямой GET: получено {len(data)} записей")
+    if not data:
+        _namolot_log("оба пути (namolot_client и прямой GET) вернули 0 записей")
+    return data
 
 
 def _parse_namolot_datetime(value) -> datetime | None:
@@ -793,9 +941,9 @@ OWN_COLUMNS = [
     "Урожайность, т/га",
 ]
 
-# СОБСТВЕННЫЕ и НАЕМНЫЕ — друг под другом, обе таблицы начинаются с колонки 1.
+# СОБСТВЕННЫЕ, НАЕМНЫЕ и КОРМОЗАГОТОВКА — друг под другом, с колонки 1.
 HIRED_START_COL = 1
-# Между таблицами: 1 пустая строка-разделитель + 1 строка заголовка секции «НАЕМНЫЕ».
+# Между таблицами: 1 пустая строка-разделитель + 1 строка заголовка секции.
 TABLE_GAP_ROWS = 2
 
 # Цвета для групп комбайнов на одном поле (одна группа — один цвет)
@@ -1159,11 +1307,16 @@ def style_report14_firm_sheet(
     own_n_cols: int | None = None,
     hired_n_cols: int | None = None,
     hired_group_list: list[int] | None = None,
+    row_forage_header: int | None = None,
+    forage_n_data: int = 0,
+    forage_n_cols: int | None = None,
+    forage_group_list: list[int] | None = None,
 ) -> None:
     from openpyxl.styles import Alignment, Font, PatternFill
 
     own_cols = own_n_cols if own_n_cols is not None else len(OWN_COLUMNS)
     hired_cols = hired_n_cols if hired_n_cols is not None else len(HIRED_COLUMNS)
+    forage_cols = forage_n_cols if forage_n_cols is not None else len(OWN_COLUMNS)
 
     # Одинаковое оформление: те же ширины, перенос «Комбайн»/«Техника»,
     # центрирование гос. номера и времени.
@@ -1180,6 +1333,13 @@ def style_report14_firm_sheet(
             group_list=hired_group_list, group_col=GROUP_COL_IDX,
             wrap_cols=(2, 3),
         )
+    if row_forage_header is not None and forage_n_data > 0:
+        style_report14_firm_table(
+            ws, row_forage_header, forage_n_data, forage_cols,
+            start_col=1, col_widths=_OWN_WIDTHS_14,
+            group_list=forage_group_list, group_col=GROUP_COL_IDX,
+            wrap_cols=(2, 3),
+        )
 
     sec_font = Font(bold=True, size=11)
     sec_fill = PatternFill("solid", fgColor="F3F4F6")
@@ -1188,6 +1348,8 @@ def style_report14_firm_sheet(
     ]
     if row_hired_header is not None and hired_n_data > 0:
         sections.append((row_hired_header, hired_cols, "НАЕМНЫЕ"))
+    if row_forage_header is not None and forage_n_data > 0:
+        sections.append((row_forage_header, forage_cols, FORAGE_SECTION_TITLE))
     for header_row, n_cols, title in sections:
         sec_row = header_row - 1
         ws.merge_cells(
@@ -1431,7 +1593,9 @@ def load_geo_reference() -> tuple[
         folder = field_to_firm_folder.get(fid_i)
         if folder is None:
             continue
-        code = _norm_field_code(f.get("name"))
+        # Хвостовые пометки "(АА)" в названии поля Cropwise убираем — в Namolot
+        # "spp" приходит без них, иначе код поля не сопоставится (масса потеряется).
+        code = _norm_field_code(_cropwise_field_code(f.get("name")))
         if not code:
             continue
         if code in field_name_to_firm_folder and field_name_to_firm_folder[code] != folder:
@@ -1844,7 +2008,6 @@ async def fetch_task_crop_via_agro_operation(
 
 
 # Кукуруза на силос / на зерно — как 10_main_harvest.get_field_to_crop.
-SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
 CORN_GRAIN_CROP = "Кукуруза на зерно"
 CORN_SILAGE_CROP = "Кукуруза на силос"
 _silage_corn_field_ids_cache: set[int] | None = None
@@ -2007,30 +2170,6 @@ def build_summary_report(
         # иначе такие машины лишний раз попадают в «Количество ... на полях»,
         # хотя фактически ничего не убрали за этот отрезок времени.
         fmi_df = fmi_df[fmi_df["covered_area"] > 0]
-        try:
-            from proverka.task_facts import bind_capture
-
-            _bound = bind_capture()
-        except Exception:
-            _bound = None
-        if _bound is not None and not fmi_df.empty:
-            _folder_to_firm = {folder_id: name for name, (folder_id, _region) in firms.items()}
-            _tasks_by_id = {t.get("id"): t for t in tasks}
-            for rec in fmi_df.to_dict("records"):
-                firm_name = _folder_to_firm.get(rec.get("folder_id"))
-                if not firm_name:
-                    continue
-                task = _tasks_by_id.get(rec.get("machine_task_id")) or {}
-                _mid = rec.get("machine_id")
-                _bound[0](
-                    group="5.0 Уборка",
-                    firm=firm_name,
-                    field_id=rec.get("field_id"),
-                    task_id=rec.get("machine_task_id"),
-                    machine_id=int(_mid) if _mid is not None and str(_mid) != "nan" else None,
-                    ha=float(rec.get("covered_area") or 0),
-                    season=str(task.get("season") or ""),
-                )
 
     rows = []
     total_work_hours = 0.0
@@ -2078,7 +2217,7 @@ def build_summary_report(
 
 
 # =============================================================================
-# ДЕТАЛЬНЫЙ ОТЧЁТ ПО ФИРМЕ (СОБСТВЕННЫЕ + НАЕМНЫЕ)
+# ДЕТАЛЬНЫЙ ОТЧЁТ ПО ФИРМЕ (СОБСТВЕННЫЕ + НАЕМНЫЕ + КОРМОЗАГОТОВКА)
 # =============================================================================
 
 def build_global_field_group_map(*fmi_lists: list[dict]) -> dict[int, int]:
@@ -2204,9 +2343,11 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
                     field_to_crop_general: dict[int, str] | None = None,
                     field_to_group: dict[int, int] | None = None,
                     field_to_firm_folder: dict[int, int] | None = None,
-                    field_name_to_firm_folder: dict[str, int] | None = None) -> tuple[pd.DataFrame, list[int]]:
+                    field_name_to_firm_folder: dict[str, int] | None = None,
+                    allowed_crops: frozenset[str] | None = None,
+                    excluded_crops: frozenset[str] | None = None) -> tuple[pd.DataFrame, list[int]]:
     """
-    Таблица СОБСТВЕННЫЕ по комбайнам.
+    Таблица по комбайнам (собственные, наёмные или кормозаготовка).
     Данные — из API (machine_task_field_mapping_items, machines), не вручную.
     Группа = комбайны, работавшие на одном поле (одна группа — один цвет).
     field_to_group — сквозная карта field_id→номер группы (build_global_field_group_map).
@@ -2271,18 +2412,6 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
     # (в т.ч. ошибочная «Соя» с year+1).
     if task_crop_via_operation or field_to_crop_general:
         def _row_crop(r) -> str:
-            hid = None
-            if "history_item_id" in r.index and pd.notna(r["history_item_id"]):
-                try:
-                    hid = int(r["history_item_id"])
-                except (TypeError, ValueError):
-                    hid = None
-            if hid is not None:
-                from mtfmi_batch_fetch import crop_of_item
-
-                named = crop_of_item({"history_item_id": hid}, "")
-                if named:
-                    return named
             crop = field_to_crop_general.get(r["field_id"])
             if crop:
                 return crop
@@ -2309,6 +2438,23 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
     firm_fmi = _reassign_spurious_crop_fragments(
         firm_fmi, namolot_index, machine_info, firm_folder_id,
     )
+
+    # Для овощного листа — только овощные культуры (см. VEG_CROPS_ALLOWED).
+    # excluded_crops — кормозаготовка, которую выносим в отдельную секцию.
+    if allowed_crops is not None:
+        allowed_norm = {_normalize_crop_name(a) for a in allowed_crops}
+        firm_fmi = firm_fmi[
+            firm_fmi["crop"].map(lambda c: _normalize_crop_name(c) in allowed_norm)
+        ]
+        if firm_fmi.empty:
+            return pd.DataFrame(columns=OWN_COLUMNS), []
+    if excluded_crops:
+        excluded_norm = {_normalize_crop_name(a) for a in excluded_crops}
+        firm_fmi = firm_fmi[
+            ~firm_fmi["crop"].map(lambda c: _normalize_crop_name(c) in excluded_norm)
+        ]
+        if firm_fmi.empty:
+            return pd.DataFrame(columns=OWN_COLUMNS), []
 
     # Сначала (машина, культура, поле), сливаем GPS-фрагменты < MIN_FIELD_AREA_HA,
     # затем агрегируем до строк таблицы.
@@ -2478,37 +2624,48 @@ def get_firm_display_name(firm_name: str, folder_id: int, folder_to_name: dict[i
     return _clean_firm_display_name(raw)
 
 
+def _write_table_block(ws, df: pd.DataFrame, header_row: int) -> None:
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), header_row):
+        for c_idx, val in enumerate(row, 1):
+            ws.cell(row=r_idx, column=c_idx, value=val)
+
+
 def write_firm_sheet(writer, firm_name: str, folder_id: int, folder_to_name: dict[int, str],
                     own_df: pd.DataFrame, hired_df: pd.DataFrame,
                     report_date: date, start_row: int,
-                    group_list: list[int] | None = None) -> tuple[int, int | None]:
+                    group_list: list[int] | None = None,
+                    forage_df: pd.DataFrame | None = None) -> tuple[int, int | None, int | None]:
     """
-    Записывает лист фирмы: заголовок, СОБСТВЕННЫЕ, при наличии данных — НАЕМНЫЕ.
+    Записывает лист фирмы: СОБСТВЕННЫЕ, при наличии данных — НАЕМНЫЕ,
+    затем КОРМОЗАГОТОВКА (если есть строки).
     start_row — Excel row (1-based) для первой таблицы.
     group_list — номера групп для подсветки колонки «Номер группы» (одна группа — один цвет).
-    Возвращает (row_own_header, row_hired_header); row_hired_header=None, если наёмных нет.
+    Возвращает (row_own_header, row_hired_header, row_forage_header).
+    Заголовок секции = None, если соответствующих строк нет.
     """
-    from openpyxl.utils.dataframe import dataframe_to_rows
     sheet_name = firm_name[:31]  # Excel limit
     ws = writer.book[sheet_name]
 
     # start_row — строка секции «СОБСТВЕННЫЕ»; заголовок таблицы — на следующей строке.
     row_own_header = start_row + 1
-    for r_idx, row in enumerate(dataframe_to_rows(own_df, index=False, header=True), row_own_header):
-        for c_idx, val in enumerate(row, 1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+    _write_table_block(ws, own_df, row_own_header)
+    last_row = row_own_header + len(own_df)
 
     # НАЕМНЫЕ — только если есть фактические строки (без пустых заглушек).
-    if hired_df is None or hired_df.empty:
-        return row_own_header, None
+    row_hired_header = None
+    if hired_df is not None and not hired_df.empty:
+        row_hired_header = last_row + TABLE_GAP_ROWS + 1
+        _write_table_block(ws, hired_df, row_hired_header)
+        last_row = row_hired_header + len(hired_df)
 
-    row_own_last = row_own_header + len(own_df)
-    row_hired_header = row_own_last + TABLE_GAP_ROWS + 1
-    for r_idx, row in enumerate(dataframe_to_rows(hired_df, index=False, header=True), row_hired_header):
-        for c_idx, val in enumerate(row, 1):
-            ws.cell(row=r_idx, column=c_idx, value=val)
+    # КОРМОЗАГОТОВКА — после наёмных (или сразу после собственных, если наёмных нет).
+    row_forage_header = None
+    if forage_df is not None and not forage_df.empty:
+        row_forage_header = last_row + TABLE_GAP_ROWS + 1
+        _write_table_block(ws, forage_df, row_forage_header)
 
-    return row_own_header, row_hired_header
+    return row_own_header, row_hired_header, row_forage_header
 
 
 # =============================================================================
@@ -2561,32 +2718,18 @@ def main():
 
     _step("→ fetch_fmi() (зерновые) ...")
     fmi_list = fetch_fmi(task_ids, report_date)
-    task_to_wt = {int(t["id"]): int(t["work_type_id"]) for t in tasks if t.get("work_type_id") is not None}
-    fmi_list = _normalize_fmi_for_shift(fmi_list, report_date, task_to_wt)
+    task_to_wt = {
+        int(t["id"]): int(t["work_type_id"])
+        for t in tasks
+        if t.get("id") is not None and t.get("work_type_id") is not None
+    }
+    fmi_list = _normalize_fmi_for_shift(
+        fmi_list, report_date, task_to_wt=task_to_wt,
+    )
     print(
         f"  Зерновые — заданий: {len(tasks)}, FMI: {len(fmi_list)}",
         flush=True,
     )
-
-    async def _bind_fmi_history_crops(rows: list[dict]) -> None:
-        from collections import defaultdict
-
-        from mtfmi_batch_fetch import remember_history_crops
-
-        grouped: dict[int, list[dict]] = defaultdict(list)
-        for item in rows:
-            tid = item.get("machine_task_id")
-            if tid is not None:
-                grouped[int(tid)].append(item)
-        if not grouped:
-            return
-        headers_cw = {"X-User-Api-Token": API_TOKEN}
-        sem_cw = asyncio.Semaphore(8)
-        async with httpx.AsyncClient(headers=headers_cw, timeout=120) as client:
-            await remember_history_crops(client, BASE_URL, grouped, sem_cw)
-
-    _step("→ культура строки площади (history_item) ...")
-    asyncio.run(_bind_fmi_history_crops(fmi_list))
 
     _step("→ fetch_task_crop_via_agro_operation() (async) ...")
     task_crop_via_operation = asyncio.run(
@@ -2612,13 +2755,8 @@ def main():
         veg_task_to_machine = {t["id"]: t["machine_id"] for t in veg_tasks}
         veg_task_to_implement = {t["id"]: t.get("implement_id") for t in veg_tasks}
         veg_fmi_list = fetch_fmi(veg_task_ids, report_date)
-        veg_task_to_wt = {
-            int(t["id"]): int(t["work_type_id"])
-            for t in veg_tasks if t.get("work_type_id") is not None
-        }
-        veg_fmi_list = _normalize_fmi_for_shift(veg_fmi_list, report_date, veg_task_to_wt)
+        veg_fmi_list = _normalize_fmi_for_shift(veg_fmi_list, report_date)
         print(f"  Овощи — заданий: {len(veg_tasks)}, FMI: {len(veg_fmi_list)}", flush=True)
-        asyncio.run(_bind_fmi_history_crops(veg_fmi_list))
         if veg_task_ids:
             _step("→ fetch_task_crop_via_agro_operation() (овощи) ...")
             veg_task_crop_via_operation = asyncio.run(
@@ -2709,6 +2847,7 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                excluded_crops=FORAGE_CROPS,
             )
             hired_df, hired_group_list = build_own_table(
                 folder_id, report_date, hired_machines, hired_ids,
@@ -2719,13 +2858,28 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                excluded_crops=FORAGE_CROPS,
+            )
+            forage_machines = harvesters + hired_machines
+            forage_ids = harvester_ids | hired_ids
+            forage_df, forage_group_list = build_own_table(
+                folder_id, report_date, forage_machines, forage_ids,
+                task_to_machine, fmi_list, field_to_fg, fg_to_folder,
+                task_to_implement, implements_dict,
+                task_crop_via_operation=task_crop_via_operation,
+                field_to_crop_general=field_to_crop_general,
+                field_to_group=field_to_group,
+                field_to_firm_folder=field_to_firm_folder,
+                field_name_to_firm_folder=field_name_to_firm_folder,
+                allowed_crops=FORAGE_CROPS,
             )
             sheet_name = firm_name[:31]
             writer.book.create_sheet(sheet_name)
-            row_own, row_hired = write_firm_sheet(
+            row_own, row_hired, row_forage = write_firm_sheet(
                 writer, firm_name, folder_id, folder_to_name,
                 own_df, hired_df, report_date, start_row=1,
                 group_list=group_list,
+                forage_df=forage_df,
             )
             style_report14_firm_sheet(
                 writer.book[sheet_name],
@@ -2735,10 +2889,15 @@ def main():
                 own_n_cols=len(own_df.columns),
                 hired_n_cols=len(hired_df.columns) if not hired_df.empty else None,
                 hired_group_list=hired_group_list,
+                row_forage_header=row_forage,
+                forage_n_data=len(forage_df),
+                forage_n_cols=len(forage_df.columns) if not forage_df.empty else None,
+                forage_group_list=forage_group_list,
             )
             print(
                 f"  Лист: {sheet_name} "
-                f"(собств. {len(own_df)}, наёмн. {len(hired_df)})"
+                f"(собств. {len(own_df)}, наёмн. {len(hired_df)}, "
+                f"кормозаготовка {len(forage_df)})"
             )
 
         # ------------------------------------------------------------
@@ -2768,6 +2927,7 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                allowed_crops=VEG_CROPS_ALLOWED,
             )
             veg_hired_df, veg_hired_group_list = build_own_table(
                 veg_folder_id, report_date, veg_hired_machines, veg_hired_ids,
@@ -2778,6 +2938,7 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                allowed_crops=VEG_CROPS_ALLOWED,
             )
             _veg_rename = {
                 "Комбайн": "Техника",
@@ -2787,7 +2948,7 @@ def main():
             veg_hired_df = veg_hired_df.rename(columns=_veg_rename)
             veg_sheet_name = VEG_DETAIL_SHEET_NAME
             writer.book.create_sheet(veg_sheet_name)
-            veg_row_own, veg_row_hired = write_firm_sheet(
+            veg_row_own, veg_row_hired, _ = write_firm_sheet(
                 writer, veg_sheet_name, veg_folder_id, folder_to_name,
                 veg_own_df, veg_hired_df, report_date, start_row=1,
                 group_list=veg_group_list,

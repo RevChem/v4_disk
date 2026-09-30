@@ -35,6 +35,7 @@ from app.legacy.report_generation import (
     _report_execution_waves,
     _resolve_report_config,
     _resolve_scripts_dirs,
+    _artifact_title_for_report_id,
     _resolve_storage_title,
     _resolve_svodki_root,
     _reorder_report1_workbook_file,
@@ -969,7 +970,7 @@ def _display_title_from_filename(filename: str, summary_date: date | None = None
         stem = stem[:-4]
     rid = _report_id_from_title(stem)
     if rid:
-        short = rid + ".Сводка"
+        short = _artifact_title_for_report_id(rid, f"{rid}.Сводка")
         if summary_date:
             return f"{short} · {summary_date.isoformat()}"
         return short

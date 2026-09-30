@@ -1598,12 +1598,14 @@ def _accumulate_crop_ha(
     season: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     def _label(item: dict, fid: int) -> str:
-        if mtfmi_crop is not None:
-            raw_id = item.get("id")
-            if raw_id is None:
-                return "—"
-            return mtfmi_crop.get(int(raw_id), "—")
-        return _crop_label_old(fid, field_crops or {})
+        from mtfmi_batch_fetch import crop_of_item
+
+        fallback = _crop_label_old(fid, field_crops or {}) or "—"
+        if mtfmi_crop is not None and item.get("id") is not None:
+            named = crop_of_item(item, fallback)
+            if named:
+                return named
+        return fallback if fallback != "—" else "—"
 
     for t in tasks_today:
         for item in mtfmi_map.get(t["id"], []):
