@@ -209,7 +209,7 @@ PLAN_SEASON_PLOW: dict[str, float] = {
 }
 
 # --- Вспашка по культурам (как 2_main_ideal_compact, раздел 2.4) ------------
-# Культура поля — только history_items year=SEASON_YEAR (2027), не 2026+2027.
+# Культура строки задания, иначе поле year=SEASON_YEAR (2027), не карта 2026+2027.
 # AgroOperation для вспашки не используется (как во 2_main).
 PLOW_SEASON_CROPS: frozenset[str] = frozenset({
     "Рапс озимый",
@@ -245,6 +245,23 @@ def _map_plow_crop_name(raw: str) -> str | None:
 
 def _plow_crop_for_field(fid_i: int, field_to_crop_plow: dict[int, str]) -> str | None:
     return field_to_crop_plow.get(fid_i)
+
+
+def _plow_crop_of_row(
+    item: dict,
+    fid_i: int,
+    field_to_crop_plow: dict[int, str],
+) -> str | None:
+    """Как остальные операции: культура строки, иначе карта поля year+1.
+
+    Не как 1.1: там запасной вариант — карта newest_year_wins.
+    """
+    from mtfmi_batch_fetch import crop_of_item
+
+    named = _map_plow_crop_name(crop_of_item(item, ""))
+    if named:
+        return named
+    return _plow_crop_for_field(fid_i, field_to_crop_plow)
 
 
 def _build_field_to_crop_plow(
@@ -916,8 +933,7 @@ def build_plow_stats_by_crop(
 ) -> dict[str, dict[str, dict]]:
     """
     Факт вспашки по культурам PLOW_SEASON_CROPS — один проход по заданиям.
-    Культура — только field_to_crop_plow (history_items year=SEASON_YEAR).
-    HistoryItem строки задания не используем: там часто прошлая культура.
+    Культура строки задания, иначе field_to_crop_plow (year=SEASON_YEAR).
     """
     allowed_seasons = (
         {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
@@ -978,7 +994,7 @@ def build_plow_stats_by_crop(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            crop = _plow_crop_for_field(fid_i, field_to_crop_plow)
+            crop = _plow_crop_of_row(item, fid_i, field_to_crop_plow)
             if not crop:
                 continue
 
@@ -1030,7 +1046,7 @@ def build_plow_stats_by_crop(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            crop = _plow_crop_for_field(fid_i, field_to_crop_plow)
+            crop = _plow_crop_of_row(item, fid_i, field_to_crop_plow)
             if not crop:
                 continue
 
@@ -1194,7 +1210,7 @@ def build_all_firm_stats(
                     if _note is not None:
                         _note(
                             group="2.4 Вспашка", firm=firm,
-                            crop=_plow_crop_for_field(fid_i, field_to_crop_plow) or "",
+                            crop=_plow_crop_of_row(item, fid_i, field_to_crop_plow) or "",
                             field_id=fid_i, task_id=int(tid) if tid is not None else None,
                             machine_id=int(mid) if mid is not None else None, ha=cov_h,
                             season=str(t.get("season") or ""),

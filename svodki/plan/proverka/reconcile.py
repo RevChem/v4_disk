@@ -208,11 +208,8 @@ def _cropwise_retry_warranted(
 def _annotate_quality(cmp_: dict[str, Any], parsed: dict[str, Any], work: dict[str, Any]) -> None:
     """Явные предупреждения вместо молчаливых допущений парсера."""
     warns: list[str] = []
-    if parsed.get("fact_column_confidence") == "guess":
-        warns.append(
-            f"колонка факта выбрана по догадке ({parsed.get('fact_column')!r}) — "
-            "проверьте fact_column_hints сводки"
-        )
+    if parsed.get("fact_column_error"):
+        warns.append(str(parsed["fact_column_error"]))
     balance = cmp_.get("cropwise_ui_balance") or {}
     if balance and not balance.get("balanced"):
         warns.append(

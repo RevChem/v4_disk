@@ -18,13 +18,6 @@ _CACHE_TTL_SEC = 600
 _CACHE_MAX = 8
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
-_EXTRA_HINTS: dict[str, tuple[str, ...]] = {
-    "4.1 Посев (овощи)": ("Посев",),
-    "2.12 Прикатывание": ("Прикат", "Обработ"),
-    "2.7 Гребнеобразование": ("Гребн", "Обработ"),
-    "2.6 Фрезерование": ("Фрез", "Обработ"),
-}
-
 SYSTEM_PROMPT = (
     "Ты помощник агронома. Отвечай только по таблице заданий Cropwise. "
     "Строка — одно задание. ha — гектары из отчёта. driver — ФИО исполнителя, "
@@ -59,26 +52,14 @@ def list_groups() -> list[dict[str, Any]]:
 
 
 def hints_for_groups(groups: list[str]) -> list[str]:
-    from report_catalog import REPORT_CATALOG
+    from proverka.task_names import tasks_for_group
 
-    selected = set(groups)
     hints: list[str] = []
-    covered: set[str] = set()
-    for entry in REPORT_CATALOG:
-        overlap = [g for g in (entry.work_groups or ()) if g in selected]
-        if not overlap:
-            continue
-        covered.update(overlap)
-        hints.extend(entry.fact_column_hints or ())
     for name in groups:
-        if name not in covered:
-            hints.extend(_EXTRA_HINTS.get(name, ("Обработ",)))
-    out: list[str] = []
-    for hint in hints:
-        text = str(hint or "").strip()
-        if text and text not in out:
-            out.append(text)
-    return out or ["Обработ"]
+        for task in tasks_for_group(name):
+            if task not in hints:
+                hints.append(task)
+    return hints
 
 
 def shift_window(date_from: date, date_to: date) -> tuple[str, str]:

@@ -2137,8 +2137,8 @@ def collect_work_data(
                 group_name, HARVEST_SEASON_START
             )
         elif group_name == PLOW_GROUP_NAME:
-            # Факт: season==year+1; культура — field_to_crop_plow (только history year+1),
-            # не field_to_crop_general (2026 картофель затирал 2027 рапс на ИсО-xx).
+            # Факт: сезоны из редактора. Культура — как у остальных: HistoryItem
+            # строки, иначе field_to_crop_plow (year+1, не общая карта 2026+2027).
             active_crop_map = field_to_crop_plow
             active_firm_map = field_to_firm_all
             active_available_ids = period_available_ids
@@ -2435,13 +2435,8 @@ def collect_work_data(
             default: str = "",
             item: dict | None = None,
         ) -> str:
-            # Вспашка: только культура поля сезона year+1 (field_to_crop_plow).
-            # HistoryItem строки — часто прошлая культура (Рапс яровой 2026),
-            # её нельзя подставлять вместо урожая 2027.
-            if group_name == PLOW_GROUP_NAME:
-                return active_crop_map.get(fid_i_, default)
-            # 1.1 МУ: как fetch_fertilizer_11 — crop_of_item(history_item) с fallback
-            # на fert_field_to_crop (active_crop_map / newest_year_wins).
+            # 1.1 МУ — отдельно: crop_of_item и карта newest_year_wins.
+            # Вспашка идёт общим путём ниже: культура строки, иначе карта поля.
             if group_name == FERT_GROUP_NAME:
                 from mtfmi_batch_fetch import crop_of_item
 
@@ -2471,10 +2466,11 @@ def collect_work_data(
                     return named
                 fallback = active_crop_map.get(fid_i_, default)
                 return "" if fallback == "Зябь" else (fallback or default)
-            # Уборка 5.0 / дискование / посев — культура только с поля.
-            # Вспашка возвращена выше: только field_to_crop_plow, без HistoryItem строки.
+            # Строка без культуры: культура поля своей карты группы.
+            # Вспашка — field_to_crop_plow (только history year+1).
             if group_name in {
                 HARVEST_GROUP_NAME,
+                PLOW_GROUP_NAME,
                 DEEP_GROUP_NAME,
                 DISK_GROUP_NAME,
                 SEEDING_GROUP_NAME,

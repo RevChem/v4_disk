@@ -10,7 +10,12 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
+
+_PLAN = Path(__file__).resolve().parents[2]
+if str(_PLAN) not in sys.path:
+    sys.path.insert(0, str(_PLAN))
 
 _SPEC = importlib.util.spec_from_file_location(
     "cropwise_ui_under_test", Path(__file__).resolve().parents[1] / "cropwise_ui.py",
@@ -20,7 +25,7 @@ assert _SPEC.loader is not None
 _SPEC.loader.exec_module(cui)
 
 FIRMS = ["Агрофирма А", "Агрофирма Б"]
-HINTS = ["Минераль"]
+HINTS = ["1.1 Внесение минеральных удобрений"]
 
 
 def _body() -> dict:
@@ -28,7 +33,7 @@ def _body() -> dict:
     return {
         "regionColumns": [
             {"key": "name", "name": "Культура / Поле"},
-            {"key": "f", "name": "Минеральные удобрения, га"},
+            {"key": "f", "name": "Минеральные удобрения, га", "work_type_names": ["1.1 Внесение минеральных удобрений"]},
         ],
         "regionRows": [
             {"name": "Всего", "f": "1 766"},
@@ -91,9 +96,13 @@ def test_ambiguous_firm_name_is_not_guessed() -> None:
 
 def test_fact_column_confidence_is_exposed() -> None:
     parsed = cui.parse_work_report_body(_body(), FIRMS, HINTS)
-    assert parsed["fact_column_confidence"] == "hint"
-    guessed = cui.parse_work_report_body(_body(), FIRMS, ["НетТакогоХинта"])
-    assert guessed["fact_column_confidence"] in ("guess", "area", "none")
+    assert parsed["fact_column_confidence"] == "exact"
+    assert not parsed.get("fact_column_error")
+    missed = cui.parse_work_report_body(_body(), FIRMS, ["2.4 Вспашка"])
+    assert missed["fact_column_confidence"] == "none"
+    assert missed["fact_total_ha"] == 0.0
+    assert "2.4 Вспашка" in missed["fact_column_error"]
+    assert "1.1 Внесение минеральных удобрений" in missed["fact_column_error"]
 
 
 def _grouped_body() -> dict:
@@ -131,7 +140,11 @@ def _grouped_body() -> dict:
 
 def test_group_column_work_types_are_exposed() -> None:
     # Без этого поля склейка 3.1+3.2 в одно число была не видна в отчёте.
-    parsed = cui.parse_work_report_body(_grouped_body(), FIRMS, ["Обработ"])
+    parsed = cui.parse_work_report_body(
+        _grouped_body(),
+        FIRMS,
+        ["3.1 Опрыскивание", "3.2 Опрыскивание на овощах"],
+    )
     assert parsed["fact_column"] == "Обработка СЗР, га"
     assert parsed["fact_work_types"] == [
         "3.1 Опрыскивание",
@@ -146,7 +159,7 @@ def test_empty_firm_list_accepts_subgroup_mapped_to_parent() -> None:
     body = {
         "regionColumns": [
             {"key": "name", "name": "Группа полей"},
-            {"key": "f", "name": "Уборка, га"},
+            {"key": "f", "name": "Уборка, га", "work_type_names": ["5.2 Уборка зерновых и зернобобовых"]},
         ],
         "regionRows": [
             {"name": "Всего", "f": "100"},
@@ -161,8 +174,8 @@ def test_empty_firm_list_accepts_subgroup_mapped_to_parent() -> None:
     }
     cui._SUBGROUP_TO_FIRM = {cui._normalize_name("ЧО Полив"): "АФ Чистопольская"}
     try:
-        parsed = cui.parse_work_report_body(body, [], ["Уборка"])
-        score = cui._work_response_score({"ok": True, "body": body}, ["Уборка"])
+        parsed = cui.parse_work_report_body(body, [], ["5.2 Уборка зерновых и зернобобовых"])
+        score = cui._work_response_score({"ok": True, "body": body}, ["5.2 Уборка зерновых и зернобобовых"])
     finally:
         cui._SUBGROUP_TO_FIRM = None
     assert parsed["fact_by_firm"]["АФ Чистопольская"] == 100.0
@@ -197,7 +210,13 @@ def test_harvest_columns_uborka_and_kormozagotovka_are_summed() -> None:
         "cropColumns": [],
     }
     parsed = cui.parse_work_report_body(
-        body, FIRMS, ["Убор", "Кормозаготов", "Скашиван", "Обработ"],
+        body,
+        FIRMS,
+        [
+            "5.2 Уборка зерновых и зернобобовых",
+            "5.8 Уборка рапса, горчицы, гречихи и проса",
+            "6.3 Скашивание с измельчением кукурузы",
+        ],
     )
     assert parsed["fact_total_ha"] == 2198.55
     assert "6.3 Скашивание с измельчением кукурузы" in parsed["fact_work_types"]
@@ -206,14 +225,14 @@ def test_harvest_columns_uborka_and_kormozagotovka_are_summed() -> None:
 def test_group_column_keeps_only_the_named_operation() -> None:
     """Колонка-группа не должна отдавать вспашку в глубокорыхление и 3.1 в овощи."""
     veg = cui.parse_work_report_body(
-        _grouped_body(), FIRMS, ["овощ", "3.2", "Обработ"],
+        _grouped_body(), FIRMS, ["3.2 Опрыскивание на овощах"],
     )
     assert veg["fact_total_ha"] == 185.66
     assert veg["fact_work_types"] == ["3.2 Опрыскивание на овощах"]
     assert veg["fact_by_firm"]["Агрофирма А"] == 185.66
 
     spray = cui.parse_work_report_body(
-        _grouped_body(), FIRMS, ["3.1", "Опрыскивание", "Опрыск", "Обработ"],
+        _grouped_body(), FIRMS, ["3.1 Опрыскивание"],
     )
     assert spray["fact_total_ha"] == 3501.98
     assert spray["fact_work_types"] == ["3.1 Опрыскивание"]
@@ -235,11 +254,11 @@ def test_group_column_keeps_only_the_named_operation() -> None:
         "cropColumns": [],
     }
     deep = cui.parse_work_report_body(
-        tillage, FIRMS, ["Глубокорых", "Глубок", "2.8", "Обработ"],
+        tillage, FIRMS, ["2.8 Глубокорыхление"],
     )
     assert deep["fact_total_ha"] == 2.43
     assert deep["fact_by_firm"]["Агрофирма А"] == 2.43
-    plow = cui.parse_work_report_body(tillage, FIRMS, ["Вспаш", "2.4", "Обработ"])
+    plow = cui.parse_work_report_body(tillage, FIRMS, ["2.4 Вспашка"])
     assert plow["fact_total_ha"] == 6.69
 
 
@@ -251,9 +270,59 @@ def test_single_work_type_group_column_is_the_operation_total() -> None:
         row["Обработка СЗР"] = ["3 501.98"]
         for ch in row.get("children") or []:
             ch["Обработка СЗР"] = ["3 501.98"]
-    parsed = cui.parse_work_report_body(body, FIRMS, ["Обработ"])
+    parsed = cui.parse_work_report_body(body, FIRMS, ["3.1 Опрыскивание"])
     assert parsed["fact_work_types"] == ["3.1 Опрыскивание"]
     assert parsed["fact_total_ha"] == 3501.98
+
+
+def test_neighbor_task_is_not_taken_by_shared_word() -> None:
+    """«Вспаш» больше не захватывает 2.5 вместе с 2.4."""
+    body = {
+        "regionColumns": [
+            {"key": "name", "name": "Группа полей"},
+            {
+                "key": "Обработка почвы",
+                "name": "Обработка почвы, га",
+                "work_type_names": [
+                    "2.4 Вспашка",
+                    "2.5 Вспашка по многолетним травам и залежи",
+                ],
+            },
+            {"key": "other", "name": "Прочее, га", "work_type_names": ["6.4 Ворошение"]},
+        ],
+        "regionRows": [
+            {
+                "name": "Всего",
+                "Обработка почвы": ["10", "4"],
+                "other": ["99"],
+            },
+        ],
+        "cropRows": [],
+        "cropColumns": [],
+    }
+    parsed = cui.parse_work_report_body(body, FIRMS, ["2.4 Вспашка"])
+    assert parsed["fact_total_ha"] == 10.0
+    assert parsed["fact_work_types"] == ["2.4 Вспашка"]
+    assert parsed["fact_column"] == "Обработка почвы, га"
+
+
+def test_dotted_task_code_matches_the_catalog_name() -> None:
+    body = {
+        "regionColumns": [
+            {"key": "name", "name": "Группа полей"},
+            {
+                "key": "Кормозаготовка",
+                "name": "Кормозаготовка, га",
+                "work_type_names": ["6.9.Скашивание на сено"],
+            },
+        ],
+        "regionRows": [{"name": "Всего", "Кормозаготовка": ["7.5"]}],
+        "cropRows": [],
+        "cropColumns": [],
+    }
+    parsed = cui.parse_work_report_body(body, FIRMS, ["6.9 Скашивание на сено"])
+    assert parsed["fact_total_ha"] == 7.5
+    assert not parsed.get("fact_column_error")
 
 
 if __name__ == "__main__":

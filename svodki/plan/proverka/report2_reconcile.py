@@ -124,17 +124,9 @@ async def _load_canonical_svodka_ops(
 
 
 def _fact_hints_for_group(group_name: str) -> tuple[str, ...]:
-    if group_name == "2.4 Вспашка":
-        return ("Вспаш", "2.4", "Обработ")
-    if group_name == "2.8 Глубокорыхление":
-        return ("Глубокорых", "Глубок", "2.8", "Обработ")
-    if group_name == "3.1 Опрыскивание":
-        return ("3.1", "Опрыскивание", "Опрыск", "Обработ")
-    if group_name == "3.2 Опрыскивание (овощи)":
-        return ("овощ", "3.2", "Обработ")
-    if group_name.startswith("5."):
-        return ("Убор", "Кормозаготов", "Скашиван", "Обработ")
-    return ("Обработ",)
+    from proverka.task_names import tasks_for_group
+
+    return tasks_for_group(group_name)
 
 
 def _cropwise_spec_for_group(group_name: str) -> ReportSpec:

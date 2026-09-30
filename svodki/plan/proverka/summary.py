@@ -142,9 +142,14 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
     file_values = result.get("file_values") or {}
     file_ha: float | None = None
     file_diff_ha: float | None = None
+    warnings = list(cmp_.get("warnings") or [])
     if file_values.get("found"):
         file_ha = float(file_values.get("file_ha") or 0)
         file_diff_ha = round(file_ha - sv_ha, 2)
+    if file_values.get("error"):
+        warnings.append(str(file_values["error"]))
+    if result.get("file_internal_error"):
+        warnings.append(str(result["file_internal_error"]))
 
     return {
         "id": rid,
@@ -162,7 +167,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
         "season": (sp.get("label") or sp.get("task_season_label") or "")[:80],
         "firms_with_diff": firms_with_diff,
         "work_type_ids": svodka.get("work_type_ids") or [],
-        "warnings": list(cmp_.get("warnings") or []),
+        "warnings": warnings,
     }
 
 
