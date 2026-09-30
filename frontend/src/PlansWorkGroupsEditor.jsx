@@ -50,7 +50,6 @@ export default function PlansWorkGroupsEditor({
   summaryDate = null,
   onSaved,
   saving,
-  readOnly = false,
   setSaving,
   setError,
   setSuccess
@@ -60,14 +59,21 @@ export default function PlansWorkGroupsEditor({
   const [typesLoading, setTypesLoading] = useState(false);
   const [filter, setFilter] = useState("");
   const groupsSnapshotRef = useRef("");
+  const appliedNormRef = useRef("");
   const nextRowIdRef = useRef(1);
 
   useEffect(() => {
     const nextSnapshot = JSON.stringify(groups ?? []);
     if (nextSnapshot === groupsSnapshotRef.current) return;
+    const serverKey = JSON.stringify(
+      normalizeGroups(groups).map(({ name, ids }) => ({ name, ids }))
+    );
+    const localKey = JSON.stringify(normalizeGroups(draft).map(({ name, ids }) => ({ name, ids })));
+    if (appliedNormRef.current && localKey !== appliedNormRef.current) return;
     groupsSnapshotRef.current = nextSnapshot;
+    appliedNormRef.current = serverKey;
     setDraft(normalizeGroups(groups));
-  }, [groups]);
+  }, [groups, draft]);
 
   const loadWorkTypes = useCallback(async () => {
     setTypesLoading(true);
@@ -115,10 +121,6 @@ export default function PlansWorkGroupsEditor({
   }
 
   async function handleSave() {
-    if (readOnly) {
-      setError("Сейчас планы редактирует другой пользователь. Параллельные правки недоступны.");
-      return;
-    }
     const normalized = normalizeGroups(draft)
       .filter((g) => g.name)
       .map(({ name, ids }) => ({ name, ids }));
@@ -131,6 +133,8 @@ export default function PlansWorkGroupsEditor({
     setSuccess("");
     try {
       const data = await updatePlansEditorWorkGroups(normalized, summaryDate);
+      appliedNormRef.current = "";
+      groupsSnapshotRef.current = "";
       onSaved(data);
       setSuccess("WORK_GROUPS сохранены.");
     } catch (e) {
@@ -167,7 +171,7 @@ export default function PlansWorkGroupsEditor({
                         fullWidth
                         value={row.name}
                         onChange={(e) => updateRow(index, { name: e.target.value })}
-                        disabled={saving || readOnly}
+                        disabled={saving}
                       />
                     </TableCell>
                     <TableCell sx={{ verticalAlign: "top" }}>
@@ -180,7 +184,7 @@ export default function PlansWorkGroupsEditor({
                           const idsText = e.target.value;
                           updateRow(index, { idsText, ids: textToIds(idsText) });
                         }}
-                        disabled={saving || readOnly}
+                        disabled={saving}
                       />
                     </TableCell>
                     <TableCell sx={{ verticalAlign: "top" }}>
@@ -201,7 +205,7 @@ export default function PlansWorkGroupsEditor({
                         size="small"
                         aria-label="Удалить группу"
                         onClick={() => deleteRow(index)}
-                        disabled={saving || readOnly || draft.length <= 1}
+                        disabled={saving || draft.length <= 1}
                       >
                         <DeleteOutlineRoundedIcon fontSize="small" />
                       </IconButton>
@@ -212,10 +216,10 @@ export default function PlansWorkGroupsEditor({
             </Table>
           </TableContainer>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button startIcon={<AddRoundedIcon />} onClick={addRow} disabled={saving || readOnly}>
+            <Button startIcon={<AddRoundedIcon />} onClick={addRow} disabled={saving}>
               Добавить группу
             </Button>
-            <Button variant="contained" onClick={handleSave} disabled={saving || readOnly}>
+            <Button variant="contained" onClick={handleSave} disabled={saving}>
               {saving ? "Сохранение..." : "Сохранить WORK_GROUPS"}
             </Button>
           </Stack>

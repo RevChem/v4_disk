@@ -3608,7 +3608,10 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         shift = _veg_shift_info(task.get("end_time"), report_date)
         if not shift:
             continue
-        t_date, _day_start, hourly_cutoff = shift
+        _t_date, _day_start, _hourly_cutoff = shift
+        del _t_date, _hourly_cutoff
+        from task_area_shared import area_ha_by_shift_date
+
         for item in mtfmi_map.get(tid, []):
             fid = item.get("field_id")
             if not fid:
@@ -3619,24 +3622,30 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             crop = _normalize_veg_crop_name(field_to_crop_map.get(fid_i))
             if not crop:
                 continue
-            cov = _veg_mtfmi_cov(item, hourly_cutoff)
-            if cov <= _VEG_MIN_AREA_HA:
-                continue
-            agg[crop][t_date] += cov
-            if t_date == report_shift_date and task.get("machine_id") is not None:
-                veg_machines_today.add(task["machine_id"])
-            if _note is not None and t_date == report_shift_date:
-                _mid = task.get("machine_id")
-                _note(
-                    group="5.4 Уборка картофеля, лука",
-                    firm=_VEG_HARVEST_FIRM,
-                    crop=crop,
-                    field_id=fid_i,
-                    task_id=int(tid),
-                    machine_id=int(_mid) if _mid is not None else None,
-                    ha=cov,
-                    season=str(task.get("season") or ""),
-                )
+            portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+            if not portions:
+                raw_cov = float(item.get("covered_area") or 0)
+                portions = {_day_start.date(): raw_cov} if raw_cov > 0 else {}
+            for t_date, cov in portions.items():
+                if t_date < VEG_SEASON_START or t_date >= report_date:
+                    continue
+                if cov <= _VEG_MIN_AREA_HA:
+                    continue
+                agg[crop][t_date] += cov
+                if t_date == report_shift_date and task.get("machine_id") is not None:
+                    veg_machines_today.add(task["machine_id"])
+                if _note is not None and t_date == report_shift_date:
+                    _mid = task.get("machine_id")
+                    _note(
+                        group="5.4 Уборка картофеля, лука",
+                        firm=_VEG_HARVEST_FIRM,
+                        crop=crop,
+                        field_id=fid_i,
+                        task_id=int(tid),
+                        machine_id=int(_mid) if _mid is not None else None,
+                        ha=cov,
+                        season=str(task.get("season") or ""),
+                    )
 
     for task in no_shift_tasks:
         tid = task["id"]

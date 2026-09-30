@@ -371,16 +371,17 @@ class PlansEditorValueUpdateIn(BaseModel):
     value: float | int
 
 
-class PlansEditLockIn(BaseModel):
+class PlansEditPresenceIn(BaseModel):
     token: str = Field(min_length=16, max_length=80)
 
 
-class PlansEditLockOut(BaseModel):
-    locked: bool
-    can_edit: bool
-    held_by_you: bool = False
-    holder_user_id: int | None = None
-    holder_name: str | None = None
+class PlansEditPresenceUserOut(BaseModel):
+    user_id: int
+    name: str
+
+
+class PlansEditPresenceOut(BaseModel):
+    others: list[PlansEditPresenceUserOut] = Field(default_factory=list)
 
 
 class Report1LayoutDonorReportOut(BaseModel):

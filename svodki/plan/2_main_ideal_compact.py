@@ -2329,6 +2329,7 @@ def collect_work_data(
             "task_ids": task_ids,
             "task_machine": task_machine,
             "all_tasks_for_mtfmi": all_tasks_for_mtfmi,
+            "period_start": group_period_start,
         })
         continue
 
@@ -2351,6 +2352,7 @@ def collect_work_data(
         task_ids = g["task_ids"]
         task_machine = g["task_machine"]
         all_tasks_for_mtfmi = g["all_tasks_for_mtfmi"]
+        harvest_period_start = g.get("period_start") or date(TODAY.year, 1, 1)
         mtfmi_map = {tid: global_mtfmi.get(tid, []) for tid in task_ids}
 
         task_season: dict[int, str] = {
@@ -2528,6 +2530,22 @@ def collect_work_data(
                 season=str(task_s.get("season") or ""),
             )
 
+        def _note_harvest_portion(
+            firm_s, mid_s, tid_s, fid_s, crop_s, crop_agg_s, ha_s, task_s, shift_date,
+        ) -> None:
+            """Площадь уборки — в смену часа работы, не в день закрытия задания."""
+            machine_day_area[firm_s][shift_date][mid_s] += float(ha_s)
+            _note_shift(firm_s, mid_s, tid_s, fid_s, crop_agg_s or crop_s, ha_s, task_s, shift_date)
+            if mid_s is not None:
+                machine_day_group[firm_s][shift_date][mid_s] = machine_group.get(mid_s, 0)
+            if crop_agg_s:
+                machine_day_items[firm_s][shift_date][mid_s].append(
+                    (fid_s, crop_agg_s, float(ha_s))
+                )
+            elif is_harvest_grain and crop_s in HARVEST_VEG_CROPS:
+                agg[firm_s][crop_s][shift_date] += float(ha_s)
+                firm_crop_fields[firm_s][crop_s].add(fid_s)
+
         for task in all_tasks:
             tid  = task["id"]
             mid  = task_machine.get(tid)
@@ -2679,6 +2697,28 @@ def collect_work_data(
                     if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                         continue
 
+                crop_for_agg = (
+                    crop if _harvest_grain_field_allowed(group_name, crop) else None
+                )
+
+                if is_harvest_grain or is_harvest_veg:
+                    from task_area_shared import area_ha_by_shift_date
+
+                    portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                    if not portions:
+                        raw_cov = float(item.get("covered_area") or 0)
+                        portions = {t_date: raw_cov} if raw_cov > 0 else {}
+                    for shift_date, shift_cov in portions.items():
+                        if shift_date < harvest_period_start or shift_date >= TODAY:
+                            continue
+                        if shift_cov <= 0:
+                            continue
+                        _note_harvest_portion(
+                            firm, mid, tid, fid_i, crop, crop_for_agg,
+                            float(shift_cov), task, shift_date,
+                        )
+                    continue
+
                 if use_report4_boron_logic:
                     # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
                     cov = float(item.get("covered_area") or 0)
@@ -2696,12 +2736,6 @@ def collect_work_data(
 
                 if cov <= 0:
                     continue
-
-                # Уборка 5.0: овощные поля — в фирменный итог (как 10_main),
-                # но не в разбивку по культурам листа 5.0.
-                crop_for_agg = (
-                    crop if _harvest_grain_field_allowed(group_name, crop) else None
-                )
 
                 if group_name == PLOW_GROUP_NAME:
                     # «Выполнено» = все поля с season==year+1 (фирма из field_to_firm_all).

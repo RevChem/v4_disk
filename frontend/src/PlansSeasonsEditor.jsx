@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Paper from "@mui/material/Paper";
@@ -26,12 +26,12 @@ export default function PlansSeasonsEditor({
   summaryDate,
   onSaved,
   saving,
-  readOnly = false,
   setSaving,
   setError,
   setSuccess,
 }) {
   const [rows, setRows] = useState([]);
+  const appliedKeyRef = useRef("");
 
   const yearKeys = useMemo(() => {
     const keys = Object.keys(calendarSeasons || {});
@@ -41,28 +41,27 @@ export default function PlansSeasonsEditor({
   }, [calendarSeasons, reportDate]);
 
   useEffect(() => {
-    setRows(
-      yearKeys.map((year) => {
-        const entry = calendarSeasons?.[year] || {};
-        const y = Number(year);
-        return {
-          year,
-          period_start: entry.period_start || (Number.isFinite(y) ? `${y - 1}-07-01` : ""),
-          period_end: entry.period_end || (Number.isFinite(y) ? `${y}-07-01` : ""),
-        };
-      })
-    );
-  }, [calendarSeasons, yearKeys]);
+    const incoming = yearKeys.map((year) => {
+      const entry = calendarSeasons?.[year] || {};
+      const y = Number(year);
+      return {
+        year,
+        period_start: entry.period_start || (Number.isFinite(y) ? `${y - 1}-07-01` : ""),
+        period_end: entry.period_end || (Number.isFinite(y) ? `${y}-07-01` : ""),
+      };
+    });
+    const incomingKey = JSON.stringify(incoming);
+    if (incomingKey === appliedKeyRef.current) return;
+    if (appliedKeyRef.current && JSON.stringify(rows) !== appliedKeyRef.current) return;
+    appliedKeyRef.current = incomingKey;
+    setRows(incoming);
+  }, [calendarSeasons, yearKeys, rows]);
 
   function updateRow(idx, field, value) {
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
   }
 
   async function handleSave() {
-    if (readOnly) {
-      setError("Сейчас планы редактирует другой пользователь. Параллельные правки недоступны.");
-      return;
-    }
     setSaving(true);
     setError("");
     setSuccess("");
@@ -76,6 +75,7 @@ export default function PlansSeasonsEditor({
         };
       }
       const data = await updatePlansEditorCalendarSeasons({ calendar_seasons }, summaryDate);
+      appliedKeyRef.current = "";
       onSaved?.(data);
       setSuccess("Календарь сезонов сохранён");
     } catch (e) {
@@ -119,7 +119,7 @@ export default function PlansSeasonsEditor({
                     type="date"
                     value={row.period_start}
                     onChange={(e) => updateRow(idx, "period_start", e.target.value)}
-                    disabled={saving || readOnly}
+                    disabled={saving}
                     InputLabelProps={{ shrink: true }}
                   />
                 </TableCell>
@@ -129,7 +129,7 @@ export default function PlansSeasonsEditor({
                     type="date"
                     value={row.period_end}
                     onChange={(e) => updateRow(idx, "period_end", e.target.value)}
-                    disabled={saving || readOnly}
+                    disabled={saving}
                     InputLabelProps={{ shrink: true }}
                   />
                 </TableCell>
@@ -139,7 +139,7 @@ export default function PlansSeasonsEditor({
         </Table>
       </Paper>
 
-      <Button variant="contained" disabled={saving || readOnly} onClick={handleSave}>
+      <Button variant="contained" disabled={saving} onClick={handleSave}>
         Сохранить календарь сезонов
       </Button>
 

@@ -1004,7 +1004,7 @@ def aggregate_harvest_by_firm(
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
                     continue
-                cov = float(veg_ctx["mtfmi_cov"](item, cutoff))
+                cov = _item_area_in_shift(item, day_start, cutoff)
             else:
                 cov = harvest_item_area_for_shift(
                     item, cutoff,
@@ -1038,7 +1038,7 @@ def aggregate_harvest_by_firm(
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm_i, crop_i, veg_ctx=veg_ctx):
                     continue
-                item_cov = float(veg_ctx["mtfmi_cov"](item, cutoff))
+                item_cov = _item_area_in_shift(item, day_start, cutoff)
             else:
                 item_cov = harvest_item_area_for_shift(
                     item, cutoff,
@@ -1119,15 +1119,7 @@ def aggregate_harvest_by_firm(
         end_dt = parse_dt(t.get("end_time"))
         if not end_dt:
             continue
-        shift = _shift_date_from_dt(end_dt, DAY_START_HOUR)
-        if shift < veg_season_start:
-            continue
-        _, shift_cutoff = compute_time_range(
-            shift, DAY_START_HOUR, DAY_END_HOUR
-        )
-        shift_key = shift.isoformat()
-        if shift_key > upper:
-            continue
+        from task_area_shared import area_ha_by_shift_date, history_crop_name
 
         items = mtfmi_map.get(t["id"], [])
         for item in items:
@@ -1138,41 +1130,38 @@ def aggregate_harvest_by_firm(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            from task_area_shared import history_crop_name
-
             crop = history_crop_name(
                 item, field_to_crop.get(fid_i) or "",
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
                 continue
-            if wt in veg_wt_ids:
-                if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
-                    continue
-                cov = float(veg_ctx["mtfmi_cov"](item, shift_cutoff))
-            else:
-                _, shift_day_start = compute_time_range(
-                    shift, DAY_START_HOUR, DAY_END_HOUR,
-                )
-                cov = harvest_item_area_for_shift(
-                    item, shift_cutoff,
-                    day_start=shift_day_start,
-                    work_type_id=wt,
-                    parse_dt=parse_dt,
-                )
-            if cov <= 0:
+            if wt in veg_wt_ids and not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
                 continue
-            season_daily_area[firm][shift_key] += cov
-            if wt in GRAIN_WT_IDS:
-                season_daily_area_grain[firm][shift_key] += cov
+            portions = area_ha_by_shift_date(
+                item, parse_dt=parse_dt, day_start_hour=DAY_START_HOUR,
+            )
+            if not portions:
+                shift = _shift_date_from_dt(end_dt, DAY_START_HOUR)
+                raw_cov = float(item.get("covered_area") or 0)
+                portions = {shift: raw_cov} if raw_cov > 0 else {}
+            for portion_shift, cov in portions.items():
+                if portion_shift < veg_season_start or cov <= 0:
+                    continue
+                shift_key = portion_shift.isoformat()
+                if shift_key > upper:
+                    continue
+                season_daily_area[firm][shift_key] += cov
+                if wt in GRAIN_WT_IDS:
+                    season_daily_area_grain[firm][shift_key] += cov
+                    if mid is not None:
+                        season_daily_machines_grain[firm][shift_key].add(int(mid))
+                elif wt in veg_wt_ids:
+                    season_daily_area_veg[firm][shift_key] += cov
+                    if mid is not None:
+                        season_daily_machines_veg[firm][shift_key].add(int(mid))
                 if mid is not None:
-                    season_daily_machines_grain[firm][shift_key].add(int(mid))
-            elif wt in veg_wt_ids:
-                season_daily_area_veg[firm][shift_key] += cov
-                if mid is not None:
-                    season_daily_machines_veg[firm][shift_key].add(int(mid))
-            if mid is not None:
-                season_daily_machines[firm][shift_key].add(int(mid))
+                    season_daily_machines[firm][shift_key].add(int(mid))
 
     result: dict[str, dict] = {}
     for firm in AGROFIRMS:

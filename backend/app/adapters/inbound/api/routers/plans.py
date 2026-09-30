@@ -14,11 +14,9 @@ from app.database import get_db
 from app.infrastructure.logging import get_logger
 from app.models import User
 from app.legacy.plans_edit_lock import (
-    acquire_plans_edit_lock,
-    peek_plans_edit_lock,
-    release_plans_edit_lock,
+    heartbeat_plans_presence,
+    release_plans_presence,
     token_is_valid,
-    touch_plans_edit_lock,
 )
 from app.legacy.plans_editor import (
     WorkTypesUnavailableError,
@@ -29,8 +27,8 @@ from app.legacy.plans_editor import (
 )
 from app.legacy.season_meta import set_calendar_seasons, set_season_range_override
 from app.schemas import (
-    PlansEditLockIn,
-    PlansEditLockOut,
+    PlansEditPresenceIn,
+    PlansEditPresenceOut,
     PlansEditorCalendarSeasonsUpdateIn,
     PlansEditorOut,
     PlansEditorSeasonRangeUpdateIn,
@@ -81,43 +79,26 @@ def _holder_name(user: User) -> str:
     )
 
 
-def _require_plans_edit_holder(request: Request, user: User) -> None:
-    token = (request.headers.get("x-plans-edit-token") or "").strip()
-    if token_is_valid(token):
-        state = touch_plans_edit_lock(user.id, token)
-    else:
-        state = peek_plans_edit_lock(user.id, "")
-    if state["can_edit"]:
-        return
-    if state["held_by_you"]:
-        detail = "Планы уже редактируются в другом окне. Параллельные правки недоступны."
-    elif state["holder_name"]:
-        detail = f"Сейчас планы редактирует {state['holder_name']}. Параллельные правки недоступны."
-    else:
-        detail = "Редактор планов не закреплён за вами. Откройте его заново."
-    raise HTTPException(status_code=409, detail=detail)
-
-
-@router.post("/lock", response_model=PlansEditLockOut)
-def claim_plans_edit_lock(
-    payload: PlansEditLockIn,
+@router.post("/presence", response_model=PlansEditPresenceOut)
+def beat_plans_edit_presence(
+    payload: PlansEditPresenceIn,
     user: User = Depends(require_plans_access),
 ):
     token = payload.token.strip()
     if not token_is_valid(token):
         raise HTTPException(status_code=400, detail="Некорректный ключ сессии редактора.")
-    return acquire_plans_edit_lock(user.id, _holder_name(user), token)
+    return heartbeat_plans_presence(user.id, _holder_name(user), token)
 
 
-@router.post("/lock/release", response_model=PlansEditLockOut)
-def drop_plans_edit_lock(
-    payload: PlansEditLockIn,
+@router.post("/presence/release", response_model=PlansEditPresenceOut)
+def drop_plans_edit_presence(
+    payload: PlansEditPresenceIn,
     user: User = Depends(require_plans_access),
 ):
     token = payload.token.strip()
     if not token_is_valid(token):
         raise HTTPException(status_code=400, detail="Некорректный ключ сессии редактора.")
-    return release_plans_edit_lock(user.id, token)
+    return release_plans_presence(user.id, token)
 
 
 @router.get("", response_model=PlansEditorOut)
@@ -139,7 +120,6 @@ def update_plans_editor_value(
     db: Session = Depends(get_db),
     user: User = Depends(require_plans_access),
 ):
-    _require_plans_edit_holder(request, user)
     keys = list(payload.keys)
     old_value = _old_plan_value(_effective_before(summary_date), payload.section_key, keys)
     try:
@@ -173,7 +153,6 @@ def update_plans_editor_work_groups(
     db: Session = Depends(get_db),
     user: User = Depends(require_plans_access),
 ):
-    _require_plans_edit_holder(request, user)
     old_names = _group_names(_effective_before(summary_date))
     groups = [g.model_dump() for g in payload.groups]
     try:
@@ -198,7 +177,6 @@ def update_plans_editor_calendar_seasons(
     db: Session = Depends(get_db),
     user: User = Depends(require_plans_access),
 ):
-    _require_plans_edit_holder(request, user)
     try:
         cal = {
             str(k): v.model_dump()
@@ -219,7 +197,6 @@ def update_plans_editor_season_range(
     db: Session = Depends(get_db),
     user: User = Depends(require_plans_access),
 ):
-    _require_plans_edit_holder(request, user)
     try:
         set_season_range_override(
             payload.group_name,
