@@ -170,6 +170,7 @@ def build_activity_feed(
 
     # generation_jobs — детализация по сводкам (ok/error)
     jobs = repo.list_generation_jobs(db, limit=min(limit, 100))
+    season_events: list[dict[str, Any]] = []
     for job in jobs:
         if not see_all and job.user_id != viewer_id:
             continue
@@ -184,6 +185,7 @@ def build_activity_feed(
         failed_map = {str(x.get("report_id")): x for x in (result.get("failed") or [])}
         created_map = {str(x.get("report_id")): x for x in (result.get("created") or [])}
         logs = result.get("logs") or []
+        season_events.extend(_season_events_from_logs(job, logs, username))
         try:
             rids = json.loads(job.report_ids or "[]")
         except json.JSONDecodeError:
@@ -265,6 +267,7 @@ def build_activity_feed(
 
     user_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     report_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    season_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
     if viewer.role != "developer":
         user_events = []
@@ -283,9 +286,41 @@ def build_activity_feed(
     return {
         "user_events": user_events[:limit],
         "report_events": report_events[:limit],
+        "season_events": season_events[:limit],
         "users": users,
         "viewer_can_see_all": see_all,
     }
+
+
+def _season_events_from_logs(job: Any, logs: list, username: str) -> list[dict[str, Any]]:
+    """Строки SEASON_MISMATCH из лога генерации — вкладка «Сезоны»."""
+    events: list[dict[str, Any]] = []
+    when = (job.updated_at or job.created_at)
+    created = when.isoformat() if when else None
+    date_s = job.summary_date.isoformat() if job.summary_date else ""
+    n = 0
+    for line in logs or []:
+        text = str(line).strip()
+        if "SEASON_MISMATCH" not in text:
+            continue
+        message = text.replace("SEASON_MISMATCH", "").strip(" -")
+        if date_s and date_s not in message:
+            message = f"{date_s} · {message}"
+        events.append({
+            "id": f"season-{job.id}-{n}",
+            "created_at": created,
+            "action": "seasons.mismatch",
+            "message": message,
+            "user_id": job.user_id,
+            "username": username,
+            "job_id": job.id,
+            "summary_date": date_s,
+            "area": "Сезоны",
+        })
+        n += 1
+        if n >= 40:
+            break
+    return events
 
 
 def job_detail(db: Session, job_id: str, *, viewer: User) -> dict[str, Any] | None:

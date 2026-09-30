@@ -128,6 +128,12 @@ async def fetch_mtfmi_map_for_tasks(
         await remember_history_crops(client, base_url, result, sem)
     except Exception as exc:
         print(f"  {prefix}культура history_item: {exc}", flush=True)
+    try:
+        from season_mismatch_log import log_loaded_mtfmi
+
+        log_loaded_mtfmi(result)
+    except Exception as exc:
+        print(f"  {prefix}сезоны культуры: {exc}", flush=True)
     return result
 
 
@@ -189,3 +195,13 @@ async def remember_history_crops(
         name = crops.get(int(hi["crop_id"]), "")
         if name:
             _HISTORY_CROP[int(hi["id"])] = name
+        try:
+            year = int(hi.get("year") or 0)
+        except (TypeError, ValueError):
+            year = 0
+        try:
+            from season_mismatch_log import remember_history_item
+
+            remember_history_item(int(hi["id"]), year or None, name)
+        except Exception:
+            pass

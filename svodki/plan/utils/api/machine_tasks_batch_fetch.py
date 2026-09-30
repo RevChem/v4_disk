@@ -116,7 +116,15 @@ async def fetch_by_work_type_ids_async(
                 continue
             all_rows.extend(res)
 
-    return dedupe_rows_by_id(all_rows)
+    rows = dedupe_rows_by_id(all_rows)
+    if "machine_tasks" in str(url):
+        try:
+            from season_mismatch_log import remember_tasks
+
+            remember_tasks(rows)
+        except Exception:
+            pass
+    return rows
 
 
 async def fetch_machine_tasks_by_wt_async(
@@ -221,7 +229,15 @@ def fetch_by_work_type_ids_sync(
                 continue
             all_rows.extend(rows)
 
-    return dedupe_rows_by_id(all_rows)
+    rows = dedupe_rows_by_id(all_rows)
+    if str(endpoint) == "machine_tasks":
+        try:
+            from season_mismatch_log import remember_tasks
+
+            remember_tasks(rows)
+        except Exception:
+            pass
+    return rows
 
 
 def fetch_machine_tasks_by_wt_sync(

@@ -202,6 +202,8 @@ def event_area(action: str) -> str:
         return "Проверка"
     if action.startswith("reports.generation."):
         return "Генерация"
+    if action.startswith("seasons."):
+        return "Сезоны"
     if action.startswith("auth.") or action.startswith("users."):
         return "Пользователи"
     if action.startswith("interface."):

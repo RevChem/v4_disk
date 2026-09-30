@@ -369,6 +369,19 @@ def _subprocess_exit_is_transient(rc: int) -> bool:
     return False
 
 
+def _season_mismatch_log_lines(stdout: str, title: str) -> list[str]:
+    """Строки несовпадения сезона культуры — из всего stdout, не только из хвоста."""
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if "SEASON_MISMATCH" not in text:
+            continue
+        out.append(f"[{title}] {text}")
+        if len(out) >= 80:
+            break
+    return out
+
+
 def _subprocess_should_retry(rc: int, stdout: str, stderr: str, attempt: int, max_attempts: int) -> bool:
     if rc == 0 or attempt >= max_attempts:
         return False
@@ -1909,10 +1922,11 @@ def _execute_resolved_report(
                 )
             if r23_auto_report2:
                 if stdout.strip():
+                    logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
                     logs.extend(
                         f"[{cfg.title}] {line}"
                         for line in stdout.splitlines()[-10:]
-                        if line.strip()
+                        if line.strip() and "SEASON_MISMATCH" not in line
                     )
                 logs.append(
                     f"[{cfg.title}] Автозапуск для сводки 23: PDF сводки 2 не публикуем."
@@ -1929,7 +1943,12 @@ def _execute_resolved_report(
                     logs.append(f"[{cfg.title}] не сохранён снимок текста для редактора: {exc}")
         logs.append(f"[{cfg.title}] XLSX: {xlsx_path.name}")
         if stdout.strip():
-            logs.extend(f"[{cfg.title}] {line}" for line in stdout.splitlines()[-10:] if line.strip())
+            logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
+            logs.extend(
+                f"[{cfg.title}] {line}"
+                for line in stdout.splitlines()[-10:]
+                if line.strip() and "SEASON_MISMATCH" not in line
+            )
 
         _normalize_excel_sheet_titles_file(xlsx_path, cfg_id, logs)
 
@@ -2797,6 +2816,7 @@ def _run_report_script(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.setdefault("PYTHONWARNINGS", "ignore")
     env["REPORT_DATE"] = report_date.isoformat()
+    env["SVODKI_REPORT_ID"] = str(cfg.id)
     if report1_fast_groups and _cfg_id_norm(cfg) in {"1", "1.18"} and not _report1_standalone_enabled():
         env["REPORT1_SKIP_PERF_GROUPS"] = "|".join(report1_fast_groups)
     if _report1_standalone_enabled() and _cfg_id_norm(cfg) in {"1", "1.18"}:

@@ -191,6 +191,7 @@ const FIXED_LOG_TABS = [
   { id: "users", label: "Пользователи", areas: ["Пользователи", "Прочее"] },
   { id: "reports", label: "Сводки", reports: true, areas: ["Сводки"] },
   { id: "generation", label: "Генерация", areas: ["Генерация"] },
+  { id: "seasons", label: "Сезоны", seasons: true, areas: [] },
   { id: "plans", label: "Редактор планов", areas: ["Редактор планов"] },
   { id: "page_order", label: "Порядок страниц", areas: ["Порядок страниц"] },
   { id: "pdf", label: "Подписи PDF", areas: ["Подписи PDF"] },
@@ -214,6 +215,7 @@ function areaOf(ev) {
   if (action.startsWith("schedule.")) return "Расписание";
   if (action.startsWith("proverka")) return "Проверка";
   if (action.startsWith("reports.generation.")) return "Генерация";
+  if (action.startsWith("seasons.")) return "Сезоны";
   if (action.startsWith("auth.") || action.startsWith("users.")) return "Пользователи";
   if (action.startsWith("interface.")) return "Интерфейс";
   if (action.startsWith("field_season.")) return "Поля";
@@ -281,7 +283,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
   }, [loadFeed]);
 
   useEffect(() => {
-    if (!canViewUserEvents && tab !== "reports") {
+    if (!canViewUserEvents && tab !== "reports" && tab !== "seasons") {
       setTab("reports");
     }
   }, [canViewUserEvents, tab]);
@@ -363,15 +365,26 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
     return [...FIXED_LOG_TABS, ...extras];
   }, [filteredUserEvents]);
 
+  const visibleTabs = useMemo(() => {
+    if (canViewUserEvents) return logTabs;
+    return logTabs.filter((item) => item.id === "reports" || item.id === "seasons");
+  }, [canViewUserEvents, logTabs]);
+
   useEffect(() => {
-    if (!logTabs.some((item) => item.id === tab)) {
+    if (!visibleTabs.some((item) => item.id === tab)) {
       setTab(canViewUserEvents ? "users" : "reports");
     }
-  }, [logTabs, tab, canViewUserEvents]);
+  }, [visibleTabs, tab, canViewUserEvents]);
 
-  const activeTab = logTabs.find((item) => item.id === tab);
+  const activeTab = visibleTabs.find((item) => item.id === tab);
+  const seasonEvents = useMemo(
+    () => (feed.season_events || []).filter((ev) => matchesUserFilter(ev, userFilter)),
+    [feed.season_events, userFilter],
+  );
   const activeEvents =
-    activeTab && !activeTab.reports ? eventsInAreas(filteredUserEvents, activeTab.areas) : [];
+    activeTab && !activeTab.reports && !activeTab.seasons
+      ? eventsInAreas(filteredUserEvents, activeTab.areas)
+      : [];
 
   const errorCount = useMemo(
     () => filteredReportEvents.filter((r) => r.status === "error").length,
@@ -418,7 +431,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
             <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
               {canViewUserEvents
                 ? "Правки разложены по вкладкам. Клик по красной сводке — технический лог."
-                : "Ошибки по сводкам. Клик по красной сводке — технический лог."}
+                : "Ошибки по сводкам и несовпадения сезонов. Клик по красной сводке — технический лог."}
             </Typography>
           </Stack>
 
@@ -428,19 +441,21 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
             </Alert>
           )}
 
-          {canViewUserEvents ? (
+          {visibleTabs.length > 1 ? (
             <Tabs
-              value={logTabs.some((item) => item.id === tab) ? tab : "users"}
+              value={visibleTabs.some((item) => item.id === tab) ? tab : visibleTabs[0].id}
               onChange={(_, v) => setTab(v)}
               variant="scrollable"
               scrollButtons="auto"
               allowScrollButtonsMobile
               sx={{ minHeight: 40 }}
             >
-              {logTabs.map((item) => {
-                const count = item.reports
-                  ? filteredReportEvents.length + summaryChangeEvents.length
-                  : eventsInAreas(filteredUserEvents, item.areas).length;
+              {visibleTabs.map((item) => {
+                const count = item.seasons
+                  ? seasonEvents.length
+                  : item.reports
+                    ? filteredReportEvents.length + summaryChangeEvents.length
+                    : eventsInAreas(filteredUserEvents, item.areas).length;
                 return (
                   <Tab
                     key={item.id}
@@ -466,7 +481,19 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
             </Stack>
           )}
 
-          {tab !== "reports" && !loading && canViewUserEvents && (
+          {tab === "seasons" && !loading && (
+            <UserEventList
+              events={seasonEvents}
+              emptyText={
+                userFilter
+                  ? "Нет записей для выбранного пользователя."
+                  : "Несовпадений сезона задания и года культуры нет. Они появятся после генерации сводок."
+              }
+              onOpenReport={openReport}
+            />
+          )}
+
+          {tab !== "reports" && tab !== "seasons" && !loading && canViewUserEvents && (
             <UserEventList events={activeEvents} emptyText={emptyForFilter} onOpenReport={openReport} />
           )}
 

@@ -1824,6 +1824,7 @@ def _load_mtfmi_row_crops(
     mtfmi_map: dict[int, list[dict]],
     history_item_to_crop: dict[int, str],
     headers: dict,
+    history_item_to_year: dict[int, int] | None = None,
 ) -> dict[int, str]:
     """Культура строки площади: MachineTaskFieldMappingItem.history_item_id."""
     pairs: list[tuple[int, int]] = []
@@ -1864,6 +1865,12 @@ def _load_mtfmi_row_crops(
             extra[int(hi["id"])] = name
             if not is_skip_crop(name):
                 history_item_to_crop.setdefault(int(hi["id"]), name)
+            try:
+                year = int(hi.get("year") or 0)
+            except (TypeError, ValueError):
+                year = 0
+            if year and history_item_to_year is not None:
+                history_item_to_year.setdefault(int(hi["id"]), year)
     out: dict[int, str] = {}
     for mid_i, hid_i in pairs:
         name = extra.get(hid_i) or history_item_to_crop.get(hid_i) or ""
@@ -2335,7 +2342,25 @@ def collect_work_data(
 
     all_task_ids = [tid for g in pending_groups for tid in g["task_ids"]]
     global_mtfmi = _build_global_mtfmi_map(all_task_ids, headers)
-    mtfmi_row_crop = _load_mtfmi_row_crops(global_mtfmi, history_item_to_crop, headers)
+    mtfmi_row_crop = _load_mtfmi_row_crops(
+        global_mtfmi, history_item_to_crop, headers, history_item_to_year,
+    )
+    try:
+        from season_mismatch_log import log_row_season_mismatches
+
+        logged_tasks = [
+            task
+            for group in pending_groups
+            for task in group["all_tasks_for_mtfmi"]
+        ]
+        log_row_season_mismatches(
+            logged_tasks,
+            global_mtfmi,
+            history_item_to_year,
+            history_item_to_crop,
+        )
+    except Exception as exc:
+        print(f"  сезоны культуры: {exc}", flush=True)
 
     for g in pending_groups:
         group_name = g["group_name"]
