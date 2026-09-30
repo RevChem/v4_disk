@@ -2435,6 +2435,11 @@ def collect_work_data(
             default: str = "",
             item: dict | None = None,
         ) -> str:
+            # Вспашка: только культура поля сезона year+1 (field_to_crop_plow).
+            # HistoryItem строки — часто прошлая культура (Рапс яровой 2026),
+            # её нельзя подставлять вместо урожая 2027.
+            if group_name == PLOW_GROUP_NAME:
+                return active_crop_map.get(fid_i_, default)
             # 1.1 МУ: как fetch_fertilizer_11 — crop_of_item(history_item) с fallback
             # на fert_field_to_crop (active_crop_map / newest_year_wins).
             if group_name == FERT_GROUP_NAME:
@@ -2466,10 +2471,10 @@ def collect_work_data(
                     return named
                 fallback = active_crop_map.get(fid_i_, default)
                 return "" if fallback == "Зябь" else (fallback or default)
-            # Уборка 5.0 / вспашка / дискование / посев — культура только с поля.
+            # Уборка 5.0 / дискование / посев — культура только с поля.
+            # Вспашка возвращена выше: только field_to_crop_plow, без HistoryItem строки.
             if group_name in {
                 HARVEST_GROUP_NAME,
-                PLOW_GROUP_NAME,
                 DEEP_GROUP_NAME,
                 DISK_GROUP_NAME,
                 SEEDING_GROUP_NAME,

@@ -917,6 +917,7 @@ def build_plow_stats_by_crop(
     """
     Факт вспашки по культурам PLOW_SEASON_CROPS — один проход по заданиям.
     Культура — только field_to_crop_plow (history_items year=SEASON_YEAR).
+    HistoryItem строки задания не используем: там часто прошлая культура.
     """
     allowed_seasons = (
         {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
@@ -977,11 +978,7 @@ def build_plow_stats_by_crop(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            from mtfmi_batch_fetch import crop_of_item
-
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or _plow_crop_for_field(
-                fid_i, field_to_crop_plow,
-            )
+            crop = _plow_crop_for_field(fid_i, field_to_crop_plow)
             if not crop:
                 continue
 
@@ -1033,11 +1030,7 @@ def build_plow_stats_by_crop(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
-            from mtfmi_batch_fetch import crop_of_item
-
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or _plow_crop_for_field(
-                fid_i, field_to_crop_plow,
-            )
+            crop = _plow_crop_for_field(fid_i, field_to_crop_plow)
             if not crop:
                 continue
 
@@ -1082,11 +1075,13 @@ def build_all_firm_stats(
     implements_dict: dict[int, dict],
     available_field_ids: set[int] | None = None,
     task_year: int | None = None,
+    field_to_crop_plow: dict[int, str] | None = None,
 ) -> dict[str, dict]:
     """
     Распределяет задания по агрофирмам на основе поля из mtfmi.
     Возвращает: firm_name → stats
     """
+    field_to_crop_plow = field_to_crop_plow or {}
 
     # per_firm_machine[firm][machine_id] → агрегированные данные
     per_firm_machine: dict[str, dict[int, dict]] = {
@@ -1197,11 +1192,9 @@ def build_all_firm_stats(
                 if wt in PLOW_WT_IDS and fid_i:
                     today_plow_by_field[firm][fid_i] += cov_h
                     if _note is not None:
-                        from mtfmi_batch_fetch import crop_of_item
-
                         _note(
                             group="2.4 Вспашка", firm=firm,
-                            crop=crop_of_item(item, str(field_to_crop.get(fid_i) or "")),
+                            crop=_plow_crop_for_field(fid_i, field_to_crop_plow) or "",
                             field_id=fid_i, task_id=int(tid) if tid is not None else None,
                             machine_id=int(mid) if mid is not None else None, ha=cov_h,
                             season=str(t.get("season") or ""),
@@ -2410,6 +2403,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         field_to_crop,
         implements_dict,
         available_field_ids=None,
+        field_to_crop_plow=field_to_crop_plow,
     )
 
     plow_by_crop = build_plow_stats_by_crop(
