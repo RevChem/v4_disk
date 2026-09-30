@@ -430,6 +430,41 @@ def column_work_types(col: dict | None) -> list[str]:
     return [str(x) for x in (col.get("work_type_names") or [])]
 
 
+_BROAD_WORK_HINTS = frozenset({"обработ", "площадь"})
+
+
+def matching_work_type_indexes(names: list[str], hints: list[str] | None) -> list[int] | None:
+    """
+    Индексы work_type_names одной операции внутри колонки-группы.
+
+    «Обработка почвы» и «Обработка СЗР» — списки: вспашка+глубокорыхление,
+    опрыскивание+овощи. Сумма списка — факт всей группы, не одной операции.
+    Берём самый длинный хинт, который попадает не во все виды работ колонки.
+    Широкие «Обработ» и «Площадь» колонку находят, но вид работ не режут.
+    """
+    if len(names) <= 1 or not hints:
+        return None
+    specific = [
+        str(h).strip()
+        for h in hints
+        if str(h or "").strip() and str(h).strip().lower() not in _BROAD_WORK_HINTS
+    ]
+    for hint in sorted(specific, key=len, reverse=True):
+        needle = hint.lower()
+        hit = [i for i, name in enumerate(names) if needle in name.lower()]
+        if hit and len(hit) < len(names):
+            return hit
+    return None
+
+
+def selected_work_type_names(col: dict | None, hints: list[str] | None) -> list[str]:
+    names = column_work_types(col)
+    indexes = matching_work_type_indexes(names, hints)
+    if indexes is None:
+        return names
+    return [names[i] for i in indexes]
+
+
 def _normalize_name(name: str) -> str:
     s = name.replace('"', "").replace("«", "").replace("»", "").strip().lower()
     for prefix in ("ооо ", "аф ", "чо "):
@@ -640,10 +675,19 @@ def _pick_fact_column(columns: list[dict], hints: list[str]) -> dict | None:
     return pick_fact_column(columns, hints)[0]
 
 
-def _row_metric_ha(row: dict, col: dict | None) -> float:
+def _row_metric_ha(row: dict, col: dict | None, hints: list[str] | None = None) -> float:
     if not col:
         return 0.0
-    return _cell_ha(row.get(col.get("key")))
+    value = row.get(col.get("key"))
+    names = column_work_types(col)
+    indexes = matching_work_type_indexes(names, hints)
+    if (
+        indexes is not None
+        and isinstance(value, list)
+        and len(value) == len(names)
+    ):
+        return sum(_parse_ha_number(value[i]) for i in indexes if 0 <= i < len(value))
+    return _cell_ha(value)
 
 
 def _parse_tab(
@@ -661,7 +705,7 @@ def _parse_tab(
         fact_confidence = "hint"
 
     def _fact_ha(row: dict) -> float:
-        return sum(_row_metric_ha(row, col) for col in fact_cols)
+        return sum(_row_metric_ha(row, col, fact_hints) for col in fact_cols)
     area_col = next((c for c in columns if "Площадь" in (c.get("name") or "")), None)
     display_aliases = _display_name_aliases(firm_names)
 
@@ -758,7 +802,7 @@ def _parse_tab(
         "fact_work_types": [
             name
             for col in fact_cols
-            for name in column_work_types(col)
+            for name in selected_work_type_names(col, fact_hints)
         ],
         "area_column": (area_col or {}).get("name"),
         "column_titles": [c.get("name") for c in columns],
@@ -882,7 +926,7 @@ def parse_work_report_detail_rows(
         return []
 
     def _detail_ha(row: dict) -> float:
-        return sum(_row_metric_ha(row, col) for col in fact_cols)
+        return sum(_row_metric_ha(row, col, fact_hints) for col in fact_cols)
 
     display_aliases = _display_name_aliases(firm_names)
     out: list[dict[str, Any]] = []

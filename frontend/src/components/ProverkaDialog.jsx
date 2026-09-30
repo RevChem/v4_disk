@@ -34,6 +34,8 @@ import AiReportPanel from "./AiReportPanel";
 
 /** Согласовано с proverka/ha_thresholds.py DIFF_MIN_HA */
 const DIFF_MIN_HA = 0.5;
+/** Красный счётчик на вкладке сводки: отличия меньше этого порога — не ошибка. */
+const TAB_ERROR_MIN_HA = 10;
 import { sortCatalogDesc } from "../utils/reportSort";
 import { formatDateTimeRu } from "../utils/formatDuration";
 import {
@@ -359,10 +361,15 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   function reportViewDiffCountFor(view) {
     if (!view) return 0;
     const sections = view.sections?.length ? view.sections : [view];
+    const isTabError = (row) => {
+      const diff = Number(row?.max_diff_ha);
+      if (Number.isFinite(diff)) return Math.abs(diff) >= TAB_ERROR_MIN_HA;
+      return row?.status === "DIFF";
+    };
     let n = 0;
     for (const sec of sections) {
-      n += (sec.crops || []).filter((r) => r.status === "DIFF").length;
-      n += (sec.firms || []).filter((r) => r.status === "DIFF").length;
+      n += (sec.crops || []).filter(isTabError).length;
+      n += (sec.firms || []).filter(isTabError).length;
     }
     return n;
   }

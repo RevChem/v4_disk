@@ -85,6 +85,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         season_rule="year_plus_one",
         fact_column_hints=("Опрыск", "Обработ"),
         cropwise_comparable=True,
+        cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "7",
@@ -114,6 +115,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         season_rule="plow_year_plus_one",
         fact_column_hints=("Вспаш", "Глубок", "Обработ"),
         cropwise_comparable=True,
+        cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "10",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -28,7 +28,11 @@ import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import IconButton from "@mui/material/IconButton";
 import Tooltip from "@mui/material/Tooltip";
 import {
+  acquirePlansEditLock,
   fetchPlansEditor,
+  releasePlansEditLock,
+  releasePlansEditLockKeepalive,
+  setPlansEditToken,
   updatePlansEditorSeasonRange,
   updatePlansEditorValue
 } from "./api";
@@ -78,6 +82,7 @@ function PlanNumberField({
   baseVal,
   edited,
   saving,
+  readOnly,
   onSave
 }) {
   const [localValue, setLocalValue] = useState(() => formatPlanInputValue(effVal));
@@ -101,19 +106,20 @@ function PlanNumberField({
       onChange={(e) => setLocalValue(e.target.value)}
       onBlur={async (e) => {
         setFocused(false);
+        if (readOnly) return;
         const ok = await onSave(relativeKeys, e.target.value);
         if (!ok) {
           setLocalValue(formatPlanInputValue(effVal));
         }
       }}
-      disabled={saving}
+      disabled={saving || readOnly}
       sx={editedFieldSx(edited)}
       helperText={edited ? `База: ${baseVal}` : undefined}
     />
   );
 }
 
-function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, onSave }) {
+function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, readOnly, onSave }) {
   const [localValue, setLocalValue] = useState(() => formatPlanInputValue(effVal));
   const [focused, setFocused] = useState(false);
 
@@ -133,6 +139,7 @@ function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, 
       onChange={(e) => setLocalValue(e.target.value)}
       onBlur={async (e) => {
         setFocused(false);
+        if (readOnly) return;
         const ok = await onSave(relativeKeys, e.target.value);
         if (!ok) {
           setLocalValue(formatPlanInputValue(effVal));
@@ -144,7 +151,7 @@ function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, 
           e.currentTarget.blur();
         }
       }}
-      disabled={saving}
+      disabled={saving || readOnly}
       inputProps={{ style: { textAlign: "center" } }}
       sx={{
         width: 88,
@@ -157,6 +164,16 @@ function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, 
 }
 
 const EMPTY_WORK_GROUPS = [];
+
+function newPlansEditToken() {
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+  if (cryptoObj?.getRandomValues) {
+    const bytes = cryptoObj.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return `plans${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`.replace(/[^A-Za-z0-9_-]/g, "");
+}
 
 function yearsFromSeasonMeta(meta) {
   if (!meta) return [];
@@ -178,6 +195,66 @@ export default function PlansEditor({ summaryDate = null }) {
   const [success, setSuccess] = useState("");
   const [sectionKey, setSectionKey] = useState("CALENDAR_SEASONS");
   const [workGroup, setWorkGroup] = useState("");
+  const [editLock, setEditLock] = useState(null);
+  const editLockRef = useRef(null);
+  editLockRef.current = editLock;
+  const readOnly = !editLock?.can_edit;
+
+  useEffect(() => {
+    const token = newPlansEditToken();
+    setPlansEditToken(token);
+    let stopped = false;
+    const controller = new AbortController();
+
+    const sync = async () => {
+      try {
+        const data = await acquirePlansEditLock(token, controller.signal);
+        if (!stopped) setEditLock(data);
+      } catch (e) {
+        if (stopped || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
+        if (!stopped) {
+          setEditLock({
+            locked: true,
+            can_edit: false,
+            held_by_you: false,
+            holder_name: null,
+            failed: true
+          });
+        }
+      }
+    };
+
+    sync();
+    const timer = window.setInterval(sync, 5000);
+    const releaseOnHide = () => releasePlansEditLockKeepalive(token);
+    window.addEventListener("pagehide", releaseOnHide);
+
+    return () => {
+      stopped = true;
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", releaseOnHide);
+      setPlansEditToken("");
+      releasePlansEditLock(token).catch(() => {});
+      window.setTimeout(() => {
+        releasePlansEditLock(token).catch(() => {});
+      }, 2000);
+    };
+  }, []);
+
+  const parallelEditMessage = () => {
+    const lock = editLockRef.current;
+    if (lock?.failed) {
+      return "Не удалось проверить, свободен ли редактор. Сохранение отключено.";
+    }
+    if (lock?.held_by_you && !lock?.can_edit) {
+      return "Планы уже открыты для правки в другом вашем окне. Параллельные правки недоступны.";
+    }
+    if (lock?.holder_name) {
+      return `Сейчас планы редактирует ${lock.holder_name}. Параллельные правки недоступны.`;
+    }
+    return "Редактор планов занят. Параллельные правки недоступны.";
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -247,6 +324,10 @@ export default function PlansEditor({ summaryDate = null }) {
 
   const saveSeasonRange = async ({ clear = false } = {}) => {
     if (!workGroup) return;
+    if (!editLockRef.current?.can_edit) {
+      setError(parallelEditMessage());
+      return;
+    }
     setSaving(true);
     setError("");
     setSuccess("");
@@ -355,6 +436,10 @@ export default function PlansEditor({ summaryDate = null }) {
     if (typeof current === "number" && Math.abs(current - num) <= 1e-9) {
       return true;
     }
+    if (!editLockRef.current?.can_edit) {
+      setError(parallelEditMessage());
+      return false;
+    }
     setSaving(true);
     setError("");
     setSuccess("");
@@ -449,6 +534,28 @@ export default function PlansEditor({ summaryDate = null }) {
               Есть сохранённые правки ({state.path})
             </Alert>
           )}
+          {!editLock ? (
+            <Alert severity="info" sx={{ py: 0.5 }}>
+              Проверяем, не редактирует ли планы кто-то ещё…
+            </Alert>
+          ) : editLock.can_edit ? (
+            <Alert severity="success" sx={{ py: 0.5 }}>
+              Редактирование закреплено за вами. Пока это окно открыто, другие пользователи не могут сохранять правки.
+            </Alert>
+          ) : editLock.failed ? (
+            <Alert severity="error" sx={{ py: 0.5 }}>
+              Не удалось проверить, свободен ли редактор. Сохранение отключено, пока связь с сервером не восстановится.
+            </Alert>
+          ) : editLock.held_by_you ? (
+            <Alert severity="warning" sx={{ py: 0.5 }}>
+              Планы уже открыты для правки в другом вашем окне. Закройте его: одновременно править может только один человек.
+            </Alert>
+          ) : (
+            <Alert severity="warning" sx={{ py: 0.5 }}>
+              Сейчас планы редактирует <strong>{editLock.holder_name || "другой пользователь"}</strong>. Параллельные
+              правки недоступны — дождитесь, пока редактор освободится.
+            </Alert>
+          )}
           {error && <Alert severity="error">{error}</Alert>}
           {success && <Alert severity="success">{success}</Alert>}
 
@@ -469,6 +576,7 @@ export default function PlansEditor({ summaryDate = null }) {
               summaryDate={summaryDate}
               onSaved={setState}
               saving={saving}
+              readOnly={readOnly}
               setSaving={setSaving}
               setError={setError}
               setSuccess={setSuccess}
@@ -481,6 +589,7 @@ export default function PlansEditor({ summaryDate = null }) {
                 setState(data);
               }}
               saving={saving}
+              readOnly={readOnly}
               setSaving={setSaving}
               setError={setError}
               setSuccess={setSuccess}
@@ -518,7 +627,7 @@ export default function PlansEditor({ summaryDate = null }) {
                   <Button
                     variant="contained"
                     size="small"
-                    disabled={saving || !workGroup || rangeYears.length === 0}
+                    disabled={saving || readOnly || !workGroup || rangeYears.length === 0}
                     onClick={() => saveSeasonRange()}
                   >
                     Сохранить сезоны
@@ -526,7 +635,7 @@ export default function PlansEditor({ summaryDate = null }) {
                   <Button
                     variant="outlined"
                     size="small"
-                    disabled={saving || !workGroup || !seasonMeta.has_override}
+                    disabled={saving || readOnly || !workGroup || !seasonMeta.has_override}
                     onClick={() => saveSeasonRange({ clear: true })}
                   >
                     Сбросить
@@ -546,8 +655,11 @@ export default function PlansEditor({ summaryDate = null }) {
                           clickable
                           color={selected ? "primary" : "default"}
                           variant={selected ? "filled" : "outlined"}
-                          disabled={saving}
-                          onClick={() => toggleSeasonYear(y)}
+                          disabled={saving || readOnly}
+                          onClick={() => {
+                            if (readOnly) return;
+                            toggleSeasonYear(y);
+                          }}
                         />
                       );
                     })}
@@ -581,6 +693,7 @@ export default function PlansEditor({ summaryDate = null }) {
                       baseVal={baseVal}
                       edited={edited}
                       saving={saving}
+                      readOnly={readOnly}
                       onSave={saveValue}
                     />
                     {seasonHint ? (
@@ -615,6 +728,7 @@ export default function PlansEditor({ summaryDate = null }) {
                         baseVal={baseVal}
                         edited={edited}
                         saving={saving}
+                        readOnly={readOnly}
                         onSave={saveValue}
                       />
                     </Paper>
@@ -754,6 +868,7 @@ export default function PlansEditor({ summaryDate = null }) {
                                   baseVal={baseVal}
                                   edited={edited}
                                   saving={saving || firmHidden}
+                                  readOnly={readOnly}
                                   onSave={saveValue}
                                 />
                                 <Tooltip
@@ -766,11 +881,15 @@ export default function PlansEditor({ summaryDate = null }) {
                                   <span>
                                     <IconButton
                                       size="small"
-                                      disabled={saving || hidden}
+                                      disabled={saving || hidden || readOnly}
                                       color={firmHidden ? "error" : "default"}
                                       aria-label={firmHidden ? "Показать для АФ" : "Скрыть для АФ"}
                                       sx={{ flexShrink: 0 }}
                                       onClick={async () => {
+                                        if (!editLockRef.current?.can_edit) {
+                                          setError(parallelEditMessage());
+                                          return;
+                                        }
                                         setSaving(true);
                                         setError("");
                                         setSuccess("");
@@ -833,7 +952,12 @@ export default function PlansEditor({ summaryDate = null }) {
                             baseVal={state?.base?.CROP_DISPLAY_RANK?.[workGroup]?.[crop]}
                             edited={rankEdited}
                             saving={saving}
+                            readOnly={readOnly}
                             onSave={async (keys, raw) => {
+                              if (!editLockRef.current?.can_edit) {
+                                setError(parallelEditMessage());
+                                return false;
+                              }
                               const trimmed = String(raw).replace(",", ".").trim();
                               if (trimmed === "") {
                                 return true;

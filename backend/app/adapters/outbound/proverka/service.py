@@ -226,12 +226,47 @@ def latest_job_for_date(report_date: date) -> dict[str, Any] | None:
     return jobs[0] if jobs else None
 
 
+def _strip_env_value(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1].strip()
+    return text
+
+
+def _dotenv_candidates() -> list[Path]:
+    paths = [Path("/app/.env"), Path(settings.svodki_root).resolve().parent / ".env"]
+    out: list[Path] = []
+    for path in paths:
+        if path not in out:
+            out.append(path)
+    return out
+
+
+def cropwise_session_cookie_from_dotenv() -> str:
+    """CROPWISE_SESSION_COOKIE из файла .env, без чужой cookie процесса."""
+    for path in _dotenv_candidates():
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#") or "=" not in text:
+                continue
+            key, _, raw = text.partition("=")
+            if key.strip() != "CROPWISE_SESSION_COOKIE":
+                continue
+            cookie = _strip_env_value(raw)
+            if cookie:
+                os.environ["CROPWISE_SESSION_COOKIE"] = cookie
+                return cookie
+    return session_cookie_from_env()
+
+
 def session_cookie_from_env() -> str:
     _ensure_plan_path()
     from proverka.reconcile import load_env, session_cookie
 
     load_env()
-    return session_cookie()
+    return _strip_env_value(session_cookie())
 
 
 def dashboard_for_date(report_date: date) -> dict[str, Any]:
@@ -302,15 +337,20 @@ def refresh_dashboard_check(report_date: date, *, run_ai_analysis: bool = False)
 
 
 def daily_proverka_ai_job(report_date: date | None = None) -> str:
-    """Cron 21:00 MSK: proverka всех сводок + AI."""
+    """Cron 21:00 MSK: proverka всех сводок за вчера + AI. Cookie — CROPWISE_SESSION_COOKIE из .env."""
     _ensure_plan_path()
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
     from proverka.reports_config import list_report_ids
 
-    rd = report_date or date.today()
+    rd = report_date or (
+        datetime.now(ZoneInfo(settings.schedule_timezone)).date() - timedelta(days=1)
+    )
     rids = list_report_ids()
-    cookie = session_cookie_from_env()
+    cookie = cropwise_session_cookie_from_dotenv()
     if not cookie:
-        raise ValueError("CROPWISE_SESSION_COOKIE не задан для daily proverka AI")
+        raise ValueError("CROPWISE_SESSION_COOKIE не задан в .env для вечерней проверки")
     return create_job(
         report_date=rd,
         report_ids=rids,
@@ -613,6 +653,36 @@ def run_ai_job(job_id: str) -> dict[str, Any]:
     return ai_result
 
 
+def _refresh_saved_reports(
+    report_date: date,
+    report_ids: list[str],
+    on_progress: Callable[[str], None],
+    is_cancelled: Callable[[str | None], bool],
+) -> None:
+    """Пересобирает xlsx выбранных сводок, чтобы колонка «файл» не читала вчерашний отчёт."""
+    on_progress("Обновление сводок перед проверкой…")
+    try:
+        from app.legacy.report_runner import generate_reports_to_disk
+
+        created, failed, _logs = generate_reports_to_disk(
+            report_date,
+            report_ids,
+            is_cancelled=lambda rid: is_cancelled(str(rid)),
+        )
+    except Exception as exc:
+        on_progress(f"Файлы сводок не обновлены: {exc}")
+        return
+    if is_cancelled(None):
+        return
+    if failed:
+        names = ", ".join(
+            str(item.get("report_id") or item.get("title") or "?") for item in failed[:8]
+        )
+        on_progress(f"Сводки обновлены с ошибками ({names}). Проверка по свежему расчёту.")
+        return
+    on_progress(f"Сводки обновлены ({len(created)} файлов)")
+
+
 def run_job(job_id: str) -> None:
     _ensure_plan_path()
     from proverka.runner import ProverkaCancelled, run_proverka_batch
@@ -677,6 +747,9 @@ def run_job(job_id: str) -> None:
     )
 
     try:
+        _refresh_saved_reports(report_date, report_ids, on_progress, is_cancelled)
+        if is_cancelled(None) or (d / "CANCEL").is_file():
+            raise ProverkaCancelled("cancelled")
         result = run_proverka_batch(
             report_date,
             report_ids,

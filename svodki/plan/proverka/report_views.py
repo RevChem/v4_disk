@@ -268,15 +268,40 @@ def _build_operation_section(
     for _crop, by_f in cropwise_firms.items():
         for firm, ha in by_f.items():
             cropwise_by_firm_total[firm] = round(cropwise_by_firm_total.get(firm, 0.0) + ha, 2)
-    cw_bf = (result.get("comparison") or {}).get("cropwise_by_firm") or {}
-    if isinstance(cw_bf, dict):
-        for firm, ha in cw_bf.items():
-            if ha is not None:
-                cropwise_by_firm_total[str(firm)] = round(float(ha), 2)
+    # Итог по агрофирмам — из сверки этой операции. Общий comparison сводки
+    # 6/9 — сумма вспашки с глубокорыхлением или всего опрыскивания: его нельзя
+    # подставлять в каждую секцию.
+    oc = (result.get("operation_comparisons") or {}).get(group) or {}
+    op_bf = (oc.get("comparison") or {}).get("cropwise_by_firm")
+    authoritative_cw = isinstance(op_bf, dict) and bool(op_bf)
+    if authoritative_cw:
+        cropwise_by_firm_total = {
+            str(firm): round(float(ha), 2)
+            for firm, ha in op_bf.items()
+            if ha is not None
+        }
+    else:
+        from proverka.reports_config import REPORTS
+
+        spec = REPORTS.get(focus_rid)
+        multi = bool(spec and len(spec.work_groups or ()) > 1)
+        cw_bf = {} if multi else (result.get("comparison") or {}).get("cropwise_by_firm") or {}
+        if isinstance(cw_bf, dict) and cw_bf:
+            authoritative_cw = True
+            cropwise_by_firm_total = {
+                str(firm): round(float(ha), 2)
+                for firm, ha in cw_bf.items()
+                if ha is not None
+            }
 
     firm_rows: list[dict[str, Any]] = []
     for firm in sorted(firm_names, key=lambda f: f.casefold()):
-        cw_f = cropwise_by_firm_total.get(firm)
+        if firm in cropwise_by_firm_total:
+            cw_f: float | None = cropwise_by_firm_total[firm]
+        elif authoritative_cw:
+            cw_f = 0.0
+        else:
+            cw_f = None
         values = _values_for_firm(firm, focus_rid, peer_ids, reports, group, cw_f)
         compare_vals = {k: v for k, v in values.items() if v is not None}
         max_diff, status = _spread(compare_vals)

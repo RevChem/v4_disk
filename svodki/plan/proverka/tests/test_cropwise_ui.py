@@ -203,6 +203,46 @@ def test_harvest_columns_uborka_and_kormozagotovka_are_summed() -> None:
     assert "6.3 Скашивание с измельчением кукурузы" in parsed["fact_work_types"]
 
 
+def test_group_column_keeps_only_the_named_operation() -> None:
+    """Колонка-группа не должна отдавать вспашку в глубокорыхление и 3.1 в овощи."""
+    veg = cui.parse_work_report_body(
+        _grouped_body(), FIRMS, ["овощ", "3.2", "Обработ"],
+    )
+    assert veg["fact_total_ha"] == 185.66
+    assert veg["fact_work_types"] == ["3.2 Опрыскивание на овощах"]
+    assert veg["fact_by_firm"]["Агрофирма А"] == 185.66
+
+    spray = cui.parse_work_report_body(
+        _grouped_body(), FIRMS, ["3.1", "Опрыскивание", "Опрыск", "Обработ"],
+    )
+    assert spray["fact_total_ha"] == 3501.98
+    assert spray["fact_work_types"] == ["3.1 Опрыскивание"]
+
+    tillage = {
+        "regionColumns": [
+            {"key": "name", "name": "Группа полей"},
+            {
+                "key": "Обработка почвы",
+                "name": "Обработка почвы, га",
+                "work_type_names": ["2.4 Вспашка", "2.8 Глубокорыхление"],
+            },
+        ],
+        "regionRows": [
+            {"name": "Всего", "Обработка почвы": ["6.69", "2.43"]},
+            {"name": "Агрофирма А", "Обработка почвы": ["6.69", "2.43"]},
+        ],
+        "cropRows": [],
+        "cropColumns": [],
+    }
+    deep = cui.parse_work_report_body(
+        tillage, FIRMS, ["Глубокорых", "Глубок", "2.8", "Обработ"],
+    )
+    assert deep["fact_total_ha"] == 2.43
+    assert deep["fact_by_firm"]["Агрофирма А"] == 2.43
+    plow = cui.parse_work_report_body(tillage, FIRMS, ["Вспаш", "2.4", "Обработ"])
+    assert plow["fact_total_ha"] == 6.69
+
+
 def test_single_work_type_group_column_is_the_operation_total() -> None:
     # Запрос work.json по wt одной операции оставляет в группе только её вид работ.
     body = _grouped_body()

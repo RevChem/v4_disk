@@ -26,6 +26,7 @@ export default function PlansSeasonsEditor({
   summaryDate,
   onSaved,
   saving,
+  readOnly = false,
   setSaving,
   setError,
   setSuccess,
@@ -58,6 +59,10 @@ export default function PlansSeasonsEditor({
   }
 
   async function handleSave() {
+    if (readOnly) {
+      setError("Сейчас планы редактирует другой пользователь. Параллельные правки недоступны.");
+      return;
+    }
     setSaving(true);
     setError("");
     setSuccess("");
@@ -114,7 +119,7 @@ export default function PlansSeasonsEditor({
                     type="date"
                     value={row.period_start}
                     onChange={(e) => updateRow(idx, "period_start", e.target.value)}
-                    disabled={saving}
+                    disabled={saving || readOnly}
                     InputLabelProps={{ shrink: true }}
                   />
                 </TableCell>
@@ -124,7 +129,7 @@ export default function PlansSeasonsEditor({
                     type="date"
                     value={row.period_end}
                     onChange={(e) => updateRow(idx, "period_end", e.target.value)}
-                    disabled={saving}
+                    disabled={saving || readOnly}
                     InputLabelProps={{ shrink: true }}
                   />
                 </TableCell>
@@ -134,7 +139,7 @@ export default function PlansSeasonsEditor({
         </Table>
       </Paper>
 
-      <Button variant="contained" disabled={saving} onClick={handleSave}>
+      <Button variant="contained" disabled={saving || readOnly} onClick={handleSave}>
         Сохранить календарь сезонов
       </Button>
 

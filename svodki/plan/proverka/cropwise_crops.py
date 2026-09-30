@@ -269,6 +269,47 @@ def fill_crop_comparisons(
     )
 
 
+def cropwise_crops_api_by_operation(
+    wt_ids: list[int],
+    shift_cache: Any,
+    cutoff,
+    task_years: list[int] | None,
+    *,
+    plow_season_only: bool = False,
+) -> dict[str, dict[str, float]]:
+    """
+    Культуры Cropwise только по wt операции (API v3), без cropRows work.json.
+
+    В отчёте 9 work.json отдаёт одни cropRows на вспашку+глубокорыхление —
+    при разборе по hints обе операции получали одинаковые итоги по культурам.
+    """
+    if shift_cache is None:
+        return {}
+    wt_set = {int(x) for x in wt_ids}
+    tasks = [
+        t for t in (shift_cache.all_tasks or [])
+        if int(t.get("work_type_id") or 0) in wt_set
+    ]
+    seasons = {
+        str(t.get("season"))
+        for t in tasks
+        if t.get("season") not in (None, "")
+    }
+    if task_years:
+        seasons |= {str(int(y)) for y in task_years}
+    if plow_season_only and task_years:
+        seasons = {str(int(y)) for y in task_years}
+    if not seasons or not tasks:
+        return {}
+    return api_area_by_firm_crop(
+        tasks,
+        shift_cache.mtfmi_map,
+        shift_cache.field_to_firm,
+        seasons,
+        cutoff,
+    )
+
+
 def cropwise_crops_all_seasons(
     body: Any,
     firm_names: list[str],

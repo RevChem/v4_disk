@@ -110,6 +110,52 @@ def test_report3_crop_table_has_module_file_for_peers():
     assert soya["values"]["m_2"] == 58.0
 
 
+def test_multi_group_firm_cropwise_uses_operation_not_report_total():
+    """Сводка 9: колонка Cropwise секции 2.8 — не сумма вспашки и глубокорыхления."""
+    group = "2.8 Глубокорыхление"
+    op = {
+        "total_ha": 16.34,
+        "area_today_by_firm": {
+            "АгроРаздолье": 2.43,
+            "Актай": 13.91,
+            "НурлатАгро": 0.0,
+        },
+    }
+    view = build_focus_report_view(
+        "9",
+        {
+            "reports": {
+                "9": {
+                    "svodka": {"operations": {group: op, "2.4 Вспашка": {"total_ha": 0}}},
+                    "comparison": {
+                        "cropwise_by_firm": {
+                            "АгроРаздолье": 9.12,
+                            "Актай": 13.91,
+                            "НурлатАгро": 145.49,
+                        }
+                    },
+                    "operation_comparisons": {
+                        group: {
+                            "comparison": {
+                                "cropwise_by_firm": {
+                                    "АгроРаздолье": 2.43,
+                                    "Актай": 13.91,
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    )
+    assert view is not None
+    deep = next(s for s in view["sections"] if s["group_name"] == group)
+    by_firm = {r["firm"]: r["values"]["cropwise"] for r in deep["firms"]}
+    assert by_firm["АгроРаздолье"] == 2.43
+    assert by_firm["Актай"] == 13.91
+    assert "НурлатАгро" not in by_firm or by_firm["НурлатАгро"] == 0
+
+
 def test_build_report_views_all_selected_in_reports():
     batch = _batch_mu()
     views = build_report_views(batch, None, ["1", "2", "3", "5"])

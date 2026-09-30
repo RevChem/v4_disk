@@ -78,7 +78,7 @@ def run_proverka_ai_task(job_id: str) -> dict:
 
 @celery_app.task(name="app.adapters.inbound.celery.tasks.daily_proverka_ai")
 def daily_proverka_ai() -> dict:
-    """21:00 MSK: proverka за вчера и сегодня + AI + email с Excel."""
+    """21:00 MSK: proverka только за вчера + AI + email с Excel."""
     from app.adapters.outbound.proverka.machines_service import (
         daily_proverka_machines_job,
         read_job_status as read_machines_job_status,
@@ -96,7 +96,7 @@ def daily_proverka_ai() -> dict:
             return {"skipped": "already_ran", "report_date": today.isoformat()}
         job_results: list[tuple[date, str | None, dict]] = []
         machines_job_results: list[tuple[date, str | None, dict]] = []
-        for report_date in (yesterday, today):
+        for report_date in (yesterday,):
             job_id: str | None = None
             status: dict = {"status": "failed", "error": "не запущено"}
             try:

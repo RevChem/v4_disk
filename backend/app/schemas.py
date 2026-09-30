@@ -371,6 +371,18 @@ class PlansEditorValueUpdateIn(BaseModel):
     value: float | int
 
 
+class PlansEditLockIn(BaseModel):
+    token: str = Field(min_length=16, max_length=80)
+
+
+class PlansEditLockOut(BaseModel):
+    locked: bool
+    can_edit: bool
+    held_by_you: bool = False
+    holder_user_id: int | None = None
+    holder_name: str | None = None
+
+
 class Report1LayoutDonorReportOut(BaseModel):
     id: str
     title: str

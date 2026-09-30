@@ -605,6 +605,23 @@ def resolve_report_season_config(
     }
 
 
+def winter_spray_task_seasons(
+    selected: set[str] | None,
+    report_date: date,
+) -> set[str]:
+    """Сезоны, в которых озимые опрыскивания сохраняют культуру.
+
+    По умолчанию это год+1. Если в редакторе выбран только сезон без года+1
+    (один 2026 при отчёте в 2026), озимые этого сезона оставляем: иначе рапс
+    и пшеница пропадают, хотя сводки 1 и 6 их считают.
+    """
+    next_year = str(report_date.year + 1)
+    chosen = {str(y) for y in (selected or set()) if str(y).strip()}
+    if not chosen or next_year in chosen:
+        return {next_year}
+    return set(chosen)
+
+
 def fact_season_years_for_group(group_name: str, report_date: date) -> list[int]:
     """Годы machine_task.season для суток и сезонного факта.
 

@@ -129,5 +129,18 @@ def merged_period_for_years(
     return merged_start, merged_end
 
 
+def fact_window_end(calendar_end: date, report_date: date) -> date:
+    """Верхняя граница факта — дата отчёта.
+
+    Календарь сезона N кончается 01.07.N. Если в редакторе выбран только
+    такой сезон, а отчёт позже, обрезка по calendar_end выкидывает все
+    поздние смены и лист обнуляется. Год machine_task режется отдельно,
+    как в сводках 1 и 6.
+    """
+    if calendar_end < report_date:
+        return report_date
+    return calendar_end
+
+
 def format_period_ru(start: date, end: date) -> str:
     return f"{start.strftime('%d.%m.%Y')}–{end.strftime('%d.%m.%Y')}"

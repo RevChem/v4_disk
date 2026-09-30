@@ -150,7 +150,9 @@ from season_unified import (
     season_label_for_group,
     task_season_str_for_group,
     task_season_years_set_for_group,
+    winter_spray_task_seasons,
 )
+from season_calendar import fact_window_end
 
 
 def _merged_period_for_group(group_name: str, default_start: date) -> tuple[date, date]:
@@ -2180,6 +2182,10 @@ def collect_work_data(
         if use_report4_boron_logic:
             group_period_start = date(TODAY.year, 1, 1)
             group_period_end = TODAY
+        # Один сезон в редакторе (календарь до 01.07) не должен обнулять факт
+        # после этой даты. Сводки 1 и 6 режут machine_task.season и считают
+        # смены до даты отчёта. Иначе «только 2026» в сентябре даёт нули.
+        group_period_end = fact_window_end(group_period_end, TODAY)
         # Дискование — площадь как в сводках 1 и 7: без is_skip_crop, только поля с культурой в сезоне.
         use_report17_area_logic = group_name == DISK_GROUP_NAME
         # Запрашиваем с запасом: от START_DATE 06:00 до (TODAY+1) 06:00
@@ -2378,8 +2384,12 @@ def collect_work_data(
         _winter_season_only = (
             SPRAY_WINTER_CROPS_SEASON_ONLY if group_name == SPRAY_GROUP_NAME else frozenset()
         )
-        _season_year_str = str(TODAY.year + 1) if _winter_season_only else None
         _season_task_seasons = _fact_seasons_for_group(group_name)
+        _winter_keep = (
+            winter_spray_task_seasons(_season_task_seasons, TODAY)
+            if _winter_season_only
+            else set()
+        )
 
         if _season_task_seasons is not None:
             from collections import Counter
@@ -2411,8 +2421,8 @@ def collect_work_data(
             if (
                 crop_
                 and crop_ in _winter_season_only
-                and _season_year_str is not None
-                and task_season.get(tid_) != _season_year_str
+                and _winter_keep
+                and task_season.get(tid_) not in _winter_keep
             ):
                 return default
             return crop_

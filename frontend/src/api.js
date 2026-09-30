@@ -15,10 +15,26 @@ const api = axios.create({
   timeout: 3_600_000,
 });
 
+let plansEditToken = "";
+
+export function setPlansEditToken(token) {
+  plansEditToken = token || "";
+}
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  const method = String(config.method || "get").toLowerCase();
+  const url = String(config.url || "");
+  if (
+    plansEditToken
+    && method !== "get"
+    && url.includes("/plans-editor")
+    && !url.includes("/plans-editor/lock")
+  ) {
+    config.headers["X-Plans-Edit-Token"] = plansEditToken;
   }
   return config;
 });
@@ -372,6 +388,30 @@ export async function convertXlsxToPdf(file, summaryDate = null) {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return data;
+}
+
+export async function acquirePlansEditLock(token, signal) {
+  const { data } = await api.post("/plans-editor/lock", { token }, { signal });
+  return data;
+}
+
+export async function releasePlansEditLock(token) {
+  const { data } = await api.post("/plans-editor/lock/release", { token });
+  return data;
+}
+
+export function releasePlansEditLockKeepalive(token) {
+  const access = localStorage.getItem(TOKEN_KEY);
+  const base = apiBaseURL().replace(/\/$/, "");
+  fetch(`${base}/plans-editor/lock/release`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(access ? { Authorization: `Bearer ${access}` } : {}),
+    },
+    body: JSON.stringify({ token }),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 export async function fetchPlansEditor(summaryDate = null) {

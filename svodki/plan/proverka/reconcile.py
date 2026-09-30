@@ -50,19 +50,34 @@ CROPWISE_SESSION_COOKIE = ""
 # =============================================================================
 
 
+def _strip_env_value(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1].strip()
+    return text
+
+
 def load_env() -> None:
     env_path = PLAN_DIR.parents[1] / ".env"
+    if not env_path.exists():
+        env_path = Path("/app/.env")
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip())
+            key = k.strip()
+            value = _strip_env_value(v)
+            if key == "CROPWISE_SESSION_COOKIE":
+                if value:
+                    os.environ[key] = value
+                continue
+            os.environ.setdefault(key, value)
 
 
 def session_cookie() -> str:
-    return (
+    return _strip_env_value(
         os.environ.get("CROPWISE_SESSION_COOKIE", "").strip()
         or CROPWISE_SESSION_COOKIE.strip()
     )
