@@ -5,6 +5,7 @@ import {
   Card,
   CardContent,
   CircularProgress,
+  Collapse,
   Stack,
   Typography,
 } from "@mui/material";
@@ -14,7 +15,7 @@ import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
 import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 
-import { deleteSummary, downloadGeneratedFile, startGeneratedFileDownload } from "../api";
+import { deleteSummary, downloadGeneratedFile, startGeneratedFileDownload, summaryIsExcel } from "../api";
 
 function formatAdded(modifiedAt, generationSeconds) {
   if (!modifiedAt) return "—";
@@ -135,6 +136,7 @@ export default function PdfSummaryPanel({
           <Stack spacing={1.5}>
             {sortedFiles.map((f) => {
               const open = previewFilename === f.filename;
+              const isExcel = summaryIsExcel(f);
               return (
                 <Box key={f.filename}>
                   <Box
@@ -161,30 +163,36 @@ export default function PdfSummaryPanel({
                       <Typography fontWeight={600}>{f.title || f.filename}</Typography>
                       <Typography variant="body2" color="text.secondary">
                         Добавлено: {formatAdded(f.modified_at, f.generation_seconds)}
+                        {isExcel ? " · Excel" : ""}
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={1} sx={{ flexShrink: 0, flexWrap: "wrap" }}>
-                      <Button
-                        variant={open ? "contained" : "outlined"}
-                        size="small"
-                        startIcon={<VisibilityRoundedIcon />}
-                        onClick={() => togglePreview(f.filename)}
-                        disabled={previewLoading && !open}
-                      >
-                        {open ? "Скрыть" : "Предпросмотр"}
-                      </Button>
+                      {!isExcel && (
+                        <Button
+                          variant={open ? "contained" : "outlined"}
+                          size="small"
+                          className="pressable"
+                          startIcon={<VisibilityRoundedIcon />}
+                          onClick={() => togglePreview(f.filename)}
+                          disabled={previewLoading && !open}
+                        >
+                          {open ? "Скрыть" : "Предпросмотр"}
+                        </Button>
+                      )}
                       <Button
                         variant="contained"
                         size="small"
+                        className="pressable"
                         startIcon={<DownloadRoundedIcon />}
                         onClick={() => handleDownload(f.filename)}
                       >
-                        Скачать
+                        {isExcel ? "Скачать Excel" : "Скачать"}
                       </Button>
-                      {canCellEdit && f.summary_id && (
+                      {canCellEdit && f.summary_id && !isExcel && (
                         <Button
                           variant="outlined"
                           size="small"
+                          className="pressable"
                           startIcon={<EditNoteRoundedIcon />}
                           onClick={() =>
                             onCellEdit?.({
@@ -199,10 +207,11 @@ export default function PdfSummaryPanel({
                           Правки в документе
                         </Button>
                       )}
-                      {canComments && f.summary_id && (
+                      {canComments && f.summary_id && !isExcel && (
                         <Button
                           variant="outlined"
                           size="small"
+                          className="pressable"
                           startIcon={<ChatBubbleOutlineRoundedIcon />}
                           onClick={() =>
                             onComment?.({
@@ -221,6 +230,7 @@ export default function PdfSummaryPanel({
                           variant="contained"
                           color="error"
                           size="small"
+                          className="pressable summary-delete-btn"
                           startIcon={<DeleteOutlineRoundedIcon />}
                           onClick={() => handleDelete(f)}
                           disabled={deletingId === Number(f.summary_id)}
@@ -231,7 +241,7 @@ export default function PdfSummaryPanel({
                       )}
                     </Stack>
                   </Box>
-                  {open && previewUrl && (
+                  <Collapse in={Boolean(open && previewUrl && !isExcel)} timeout={{ enter: 420, exit: 280 }}>
                     <Box
                       sx={{
                         mt: 1,
@@ -244,12 +254,12 @@ export default function PdfSummaryPanel({
                     >
                       <Box
                         component="iframe"
-                        src={previewUrl}
+                        src={previewUrl || undefined}
                         title={f.title || f.filename}
                         sx={{ width: "100%", height: "100%", border: 0 }}
                       />
                     </Box>
-                  )}
+                  </Collapse>
                 </Box>
               );
             })}

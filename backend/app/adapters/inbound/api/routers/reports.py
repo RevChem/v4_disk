@@ -5,9 +5,10 @@ import json
 from datetime import date
 from pathlib import Path
 
+from app.legacy.report_generation import _parse_report27_period_header
 from app.legacy.report_runner import list_job_completed_report_ids
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -105,15 +106,45 @@ def generate_reports(
     request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_generate_access),
+    x_svodki_r27_period: str | None = Header(default=None, alias="X-Svodki-R27-Period"),
 ):
     summary_date = payload.summary_date
     report_ids = [str(x) for x in payload.report_ids] if payload.report_ids else []
+    try:
+        job_options = payload.generation_job_options()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not job_options and x_svodki_r27_period:
+        d_from, d_to, t_from, t_cut = _parse_report27_period_header(x_svodki_r27_period)
+        if d_from and d_to and t_from and t_cut:
+            if report_ids != ["27"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail='Заголовок X-Svodki-R27-Period разрешён только с report_ids: ["27"].',
+                )
+            job_options = {
+                "report27_cutoff": t_cut,
+                "report27_time_from": t_from,
+                "report27_date_from": d_from.isoformat(),
+                "report27_date_to": d_to.isoformat(),
+            }
+    elif job_options is not None and x_svodki_r27_period and "report27_date_from" not in job_options:
+        d_from, d_to, t_from, t_cut = _parse_report27_period_header(x_svodki_r27_period)
+        if d_from and d_to and t_from and t_cut and report_ids == ["27"]:
+            job_options = {
+                **job_options,
+                "report27_cutoff": t_cut,
+                "report27_time_from": t_from,
+                "report27_date_from": d_from.isoformat(),
+                "report27_date_to": d_to.isoformat(),
+            }
     try:
         job, task_id = enqueue_or_run(
             db,
             user_id=user.id,
             summary_date=summary_date,
             report_ids=report_ids or [],
+            job_options=job_options,
         )
     except ReportGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -218,15 +249,21 @@ def download_generated_file(
 ):
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Некорректное имя файла")
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Доступны только PDF-файлы")
+    lower = filename.lower()
+    if not (lower.endswith(".pdf") or lower.endswith(".xlsx")):
+        raise HTTPException(status_code=400, detail="Доступны только PDF и Excel")
     folder = Path(settings.upload_dir) / summary_date.isoformat()
     path = folder / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
+    media = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if lower.endswith(".xlsx")
+        else "application/pdf"
+    )
     return FileResponse(
         path,
-        media_type="application/pdf",
+        media_type=media,
         filename=filename,
         headers={
             "X-Accel-Buffering": "no",

@@ -38,7 +38,11 @@ import FieldSeasonDialog from "../components/FieldSeasonDialog";
 import WorksSummaryDialog from "../components/WorksSummaryDialog";
 import Report1LayoutEditorDialog from "../components/Report1LayoutEditorDialog";
 import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
+import HarvestGrossDialog from "../components/HarvestGrossDialog";
+import Report27CustomDialog from "../components/Report27CustomDialog";
 import {
+  buildHarvestGrossPayload,
+  emptyHarvestGrossForm,
   fetchAvailableDates,
   fetchReportCatalog,
   generateReports,
@@ -46,6 +50,7 @@ import {
   listGeneratedFiles,
   summaryIsExcel,
 } from "../api";
+import dayjs from "dayjs";
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -89,9 +94,20 @@ export default function DashboardPage({
   const [cellEditItem, setCellEditItem] = useState(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentsInitialSummaryId, setCommentsInitialSummaryId] = useState(null);
+  const [harvestGrossOpen, setHarvestGrossOpen] = useState(false);
+  const [harvestGrossPendingIds, setHarvestGrossPendingIds] = useState([]);
+  const [harvestGrossForm, setHarvestGrossForm] = useState(() => emptyHarvestGrossForm());
+  const [report27CustomOpen, setReport27CustomOpen] = useState(false);
+  const [report27CustomDateFrom, setReport27CustomDateFrom] = useState("");
+  const [report27CustomDateTo, setReport27CustomDateTo] = useState("");
+  const [report27CustomTimeFrom, setReport27CustomTimeFrom] = useState("06:00");
+  const [report27CustomTimeTo, setReport27CustomTimeTo] = useState("06:00");
+  const [report27CustomGenerating, setReport27CustomGenerating] = useState(false);
+  const [report27CustomError, setReport27CustomError] = useState("");
 
   const canPlans = user?.role === "developer" || user?.role === "admin" || user?.role === "user";
   const canProverka = user?.role === "developer";
+  const canSitcentrOps = user?.role === "developer" || user?.role === "sitcentr";
   const canComments = canPlans;
   const canCellEdit = user?.role === "developer" || user?.role === "user";
   const accessToken = getStoredTokens().access || "";
@@ -272,8 +288,7 @@ export default function DashboardPage({
     setSelectedIds(checked ? visibleCatalog.map((i) => i.id) : []);
   }
 
-  async function handleGenerate() {
-    if (!selectedIds.length) return;
+  async function enqueueReports(ids, options = {}) {
     setEnqueueing(true);
     setError("");
     setInfo("");
@@ -281,13 +296,109 @@ export default function DashboardPage({
     setGenerationLogs([]);
     setFailedJobId(null);
     try {
-      const res = await generateReports(summaryDate, selectedIds);
+      const res = await generateReports(summaryDate, ids, options);
       setInfo(`Задача поставлена в очередь (${res.job_id?.slice(0, 8) || "—"}…)`);
       onGenerationQueued?.();
     } catch (e) {
       setError(String(e.message || e));
     } finally {
       setEnqueueing(false);
+    }
+  }
+
+  async function handleGenerate() {
+    if (!selectedIds.length) return;
+    if (selectedIds.some((id) => id === "10" || id === "13" || id === "1")) {
+      setHarvestGrossPendingIds([...selectedIds]);
+      setHarvestGrossForm(emptyHarvestGrossForm());
+      setHarvestGrossOpen(true);
+      return;
+    }
+    await enqueueReports(selectedIds);
+  }
+
+  function updateHarvestGrossField(section, cropName, firmName, field, value) {
+    setHarvestGrossForm((prev) => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        [cropName]: {
+          ...(prev[section]?.[cropName] || {}),
+          [firmName]: {
+            ...(prev[section]?.[cropName]?.[firmName] || { season_t: "", day_t: "" }),
+            [field]: value,
+          },
+        },
+      },
+    }));
+  }
+
+  async function confirmHarvestGrossModal() {
+    const ids = harvestGrossPendingIds.length ? harvestGrossPendingIds : selectedIds;
+    const payload = buildHarvestGrossPayload(harvestGrossForm);
+    setHarvestGrossOpen(false);
+    await enqueueReports(ids, payload ? { reportHarvestGross: payload } : {});
+  }
+
+  function openReport27Custom() {
+    const base = summaryDate || todayIso();
+    const prev = dayjs(base).subtract(1, "day").format("YYYY-MM-DD");
+    setReport27CustomDateFrom(prev);
+    setReport27CustomDateTo(base);
+    setReport27CustomTimeFrom("06:00");
+    setReport27CustomTimeTo("06:00");
+    setReport27CustomError("");
+    setReport27CustomOpen(true);
+  }
+
+  async function handleGenerateReport27Custom() {
+    if (!canSitcentrOps) return;
+    const dateFrom = String(report27CustomDateFrom || "").trim();
+    const dateTo = String(report27CustomDateTo || "").trim();
+    const timeFrom = String(report27CustomTimeFrom || "").trim();
+    const timeTo = String(report27CustomTimeTo || "").trim();
+    if (!dateFrom || !dateTo) {
+      setReport27CustomError("Укажите даты начала и конца периода.");
+      return;
+    }
+    if (!/^\d{2}:\d{2}$/.test(timeFrom) || !/^\d{2}:\d{2}$/.test(timeTo)) {
+      setReport27CustomError("Укажите время «от» и «до» в формате HH:MM.");
+      return;
+    }
+    const fromDt = dayjs(`${dateFrom}T${timeFrom}`);
+    const toDt = dayjs(`${dateTo}T${timeTo}`);
+    if (!fromDt.isValid() || !toDt.isValid()) {
+      setReport27CustomError("Некорректная дата или время.");
+      return;
+    }
+    if (!fromDt.isBefore(toDt)) {
+      setReport27CustomError("Начало периода должно быть раньше конца.");
+      return;
+    }
+    setReport27CustomGenerating(true);
+    setReport27CustomError("");
+    setError("");
+    setInfo("");
+    try {
+      const res = await generateReports(dateTo, ["27"], {
+        report27Cutoff: timeTo,
+        report27TimeFrom: timeFrom,
+        report27DateFrom: dateFrom,
+        report27DateTo: dateTo,
+      });
+      setInfo(
+        `Сводки 27 и 27.1 Excel (${dateFrom} ${timeFrom} — ${dateTo} ${timeTo}) ` +
+          `поставлены в очередь (${res.job_id?.slice(0, 8) || "—"}…).`
+      );
+      setReport27CustomOpen(false);
+      setSummaryDate(dateTo);
+      onGenerationQueued?.();
+    } catch (e) {
+      const msg = String(e.message || e || "Не удалось поставить сводку 27 в очередь.");
+      setReport27CustomError(msg);
+      setError(msg);
+    } finally {
+      setReport27CustomGenerating(false);
     }
   }
 
@@ -406,6 +517,18 @@ export default function DashboardPage({
                 >
                   {enqueueing ? "Создание…" : "Создать выбранные сводки"}
                 </Button>
+
+                {canSitcentrOps && (
+                  <Button
+                    variant="outlined"
+                    fullWidth
+                    size="small"
+                    sx={sidebarToolBtnSx}
+                    onClick={openReport27Custom}
+                  >
+                    27·Excel — рейтинг за период
+                  </Button>
+                )}
 
                 {canPlans && (
                   <>
@@ -542,6 +665,33 @@ export default function DashboardPage({
         </Stack>
       )}
 
+      <HarvestGrossDialog
+        open={harvestGrossOpen}
+        onClose={() => {
+          if (!enqueueing) setHarvestGrossOpen(false);
+        }}
+        form={harvestGrossForm}
+        onFieldChange={updateHarvestGrossField}
+        generating={enqueueing}
+        onSubmit={() => void confirmHarvestGrossModal()}
+      />
+      <Report27CustomDialog
+        open={report27CustomOpen}
+        onClose={() => {
+          if (!report27CustomGenerating) setReport27CustomOpen(false);
+        }}
+        dateFrom={report27CustomDateFrom}
+        dateTo={report27CustomDateTo}
+        timeFrom={report27CustomTimeFrom}
+        timeTo={report27CustomTimeTo}
+        onDateFromChange={setReport27CustomDateFrom}
+        onDateToChange={setReport27CustomDateTo}
+        onTimeFromChange={setReport27CustomTimeFrom}
+        onTimeToChange={setReport27CustomTimeTo}
+        generating={report27CustomGenerating}
+        error={report27CustomError}
+        onSubmit={() => void handleGenerateReport27Custom()}
+      />
       <PlansEditorDialog open={plansOpen} onClose={() => setPlansOpen(false)} summaryDate={summaryDate} />
       <ProverkaDialog
         open={proverkaOpen}

@@ -451,15 +451,99 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
     return agg
 
 
+_HARVEST_GROSS_ENV = "SVODKI_REPORT_HARVEST_GROSS_JSON"
+_manual_gross_raw: str | None = None
+_manual_gross_data: dict = {}
+
+
+def _load_manual_harvest_gross() -> dict:
+    """JSON из модального окна. Пустые ячейки в файл не попадают."""
+    global _manual_gross_raw, _manual_gross_data
+    raw = (os.environ.get(_HARVEST_GROSS_ENV) or "").strip()
+    if raw == _manual_gross_raw:
+        return _manual_gross_data
+    _manual_gross_raw = raw
+    if not raw:
+        _manual_gross_data = {}
+        return _manual_gross_data
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        print("  [harvest-gross] не удалось разобрать ручной валовый сбор", flush=True)
+        _manual_gross_data = {}
+        return _manual_gross_data
+    _manual_gross_data = parsed if isinstance(parsed, dict) else {}
+    return _manual_gross_data
+
+
+def _manual_crop_entry(crop_name: str) -> dict | None:
+    data = _load_manual_harvest_gross()
+    for section in ("crops", "vegetables"):
+        block = data.get(section)
+        if not isinstance(block, dict):
+            continue
+        entry = block.get(crop_name)
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _optional_tonnes(entry: dict, field: str) -> float | None:
+    if field not in entry or entry[field] is None or entry[field] == "":
+        return None
+    try:
+        return float(entry[field])
+    except (TypeError, ValueError):
+        return None
+
+
+def _manual_firm_tonnes(firm_name: str, crop_name: str) -> tuple[float | None, float | None]:
+    entry = _manual_crop_entry(crop_name)
+    if not entry:
+        return None, None
+    by_firm = entry.get("by_firm")
+    if not isinstance(by_firm, dict):
+        return None, None
+    firm_entry = by_firm.get(firm_name)
+    if not isinstance(firm_entry, dict):
+        return None, None
+    return _optional_tonnes(firm_entry, "season_t"), _optional_tonnes(firm_entry, "day_t")
+
+
+def _harvest_tonnes_raw(
+    firm_name: str,
+    crop_name: str,
+    label_date: date,
+) -> tuple[float, float]:
+    """Тонны до округления: ручной ввод заменяет только заполненные ячейки."""
+    ov_season, ov_day = _manual_firm_tonnes(firm_name, crop_name)
+    season = day = 0.0
+    if ov_season is None or ov_day is None:
+        agg = _build_namolot_agg(label_date)
+        key = (firm_name, crop_name)
+        season = float(agg.season.get(key, 0.0))
+        day = float(agg.day.get(key, 0.0))
+    if ov_season is not None:
+        season = ov_season
+    if ov_day is not None:
+        day = ov_day
+    if ov_season is not None or ov_day is not None:
+        print(
+            f"  [harvest-gross] {firm_name} / {crop_name}: "
+            f"сезон {season} т, сутки {day} т (ручной ввод)",
+            flush=True,
+        )
+    return season, day
+
+
 def get_namolot_harvest(
     firm_name: str,
     crop_name: str,
     label_date: date,
 ) -> tuple[float, float]:
     """(валовый сбор за сезон, за сутки), т — по агрофирме и культуре."""
-    agg = _build_namolot_agg(label_date)
-    key = (firm_name, crop_name)
-    return round(agg.season.get(key, 0.0)), round(agg.day.get(key, 0.0))
+    season, day = _harvest_tonnes_raw(firm_name, crop_name, label_date)
+    return round(season), round(day)
 
 
 def get_namolot_harvest_holding(
@@ -467,9 +551,25 @@ def get_namolot_harvest_holding(
     label_date: date,
 ) -> tuple[float, float]:
     """(валовый сбор за сезон, за сутки), т — по культуре суммарно по холдингу."""
+    entry = _manual_crop_entry(crop_name)
+    by_firm = entry.get("by_firm") if isinstance(entry, dict) else None
+    if isinstance(by_firm, dict) and by_firm:
+        season = day = 0.0
+        for firm_name in AGROFARM_ORDER:
+            firm_season, firm_day = _harvest_tonnes_raw(firm_name, crop_name, label_date)
+            season += firm_season
+            day += firm_day
+        return round(season), round(day)
     agg = _build_namolot_agg(label_date)
     season = sum(v for (_, c), v in agg.season.items() if c == crop_name)
     day = sum(v for (_, c), v in agg.day.items() if c == crop_name)
+    if isinstance(entry, dict) and not by_firm:
+        ov_season = _optional_tonnes(entry, "season_t")
+        ov_day = _optional_tonnes(entry, "day_t")
+        if ov_season is not None:
+            season = ov_season
+        if ov_day is not None:
+            day = ov_day
     return round(season), round(day)
 
 def resolve_combine_season_start(report_date: date) -> date:

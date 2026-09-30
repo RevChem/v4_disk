@@ -19,12 +19,14 @@ from app.legacy.report_generation import (
     ReportGenerationCancelled,
     ReportGenerationError,
     _cfg_id_norm,
+    _coerce_optional_date,
     _configs_for_ordered_ids,
     _convert_xlsx_to_pdf,
     _dedicated_heavy_report_lanes_enabled,
     _donor_retry_rounds,
     _env_flag,
     _failed_report_retry_rounds,
+    _is_report27_family,
     _max_concurrent_report_workers,
     _maybe_add_report2_for_r23,
     _maybe_add_report27_1,
@@ -60,6 +62,28 @@ def _job_progress_path(job_id: str) -> Path:
 def init_job_progress(job_id: str) -> None:
     path = _job_progress_path(job_id)
     path.write_text(json.dumps({"completed_report_ids": []}, ensure_ascii=False), encoding="utf-8")
+
+
+def save_job_options(job_id: str, options: dict | None) -> None:
+    jid = str(job_id or "").strip()
+    if not jid or not options:
+        return
+    path = _job_progress_path(jid).with_suffix(".opts.json")
+    path.write_text(json.dumps(options, ensure_ascii=False), encoding="utf-8")
+
+
+def load_job_options(job_id: str | None) -> dict:
+    jid = str(job_id or "").strip()
+    if not jid:
+        return {}
+    path = _job_progress_path(jid).with_suffix(".opts.json")
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def record_job_report_completed(job_id: str | None, report_id: str) -> None:
@@ -104,9 +128,14 @@ def list_job_completed_report_ids(job_id: str, report_ids: list[str] | None = No
 
 
 def clear_job_progress(job_id: str) -> None:
-    path = _job_progress_path(job_id)
-    if path.is_file():
-        path.unlink(missing_ok=True)
+    jid = str(job_id or "").strip()
+    if not jid:
+        return
+    for path in (_job_progress_path(jid), _job_progress_path(jid).with_suffix(".opts.json")):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @dataclass
@@ -255,6 +284,12 @@ def _execute_single_report_to_disk(
     storage_title = _resolve_storage_title(cfg, summary_date)
     report_temp = temp_root / f"{cfg_id}_{uuid.uuid4().hex}"
     report_temp.mkdir(parents=True, exist_ok=True)
+    excel_only = _is_report27_family(cfg_id)
+    job_opts = load_job_options(generation_job_id) if generation_job_id else {}
+    r27_cutoff = job_opts.get("report27_cutoff")
+    r27_time_from = job_opts.get("report27_time_from")
+    r27_date_from = _coerce_optional_date(job_opts.get("report27_date_from"))
+    r27_date_to = _coerce_optional_date(job_opts.get("report27_date_to"))
 
     report_started = time.monotonic()
     try:
@@ -270,6 +305,11 @@ def _execute_single_report_to_disk(
             api_snapshot_read_only=api_snapshot_read_only,
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
+            report27_cutoff=r27_cutoff if excel_only else None,
+            report27_time_from=r27_time_from if excel_only else None,
+            report27_date_from=r27_date_from if excel_only else None,
+            report27_date_to=r27_date_to if excel_only else None,
+            report_harvest_gross=job_opts.get("report_harvest_gross"),
         )
         local_logs.append(
             f"[{cfg.title}] Время скрипта XLSX: {time.monotonic() - script_started:.1f} с"
@@ -278,25 +318,29 @@ def _execute_single_report_to_disk(
             _reorder_report1_workbook_file(xlsx_path, local_logs, report_label=cfg_id)
 
         saved_pdf: Path | None = None
-        pdf_started = time.monotonic()
-        pdf_path = _convert_xlsx_to_pdf(
-            src=xlsx_path,
-            output_dir=report_temp,
-            logo_root=logo_root,
-            summary_date=summary_date,
-        )
-        saved_pdf = _save_artifact(pdf_path, summary_date, storage_title, ".pdf", report_id=cfg_id)
-        local_logs.append(f"[{cfg.title}] Время PDF: {time.monotonic() - pdf_started:.1f} с")
-        local_logs.append(f"[{cfg.title}] PDF: {saved_pdf.name}")
-
         saved_xlsx: Path | None = None
-        try:
+        if excel_only:
+            if " (Excel)" not in storage_title:
+                storage_title = f"{storage_title} (Excel)"
+            local_logs.append(f"[{cfg.title}] Сводка 27/27.1: сохраняем только Excel, без PDF.")
             saved_xlsx = _save_artifact(xlsx_path, summary_date, storage_title, ".xlsx", report_id=cfg_id)
             local_logs.append(f"[{cfg.title}] XLSX: {saved_xlsx.name}")
-        except Exception as exc:
-            # Наличие xlsx рядом с pdf — приятный бонус (нужен, в частности, для
-            # сверки «В файле» в proverka), но не должен ронять генерацию отчёта.
-            local_logs.append(f"[{cfg.title}] Не удалось сохранить XLSX: {exc}")
+        else:
+            pdf_started = time.monotonic()
+            pdf_path = _convert_xlsx_to_pdf(
+                src=xlsx_path,
+                output_dir=report_temp,
+                logo_root=logo_root,
+                summary_date=summary_date,
+            )
+            saved_pdf = _save_artifact(pdf_path, summary_date, storage_title, ".pdf", report_id=cfg_id)
+            local_logs.append(f"[{cfg.title}] Время PDF: {time.monotonic() - pdf_started:.1f} с")
+            local_logs.append(f"[{cfg.title}] PDF: {saved_pdf.name}")
+            try:
+                saved_xlsx = _save_artifact(xlsx_path, summary_date, storage_title, ".xlsx", report_id=cfg_id)
+                local_logs.append(f"[{cfg.title}] XLSX: {saved_xlsx.name}")
+            except Exception as exc:
+                local_logs.append(f"[{cfg.title}] Не удалось сохранить XLSX: {exc}")
 
         if stdout.strip():
             local_logs.extend(
@@ -955,15 +999,27 @@ def list_generated_files(summary_date: date) -> list[dict[str, str]]:
     for path in folder.iterdir():
         if not path.is_file():
             continue
-        if path.suffix.lower() != ".pdf":
+        suffix = path.suffix.lower()
+        if suffix not in {".pdf", ".xlsx"}:
             continue
-        stat = path.stat()
         rid = _report_id_from_filename(path.name)
+        if suffix == ".xlsx":
+            pdf_twins = [
+                p
+                for p in folder.iterdir()
+                if p.is_file()
+                and p.suffix.lower() == ".pdf"
+                and _report_id_from_filename(p.name) == rid
+            ]
+            if pdf_twins and not _is_report27_family(rid or ""):
+                continue
+        stat = path.stat()
         row = {
             "filename": path.name,
             "title": _display_title_from_filename(path.name, summary_date),
             "report_id": rid,
-            "format": "pdf",
+            "format": "xlsx" if suffix == ".xlsx" else "pdf",
+            "file_format": "xlsx" if suffix == ".xlsx" else "pdf",
             "size_bytes": str(stat.st_size),
             "modified_at": str(int(stat.st_mtime)),
         }
@@ -982,8 +1038,12 @@ def list_available_dates() -> list[dict[str, str | int]]:
     for child in sorted(root.iterdir(), reverse=True):
         if not child.is_dir() or child.name.startswith("_"):
             continue
-        pdf_count = sum(1 for p in child.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
-        if pdf_count == 0:
+        file_count = sum(
+            1
+            for p in child.iterdir()
+            if p.is_file() and p.suffix.lower() in {".pdf", ".xlsx"}
+        )
+        if file_count == 0:
             continue
-        out.append({"summary_date": child.name, "count": pdf_count})
+        out.append({"summary_date": child.name, "count": file_count})
     return out

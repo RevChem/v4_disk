@@ -224,9 +224,14 @@ def enqueue_or_run(
     user_id: int | None,
     summary_date: date,
     report_ids: list[str] | None,
+    job_options: dict | None = None,
 ) -> tuple[GenerationJob, str | None]:
     ids = report_ids or []
     job = repo.create_generation_job(db, user_id=user_id, summary_date=summary_date, report_ids=ids)
+    if job_options:
+        from app.legacy.report_runner import save_job_options
+
+        save_job_options(job.id, job_options)
     if settings.celery_enabled:
         from app.adapters.inbound.celery.tasks import run_generation_job_task
 

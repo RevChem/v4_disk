@@ -29,7 +29,6 @@ import IconButton from "@mui/material/IconButton";
 import Tooltip from "@mui/material/Tooltip";
 import {
   fetchPlansEditor,
-  resetPlansEditor,
   updatePlansEditorSeasonRange,
   updatePlansEditorValue
 } from "./api";
@@ -377,21 +376,6 @@ export default function PlansEditor({ summaryDate = null }) {
     }
   };
 
-  const handleReset = async (onlySection = false) => {
-    setSaving(true);
-    setError("");
-    setSuccess("");
-    try {
-      const data = await resetPlansEditor(onlySection ? sectionKey : null, summaryDate);
-      setState(data);
-      setSuccess(onlySection ? "Секция сброшена к plans.py" : "Все правки сброшены к plans.py");
-    } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось сбросить");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   if (loading && !state) {
     return (
       <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 2 }}>
@@ -469,12 +453,6 @@ export default function PlansEditor({ summaryDate = null }) {
           {success && <Alert severity="success">{success}</Alert>}
 
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button variant="outlined" size="small" disabled={saving} onClick={() => handleReset(true)}>
-              Сбросить секцию
-            </Button>
-            <Button variant="outlined" color="warning" size="small" disabled={saving} onClick={() => handleReset(false)}>
-              Сбросить все правки
-            </Button>
             <Button variant="text" size="small" disabled={loading || saving} onClick={reload}>
               Обновить
             </Button>

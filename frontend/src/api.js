@@ -130,16 +130,181 @@ export async function fetchReportCatalog() {
   return data;
 }
 
-export async function generateReports(summaryDate, reportIds) {
+/** Культуры для ручного ввода валового сбора (сводки 1 / 10 / 13). */
+export const HARVEST_GROSS_GRAIN_CROPS = [
+  "Кукуруза на зерно",
+  "Кукуруза на силос",
+  "Подсолнечник",
+  "Пшеница озимая",
+  "Пшеница яровая",
+  "Рапс озимый",
+  "Рапс яровой",
+  "Соя",
+];
+
+export const HARVEST_GROSS_VEG_CROPS = ["Картофель", "Морковь", "Свекла столовая"];
+
+/** Агрофирмы для ввода валового сбора (как FIRM_ORDER в plans). */
+export const HARVEST_GROSS_FIRMS = [
+  "АФ Чистопольская",
+  "АгроРаздолье",
+  "Аксу-Агро",
+  "НурлатАгро",
+  "Дрожжаное Рассвет Агро",
+  "Актай",
+  "Лениногорская Птицефабрика",
+];
+
+export const HARVEST_GROSS_VEG_FIRMS = ["АФ Чистопольская"];
+
+function _parseHarvestNum(s) {
+  const t = String(s ?? "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(",", ".");
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _firmsForHarvestSection(section) {
+  return section === "vegetables" ? HARVEST_GROSS_VEG_FIRMS : HARVEST_GROSS_FIRMS;
+}
+
+function _isLegacyFlatCropEntry(src) {
+  if (!src || typeof src !== "object") return false;
+  const keys = Object.keys(src);
+  return keys.length > 0 && keys.every((k) => k === "season_t" || k === "day_t");
+}
+
+export function emptyHarvestGrossForm() {
+  const row = () => ({ season_t: "", day_t: "" });
+  const firmRows = (firms) => {
+    const byFirm = {};
+    for (const firm of firms) byFirm[firm] = row();
+    return byFirm;
+  };
+  const crops = {};
+  for (const name of HARVEST_GROSS_GRAIN_CROPS) crops[name] = firmRows(HARVEST_GROSS_FIRMS);
+  const vegetables = {};
+  for (const name of HARVEST_GROSS_VEG_CROPS) vegetables[name] = firmRows(HARVEST_GROSS_VEG_FIRMS);
+  return { crops, vegetables };
+}
+
+export function sumHarvestGrossCrop(form, section, cropName, field) {
+  const byFirm = form?.[section]?.[cropName];
+  if (!byFirm || typeof byFirm !== "object") return null;
+  if (_isLegacyFlatCropEntry(byFirm)) {
+    return _parseHarvestNum(byFirm[field]);
+  }
+  let sum = 0;
+  let any = false;
+  for (const firm of _firmsForHarvestSection(section)) {
+    const n = _parseHarvestNum(byFirm[firm]?.[field]);
+    if (n === null) continue;
+    sum += n;
+    any = true;
+  }
+  return any ? sum : null;
+}
+
+export function buildHarvestGrossPayload(form) {
+  const out = { crops: {}, vegetables: {} };
+  for (const [section, names] of [
+    ["crops", HARVEST_GROSS_GRAIN_CROPS],
+    ["vegetables", HARVEST_GROSS_VEG_CROPS],
+  ]) {
+    const firms = _firmsForHarvestSection(section);
+    for (const name of names) {
+      const byFirmSrc = form?.[section]?.[name] || {};
+      if (_isLegacyFlatCropEntry(byFirmSrc)) {
+        const season_t = _parseHarvestNum(byFirmSrc.season_t);
+        const day_t = _parseHarvestNum(byFirmSrc.day_t);
+        if (season_t === null && day_t === null) continue;
+        const entry = {};
+        if (season_t !== null) entry.season_t = season_t;
+        if (day_t !== null) entry.day_t = day_t;
+        out[section][name] = entry;
+        continue;
+      }
+      const by_firm = {};
+      let seasonSum = 0;
+      let daySum = 0;
+      let anySeason = false;
+      let anyDay = false;
+      for (const firm of firms) {
+        const src = byFirmSrc[firm] || {};
+        const season_t = _parseHarvestNum(src.season_t);
+        const day_t = _parseHarvestNum(src.day_t);
+        if (season_t === null && day_t === null) continue;
+        const entry = {};
+        if (season_t !== null) {
+          entry.season_t = season_t;
+          seasonSum += season_t;
+          anySeason = true;
+        }
+        if (day_t !== null) {
+          entry.day_t = day_t;
+          daySum += day_t;
+          anyDay = true;
+        }
+        by_firm[firm] = entry;
+      }
+      if (!Object.keys(by_firm).length) continue;
+      const cropEntry = { by_firm };
+      if (anySeason) cropEntry.season_t = seasonSum;
+      if (anyDay) cropEntry.day_t = daySum;
+      out[section][name] = cropEntry;
+    }
+  }
+  if (!Object.keys(out.crops).length && !Object.keys(out.vegetables).length) return null;
+  return out;
+}
+
+export async function generateReports(summaryDate, reportIds, options = {}) {
   try {
-    const { data } = await api.post(
-      "/reports/generate",
-      {
-        summary_date: summaryDate,
-        report_ids: reportIds?.length ? reportIds : null,
-      },
-      { timeout: 60_000 }
-    );
+    const payload = {
+      summary_date: summaryDate,
+      report_ids: reportIds?.length ? reportIds : null,
+    };
+    const harvestGross = options?.reportHarvestGross ?? options?.report_harvest_gross;
+    if (harvestGross && typeof harvestGross === "object") {
+      payload.report_harvest_gross = harvestGross;
+    }
+    const r27Cutoff = options?.report27Cutoff ?? options?.report27_cutoff;
+    if (typeof r27Cutoff === "string" && /^\d{2}:\d{2}$/.test(r27Cutoff.trim())) {
+      payload.report27_cutoff = r27Cutoff.trim();
+    }
+    const r27From = options?.report27TimeFrom ?? options?.report27_time_from;
+    if (typeof r27From === "string" && /^\d{2}:\d{2}$/.test(r27From.trim())) {
+      payload.report27_time_from = r27From.trim();
+    }
+    const r27DateFrom = options?.report27DateFrom ?? options?.report27_date_from;
+    if (typeof r27DateFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r27DateFrom.trim())) {
+      payload.report27_date_from = r27DateFrom.trim();
+    }
+    const r27DateTo = options?.report27DateTo ?? options?.report27_date_to;
+    if (typeof r27DateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r27DateTo.trim())) {
+      payload.report27_date_to = r27DateTo.trim();
+    }
+    const headers = {};
+    if (
+      payload.report27_date_from &&
+      payload.report27_date_to &&
+      payload.report27_time_from &&
+      payload.report27_cutoff
+    ) {
+      headers["X-Svodki-R27-Period"] = [
+        payload.report27_date_from,
+        payload.report27_date_to,
+        payload.report27_time_from,
+        payload.report27_cutoff,
+      ].join(";");
+    }
+    const { data } = await api.post("/reports/generate", payload, {
+      timeout: 60_000,
+      headers,
+    });
     return data;
   } catch (e) {
     throw new Error(formatError(e));
@@ -220,15 +385,6 @@ export async function updatePlansEditorValue({ section_key, keys, value, summary
   const { data } = await api.put(
     "/plans-editor/value",
     { section_key, keys, value },
-    { params: summaryDate ? { summary_date: summaryDate } : undefined }
-  );
-  return data;
-}
-
-export async function resetPlansEditor(sectionKey = null, summaryDate = null) {
-  const { data } = await api.post(
-    "/plans-editor/reset",
-    sectionKey ? { section_key: sectionKey } : {},
     { params: summaryDate ? { summary_date: summaryDate } : undefined }
   );
   return data;

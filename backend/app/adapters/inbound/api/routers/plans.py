@@ -17,7 +17,6 @@ from app.legacy.plans_editor import (
     WorkTypesUnavailableError,
     fetch_work_types_catalog,
     get_editor_state,
-    reset_plans_edits,
     set_plan_value,
     set_work_groups,
 )
@@ -25,7 +24,6 @@ from app.legacy.season_meta import set_calendar_seasons, set_season_range_overri
 from app.schemas import (
     PlansEditorCalendarSeasonsUpdateIn,
     PlansEditorOut,
-    PlansEditorResetIn,
     PlansEditorSeasonRangeUpdateIn,
     PlansEditorValueUpdateIn,
     PlansEditorWorkGroupsUpdateIn,
@@ -98,23 +96,6 @@ def update_plans_editor_value(
         new_value=payload.value,
         summary_date=summary_date.isoformat() if summary_date else None,
     )
-    return state
-
-
-@router.post("/reset", response_model=PlansEditorOut)
-def reset_plans_editor(
-    request: Request,
-    payload: PlansEditorResetIn | None = None,
-    summary_date: date | None = Query(default=None),
-    db: Session = Depends(get_db),
-    user: User = Depends(require_plans_access),
-):
-    section_key = payload.section_key if payload else None
-    try:
-        state = reset_plans_edits(section_key, report_date=summary_date)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _audit(db, request, user, "plans.reset", section_key=section_key)
     return state
 
 

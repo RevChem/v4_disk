@@ -78,6 +78,7 @@ export default function AppShell({
                   <Box className="logo-frame">
                     <Box
                       component="img"
+                      className="logo-img"
                       src={logoUrl}
                       alt="Логотип"
                       sx={(t) => ({

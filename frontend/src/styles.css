@@ -297,6 +297,12 @@
   place-items: center;
   border: 1px solid;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.logo-frame .logo-img {
+  mix-blend-mode: lighten;
 }
 
 .app-bg[data-disk-theme="dark"] .logo-frame {
@@ -355,6 +361,16 @@
 
 .summary-row:hover {
   transform: translateY(-1px);
+}
+
+.summary-row:active,
+.pressable:active {
+  transform: translateY(1px) scale(0.98);
+  transition: transform 0.08s ease;
+}
+
+.pressable {
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
 /* Кнопка «Удалить» — заметная рамка и фон, как в раннем оформлении */
@@ -706,7 +722,9 @@
   .summary-row {
     animation: none !important;
   }
-  .summary-row:hover {
+  .summary-row:hover,
+  .summary-row:active,
+  .pressable:active {
     transform: none !important;
   }
 

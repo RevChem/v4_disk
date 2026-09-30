@@ -484,19 +484,6 @@ def set_work_groups(groups: list[dict[str, Any]], report_date: date | None = Non
     return get_editor_state(report_date)
 
 
-def reset_plans_edits(section_key: str | None = None, report_date: date | None = None) -> dict[str, Any]:
-    if section_key:
-        key = str(section_key).strip()
-        if key not in EDITABLE_KEYS:
-            raise ValueError(f"Неизвестная секция: {key}")
-        edits = load_edits_store()
-        edits.pop(key, None)
-        save_edits_store(edits)
-    else:
-        save_edits_store({})
-    return get_editor_state(report_date)
-
-
 def write_effective_plans_edits_for_generation(dest: Path) -> Path | None:
     edits = load_edits_store()
     if not edits:

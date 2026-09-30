@@ -21,6 +21,54 @@ class ReportCatalogOut(BaseModel):
 class GenerateReportsIn(BaseModel):
     summary_date: date
     report_ids: list[str] | None = None
+    report27_cutoff: str | None = Field(default=None, description="Только для сводки 27: конец окна HH:MM.")
+    report27_time_from: str | None = Field(default=None, description="Только для сводки 27: начало окна HH:MM.")
+    report27_date_from: date | None = Field(default=None, description="Только для сводки 27: дата начала окна.")
+    report27_date_to: date | None = Field(default=None, description="Только для сводки 27: дата конца окна.")
+    report_harvest_gross: dict[str, Any] | None = Field(
+        default=None,
+        description="Ручной валовый сбор для сводок 1 / 10 / 13 (crops / vegetables).",
+    )
+
+    def report27_options(self) -> dict[str, str] | None:
+        if not any(
+            (
+                self.report27_cutoff,
+                self.report27_time_from,
+                self.report27_date_from,
+                self.report27_date_to,
+            )
+        ):
+            return None
+        ids = [str(x).strip() for x in (self.report_ids or []) if str(x).strip()]
+        if ids != ["27"]:
+            raise ValueError('Поля report27_* разрешены только вместе с report_ids: ["27"].')
+        if (self.report27_date_from or self.report27_date_to) and not (
+            self.report27_date_from and self.report27_date_to
+        ):
+            raise ValueError(
+                "Для произвольного периода сводки 27 укажите report27_date_from и report27_date_to."
+            )
+        if self.report27_date_from and self.report27_date_to:
+            if not self.report27_time_from or not self.report27_cutoff:
+                raise ValueError(
+                    "Для произвольного периода сводки 27 укажите report27_time_from и report27_cutoff."
+                )
+        return {
+            "report27_cutoff": str(self.report27_cutoff or "").strip() or None,
+            "report27_time_from": str(self.report27_time_from or "").strip() or None,
+            "report27_date_from": self.report27_date_from.isoformat() if self.report27_date_from else None,
+            "report27_date_to": self.report27_date_to.isoformat() if self.report27_date_to else None,
+        }
+
+    def generation_job_options(self) -> dict[str, Any] | None:
+        opts: dict[str, Any] = {}
+        r27 = self.report27_options()
+        if r27:
+            opts.update(r27)
+        if self.report_harvest_gross:
+            opts["report_harvest_gross"] = self.report_harvest_gross
+        return opts or None
 
 
 class CancelGenerationJobIn(BaseModel):
@@ -321,10 +369,6 @@ class PlansEditorValueUpdateIn(BaseModel):
     section_key: str
     keys: list[str] = Field(default_factory=list)
     value: float | int
-
-
-class PlansEditorResetIn(BaseModel):
-    section_key: str | None = None
 
 
 class Report1LayoutDonorReportOut(BaseModel):

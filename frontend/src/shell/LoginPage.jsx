@@ -1,5 +1,6 @@
 import { Alert, Box, Button, Card, CardContent, Container, Stack, TextField, Typography } from "@mui/material";
 
+import logoUrl from "../assets/logo.png";
 import { customBackgroundSx } from "../constants/themes";
 
 const RESET_ERRORS = {
@@ -63,12 +64,25 @@ export default function LoginPage({
         <Card className="hero-card" elevation={0}>
           <CardContent sx={{ p: 4 }}>
             <Stack spacing={2.5} component="form" onSubmit={onSubmit}>
-              <Typography variant="h5" color="text.primary">
-                {title}
-              </Typography>
-              <Typography color="text.secondary" variant="body2">
-                {subtitle}
-              </Typography>
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Box className="logo-frame" sx={{ flexShrink: 0 }}>
+                  <Box
+                    component="img"
+                    className="logo-img"
+                    src={logoUrl}
+                    alt="Логотип"
+                    sx={{ width: 58, height: 58, objectFit: "contain", p: 0.5 }}
+                  />
+                </Box>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="h5" color="text.primary" sx={{ fontWeight: 700 }}>
+                    {title}
+                  </Typography>
+                  <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
+                    {subtitle}
+                  </Typography>
+                </Box>
+              </Stack>
               {info && <Alert severity="success">{info}</Alert>}
               {error && <Alert severity="error">{recoveryError(error)}</Alert>}
               {view === "login" && !mfaRequired && (

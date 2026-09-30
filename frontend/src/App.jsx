@@ -34,6 +34,7 @@ import UsersPage from "./pages/UsersPage";
 import AppShell from "./shell/AppShell";
 import LoginPage from "./shell/LoginPage";
 import { createAppTheme } from "./theme";
+import logoUrl from "./assets/logo.png";
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -101,6 +102,16 @@ export default function App() {
   const prevQueueRef = useRef([]);
 
   const muiTheme = useMemo(() => createAppTheme(theme), [theme]);
+
+  useEffect(() => {
+    let favicon = document.querySelector("link[rel='icon']");
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.setAttribute("rel", "icon");
+      document.head.appendChild(favicon);
+    }
+    favicon.setAttribute("href", logoUrl);
+  }, []);
 
   const isDeveloper = user?.role === "developer";
   const openTaskFacts = useCallback((jobId) => {
