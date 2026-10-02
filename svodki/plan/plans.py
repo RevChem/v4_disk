@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timedelta, timezone
 
 try:
@@ -7,8 +8,19 @@ try:
 except Exception:
     pass
 
-API_TOKEN    = "6DayNcBDr9BWEZgst1Dy"
-BASE_URL     = "https://operations.cropwise.com/api/v3"
+try:
+    from env_file import load_project_env
+
+    load_project_env()
+except Exception:
+    pass
+
+API_TOKEN = (
+    os.environ.get("CROPWISE_API_TOKEN") or os.environ.get("API_TOKEN") or ""
+).strip()
+BASE_URL = (
+    os.environ.get("CROPWISE_BASE_URL") or "https://operations.cropwise.com/api/v3"
+).strip()
 
 # Заголовок как в PDF «Мастер Свод»
 REPORT_ORG_TITLE = 'ХК "Чистополье"'

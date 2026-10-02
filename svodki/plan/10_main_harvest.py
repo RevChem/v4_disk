@@ -72,7 +72,11 @@ from plans import (
     HIRED_GROUP_ID,
 )
 
-API_TOKEN = (os.environ.get("CROPWISE_API_TOKEN") or "6DayNcBDr9BWEZgst1Dy").strip() or _PLANS_API_TOKEN
+API_TOKEN = (
+    (os.environ.get("CROPWISE_API_TOKEN") or "").strip()
+    or (os.environ.get("API_TOKEN") or "").strip()
+    or _PLANS_API_TOKEN
+)
 BASE_URL = (
     (os.environ.get("CROPWISE_BASE_URL") or "").strip()
     or _PLANS_BASE_URL
@@ -100,7 +104,7 @@ NAMOLOT_BASE_URL = (
     or "http://10.0.1.5/hpp_elevator_new/hs/ground/report"
 )
 NAMOLOT_USERNAME = os.environ.get("NAMOLOT_USERNAME", "Сводка").strip()
-NAMOLOT_PASSWORD = os.environ.get("NAMOLOT_PASSWORD", "3VzLqA6S").strip()
+NAMOLOT_PASSWORD = (os.environ.get("NAMOLOT_PASSWORD") or "").strip()
 
 # ВАЖНО: quantity в ответе API — предположительно килограммы (иначе цифры по
 # одному полю получались бы на 3 порядка выше правдоподобных). Если окажется,

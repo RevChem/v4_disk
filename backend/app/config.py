@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     # Пустой путь = <upload_dir>/.task_store; выключить: svodki_task_store_enabled=false.
     svodki_task_store_enabled: bool = True
     svodki_task_store_dir: str = ""
+    # Бэкенд синхронизирует хранилище один раз перед пачкой; сводки открывают его только на чтение.
+    svodki_task_store_presync: bool = True
     svodki_report22_http_concurrency: int = 15
     svodki_pdf_convert_max_workers: int = 3
     max_upload_bytes: int = 52_428_800
@@ -220,10 +222,7 @@ def get_namolot_config() -> tuple[str, str, str]:
         (os.getenv("NAMOLOT_USERNAME") or settings.namolot_username or "").strip()
         or "Сводка"
     )
-    pwd = (
-        (os.getenv("NAMOLOT_PASSWORD") or settings.namolot_password or "").strip()
-        or "3VzLqA6S"
-    )
+    pwd = (os.getenv("NAMOLOT_PASSWORD") or settings.namolot_password or "").strip()
     return base, user, pwd
 
 

@@ -168,7 +168,7 @@ services:
       SVODKI_SERVICE: worker-heavy
     # Потолок на весь контейнер, включая скрипты сводок и LibreOffice. При OOM скрипт
     # получает SIGKILL и перезапускается (см. TRANSIENT_EXIT_SIGNALS).
-    mem_limit: ${WORKER_HEAVY_MEM_LIMIT:-6g}
+    mem_limit: ${WORKER_HEAVY_MEM_LIMIT:-8g}
 
   beat:
     build: ./backend

@@ -98,7 +98,9 @@ except ImportError:
         pass
 
 if not _plans_loaded:
-    API_TOKEN      = "6DayNcBDr9BWEZgst1Dy"
+    API_TOKEN = (
+        os.environ.get("CROPWISE_API_TOKEN") or os.environ.get("API_TOKEN") or ""
+    ).strip()
     BASE_URL       = "https://operations.cropwise.com/api/v3"
     TZ_MSK         = timezone(timedelta(hours=3))
     HIRED_GROUP_ID = 7

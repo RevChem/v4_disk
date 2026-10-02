@@ -11,12 +11,19 @@ from pathlib import Path
 
 import requests
 
+try:
+    from env_file import load_project_env
+
+    load_project_env()
+except Exception:
+    pass
+
 NAMOLOT_BASE_URL = (
     (os.environ.get("NAMOLOT_BASE_URL") or "").strip()
     or "http://10.0.1.5/hpp_elevator_new/hs/ground/report"
 )
 NAMOLOT_USERNAME = (os.environ.get("NAMOLOT_USERNAME") or "Сводка").strip()
-NAMOLOT_PASSWORD = (os.environ.get("NAMOLOT_PASSWORD") or "3VzLqA6S").strip()
+NAMOLOT_PASSWORD = (os.environ.get("NAMOLOT_PASSWORD") or "").strip()
 
 TZ_MSK = timezone(timedelta(hours=3))
 _SHIFT_HOUR = int(os.environ.get("NAMOLOT_SHIFT_HOUR", "6") or 6)

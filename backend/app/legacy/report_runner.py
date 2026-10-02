@@ -31,6 +31,7 @@ from app.legacy.report_generation import (
     _maybe_add_report2_for_r23,
     _maybe_add_report27_1,
     _prepare_ordered_report_ids,
+    _presync_task_store,
     _report1_required_donor_ids,
     _report_execution_waves,
     _resolve_report_config,
@@ -914,6 +915,15 @@ def generate_reports_to_disk(
         else:
             logs.append("Prefetch JSON отключён (SVODKI_USE_PREFETCH_DATA=0).")
 
+        # Рабочий путь Celery (run_generation_job) и proverka идут сюда, а не в generate_server_reports:
+        # синхронизируем хранилище заданий один раз перед пачкой, сводки потом только читают.
+        if set(ordered_ids) - {"23"}:
+            _presync_task_store(
+                primary_script_dir=primary_script_dir,
+                plan_script_dir=plan_script_dir,
+                report_date=request_report_date,
+                logs=logs,
+            )
         worker_cap = _max_concurrent_report_workers()
         logs.append(f"Параллельных сводок (bulk): {worker_cap}")
 

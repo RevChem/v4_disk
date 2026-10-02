@@ -54,12 +54,10 @@ from task_area_shared import (
 # КОНФИГУРАЦИЯ
 # =============================================================================
 
-API_TOKEN = "6DayNcBDr9BWEZgst1Dy"
 BASE_URL = "https://operations.cropwise.com/api/v3"
 API_TOKEN = (
     (os.environ.get("CROPWISE_API_TOKEN") or "").strip()
     or (os.environ.get("API_TOKEN") or "").strip()
-    or API_TOKEN
 )
 BASE_URL = (os.environ.get("CROPWISE_BASE_URL") or "").strip() or BASE_URL
 REPORT_DATE = date(2026, 9, 14)
@@ -228,7 +226,7 @@ NAMOLOT_BASE_URL = (
     or "http://10.0.1.5/hpp_elevator_new/hs/ground/report"
 )
 NAMOLOT_USERNAME = os.environ.get("NAMOLOT_USERNAME", "Сводка").strip()
-NAMOLOT_PASSWORD = os.environ.get("NAMOLOT_PASSWORD", "3VzLqA6S").strip()
+NAMOLOT_PASSWORD = (os.environ.get("NAMOLOT_PASSWORD") or "").strip()
 
 # ВАЖНО: quantity в ответе API — предположительно килограммы (см. 10_main_tasks.py).
 NAMOLOT_QTY_TO_TONNES: float = 1.0 / 1000.0

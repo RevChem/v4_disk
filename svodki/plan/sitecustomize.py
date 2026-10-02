@@ -846,5 +846,138 @@ def install_svodki_api_hooks() -> None:
     _install_prefetch_only_mode()
 
 
+# --- Кэш справочников в хранилище (utils/shared/svodki_ref_store.py) --------------------------
+def _ref_full_fetch_sync(call: Callable[[dict], Any], req: dict) -> list[dict] | None:
+    """Выгрузить полный список курсором. call(params) -> response. None — ответ не как у API."""
+    from svodki_ref_store import PAGE_MAX, extract_rows  # type: ignore[import-not-found]
+
+    rows: list[dict] = []
+    from_id = 0
+    for _ in range(2000):
+        resp = _fetch_requests_with_retry(lambda: call({**dict(req["extra"]), "from_id": from_id, "limit": PAGE_MAX}))
+        if int(getattr(resp, "status_code", 0)) >= 400:
+            return None
+        body = resp.json()
+        chunk = extract_rows(body)
+        if not chunk:
+            return rows
+        rows.extend(chunk)
+        meta = (body.get("meta") or {}).get("response") or {}
+        last = meta.get("last_record_id")
+        if not last or int(meta.get("obtained_records") or len(chunk)) < 100:
+            return rows
+        from_id = int(last) + 1
+    return None
+
+
+async def _ref_full_fetch_async(call: Callable[[dict], Any], req: dict) -> list[dict] | None:
+    from svodki_ref_store import PAGE_MAX, extract_rows  # type: ignore[import-not-found]
+
+    rows: list[dict] = []
+    from_id = 0
+    for _ in range(2000):
+        resp = await _fetch_httpx_with_retry(lambda: call({**dict(req["extra"]), "from_id": from_id, "limit": PAGE_MAX}))
+        if int(getattr(resp, "status_code", 0)) >= 400:
+            return None
+        body = resp.json()
+        chunk = extract_rows(body)
+        if not chunk:
+            return rows
+        rows.extend(chunk)
+        meta = (body.get("meta") or {}).get("response") or {}
+        last = meta.get("last_record_id")
+        if not last or int(meta.get("obtained_records") or len(chunk)) < 100:
+            return rows
+        from_id = int(last) + 1
+    return None
+
+
+def _install_ref_cache() -> None:
+    """Самый внутренний слой: prefetch/API-кэш выше по стеку имеют приоритет."""
+    if not os.environ.get("SVODKI_TASK_STORE_DIR", "").strip():
+        return
+    if os.environ.get("SVODKI_REF_CACHE_DISABLE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    try:
+        import requests
+        import svodki_ref_store as rs
+    except Exception:
+        return
+
+    orig_sync = requests.sessions.Session.request
+
+    def ref_request(self, method: str, url: Any, **kwargs: Any) -> Any:
+        try:
+            req = rs.parse_request(method, url, kwargs.get("params")) if not kwargs.get("stream") else None
+            if req is not None:
+                got = rs.load(req)
+                if got is None:
+                    with rs.key_lock(req):
+                        got = rs.load(req)
+                        if got is None:
+                            base_kw = {k: v for k, v in kwargs.items() if k != "params"}
+                            rows = _ref_full_fetch_sync(
+                                lambda p: orig_sync(self, "GET", req["url"], params=p, **base_kw), req)
+                            if rows is not None:
+                                rs.store(req, rows)
+                                got = rs.load(req)
+                if got is not None:
+                    return _CachedRequestsResponse(rs.page_entry(req, got[0], got[1]))
+        except Exception as exc:  # кэш — оптимизация: при любой ошибке идём в API
+            print(f"[ref-cache] пропуск: {exc}", flush=True)
+        return orig_sync(self, method, url, **kwargs)
+
+    if not getattr(requests.sessions.Session.request, "_svodki_ref_installed", False):
+        ref_request._svodki_ref_installed = True  # type: ignore[attr-defined]
+        requests.sessions.Session.request = ref_request
+
+    try:
+        import httpx
+    except Exception:
+        return
+    orig_async = httpx.AsyncClient.request
+
+    async def ref_arequest(self, method: str, url: Any, **kwargs: Any) -> Any:
+        try:
+            req = rs.parse_request(method, url, kwargs.get("params")) if not kwargs.get("stream") else None
+            if req is not None:
+                got = rs.load(req)
+                if got is None:
+                    # flock блокирующий: выгрузку делаем в потоке-обёртке нельзя (нужен event loop),
+                    # поэтому замок берём неблокирующе в отдельном потоке.
+                    import asyncio
+
+                    def _lock_enter():
+                        cm = rs.key_lock(req); cm.__enter__(); return cm
+
+                    cm = await asyncio.to_thread(_lock_enter)
+                    try:
+                        got = rs.load(req)
+                        if got is None:
+                            base_kw = {k: v for k, v in kwargs.items() if k != "params"}
+                            rows = await _ref_full_fetch_async(
+                                lambda p: orig_async(self, "GET", req["url"], params=p, **base_kw), req)
+                            if rows is not None:
+                                rs.store(req, rows)
+                                got = rs.load(req)
+                    finally:
+                        cm.__exit__(None, None, None)
+                if got is not None:
+                    return _CachedHttpxResponse(rs.page_entry(req, got[0], got[1]))
+        except Exception as exc:
+            print(f"[ref-cache] пропуск: {exc}", flush=True)
+        return await orig_async(self, method, url, **kwargs)
+
+    if not getattr(httpx.AsyncClient.request, "_svodki_ref_installed", False):
+        ref_arequest._svodki_ref_installed = True  # type: ignore[attr-defined]
+        httpx.AsyncClient.request = ref_arequest
+
+
+try:
+    _install_ref_cache()
+except Exception:  # pragma: no cover
+    pass
+
+
 if want_svodki_api_hooks():
     install_svodki_api_hooks()

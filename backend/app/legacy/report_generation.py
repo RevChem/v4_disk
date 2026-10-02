@@ -856,6 +856,71 @@ def _elapsed_seconds(start: float) -> str:
     return f"{time.monotonic() - start:.1f} с"
 
 
+# Синхронизация хранилища заданий (SQLite) выполняется бэкендом один раз перед пачкой;
+# после успеха процессы сводок получают SVODKI_STORE_READONLY=1 и в API за заданиями не ходят.
+_TASK_STORE_PRESYNC_AT = 0.0
+_TASK_STORE_PRESYNC_TTL_SEC = 30 * 60
+
+
+def _task_store_dir_str() -> str:
+    return (settings.svodki_task_store_dir or "").strip() or str((_upload_dir_path() / ".task_store").resolve())
+
+
+def _presync_task_store(
+    *,
+    primary_script_dir: Path,
+    plan_script_dir: Path | None,
+    report_date: date,
+    logs: list[str],
+) -> bool:
+    """Запустить tools/sync_task_store.py. False — сводки синхронизируют хранилище сами, как раньше."""
+    global _TASK_STORE_PRESYNC_AT
+    _TASK_STORE_PRESYNC_AT = 0.0
+    if not (settings.svodki_task_store_enabled and settings.svodki_task_store_presync):
+        return False
+    script = None
+    for d in (primary_script_dir, plan_script_dir):
+        if d is not None and (Path(d) / "tools" / "sync_task_store.py").exists():
+            script = Path(d) / "tools" / "sync_task_store.py"
+            break
+    if script is None:
+        logs.append("Синхронизация хранилища заданий: tools/sync_task_store.py не найден — пропуск.")
+        return False
+    env = os.environ.copy()
+    env.update({"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"})
+    env.pop("SVODKI_STORE_READONLY", None)
+    env["REPORT_DATE"] = report_date.isoformat()
+    tok = get_cropwise_token()
+    if tok:
+        env["CROPWISE_API_TOKEN"] = tok
+    cw_base = (settings.cropwise_base_url or "").strip()
+    if cw_base:
+        env["CROPWISE_BASE_URL"] = cw_base
+    if settings.svodki_season_start_date:
+        env["SVODKI_SEASON_START_DATE"] = str(settings.svodki_season_start_date)
+    env["SVODKI_TASK_STORE_DIR"] = _task_store_dir_str()
+    env["PYTHONPATH"] = _pythonpath_for_scripts(primary_script_dir, plan_script_dir)
+    _inject_cropwise_http_env(env)
+    env.pop("SVODKI_STORE_READONLY", None)
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            [_python_for_scripts(primary_script_dir), str(script)],
+            cwd=str(script.parent.parent), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=_script_run_timeout(),
+        )
+    except Exception as exc:  # не критично: сводки синхронизируют сами
+        logs.append(f"Синхронизация хранилища заданий не удалась ({exc}) — режим по-старому.")
+        return False
+    if proc.returncode != 0:
+        tail = (proc.stdout or proc.stderr or "").strip().splitlines()[-3:]
+        logs.append(f"Синхронизация хранилища заданий: код {proc.returncode} — режим по-старому. {' | '.join(tail)}")
+        return False
+    _TASK_STORE_PRESYNC_AT = time.monotonic()
+    logs.append(f"Хранилище заданий синхронизировано один раз перед пачкой: {_elapsed_seconds(started)}")
+    return True
+
+
 def _inject_cropwise_http_env(env: dict[str, str]) -> None:
     """Единые лимиты HTTP к Cropwise для prefetch и subprocess-скриптов."""
     env["SVODKI_PREFETCH_CONCURRENCY"] = str(settings.svodki_prefetch_concurrency)
@@ -871,6 +936,8 @@ def _inject_cropwise_http_env(env: dict[str, str]) -> None:
             (_upload_dir_path() / ".task_store").resolve()
         )
         env.setdefault("SVODKI_TASK_STORE_DIR", store_dir)
+        if _TASK_STORE_PRESYNC_AT and time.monotonic() - _TASK_STORE_PRESYNC_AT < _TASK_STORE_PRESYNC_TTL_SEC:
+            env["SVODKI_STORE_READONLY"] = "1"
 
 
 def _inject_namolot_env(env: dict[str, str]) -> None:
@@ -1173,6 +1240,13 @@ def _generate_server_reports_locked(
             logs.append(
                 "Сводка 1 harvest fast-path: «Сводка овощи»/намолот из доноров 11/10 "
                 "(без повторного API внутри сводки 1)."
+            )
+        if not r23_fast_doc_rebuild:
+            _presync_task_store(
+                primary_script_dir=primary_script_dir,
+                plan_script_dir=plan_script_dir,
+                report_date=request_report_date,
+                logs=logs,
             )
         worker_cap = _max_concurrent_report_workers()
         logs.append(f"Параллельных сводок не более: {worker_cap}")
