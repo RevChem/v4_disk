@@ -9,7 +9,7 @@
   одинаковый префикс для разных вопросов по одному срезу (кэш префикса у DeepSeek
   тарифицируется дешевле — usage.cache_hit_tokens показывает, сработал ли он);
 * thinking по умолчанию выключен (как в analyst), max_tokens ответа ограничен
-  (PROVERKA_FACTS_MAX_OUTPUT_TOKENS, по умолчанию 1800).
+  (PROVERKA_FACTS_MAX_OUTPUT_TOKENS, по умолчанию 600).
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ SYSTEM_PROMPT = (
     "Отвечай кратко, по-русски; task_id называй, когда спрашивают про конкретные задания."
 )
 
-_MAX_QUESTION_CHARS = int(os.environ.get("PROVERKA_FACTS_MAX_QUESTION_CHARS", "3000"))
+_MAX_QUESTION_CHARS = 1000
 
 
 def _runtime() -> dict[str, str]:
@@ -87,7 +87,7 @@ def _call_llm(system: str, user: str, **_kw: Any) -> tuple[str, dict[str, Any]]:
         base_url=rt["base_url"],
         temperature=0,
         timeout=int(os.environ.get("PROVERKA_AI_TIMEOUT_SEC", "120")),
-        max_tokens=int(os.environ.get("PROVERKA_FACTS_MAX_OUTPUT_TOKENS", "1800")),
+        max_tokens=int(os.environ.get("PROVERKA_FACTS_MAX_OUTPUT_TOKENS", "600")),
         **({"extra_body": extra} if extra else {}),
     )
     msg = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 
-from report1_prefetch_io import fetch_mtfmi_for_tasks, load_prefetch_endpoints
+from report1_prefetch_io import load_prefetch_endpoints
+from report_fetch_orchestration import fetch_machine_tasks_window
 
 from .cache import CACHE, Report1DataCache
 
@@ -111,12 +113,13 @@ async def preload_all(
     if task_ids:
         mtfmi_conc = _env_int("REPORT1_V2_MTFMI_CONCURRENCY", 40)
         mtfmi_sem = asyncio.Semaphore(mtfmi_conc)
-        CACHE.mtfmi_by_task = await fetch_mtfmi_for_tasks(
-            sorted(task_ids),
-            mtfmi_sem,
-            client,
-            base_url=legacy.BASE_URL,
-            log_prefix="[v2] ",
+        t_mt = time.monotonic()
+        CACHE.mtfmi_by_task = await _fetch_mtfmi_batched(
+            legacy, sorted(task_ids), mtfmi_sem, client,
+        )
+        print(
+            f"  [timing] v2 mtfmi ({len(task_ids)} задач): {time.monotonic() - t_mt:.1f} с",
+            flush=True,
         )
 
     agro = (endpoints or {}).get("agro_operations") if endpoints else None
@@ -151,34 +154,119 @@ async def _fetch_tasks_http(
     season_start: datetime,
     cutoff: datetime,
 ) -> None:
-    url = f"{legacy.BASE_URL}/machine_tasks"
-    season_start_str = season_start.strftime("%Y-%m-%dT%H:%M:%S")
-    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    """Live-загрузка machine_tasks для wt_ids одним объединённым запросом.
 
-    async def _one(wt_id: int) -> tuple[int, list[dict]]:
-        rows = await legacy.fetch_pages(
-            client,
-            url,
-            {
-                "work_type_id": wt_id,
-                "end_time_gt_eq": season_start_str,
-                "end_time_lt": cutoff_str,
-            },
-            sem,
-        )
-        return wt_id, rows
+    Раньше: по одному запросу на work_type за весь период — длинные последовательные
+    цепочки страниц. Теперь: ``fetch_machine_tasks_window`` (как в сводке 2) —
+    окна по датам × пачки work_type, все запросы параллельно; затем строки
+    раскладываются по work_type_id для патченного fetch_pages.
 
-    results = await asyncio.gather(*[_one(wt) for wt in wt_ids])
-    for wt_id, rows in results:
+    Верхняя граница = cutoff + буфер уборки (как fetch_day_stats для группы 5.0):
+    кэш сам режет по end_time_lt конкретного запроса, так что лишнее не мешает,
+    а строки уборки между cutoff и cutoff+буфер без этого терялись.
+    """
+    wt_set = {int(w) for w in wt_ids}
+    if not wt_set:
+        return
+
+    hi = cutoff
+    buf_fn = getattr(legacy, "_harvest_cutoff_buffer_hours", None)
+    if callable(buf_fn):
+        try:
+            hi = cutoff + timedelta(hours=int(buf_fn()))
+        except Exception:
+            hi = cutoff
+
+    time_params = {
+        "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "end_time_lt": hi.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    t0 = time.monotonic()
+    # use_prefetch=False: prefetch уже разобран в preload_all (endpoints); сюда попадают
+    # только wt, которых там не нашлось, — их нужно взять именно из API.
+    rows = await fetch_machine_tasks_window(
+        client, sem, legacy.BASE_URL, wt_set, time_params,
+        log_prefix="[v2] ", use_prefetch=False,
+    )
+    print(
+        f"  [timing] v2 machine_tasks HTTP ({len(wt_set)} wt, окна×пачки): "
+        f"{time.monotonic() - t0:.1f} с, строк {len(rows)}",
+        flush=True,
+    )
+
+    by_wt: dict[int, list[dict]] = {wt: [] for wt in wt_set}
+    for t in rows:
+        try:
+            wt = int(t.get("work_type_id"))
+        except (TypeError, ValueError):
+            continue
+        if wt in by_wt:
+            by_wt[wt].append(t)
+
+    for wt, wt_rows in by_wt.items():
+        merged = CACHE.tasks_by_wt.get(wt, []) + wt_rows
+        seen: set[int] = set()
+        deduped: list[dict] = []
+        for t in merged:
+            tid = t.get("id")
+            if tid is None or int(tid) in seen:
+                continue
+            seen.add(int(tid))
+            deduped.append(t)
+        # Пустой список — тоже ответ (запрос выполнен): иначе patched_fetch_pages
+        # для этого wt ушёл бы в отдельный годовой HTTP-запрос.
+        CACHE.tasks_by_wt[wt] = deduped
+
+
+async def _fetch_mtfmi_batched(
+    legacy: Any,
+    task_ids: list[int],
+    sem: asyncio.Semaphore,
+    client: httpx.AsyncClient,
+) -> dict[int, list[dict]]:
+    """mtfmi для всех заданий: prefetch JSON + live-пачки (до 300 task_id за запрос).
+
+    Раньше недостающее качалось поштучно (1 задание = 1 запрос, пачками по 120 с
+    барьером между ними). Теперь недостающее идёт через общий
+    ``fetch_mtfmi_map_for_tasks`` (пачки параллельно, поштучно — только если пачку
+    отвергли 4xx; культуры history_item запоминаются).
+    """
+    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks, remember_history_crops
+    from report1_prefetch_io import full_mtfmi_map_from_prefetch
+
+    # Оригинал (до патча v2), чтобы не зациклиться на собственном кэше.
+    fetch_batched = getattr(fetch_mtfmi_map_for_tasks, "_v2_original", fetch_mtfmi_map_for_tasks)
+
+    full = full_mtfmi_map_from_prefetch()
+    out: dict[int, list[dict]] = {}
+    for tid in task_ids:
+        rows = full.get(tid)
         if rows:
-            CACHE.tasks_by_wt.setdefault(wt_id, []).extend(rows)
-            # dedupe by id
-            seen: set[int] = set()
-            deduped: list[dict] = []
-            for t in CACHE.tasks_by_wt[wt_id]:
-                tid = t.get("id")
-                if tid is None or int(tid) in seen:
-                    continue
-                seen.add(int(tid))
-                deduped.append(t)
-            CACHE.tasks_by_wt[wt_id] = deduped
+            out[tid] = list(rows)
+    missing = [tid for tid in task_ids if tid not in out]
+    if full:
+        print(
+            f"  [v2] mtfmi prefetch: покрыто {len(out)}/{len(task_ids)} задач",
+            flush=True,
+        )
+    if missing:
+        print(f"  [v2] mtfmi live batch: {len(missing)} задач", flush=True)
+        live = await fetch_batched(
+            client, sem, legacy.BASE_URL, missing, log_prefix="  [v2] ",
+        )
+        out.update(live)
+        for tid in missing:
+            out.setdefault(tid, [])  # запрошено, строк нет — это тоже ответ
+    if full and out:
+        # live-путь сам запоминает культуры; для строк из prefetch — докачиваем.
+        try:
+            await remember_history_crops(client, legacy.BASE_URL, out, sem)
+        except Exception as exc:
+            print(f"  [v2] культура history_item: {exc}", flush=True)
+    if sum(len(v) for v in out.values()) == 0:
+        print(
+            f"  ВНИМАНИЕ: [v2] mtfmi пустой при {len(task_ids)} заданиях — "
+            "«Факт общий» будет нулевым.",
+            flush=True,
+        )
+    return out

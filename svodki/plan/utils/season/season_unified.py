@@ -605,23 +605,6 @@ def resolve_report_season_config(
     }
 
 
-def winter_spray_task_seasons(
-    selected: set[str] | None,
-    report_date: date,
-) -> set[str]:
-    """Сезоны, в которых озимые опрыскивания сохраняют культуру.
-
-    По умолчанию это год+1. Если в редакторе выбран только сезон без года+1
-    (один 2026 при отчёте в 2026), озимые этого сезона оставляем: иначе рапс
-    и пшеница пропадают, хотя сводки 1 и 6 их считают.
-    """
-    next_year = str(report_date.year + 1)
-    chosen = {str(y) for y in (selected or set()) if str(y).strip()}
-    if not chosen or next_year in chosen:
-        return {next_year}
-    return set(chosen)
-
-
 def fact_season_years_for_group(group_name: str, report_date: date) -> list[int]:
     """Годы machine_task.season для суток и сезонного факта.
 
@@ -687,6 +670,26 @@ def task_season_years_set_for_group(group_name: str, report_date: date) -> set[s
     if not years:
         return None
     return {str(y) for y in years}
+
+
+def winter_spray_task_seasons(
+    season_task_seasons: set[str] | None,
+    report_date: date,
+) -> set[str]:
+    """Сезоны MachineTask, при которых озимые рапс/пшеница остаются в опрыскивании.
+
+    Обычно это год отчёта + 1 (посев озимых). Если редактор задаёт несколько сезонов,
+    берётся следующий календарный год, когда он есть в наборе, иначе — максимальный год.
+    """
+    next_year = str(report_date.year + 1)
+    if not season_task_seasons:
+        return {next_year}
+    if next_year in season_task_seasons:
+        return {next_year}
+    numeric = sorted(int(y) for y in season_task_seasons if str(y).strip().isdigit())
+    if numeric:
+        return {str(numeric[-1])}
+    return {next_year}
 
 
 def task_fact_season_text(task: dict) -> str:

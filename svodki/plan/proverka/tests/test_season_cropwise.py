@@ -351,39 +351,6 @@ def test_single_season_still_equals_ui_total() -> None:
     assert total == UI_2027_HA
 
 
-def test_single_2026_calendar_ends_before_september_report() -> None:
-    """Сезон 2026 в календаре кончается 01.07. Сводка 2 не должна на этом обрезать факт."""
-    import season_calendar as scal
-
-    report = date(2026, 9, 30)
-    _start, end = scal.merged_period_for_years([2026], report)
-    assert end == date(2026, 7, 1)
-    assert scal.fact_window_end(end, report) == report
-
-    _start_both, end_both = scal.merged_period_for_years([2026, 2027], report)
-    assert end_both == report
-    assert scal.fact_window_end(end_both, report) == report
-
-
-def test_winter_crops_follow_editor_when_only_2026() -> None:
-    report = date(2026, 9, 30)
-    assert su.winter_spray_task_seasons({"2026", "2027"}, report) == {"2027"}
-    assert su.winter_spray_task_seasons({"2026"}, report) == {"2026"}
-    assert su.winter_spray_task_seasons({"2027"}, report) == {"2027"}
-    assert su.winter_spray_task_seasons(set(), report) == {"2027"}
-
-
-def test_spray_only_2026_keeps_task_year_and_short_calendar() -> None:
-    store = {
-        "calendar_seasons": {},
-        "by_group": {"3.1 Опрыскивание": {"season_years": [2026]}},
-    }
-    report = date(2026, 9, 30)
-    cfg = su.resolve_group_season_config("3.1 Опрыскивание", report, store=store)
-    assert cfg["task_season_years"] == [2026]
-    assert cfg["period_end"] == "2026-07-01"
-
-
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -7,10 +7,6 @@ prompt_context: |
   Для каждого finding укажи конкретные гектары и ссылки на task_url, если есть.
   local_vs_canonical — только если операция есть в digest; если cross_check по операции OK,
   это НЕ нарушение (компактные сводки 1/2 не дублируют тематические 3/9/10).
-  Используй report_view_by_report, cross_check_crop_diffs, sheet_check_diffs и violations —
-  это те же вкладки, что «Общая» и «N сводка» в «Проверка сводок».
-  В executive_summary группируй вывод: «### N сводка.» и нумерованный список.
-  Промпты про сроки посева/уборки культур (ниже) проверяй по report_date и факту посева в digest.
 
 rules:
   - id: silage_mowing_without_harvest

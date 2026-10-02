@@ -33,13 +33,13 @@ HARVESTER_GROUP_IDS: frozenset[int] = frozenset({5, 9, 16})
 CUTOFF_BUFFER_HOURS: int = 2
 
 
-def shift_date_of_hour(moment: datetime, day_start_hour: int = 6) -> date:
-    """Смена D = [D day_start_hour:00, D+1 day_start_hour:00)."""
-    cal = moment.date()
+def _shift_date_from_dt(dt: datetime, day_start_hour: int = 6) -> date:
+    """Сменный день: [D day_start_hour, D+1 day_start_hour)."""
+    cal = dt.date()
     anchor = datetime(
-        cal.year, cal.month, cal.day, day_start_hour, 0, 0, tzinfo=moment.tzinfo,
+        cal.year, cal.month, cal.day, day_start_hour, 0, 0, tzinfo=dt.tzinfo,
     )
-    if moment < anchor:
+    if dt < anchor:
         return cal - timedelta(days=1)
     return cal
 
@@ -50,28 +50,20 @@ def area_ha_by_shift_date(
     parse_dt: Callable[[object], datetime | None],
     day_start_hour: int = 6,
 ) -> dict[date, float]:
-    """Гектары уборки по сменам, а не одной кучей на день end_time.
-
-    Иначе задание, которое закрыли сегодня, кладёт в «за сутки» всю свою
-    историю: у Чистопольской в сутках оказываются не 61.09 га картофеля
-    и 0.55 га моркови, а урожай за много дней.
-    """
+    """Площадь MTFMI по сменным датам из covered_area_hourly (уборка в сводке 2)."""
     hourly = item.get("covered_area_hourly") or []
     if not hourly:
         return {}
-    out: dict[date, float] = {}
+    portions: dict[date, float] = defaultdict(float)
     for entry in hourly:
-        if not entry:
-            continue
-        moment = parse_dt(entry[0])
-        if moment is None:
+        h = parse_dt(entry[0])
+        if h is None:
             continue
         ha = float(entry[1] or 0.0)
-        if ha == 0.0:
+        if ha <= 0:
             continue
-        shift = shift_date_of_hour(moment, day_start_hour)
-        out[shift] = out.get(shift, 0.0) + ha
-    return out
+        portions[_shift_date_from_dt(h, day_start_hour)] += ha
+    return dict(portions)
 
 
 def harvest_item_area_for_shift(
@@ -82,23 +74,32 @@ def harvest_item_area_for_shift(
     work_type_id: int | None = None,
     parse_dt: Callable[[object], datetime | None],
 ) -> float:
-    """Площадь MTFMI уборки.
-
-    Если передан day_start — только окно смены [day_start, cutoff).
-    Без day_start — все часы до cutoff (сезонный итог одним проходом).
     """
-    del work_type_id
+    Площадь MTFMI за смену уборки (10/11/13/14 → эталон 772.44 га).
+
+    Зерновые wt: сумма hourly с h < cutoff, без нижней границы (как сводка 2).
+    Скашивание (SILAGE_CORN_MOWING_WT_IDS) при переданном day_start: окно
+    [day_start, cutoff) — без spillover за 06:00 и без «хвостов» соседней смены.
+    """
+    is_mowing = (
+        work_type_id is not None
+        and int(work_type_id) in SILAGE_CORN_MOWING_WT_IDS
+        and day_start is not None
+    )
     hourly = item.get("covered_area_hourly") or []
     if not hourly:
         return float(item.get("covered_area") or 0.0)
     cov = 0.0
-    for entry in hourly:
-        moment = parse_dt(entry[0])
-        if moment is None or moment >= cutoff:
-            continue
-        if day_start is not None and moment < day_start:
-            continue
-        cov += float(entry[1] or 0.0)
+    if is_mowing:
+        for entry in hourly:
+            h = parse_dt(entry[0])
+            if h and day_start <= h < cutoff:
+                cov += float(entry[1] or 0.0)
+    else:
+        for entry in hourly:
+            h = parse_dt(entry[0])
+            if h and h < cutoff:
+                cov += float(entry[1] or 0.0)
     return cov
 
 

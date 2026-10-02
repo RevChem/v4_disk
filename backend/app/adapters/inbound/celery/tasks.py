@@ -1,7 +1,7 @@
 """Celery tasks."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from app.adapters.outbound.persistence import repositories as repo
@@ -22,6 +22,8 @@ log = get_logger(__name__)
 
 @worker_ready.connect
 def _reconcile_stale_generation_jobs_on_worker_start(**kwargs) -> None:
+    if not settings.celery_reconcile_on_start:
+        return
     db = SessionLocal()
     try:
         count = reconcile_stale_generation_jobs(db)
@@ -74,98 +76,6 @@ def run_proverka_ai_task(job_id: str) -> dict:
     except Exception as exc:
         log.exception("proverka.ai.failed", job_id=job_id, error=str(exc))
         return {"job_id": job_id, "status": "failed", "error": str(exc)}
-
-
-@celery_app.task(name="app.adapters.inbound.celery.tasks.daily_proverka_ai")
-def daily_proverka_ai() -> dict:
-    """21:00 MSK: proverka только за вчера + AI + email с Excel."""
-    from app.adapters.outbound.proverka.machines_service import (
-        daily_proverka_machines_job,
-        read_job_status as read_machines_job_status,
-        run_job as run_machines_job,
-    )
-    from app.adapters.outbound.proverka.service import daily_proverka_ai_job, read_job_status, run_job
-    from app.application.proverka_mail import send_evening_proverka_report
-
-    today = _today_msk()
-    yesterday = today - timedelta(days=1)
-    state_key = f"daily_proverka_evening:{today.isoformat()}"
-    db = SessionLocal()
-    try:
-        if _already_ran_today(db, state_key, today):
-            return {"skipped": "already_ran", "report_date": today.isoformat()}
-        job_results: list[tuple[date, str | None, dict]] = []
-        machines_job_results: list[tuple[date, str | None, dict]] = []
-        for report_date in (yesterday,):
-            job_id: str | None = None
-            status: dict = {"status": "failed", "error": "не запущено"}
-            try:
-                job_id = daily_proverka_ai_job(report_date)
-                run_job(job_id)
-                status = read_job_status(job_id) or {"status": "failed", "error": "нет status.json"}
-                log.info(
-                    "daily_proverka_ai.completed",
-                    job_id=job_id,
-                    report_date=report_date.isoformat(),
-                    violations=status.get("violation_count"),
-                )
-            except Exception as exc:
-                log.exception(
-                    "daily_proverka_ai.job_failed",
-                    report_date=report_date.isoformat(),
-                    error=str(exc),
-                )
-                status = {"status": "failed", "error": str(exc)}
-            job_results.append((report_date, job_id, status))
-
-            machines_job_id: str | None = None
-            machines_status: dict = {"status": "failed", "error": "не запущено"}
-            try:
-                machines_job_id = daily_proverka_machines_job(report_date)
-                run_machines_job(machines_job_id)
-                machines_status = read_machines_job_status(machines_job_id) or {
-                    "status": "failed",
-                    "error": "нет status.json",
-                }
-                log.info(
-                    "daily_proverka_machines.completed",
-                    job_id=machines_job_id,
-                    report_date=report_date.isoformat(),
-                )
-            except Exception as exc:
-                log.exception(
-                    "daily_proverka_machines.job_failed",
-                    report_date=report_date.isoformat(),
-                    error=str(exc),
-                )
-                machines_status = {"status": "failed", "error": str(exc)}
-            machines_job_results.append((report_date, machines_job_id, machines_status))
-
-        mail_result = send_evening_proverka_report(job_results, machines_job_results)
-        repo.mark_schedule_enqueued(db, state_key, today)
-        record_activity(
-            db,
-            action="proverka.evening_report",
-            dates=[d.isoformat() for d, _, _ in job_results],
-            mail=mail_result,
-        )
-        return {
-            "report_dates": [d.isoformat() for d, _, _ in job_results],
-            "jobs": [
-                {"date": d.isoformat(), "job_id": jid, "status": st.get("status")}
-                for d, jid, st in job_results
-            ],
-            "machines_jobs": [
-                {"date": d.isoformat(), "job_id": jid, "status": st.get("status")}
-                for d, jid, st in machines_job_results
-            ],
-            "mail": mail_result,
-        }
-    except Exception as exc:
-        log.exception("daily_proverka_ai.failed", error=str(exc))
-        return {"error": str(exc)}
-    finally:
-        db.close()
 
 
 @celery_app.task(name="app.adapters.inbound.celery.tasks.run_generation_job_task", bind=True)

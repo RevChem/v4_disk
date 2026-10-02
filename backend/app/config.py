@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     svodki_prefetch_concurrency: int = 20
     svodki_prefetch_mtfmi_concurrency: int = 30
     svodki_prefetch_http_retries: int = 5
+    # Инкрементальное хранилище machine_tasks/mtfmi между запусками сводок (см. svodki_task_store.py).
+    # Пустой путь = <upload_dir>/.task_store; выключить: svodki_task_store_enabled=false.
+    svodki_task_store_enabled: bool = True
+    svodki_task_store_dir: str = ""
     svodki_report22_http_concurrency: int = 15
     svodki_pdf_convert_max_workers: int = 3
     max_upload_bytes: int = 52_428_800
@@ -72,6 +76,13 @@ class Settings(BaseSettings):
     celery_broker_url: str = "amqp://guest:guest@rabbitmq:5672//"
     celery_result_backend: str = "redis://redis:6379/1"
     celery_enabled: bool = True
+    # Пусто — все задачи в очереди "celery" (как раньше). Имя очереди (например "heavy") —
+    # тяжёлые задачи (генерация, proverka) уходят в неё, а лёгкие (check_schedules)
+    # остаются в "celery". Значение должно совпадать у api, beat и обоих worker.
+    celery_heavy_queue: str = ""
+    # Сверять «зависшие» задачи при старте worker. Выключается на лёгком worker, чтобы
+    # его перезапуск не пометил работающую задачу тяжёлого worker как потерянную.
+    celery_reconcile_on_start: bool = True
     auth_rate_limit_per_minute: int = 30
     # SMTP (verify / reset / proverka / schedule mail)
     smtp_host: str = Field(default="", validation_alias=AliasChoices("SMTP_HOST", "MAIL_SERVER"))
@@ -93,9 +104,6 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("SMTP_USE_SSL", "MAIL_USE_SSL"),
     )
-    # 21:00 MSK — proverka за вчера+сегодня и email с Excel
-    proverka_evening_mail_enabled: bool = True
-    proverka_evening_mail_to: str = ""
     public_base_url: str = "http://127.0.0.1:8080"
     # Schedule (MSK cron-like, stored in DB)
     schedule_timezone: str = "Europe/Moscow"
@@ -147,7 +155,7 @@ class Settings(BaseSettings):
         except (TypeError, ValueError):
             return 3
 
-    @field_validator("smtp_use_tls", "smtp_use_ssl", "proverka_evening_mail_enabled", mode="before")
+    @field_validator("smtp_use_tls", "smtp_use_ssl", "celery_reconcile_on_start", mode="before")
     @classmethod
     def _bool_env(cls, v: object) -> bool:
         if isinstance(v, bool):

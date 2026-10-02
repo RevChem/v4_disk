@@ -19,10 +19,12 @@
 """
 from __future__ import annotations
 
+
 import asyncio
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +37,11 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import report_async_client, run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
+from svodki_timing import stage, timing_finish, timing_start
 
 def _bootstrap_api_hooks() -> None:
     """Prefetch/API cache (sitecustomize) до requests/httpx."""
@@ -187,47 +194,20 @@ session.headers.update({"X-User-Api-Token": API_TOKEN})
 
 
 def _prefetch_endpoints() -> dict | None:
+    from svodki_prefetch_io import load_prefetch_endpoints
+
     global _PREFETCH_ENDPOINTS, _PREFETCH_LOAD_DONE
     if _PREFETCH_LOAD_DONE:
         return _PREFETCH_ENDPOINTS
     _PREFETCH_LOAD_DONE = True
-    raw = (os.environ.get("SVODKI_PREFETCH_DATA_PATH") or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        endpoints = data.get("endpoints")
-        if isinstance(endpoints, dict):
-            _PREFETCH_ENDPOINTS = endpoints
-            profile = str(data.get("prefetch_profile") or "").strip()
-            print(
-                f"  Prefetch JSON: {path.name}"
-                + (f" ({profile})" if profile else ""),
-                flush=True,
-            )
-    except Exception as exc:
-        print(f"  Prefetch JSON не прочитан ({exc}), живой API", flush=True)
+    _PREFETCH_ENDPOINTS = load_prefetch_endpoints()
     return _PREFETCH_ENDPOINTS
 
 
 def _mtfmi_map_from_prefetch(task_ids: set[int]) -> dict[int, list[dict]]:
-    endpoints = _prefetch_endpoints()
-    if not endpoints:
-        return {}
-    rows = endpoints.get("machine_task_field_mapping_items") or []
-    out: dict[int, list[dict]] = {}
-    for row in rows:
-        try:
-            tid = int(row.get("machine_task_id"))
-        except Exception:
-            continue
-        if tid not in task_ids:
-            continue
-        out.setdefault(tid, []).append(row)
-    return out
+    from svodki_prefetch_io import mtfmi_subset_from_prefetch
+
+    return mtfmi_subset_from_prefetch(task_ids)
 
 
 def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
@@ -236,7 +216,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
     for _ in range(500):
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**p, "from_id": from_id, "limit": 1000},
+            params={**p, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=120,
         )
         r.raise_for_status()
@@ -247,7 +227,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -271,26 +251,6 @@ def get_all_page(endpoint: str, params: dict | None = None) -> list[dict]:
     return results
 
 
-async def _fetch_pages_async(
-    client: httpx.AsyncClient, url: str, params: dict, sem: asyncio.Semaphore,
-) -> list[dict]:
-    items, from_id = [], 0
-    while True:
-        async with sem:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-        body  = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta    = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = last_id + 1
-    return items
-
-
 async def fetch_mtfmi_async(task_ids: list[int]) -> dict[int, list[dict]]:
     task_set = set(task_ids)
     out = _mtfmi_map_from_prefetch(task_set)
@@ -308,16 +268,7 @@ async def fetch_mtfmi_async(task_ids: list[int]) -> dict[int, list[dict]]:
 
     from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
 
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    limits = httpx.Limits(
-        max_connections=max(SEMAPHORE_LIMIT + 10, 40),
-        max_keepalive_connections=40,
-    )
-    async with httpx.AsyncClient(
-        headers={"X-User-Api-Token": API_TOKEN},
-        timeout=120,
-        limits=limits,
-    ) as client:
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
         live = await fetch_mtfmi_map_for_tasks(
             client, sem, BASE_URL, missing, log_prefix="[r26] ",
         )
@@ -485,21 +436,62 @@ def load_references():
 # СБОРКА ДАННЫХ
 # =============================================================================
 
-def collect_data(field_to_firm, machine_name, machine_group, machine_reg, machine_vin):
-    period_start = datetime(DATE_FROM.year, DATE_FROM.month, DATE_FROM.day,
-                            SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK)
-    period_end   = datetime(DATE_TO.year, DATE_TO.month, DATE_TO.day,
-                            SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
+def _fetch_period_tasks_live(mt_params: dict[str, str]) -> list[dict]:
+    """Все machine_tasks периода без prefetch.
 
+    Длинный период (> окна в днях) — параллельные окна по датам; иначе — прежний
+    одиночный курсор. Любая ошибка оконного пути → откат на прежний get_all.
+    """
+    try:
+        from live_machine_tasks_fetch import (
+            fetch_machine_tasks_date_windows_async,
+            should_use_windowed_live_fetch,
+        )
+
+        if should_use_windowed_live_fetch(mt_params):
+            async def _windowed():
+                async with report_async_client(
+                    API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120,
+                ) as (client, sem):
+                    return await fetch_machine_tasks_date_windows_async(
+                        client, BASE_URL, mt_params, sem, log_prefix="[r26] ",
+                    )
+
+            return run_report_async(_windowed())
+    except Exception as exc:
+        print(f"  [r26] оконная загрузка не удалась ({exc}); один курсор", flush=True)
+    return get_all("machine_tasks", mt_params)
+
+
+def _fetch_period_machine_tasks() -> list[dict]:
+    period_start = datetime(
+        DATE_FROM.year, DATE_FROM.month, DATE_FROM.day,
+        SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK,
+    )
+    period_end = datetime(
+        DATE_TO.year, DATE_TO.month, DATE_TO.day,
+        SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK,
+    ) + timedelta(days=1)
     start_str = period_start.strftime("%Y-%m-%dT%H:%M:%S")
-    end_str   = period_end.strftime("%Y-%m-%dT%H:%M:%S")
+    end_str = period_end.strftime("%Y-%m-%dT%H:%M:%S")
+    from svodki_prefetch_io import prefetch_tasks_by_wt, sync_machine_tasks_prefetch_or_batch
 
     print(f"\n  Загружаем machine_tasks ({start_str} — {end_str})...")
-    all_tasks = get_all("machine_tasks", {
-        "end_time_gt_eq": start_str,
-        "end_time_lt":    end_str,
-    })
-
+    mt_params = {"end_time_gt_eq": start_str, "end_time_lt": end_str}
+    index = prefetch_tasks_by_wt()
+    wt_scope = index.keys() if index else set()
+    _t_fetch = time.monotonic()
+    if index:
+        all_tasks = sync_machine_tasks_prefetch_or_batch(
+            get_all, wt_scope, mt_params, log_prefix="[r26] ",
+        )
+    else:
+        all_tasks = _fetch_period_tasks_live(mt_params)
+    print(
+        f"  [timing] r26 machine_tasks: {time.monotonic() - _t_fetch:.1f} с "
+        f"({'prefetch/batch' if index else 'live'})",
+        flush=True,
+    )
     seen: set[int] = set()
     unique_tasks: list[dict] = []
     for t in all_tasks:
@@ -507,8 +499,26 @@ def collect_data(field_to_firm, machine_name, machine_group, machine_reg, machin
         if tid not in seen:
             seen.add(tid)
             unique_tasks.append(t)
-    all_tasks = unique_tasks
-    print(f"  Задач всего: {len(all_tasks)}")
+    print(f"  Задач всего: {len(unique_tasks)}")
+    return unique_tasks
+
+
+def collect_data(
+    field_to_firm,
+    machine_name,
+    machine_group,
+    machine_reg,
+    machine_vin,
+    *,
+    all_tasks: list[dict] | None = None,
+):
+    period_start = datetime(DATE_FROM.year, DATE_FROM.month, DATE_FROM.day,
+                            SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK)
+    period_end   = datetime(DATE_TO.year, DATE_TO.month, DATE_TO.day,
+                            SHIFT_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
+
+    if all_tasks is None:
+        all_tasks = _fetch_period_machine_tasks()
     if not all_tasks:
         return {}
 
@@ -520,7 +530,7 @@ def collect_data(field_to_firm, machine_name, machine_group, machine_reg, machin
 
     task_ids  = [t["id"] for t in harvester_tasks]
     print("  Загружаем field mapping items (async)...")
-    mtfmi_map = asyncio.run(fetch_mtfmi_async(task_ids))
+    mtfmi_map = run_report_async(fetch_mtfmi_async(task_ids))
 
     # machine_id → firm → day → {secs, area}
     machine_firm_days: dict[int, dict] = defaultdict(
@@ -1099,17 +1109,37 @@ def write_report(result: dict[str, list[dict]]) -> None:
 # MAIN
 # =============================================================================
 
-def build_report() -> None:
+async def build_report_async() -> None:
     print(
         f"=== Отчёт по комбайнам | "
         f"{DATE_FROM.strftime('%d.%m.%Y')} — {DATE_TO.strftime('%d.%m.%Y')} ===\n"
     )
-    field_to_firm, machine_name, machine_group, machine_reg, machine_vin = load_references()
-    result = collect_data(field_to_firm, machine_name, machine_group, machine_reg, machine_vin)
+
+    timing_start()
+
+    async def _tasks():
+        return await asyncio.to_thread(_fetch_period_machine_tasks)
+
+    with stage("справочники ∥ machine_tasks (wall)"):
+        refs, all_tasks = await run_parallel_refs_and_fetch(
+            load_references, _tasks, label="r26-tasks",
+        )
+    field_to_firm, machine_name, machine_group, machine_reg, machine_vin = refs
+    with stage("collect_data (mtfmi + расчёт)"):
+        result = collect_data(
+            field_to_firm, machine_name, machine_group, machine_reg, machine_vin,
+            all_tasks=all_tasks,
+        )
     print(f"\n  Агрофирм с данными: {len(result)}")
     for firm, rows in result.items():
         print(f"  → {firm}: {len(rows)} комбайнов")
-    write_report(result)
+    with stage("Excel + сохранение"):
+        write_report(result)
+    timing_finish()
+
+
+def build_report() -> None:
+    run_report_async(build_report_async())
 
 
 if __name__ == "__main__":

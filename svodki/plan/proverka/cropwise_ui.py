@@ -430,32 +430,6 @@ def column_work_types(col: dict | None) -> list[str]:
     return [str(x) for x in (col.get("work_type_names") or [])]
 
 
-def matching_work_type_indexes(names: list[str], hints: list[str] | None) -> list[int] | None:
-    """
-    Индексы work_type_names, чьё имя точно совпало с запрошенной задачей.
-
-    None — в колонке одна задача и она совпала: ячейка целиком её факт.
-    [] — совпадений нет, сумму колонки брать нельзя.
-    Непустой список — только эти позиции, остальные задачи колонки не входят.
-    """
-    from proverka.task_names import names_match
-
-    if not names or not hints:
-        return [] if names else None
-    hits = [i for i, name in enumerate(names) if any(names_match(name, hint) for hint in hints)]
-    if len(names) == 1 and len(hits) == 1:
-        return None
-    return hits
-
-
-def selected_work_type_names(col: dict | None, hints: list[str] | None) -> list[str]:
-    names = column_work_types(col)
-    indexes = matching_work_type_indexes(names, hints)
-    if indexes is None:
-        return names
-    return [names[i] for i in indexes]
-
-
 def _normalize_name(name: str) -> str:
     s = name.replace('"', "").replace("«", "").replace("»", "").strip().lower()
     for prefix in ("ооо ", "аф ", "чо "):
@@ -597,166 +571,79 @@ def _is_label_column(col: dict) -> bool:
     return False
 
 
-def _column_matches_tasks(col: dict, hints: list[str]) -> bool:
-    names = column_work_types(col)
-    if not names or not hints:
-        return False
-    indexes = matching_work_type_indexes(names, hints)
-    return indexes is None or bool(indexes)
-
-
 def pick_fact_column(columns: list[dict], hints: list[str]) -> tuple[dict | None, str]:
     """
-    Первая колонка, в которой есть точно запрошенная задача.
+    Колонка факта + признак того, насколько уверенно она выбрана.
 
-    confidence: "exact" — имя задачи совпало; "none" — совпадения нет.
-    Колонку по слову «га» или по единственной «Площади» не выбираем.
+    confidence: "hint" — совпал явный хинт сводки; "area" — единственная
+    колонка «Площадь…»; "guess" — пришлось угадывать (это уже повод для
+    предупреждения, раньше такой выбор был молчаливым); "none" — не нашли.
     """
+    for hint in hints:
+        for col in columns:
+            if _is_label_column(col):
+                continue
+            name = (col.get("name") or "").strip()
+            if hint.lower() in name.lower():
+                return col, "hint"
+    area_cols = [
+        c for c in columns
+        if not _is_label_column(c)
+        and "площадь" in (c.get("name") or "").lower()
+        and c.get("key") != "name"
+    ]
+    if len(area_cols) == 1:
+        return area_cols[0], "area"
+    # Угадывание оставлено как последний шанс, но только для колонок в гектарах.
     for col in columns:
-        if _is_label_column(col):
+        name = (col.get("name") or "").lower()
+        if "площадь" in name or col.get("key") == "name":
             continue
-        if _column_matches_tasks(col, hints):
-            return col, "exact"
+        if "га" not in name:
+            continue
+        return col, "guess"
     return None, "none"
 
 
 def matching_fact_columns(columns: list[dict], hints: list[str]) -> list[dict]:
-    """Все колонки, где есть хотя бы одна точно запрошенная задача.
-
-    «Уборка» и «Кормозаготовка» суммируются, только если в каждой лежит
-    своя задача из запроса, а не потому что в заголовке есть «га».
     """
+    Колонки факта.
+
+    Первая подходящая колонка — как раньше. Дополнительно суммируются
+    соседние группы той же операции («Уборка» и «Кормозаготовка»).
+    Запасные хинты «Обработ» и «Площадь» вторую колонку не добавляют.
+    """
+    primary, _conf = pick_fact_column(columns, hints)
     matched: list[dict] = []
     seen: set[Any] = set()
-    for col in columns:
-        if _is_label_column(col):
+    if primary:
+        matched.append(primary)
+        seen.add(primary.get("key"))
+    broad = {"обработ", "площадь"}
+    for hint in hints:
+        needle = str(hint or "").strip().lower()
+        if not needle or needle in broad:
             continue
-        key = col.get("key")
-        if key in seen or not _column_matches_tasks(col, hints):
-            continue
-        matched.append(col)
-        seen.add(key)
-    return matched
-
-
-def fact_column_mismatch(columns: list[dict], hints: list[str]) -> str | None:
-    """Точная причина, почему колонку факта нельзя использовать. None — всё совпало."""
-    from proverka.task_names import is_known_task, names_match
-
-    requested = [str(hint).strip() for hint in hints if str(hint or "").strip()]
-    if not requested:
-        return "не задано точное имя задачи"
-    present: list[str] = []
-    unknown: list[str] = []
-    bare: list[str] = []
-    for col in columns:
-        if _is_label_column(col):
-            continue
-        title = (col.get("name") or col.get("key") or "").strip()
-        names = column_work_types(col)
-        if not names:
-            if title:
-                bare.append(title)
-            continue
-        for name in names:
-            present.append(name)
-            if not is_known_task(name):
-                unknown.append(name)
-    matched = matching_fact_columns(columns, requested)
-    skipped = [
-        name for name in present
-        if is_known_task(name) and not any(names_match(name, hint) for hint in requested)
-    ]
-    parts: list[str] = []
-    if unknown:
-        parts.append(
-            "неизвестная задача: "
-            + ", ".join(f"«{name}»" for name in unknown)
-            + ". В списке допустимых её нет"
-        )
-    if not matched:
-        if present:
-            parts.append(
-                "нет точного совпадения. Ожидали: "
-                + ", ".join(f"«{name}»" for name in requested)
-                + ". В ответе: "
-                + ", ".join(f"«{name}»" for name in present)
-            )
-        elif bare:
-            parts.append(
-                "нет точного совпадения. Ожидали: "
-                + ", ".join(f"«{name}»" for name in requested)
-                + ". Колонки без списка задач: "
-                + ", ".join(f"«{name}»" for name in bare)
-            )
-        else:
-            parts.append(
-                "нет точного совпадения. Ожидали: "
-                + ", ".join(f"«{name}»" for name in requested)
-                + ". В ответе колонок с задачами нет"
-            )
-    elif bare:
-        parts.append(
-            "колонки без списка задач, гектары не взяты: "
-            + ", ".join(f"«{name}»" for name in bare)
-        )
-    if matched and skipped:
-        parts.append(
-            "не взяты, имя не совпало с запросом: "
-            + ", ".join(f"«{name}»" for name in skipped)
-        )
-    if not parts:
-        return None
-    return "; ".join(parts)
-
-
-def cell_shape_error(rows: list, columns: list[dict], hints: list[str]) -> str | None:
-    """Ячейка-список должна быть той же длины, что work_type_names. Иначе это не «ноль гектаров»."""
-    fact_cols = matching_fact_columns(columns, hints)
-
-    def walk(nodes: list) -> str | None:
-        for row in nodes or []:
-            if not isinstance(row, dict):
+        for col in columns:
+            if _is_label_column(col):
                 continue
-            for col in fact_cols:
-                names = column_work_types(col)
-                indexes = matching_work_type_indexes(names, hints)
-                if not indexes:
-                    continue
-                value = row.get(col.get("key"))
-                if value is None or value == "":
-                    continue
-                if isinstance(value, list) and len(value) == len(names):
-                    continue
-                got = len(value) if isinstance(value, list) else type(value).__name__
-                title = col.get("name") or col.get("key")
-                return (
-                    f"колонка «{title}»: в ячейке {got} значений, "
-                    f"задач {len(names)} ({', '.join(names)})"
-                )
-            found = walk(row.get("children") or [])
-            if found:
-                return found
-        return None
-
-    return walk(rows)
+            key = col.get("key")
+            if key in seen:
+                continue
+            if needle in (col.get("name") or "").lower():
+                matched.append(col)
+                seen.add(key)
+    return matched
 
 
 def _pick_fact_column(columns: list[dict], hints: list[str]) -> dict | None:
     return pick_fact_column(columns, hints)[0]
 
 
-def _row_metric_ha(row: dict, col: dict | None, hints: list[str] | None = None) -> float:
+def _row_metric_ha(row: dict, col: dict | None) -> float:
     if not col:
         return 0.0
-    value = row.get(col.get("key"))
-    names = column_work_types(col)
-    indexes = matching_work_type_indexes(names, hints)
-    if indexes is not None:
-        if not indexes or not isinstance(value, list) or len(value) != len(names):
-            return 0.0
-        return sum(_parse_ha_number(value[i]) for i in indexes if 0 <= i < len(value))
-    return _cell_ha(value)
+    return _cell_ha(row.get(col.get("key")))
 
 
 def _parse_tab(
@@ -770,17 +657,11 @@ def _parse_tab(
     fact_cols = matching_fact_columns(columns, fact_hints)
     fact_col = fact_cols[0] if fact_cols else None
     _picked, fact_confidence = pick_fact_column(columns, fact_hints)
-    fact_column_error = fact_column_mismatch(columns, fact_hints)
-    shape_error = cell_shape_error(rows, columns, fact_hints)
-    if shape_error:
-        fact_column_error = (
-            f"{fact_column_error}; {shape_error}" if fact_column_error else shape_error
-        )
-    if fact_cols and not fact_column_error:
-        fact_confidence = "exact"
+    if len(fact_cols) > 1:
+        fact_confidence = "hint"
 
     def _fact_ha(row: dict) -> float:
-        return sum(_row_metric_ha(row, col, fact_hints) for col in fact_cols)
+        return sum(_row_metric_ha(row, col) for col in fact_cols)
     area_col = next((c for c in columns if "Площадь" in (c.get("name") or "")), None)
     display_aliases = _display_name_aliases(firm_names)
 
@@ -874,11 +755,10 @@ def _parse_tab(
             str(c.get("name") or "") for c in fact_cols if c.get("name")
         ) or (fact_col or {}).get("name"),
         "fact_column_confidence": fact_confidence,
-        "fact_column_error": fact_column_error,
         "fact_work_types": [
             name
             for col in fact_cols
-            for name in selected_work_type_names(col, fact_hints)
+            for name in column_work_types(col)
         ],
         "area_column": (area_col or {}).get("name"),
         "column_titles": [c.get("name") for c in columns],
@@ -1002,7 +882,7 @@ def parse_work_report_detail_rows(
         return []
 
     def _detail_ha(row: dict) -> float:
-        return sum(_row_metric_ha(row, col, fact_hints) for col in fact_cols)
+        return sum(_row_metric_ha(row, col) for col in fact_cols)
 
     display_aliases = _display_name_aliases(firm_names)
     out: list[dict[str, Any]] = []
@@ -1115,12 +995,6 @@ def parse_work_report_body(
         "detail_rows": detail_rows,
     }
     out["fact_column_confidence"] = primary.get("fact_column_confidence")
-    column_error = primary.get("fact_column_error")
-    if not (primary.get("fact_total_ha") or primary.get("fact_by_firm")):
-        column_error = (
-            by_regions.get("fact_column_error") or by_crops.get("fact_column_error")
-        )
-    out["fact_column_error"] = column_error
     out["fact_work_types"] = primary.get("fact_work_types") or []
     out["unmatched_firm_ha"] = primary.get("unmatched_firm_ha", 0.0)
     out["fact_total_residual_ha"] = primary.get("fact_total_residual_ha", 0.0)

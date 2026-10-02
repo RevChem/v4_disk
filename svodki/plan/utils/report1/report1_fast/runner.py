@@ -9,6 +9,24 @@ import time
 import httpx
 import openpyxl
 
+try:
+    from svodki_timing import stage, stage_add, timing_finish, timing_start
+except ImportError:  # таймеры необязательны
+    from contextlib import contextmanager as _cm
+
+    @_cm
+    def stage(name):  # type: ignore[misc]
+        yield
+
+    def stage_add(name, seconds):  # type: ignore[misc]
+        pass
+
+    def timing_start():  # type: ignore[misc]
+        pass
+
+    def timing_finish():  # type: ignore[misc]
+        pass
+
 from .extra_sheets import (
     append_harvest_sheets,
     prepare_harvest_cache,
@@ -39,6 +57,7 @@ def _skip_harvest_api_fetch() -> bool:
 
 
 async def build_report_async_v2() -> None:
+    timing_start()
     legacy = load_legacy()
     apply_patches(legacy)
 
@@ -49,11 +68,13 @@ async def build_report_async_v2() -> None:
     tag = "standalone" if standalone else "v2"
 
     t0 = time.monotonic()
-    legacy.load_reference_data()
+    with stage("справочники"):
+        legacy.load_reference_data()
     print(f"[{tag}] справочники: {time.monotonic() - t0:.1f} с")
 
     print(f"[{tag}] Строим план...")
-    plan_data = legacy.build_plan_ha()
+    with stage("план"):
+        plan_data = legacy.build_plan_ha()
 
     day_start, cutoff = legacy.compute_time_range(legacy.REPORT_DATE)
     headers = {"X-User-Api-Token": legacy.API_TOKEN}
@@ -81,14 +102,24 @@ async def build_report_async_v2() -> None:
         # Сначала полный preload (иначе 1.1 МУ может прочитать неполный prefetch-кэш
         # и «Сводка по культурам» занижает факт, напр. 13k вместо 79k).
         print(f"[{tag}] preload machine_tasks/mtfmi (concurrency={concurrency})...")
-        await preload_all(legacy, client, sem, day_start, cutoff, skipped_perf_groups)
+        with stage("v2 preload (machine_tasks + mtfmi)"):
+            await preload_all(legacy, client, sem, day_start, cutoff, skipped_perf_groups)
         print(f"[{tag}] 1.1 МУ + остальные группы...")
-        fert_bundle, other_group_stats = await asyncio.gather(
-            legacy.fetch_fertilizer_11_mtfmi(client, sem, day_start, cutoff),
-            legacy._fetch_other_group_stats(
-                client, sem, day_start, cutoff, other_groups, skipped_perf_groups,
-            ),
-        )
+        # 1.1 и группы идут параллельно: карту поле→фирма сбрасываем один раз здесь,
+        # а 1.1 дописывает в неё (merge_firm_map) — иначе его полный пересбор затёр бы
+        # поля, уже добавленные группами.
+        reset = getattr(legacy, "reset_field_firm_resolution", None)
+        if callable(reset):
+            reset()
+        with stage("v2 расчёт 1.1 + группы (wall)"):
+            fert_bundle, other_group_stats = await asyncio.gather(
+                legacy.fetch_fertilizer_11_mtfmi(
+                    client, sem, day_start, cutoff, merge_firm_map=True,
+                ),
+                legacy._fetch_other_group_stats(
+                    client, sem, day_start, cutoff, other_groups, skipped_perf_groups,
+                ),
+            )
     harvest_skip = _skip_harvest_api_fetch()
     standalone = _is_standalone_mode()
     harvest_prepared = None
@@ -210,8 +241,10 @@ async def build_report_async_v2() -> None:
             print(f"  [{tag}] Предупреждение: не удалось переставить листы — {exc}")
 
     output_file = f"1. fertilizer_report_{legacy.REPORT_DATE}.xlsx"
-    wb.save(output_file)
+    with stage("сохранение xlsx"):
+        wb.save(output_file)
     print(f"\n[{tag}] Сохранено: {output_file} (всего {time.monotonic() - t0:.1f} с)")
+    timing_finish()
 
 
 def build_report() -> None:

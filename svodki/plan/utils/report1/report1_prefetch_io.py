@@ -11,6 +11,12 @@ from typing import Any, Callable
 
 import httpx
 
+try:
+    import plans  # noqa: F401
+except Exception:
+    pass
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+
 _PREFETCH_ENDPOINTS: dict[str, Any] | None = None
 _PREFETCH_LOAD_DONE = False
 _FULL_MTFMI_MAP: dict[int, list[dict]] | None = None
@@ -21,24 +27,9 @@ def load_prefetch_endpoints() -> dict[str, Any] | None:
     if _PREFETCH_LOAD_DONE:
         return _PREFETCH_ENDPOINTS
     _PREFETCH_LOAD_DONE = True
-    raw = (os.environ.get("SVODKI_PREFETCH_DATA_PATH") or "").strip()
-    if not raw:
-        return None
-    try:
-        data = json.loads(Path(raw).read_text(encoding="utf-8"))
-        endpoints = data.get("endpoints")
-        if isinstance(endpoints, dict):
-            _PREFETCH_ENDPOINTS = endpoints
-            profile = str(data.get("prefetch_profile") or "").strip()
-            mt = endpoints.get("machine_tasks") or []
-            mm = endpoints.get("machine_task_field_mapping_items") or []
-            print(
-                f"  Prefetch JSON ({profile or 'default'}): "
-                f"machine_tasks={len(mt)}, mtfmi rows={len(mm)}",
-                flush=True,
-            )
-    except Exception as exc:
-        print(f"  Prefetch JSON не прочитан ({exc}), живой API", flush=True)
+    from svodki_prefetch_io import load_prefetch_endpoints as _shared_load
+
+    _PREFETCH_ENDPOINTS = _shared_load()
     return _PREFETCH_ENDPOINTS
 
 
@@ -185,7 +176,7 @@ async def fetch_mtfmi_for_tasks(
                             params={
                                 "machine_task_id": tid,
                                 "from_id": from_id,
-                                "limit": 1000,
+                                "limit": CROPWISE_PAGE_LIMIT,
                             },
                         )
                     if r.status_code >= 400:
@@ -201,7 +192,7 @@ async def fetch_mtfmi_for_tasks(
                     items.extend(chunk)
                     meta = body.get("meta", {}).get("response", {})
                     last_id = meta.get("last_record_id")
-                    if not last_id or meta.get("obtained_records", 0) < 100:
+                    if not from_id_should_continue(meta, chunk):
                         break
                     from_id = last_id + 1
                 return tid, items

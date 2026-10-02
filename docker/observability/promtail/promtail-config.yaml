@@ -14,7 +14,7 @@ scrape_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
     relabel_configs:
-      # Только контейнеры с меткой logging=promtail (api, worker, beat)
+      # Только контейнеры с меткой logging=promtail (api, worker, worker-heavy, beat)
       - source_labels: ["__meta_docker_container_label_logging"]
         regex: promtail
         action: keep

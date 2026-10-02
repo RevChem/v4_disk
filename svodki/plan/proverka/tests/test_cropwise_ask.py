@@ -12,14 +12,14 @@ if str(PLAN) not in sys.path:
 from proverka import cropwise_ask as ca  # noqa: E402
 
 FIRMS = ["Агрофирма А", "Агрофирма Б"]
-HINTS = ["3.1 Опрыскивание"]
+HINTS = ["Опрыск"]
 
 
 def _body() -> dict:
     return {
         "regionColumns": [
             {"key": "name", "name": "Культура / Поле"},
-            {"key": "f", "name": "Опрыскивание, га", "work_type_names": ["3.1 Опрыскивание"]},
+            {"key": "f", "name": "Опрыскивание, га"},
         ],
         "regionRows": [
             {"name": "Агрофирма А", "f": "100", "children": [
@@ -32,7 +32,7 @@ def _body() -> dict:
         ],
         "cropColumns": [
             {"key": "name", "name": "Культура / Поле"},
-            {"key": "f", "name": "Опрыскивание, га", "work_type_names": ["3.1 Опрыскивание"]},
+            {"key": "f", "name": "Опрыскивание, га"},
         ],
         "cropRows": [
             {"name": "Соя", "f": "100", "children": [

@@ -291,10 +291,17 @@ TRANSIENT_MARKERS = (
     "httpx.RemoteProtocolError",
     "httpx.ReadTimeout",
     "Too Many Requests",
-    "429",
-    "502",
-    "503",
-    "504",
+)
+# Коды 429/502/503/504 раньше искались как голые подстроки: любое число в выводе упавшего
+# скрипта («1429.5 га», id задачи 50431) превращало обычную ошибку в «временный сбой»,
+# и скрипт перезапускался до 5 раз × 3 раунда. Теперь код должен стоять рядом с текстом
+# HTTP-ошибки (так пишут requests/httpx) либо после слов status / HTTP.
+_TRANSIENT_HTTP_RE = re.compile(
+    r"(?<!\d)(?:429|502|503|504)(?!\d)\s+"
+    r"(?:Client\s+Error|Server\s+Error|Too\s+Many\s+Requests|Bad\s+Gateway"
+    r"|Service\s+Unavailable|Gateway\s+Time-?out)"
+    r"|(?:status(?:_code)?|HTTP)\W{0,3}(?:429|502|503|504)(?!\d)",
+    re.IGNORECASE,
 )
 # SIGKILL/OOM (-9), SIGSEGV (-11), SIGPIPE (-13), SIGTERM (-15).
 TRANSIENT_EXIT_SIGNALS = frozenset({9, 11, 13, 15})
@@ -386,7 +393,11 @@ def _subprocess_should_retry(rc: int, stdout: str, stderr: str, attempt: int, ma
     if rc == 0 or attempt >= max_attempts:
         return False
     merged = f"{stdout}\n{stderr}"
-    return _subprocess_exit_is_transient(rc) or any(marker in merged for marker in TRANSIENT_MARKERS)
+    return (
+        _subprocess_exit_is_transient(rc)
+        or any(marker in merged for marker in TRANSIENT_MARKERS)
+        or _TRANSIENT_HTTP_RE.search(merged) is not None
+    )
 
 
 def _subprocess_retry_backoff_sec(rc: int, attempt: int) -> float:
@@ -855,6 +866,11 @@ def _inject_cropwise_http_env(env: dict[str, str]) -> None:
     env.setdefault("SVODKI_REPORT2_HTTP_CONCURRENCY", r22)
     env.setdefault("SVODKI_MTFMI_HTTP_CHUNK", "300")
     env.setdefault("SVODKI_SKIP_DONOR_XLSX_RECALC", "1")
+    if settings.svodki_task_store_enabled:
+        store_dir = (settings.svodki_task_store_dir or "").strip() or str(
+            (_upload_dir_path() / ".task_store").resolve()
+        )
+        env.setdefault("SVODKI_TASK_STORE_DIR", store_dir)
 
 
 def _inject_namolot_env(env: dict[str, str]) -> None:

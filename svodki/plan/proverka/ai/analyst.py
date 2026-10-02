@@ -202,7 +202,7 @@ def _fallback_report(digest: dict[str, Any]) -> AiProverkaReport:
         report_date=str(digest.get("report_date") or ""),
         violation_count=vc,
         executive_summary=summary,
-        findings=findings[: int(os.environ.get("PROVERKA_AI_MAX_FINDINGS", "45"))],
+        findings=findings[: int(os.environ.get("PROVERKA_AI_MAX_FINDINGS", "15"))],
     )
 
 
@@ -250,17 +250,14 @@ def _invoke_deepseek_json(
         base_url=base_url,
         temperature=0.1,
         timeout=int(os.environ.get("PROVERKA_AI_TIMEOUT_SEC", "120")),
-        max_tokens=int(os.environ.get("PROVERKA_AI_MAX_OUTPUT_TOKENS", "6144")),
+        max_tokens=int(os.environ.get("PROVERKA_AI_MAX_OUTPUT_TOKENS", "2048")),
         model_kwargs={"response_format": {"type": "json_object"}},
         **({"extra_body": extra_body} if extra_body else {}),
     )
 
-    from proverka.ai.digest import digest_char_limit
-
     user_content = json.dumps(digest, ensure_ascii=False, indent=2)
-    char_limit = digest_char_limit()
-    if len(user_content) > char_limit:
-        user_content = user_content[:char_limit] + "\n…(truncated)"
+    if len(user_content) > 120_000:
+        user_content = user_content[:120_000] + "\n…(truncated)"
 
     response = llm.invoke([
         SystemMessage(content=system + "\n\n" + _json_output_hint()),
@@ -275,23 +272,13 @@ def _invoke_deepseek_json(
     return _parse_llm_json(str(content))
 
 
-def _report_to_markdown(
-    report: AiProverkaReport,
-    *,
-    digest: dict[str, Any] | None = None,
-) -> str:
+def _report_to_markdown(report: AiProverkaReport) -> str:
     lines = [
         f"# AI-отчёт proverka · {report.report_date}",
         "",
         report.executive_summary,
         "",
     ]
-    hint = (digest or {}).get("per_report_markdown_hint") or ""
-    if hint and hint not in (report.executive_summary or ""):
-        lines.append("## По сводкам")
-        lines.append("")
-        lines.append(hint)
-        lines.append("")
     if not report.findings:
         lines.append("_Нарушений не выявлено._")
         return "\n".join(lines)
@@ -330,7 +317,7 @@ def analyze_digest(digest: dict[str, Any]) -> dict[str, Any]:
             "ok": True,
             "llm_used": False,
             "report": report.model_dump(),
-            "markdown": _report_to_markdown(report, digest=digest),
+            "markdown": _report_to_markdown(report),
         }
 
     try:
@@ -342,7 +329,7 @@ def analyze_digest(digest: dict[str, Any]) -> dict[str, Any]:
             "llm_used": False,
             "error": "langchain_openai not installed",
             "report": report.model_dump(),
-            "markdown": _report_to_markdown(report, digest=digest),
+            "markdown": _report_to_markdown(report),
         }
 
     # deepseek-flash — json_object (не json_schema: DeepSeek его не поддерживает)
@@ -361,16 +348,9 @@ def analyze_digest(digest: dict[str, Any]) -> dict[str, Any]:
         extra_body = {"thinking": {"type": "disabled"}}
 
     system = (
-        "Ты ассистент агронома. Анализируешь digest сверки сводок с Cropwise и между сводками. "
-        "Используй ТОЛЬКО факты из JSON (cross_check_*, sheet_check_diffs, report_view_by_report, "
-        "violations, cropwise_issues, rule_findings). Не выдумывай числа. "
-        "violation_count = len(findings). "
-        "executive_summary — 2–4 предложения на русском, затем блоки по каждой затронутой сводке: "
-        "«### N сводка.» и нумерованный список проблем (как в per_report_markdown_hint). "
-        "Для расхождений по культурам между peer-сводками формулируй: "
-        "«Расхождение в культуре «…» с 1 сводкой на X га и на Y га со 2 сводкой». "
-        "Применяй промпты про сроки посева и уборки культур из system: если культура посеяна "
-        "или убрана вне допустимого окна — finding severity=critical с явной датой отчёта. "
+        "Ты ассистент агронома. Анализируешь digest сверки свodok с Cropwise. "
+        "Используй ТОЛЬКО факты из JSON. Не выдумывай числа. "
+        "violation_count = len(findings). executive_summary — 2–4 предложения на русском. "
         "Не включай findings для blank/UI error при svodka=0 и cropwise=0 (нет работ за смену). "
         "Для cropwise-нарушений с diff>0 указывай related_tasks из task_errors_top (task_id, url)."
     )
@@ -393,7 +373,7 @@ def analyze_digest(digest: dict[str, Any]) -> dict[str, Any]:
             "llm_used": True,
             "model": model,
             "report": report.model_dump(),
-            "markdown": _report_to_markdown(report, digest=digest),
+            "markdown": _report_to_markdown(report),
         }
     except Exception as exc:
         err = str(exc)
@@ -415,7 +395,7 @@ def analyze_digest(digest: dict[str, Any]) -> dict[str, Any]:
             "llm_used": False,
             "error": err,
             "report": report.model_dump(),
-            "markdown": _report_to_markdown(report, digest=digest),
+            "markdown": _report_to_markdown(report),
         }
 
 

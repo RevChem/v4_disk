@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import json
 import os
@@ -38,6 +39,17 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import (
+    fetch_all_pages as fetch_pages,
+    fetch_machine_tasks_window,
+    fetch_mtfmi_map_hybrid_async,
+    report_async_client,
+    run_report_async,
+)
+from report_pipeline import run_parallel_refs_and_fetch
+from svodki_timing import stage, timing_finish, timing_start
 import httpx
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -185,7 +197,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
     from_id = 0
     while True:
         r = session.get(f"{BASE_URL}/{endpoint}",
-                        params={**params, "from_id": from_id, "limit": 1000},
+                        params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
                         timeout=120)
         r.raise_for_status()
         body  = r.json()
@@ -195,7 +207,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -399,15 +411,22 @@ def load_reference_data() -> None:
 
     sync_season_start_for_report(REPORT_DATE)
 
-    print("  Загружаем crops...")
-    crops    = get_all_page("crops")
+    from svodki_pipeline import run_reference_jobs
+
+    crop_years = sorted({SEASON_START.year, SEASON_START.year + 1}, reverse=True)
+    jobs: dict[str, object] = {"crops": lambda: get_all_page("crops")}
+    for crop_year in crop_years:
+        jobs[f"history:{crop_year}"] = (
+            lambda yy=crop_year: get_all_from_id("history_items", {"year": yy})
+        )
+    print(f"  Загружаем crops и history_items (годы {crop_years})...")
+    raw = run_reference_jobs(jobs)
+    crops = raw["crops"]
     crop_map = {c["id"]: c.get("name") or c.get("title", "") for c in crops}
     print(f"    {len(crop_map)} культур")
 
-    crop_years = sorted({SEASON_START.year, SEASON_START.year + 1}, reverse=True)
-    print(f"  Загружаем history_items (годы {crop_years})...")
     for crop_year in crop_years:
-        his = get_all_from_id("history_items", {"year": crop_year})
+        his = raw[f"history:{crop_year}"]
         for hi in his:
             fid     = hi.get("field_id")
             crop_id = hi.get("crop_id")
@@ -428,25 +447,6 @@ def field_to_firm_fn(fid: int) -> str:
 # =============================================================================
 # АСИНХРОННЫЕ ЗАПРОСЫ
 # =============================================================================
-
-async def fetch_pages(client: httpx.AsyncClient, url: str,
-                      params: dict, sem: asyncio.Semaphore) -> list[dict]:
-    items, from_id = [], 0
-    while True:
-        async with sem:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-        body  = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta    = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = last_id + 1
-    return items
-
 
 async def fetch_mtfmi(client: httpx.AsyncClient, task_id: int,
                       sem: asyncio.Semaphore) -> tuple[int, list[dict]]:
@@ -479,14 +479,11 @@ async def fetch_all_data(
     cutoff_str       = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     day_start_str    = day_start.strftime("%Y-%m-%dT%H:%M:%S")
 
-    print("    Загружаем machine_tasks за сезон (batch по work_type_id)...")
-    from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
-    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
-
-    all_tasks = await fetch_machine_tasks_by_wt_async(
-        fetch_pages, client, BASE_URL, ALL_WT_IDS,
+    print("    Загружаем machine_tasks за сезон (prefetch / окна по датам)...")
+    all_tasks = await fetch_machine_tasks_window(
+        client, sem, BASE_URL, ALL_WT_IDS,
         {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
-        sem, log_prefix="[r4] ",
+        log_prefix="[r4] ",
     )
 
     tasks_with_area = [t for t in all_tasks if (t.get("covered_area") or 0) > 0]
@@ -511,7 +508,7 @@ async def fetch_all_data(
         )
 
     print("    Загружаем mtfmi для всех заданий...")
-    mtfmi_map = await fetch_mtfmi_map_for_tasks(
+    mtfmi_map = await fetch_mtfmi_map_hybrid_async(
         client, sem, BASE_URL, [t["id"] for t in tasks_with_area], log_prefix="[r4] ",
     )
 
@@ -1248,13 +1245,15 @@ async def compute_harrowing_facts(
     rd = report_date or REPORT_DATE
     sync_season_start_for_report(rd)
     day_start, cutoff = compute_time_range(rd)
-    load_reference_data()
-    headers = {"X-User-Api-Token": API_TOKEN}
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        day_stats, avg_season, total_season_sum, total_machine_days = await fetch_all_data(
-            client, sem, day_start, cutoff,
-        )
+
+    async def _fetch_facts():
+        async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+            return await fetch_all_data(client, sem, day_start, cutoff)
+
+    _, fetched = await run_parallel_refs_and_fetch(
+        load_reference_data, _fetch_facts, label="r4-tasks+mtfmi",
+    )
+    day_stats, avg_season, total_season_sum, total_machine_days = fetched
     return day_stats, avg_season, total_season_sum, total_machine_days, day_start, cutoff
 
 
@@ -1265,9 +1264,11 @@ async def build_report_async() -> None:
     print(f"Смена: {day_start.strftime('%d.%m %H:%M')} — {cutoff.strftime('%d.%m %H:%M')}\n")
 
     print("Загружаем справочники и данные за сезон и за сутки...")
-    day_stats, avg_season, total_season_sum, total_machine_days, day_start, cutoff = (
-        await compute_harrowing_facts(REPORT_DATE)
-    )
+    timing_start()
+    with stage("справочники ∥ задания+mtfmi+ресурсы"):
+        day_stats, avg_season, total_season_sum, total_machine_days, day_start, cutoff = (
+            await compute_harrowing_facts(REPORT_DATE)
+        )
 
     print("\nФормируем Excel...")
     wb = openpyxl.Workbook()
@@ -1279,12 +1280,14 @@ async def build_report_async() -> None:
         write_firm_sheet(wb, firm, day_stats, REPORT_DATE, day_start, cutoff)
 
     output_file = f"report_harrowing_{REPORT_DATE}.xlsx"
-    wb.save(output_file)
+    with stage("Excel: сохранение"):
+        wb.save(output_file)
     print(f"\nСохранено: {output_file}")
+    timing_finish()
 
 
 def build_report() -> None:
-    asyncio.run(build_report_async())
+    run_report_async(build_report_async())
 
 
 if __name__ == "__main__":

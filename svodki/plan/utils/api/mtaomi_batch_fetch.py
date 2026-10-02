@@ -10,6 +10,13 @@ from typing import Any
 
 import httpx
 
+from async_http import (
+    fetch_pages as _fetch_pages,  # noqa: F401  (имя сохранено для обратной совместимости)
+    reraise_if_strict,
+    request_json,
+    should_fallback_single,
+)
+
 MTAOMI_BATCH_SIZE = max(
     1,
     int(
@@ -26,31 +33,6 @@ MASS_REQUEST_BATCH_SIZE = max(
 
 def _chunked(items: list[int], size: int) -> list[list[int]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
-
-
-async def _fetch_pages(
-    client: httpx.AsyncClient,
-    url: str,
-    params: dict,
-    sem: asyncio.Semaphore,
-) -> list[dict]:
-    items: list[dict] = []
-    from_id = 0
-    while True:
-        async with sem:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-        r.raise_for_status()
-        body = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = int(last_id) + 1
-    return items
 
 
 async def _fetch_mtaomi_batch(
@@ -77,6 +59,10 @@ async def _fetch_mtaomi_batch(
     )
     for batch, res in zip(batches, batch_results):
         if isinstance(res, BaseException):
+            # Retry уже исчерпаны внутри request_json. Поштучно имеет смысл только
+            # если пакет отвергнут как некорректный (4xx); иначе — не терять данные молча.
+            if not should_fallback_single(res):
+                raise res
             failed.extend(batch)
             continue
         if not res:
@@ -99,6 +85,7 @@ async def _fetch_mtaomi_batch(
         )
         for i, res in zip(fallback_ids, retry):
             if isinstance(res, BaseException):
+                reraise_if_strict(res)  # раньше: молча пустой список
                 out.setdefault(i, [])
                 continue
             out[i] = list(res)
@@ -160,7 +147,7 @@ async def mass_request_async(
     sem: asyncio.Semaphore,
     batch_size: int = MASS_REQUEST_BATCH_SIZE,
 ) -> list[dict]:
-    """POST /{endpoint}/mass_request батчами."""
+    """POST /{endpoint}/mass_request батчами (чтение, поэтому повтор безопасен)."""
     id_list = list(dict.fromkeys(int(i) for i in ids if i is not None))
     if not id_list:
         return []
@@ -169,15 +156,16 @@ async def mass_request_async(
     out: list[dict] = []
 
     async def _one(batch: list[int]) -> list[dict]:
-        async with sem:
-            r = await client.post(url, json={"data": batch}, timeout=120)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        body = await request_json(
+            client, "POST", url, sem, json_body={"data": batch}, timeout=120,
+        )
+        return body.get("data", [])
 
     batches = _chunked(id_list, batch_size)
     results = await asyncio.gather(*[_one(b) for b in batches], return_exceptions=True)
     for res in results:
         if isinstance(res, BaseException):
+            reraise_if_strict(res)  # раньше: целый батч терялся молча
             continue
         out.extend(res)
     return out

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from plans import (
     API_TOKEN,
     BASE_URL,
@@ -48,6 +49,10 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import fetch_all_pages as fetch_pages, report_async_client, run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -249,7 +254,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
     from_id = 0
     while True:
         r = session.get(f"{BASE_URL}/{endpoint}",
-                        params={**params, "from_id": from_id, "limit": 1000},
+                        params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
                         timeout=120)
         r.raise_for_status()
         body  = r.json()
@@ -259,7 +264,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -492,29 +497,13 @@ def _folder_id_chain(folder_id: int | None, parent_map: dict[int, int | None]) -
 
 
 def _prefetch_endpoints() -> dict[str, list[dict]] | None:
+    from svodki_prefetch_io import load_prefetch_endpoints
+
     global _PREFETCH_ENDPOINTS, _PREFETCH_LOAD_DONE
     if _PREFETCH_LOAD_DONE:
         return _PREFETCH_ENDPOINTS
     _PREFETCH_LOAD_DONE = True
-    raw = os.environ.get("SVODKI_PREFETCH_DATA_PATH", "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        endpoints = data.get("endpoints")
-        if isinstance(endpoints, dict):
-            _PREFETCH_ENDPOINTS = endpoints
-            profile = str(data.get("prefetch_profile") or "").strip()
-            print(
-                f"  Prefetch JSON: {path.name}"
-                + (f" ({profile})" if profile else ""),
-                flush=True,
-            )
-    except Exception as exc:
-        print(f"  Prefetch JSON не прочитан ({exc}), живой API", flush=True)
+    _PREFETCH_ENDPOINTS = load_prefetch_endpoints()
     return _PREFETCH_ENDPOINTS
 
 
@@ -670,32 +659,6 @@ def field_to_firm_fn(fid: int) -> str:
 # АСИНХРОННАЯ ЗАГРУЗКА ДАННЫХ
 # =============================================================================
 
-async def fetch_pages(client: httpx.AsyncClient, url: str,
-                      params: dict, sem: asyncio.Semaphore) -> list[dict]:
-    items, from_id = [], 0
-    while True:
-        async with sem:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-        body  = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta    = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = last_id + 1
-    return items
-
-
-async def fetch_mtfmi(client: httpx.AsyncClient, task_id: int,
-                      sem: asyncio.Semaphore) -> tuple[int, list[dict]]:
-    items = await fetch_pages(client, f"{BASE_URL}/machine_task_field_mapping_items",
-                              {"machine_task_id": task_id}, sem)
-    return task_id, items
-
-
 def parse_dt(s) -> datetime | None:
     if s is None:
         return None
@@ -843,10 +806,11 @@ async def fetch_all_data(
                 all_tasks.append(t)
 
         print("    Загружаем mtfmi...")
-        mtfmi_results = await asyncio.gather(*[
-            fetch_mtfmi(client, t["id"], sem) for t in all_tasks
-        ])
-        mtfmi_map = {tid: items for tid, items in mtfmi_results}
+        from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
+
+        mtfmi_map = await fetch_mtfmi_map_for_tasks(
+            client, sem, BASE_URL, [int(t["id"]) for t in all_tasks], log_prefix="[ts22] ",
+        )
 
     print(f"    Всего заданий (без дублей): {len(all_tasks)}")
 
@@ -1249,15 +1213,15 @@ async def build_report_async() -> None:
     print(f"Срез:  {report_dt.strftime('%H:%M %d.%m.%Y')}")
     print(f"Площадь считается: с {day_start.strftime('%d.%m %H:%M')} до {report_dt.strftime('%d.%m %H:%M')}\n")
 
+    async def _fetch_ts22():
+        async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+            print("\nЗагружаем данные...")
+            return await fetch_all_data(client, sem, day_start, report_dt)
+
     print("Загружаем справочники...")
-    load_reference_data()
-
-    headers = {"X-User-Api-Token": API_TOKEN}
-    sem     = asyncio.Semaphore(SEMAPHORE_LIMIT)
-
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        print("\nЗагружаем данные...")
-        summary_data, stops_data = await fetch_all_data(client, sem, day_start, report_dt)
+    _, (summary_data, stops_data) = await run_parallel_refs_and_fetch(
+        load_reference_data, _fetch_ts22, label="ts22-fetch",
+    )
 
     print("\nФормируем Excel...")
     wb = openpyxl.Workbook()
@@ -1279,7 +1243,7 @@ async def build_report_async() -> None:
 
 
 def build_report() -> None:
-    asyncio.run(build_report_async())
+    run_report_async(build_report_async())
 
 
 if __name__ == "__main__":

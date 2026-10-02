@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import importlib.util
 import json
@@ -37,6 +38,16 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import (
+    TasksMtfmiFetchOptions,
+    fetch_all_pages,
+    fetch_all_tasks_and_mtfmi as _fetch_tasks_mtfmi_shared,
+    report_async_client,
+    run_report_async,
+)
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -405,7 +416,7 @@ def get_all_from_id(endpoint: str,
     from_id = 0
     while True:
         r = session.get(f"{BASE_URL}/{endpoint}",
-                        params={**params, "from_id": from_id, "limit": 1000})
+                        params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT})
         r.raise_for_status()
         body  = r.json()
         chunk = body.get("data", [])
@@ -413,7 +424,8 @@ def get_all_from_id(endpoint: str,
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100: break
+        if not from_id_should_continue(meta, chunk):
+            break
         from_id = last_id + 1
     return results
 
@@ -421,31 +433,6 @@ def get_all_from_id(endpoint: str,
 # =============================================================================
 # АСИНХРОННЫЕ ЗАПРОСЫ
 # =============================================================================
-
-async def fetch_all_pages(
-    client:    httpx.AsyncClient,
-    url:       str,
-    params:    dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items   = []
-    from_id = 0
-    while True:
-        async with semaphore:
-            r     = await client.get(url, params={**params,
-                                                   "from_id": from_id,
-                                                   "limit":   1000})
-            body  = r.json()
-            chunk = body.get("data", [])
-            if not chunk: break
-            items.extend(chunk)
-            meta    = body.get("meta", {}).get("response", {})
-            last_id = meta.get("last_record_id")
-            if not last_id or meta.get("obtained_records", 0) < 100: break
-            from_id = last_id + 1
-    return items
-
-
 
 def parse_dt(s) -> datetime | None:
     if s is None:
@@ -657,38 +644,17 @@ async def fetch_all_tasks_and_mtfmi(
     work_type_ids: set[int],
     label:         str = "",
 ) -> tuple[list[dict], list[dict], dict[int, list[dict]]]:
-    """Загружает задания за сутки и сезон batch-запросами по work_type_id, затем MTFMI."""
-    from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
-    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
-
-    day_start_str    = day_start.strftime("%Y-%m-%dT%H:%M:%S")
-    cutoff_str       = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    season_start_str = season_start.strftime("%Y-%m-%dT%H:%M:%S")
-
-    tasks_today, tasks_season = await asyncio.gather(
-        fetch_machine_tasks_by_wt_async(
-            fetch_all_pages, client, BASE_URL, work_type_ids,
-            {"end_time_gt_eq": day_start_str, "end_time_lt": cutoff_str},
-            semaphore, log_prefix=f"[{label}] " if label else "",
-        ),
-        fetch_machine_tasks_by_wt_async(
-            fetch_all_pages, client, BASE_URL, work_type_ids,
-            {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
-            semaphore, log_prefix=f"[{label}] " if label else "",
+    lp = f"[{label}] " if label else ""
+    return await _fetch_tasks_mtfmi_shared(
+        client, semaphore, BASE_URL,
+        day_start, cutoff, season_start, work_type_ids,
+        TasksMtfmiFetchOptions(
+            log_prefix=lp,
+            mtfmi_log_prefix=lp,
+            print_mtfmi_banner=False,
+            season_start_label=season_start.strftime("%d.%m.%Y"),
         ),
     )
-    print(f"  [{label}] Заданий за сутки: {len(tasks_today)}, за сезон: {len(tasks_season)}")
-
-    all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
-    if all_task_ids:
-        mtfmi_map = await fetch_mtfmi_map_for_tasks(
-            client, semaphore, BASE_URL, all_task_ids,
-            log_prefix=f"[{label}] " if label else "",
-        )
-    else:
-        mtfmi_map = {}
-
-    return tasks_today, tasks_season, mtfmi_map
 
 
 # =============================================================================
@@ -2046,76 +2012,77 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     print(f"Отчёт 'Посев'  |  Дата: {report_date}")
     print(f"  Суточный диапазон: {day_start} — {cutoff}\n")
 
-    crops = get_all_from_id("crops")
-    crop_names_by_id: dict[int, str] = {
-        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
-        for c in crops if c.get("id") is not None
-    }
-
-    # Строим field_id → firm через иерархию папок (как в файле 3) — после tasks/mtfmi
     field_to_firm: dict[int, str] = {}
-
-    # Строим field_id → культура посева (сезон year+1 для озимого рапса/пшеницы).
-    print(f"  Строим field_crop_by_id из history_items (годы {SEASON_YEAR}, {SEASON_YEAR + 1})...")
-    all_history_items: list[dict] = []
-    for crop_year in (SEASON_YEAR, SEASON_YEAR + 1):
-        chunk = get_all_from_id("history_items", {"year": str(crop_year)})
-        all_history_items.extend(chunk)
-        print(f"    history_items year={crop_year}: {len(chunk)} записей")
-    field_crop_by_id = build_field_to_crop(
-        crop_map=crop_names_by_id,
-        history_items=all_history_items,
-        report_date=report_date,
-        period_start=date(SEASON_YEAR, 1, 1),
-        skip_crops=SKIP_CROPS,
-        season_year=SEASON_YEAR + 1,
-    )
-    print(f"  Полей с культурой посева (без SKIP_CROPS): {len(field_crop_by_id)}")
-
-    # Поля available в периоде сезона
-    period_start = date(SEASON_YEAR, 1, 1)
-    available_field_ids: set[int] = set()
-    for r in get_all_from_id("inventory_history_items", {"historyable_type": "Field"}):
-        if not r.get("available"):
-            continue
-        fid_r = r.get("historyable_id")
-        if fid_r is None:
-            continue
-        try:
-            ev_start = date.fromisoformat(str(r.get("event_start_at"))[:10]) if r.get("event_start_at") else None
-        except ValueError:
-            ev_start = None
-        try:
-            ev_end = date.fromisoformat(str(r.get("event_end_at"))[:10]) if r.get("event_end_at") else None
-        except ValueError:
-            ev_end = None
-        if ev_start is None:
-            continue
-        if ev_start <= report_date and (ev_end is None or ev_end >= period_start):
-            available_field_ids.add(int(fid_r))
-    print(f"  Полей available в периоде {period_start}–{report_date}: {len(available_field_ids)}")
-
     firm_names     = list(AGROFIRMS.keys())
     veg_firm_names = [name for name in VEG_REPORT_FIRMS if name in VEG_AGROFIRMS]
+    period_start = date(SEASON_YEAR, 1, 1)
 
-    headers   = {"X-User-Api-Token": API_TOKEN}
-    semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
-
-    async with httpx.AsyncClient(headers=headers, timeout=120, limits=pool) as client:
-        # Загружаем посев и овощи глобально (не по фирмам)
-        (tasks_today_seed, tasks_season_seed, mtfmi_seed), \
-        (tasks_today_veg,  tasks_season_veg,  mtfmi_veg) = await asyncio.gather(
-            fetch_all_tasks_and_mtfmi(
-                client, semaphore, day_start, cutoff, season_start,
-                ALL_WT_IDS, label="Посев",
-            ),
-            fetch_all_tasks_and_mtfmi(
-                client, semaphore, day_start, cutoff, season_start,
-                VEG_WT_IDS, label="Овощи",
-            ),
+    def _sync_refs_r5() -> tuple[dict[int, str], dict[int, str], set[int]]:
+        crops = get_all_from_id("crops")
+        crop_names_by_id: dict[int, str] = {
+            int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+            for c in crops if c.get("id") is not None
+        }
+        print(f"  Строим field_crop_by_id из history_items (годы {SEASON_YEAR}, {SEASON_YEAR + 1})...")
+        all_history_items: list[dict] = []
+        for crop_year in (SEASON_YEAR, SEASON_YEAR + 1):
+            chunk = get_all_from_id("history_items", {"year": str(crop_year)})
+            all_history_items.extend(chunk)
+            print(f"    history_items year={crop_year}: {len(chunk)} записей")
+        field_crop_by_id = build_field_to_crop(
+            crop_map=crop_names_by_id,
+            history_items=all_history_items,
+            report_date=report_date,
+            period_start=period_start,
+            skip_crops=SKIP_CROPS,
+            season_year=SEASON_YEAR + 1,
         )
+        print(f"  Полей с культурой посева (без SKIP_CROPS): {len(field_crop_by_id)}")
+        available_field_ids: set[int] = set()
+        for r in get_all_from_id("inventory_history_items", {"historyable_type": "Field"}):
+            if not r.get("available"):
+                continue
+            fid_r = r.get("historyable_id")
+            if fid_r is None:
+                continue
+            try:
+                ev_start = date.fromisoformat(str(r.get("event_start_at"))[:10]) if r.get("event_start_at") else None
+            except ValueError:
+                ev_start = None
+            try:
+                ev_end = date.fromisoformat(str(r.get("event_end_at"))[:10]) if r.get("event_end_at") else None
+            except ValueError:
+                ev_end = None
+            if ev_start is None:
+                continue
+            if ev_start <= report_date and (ev_end is None or ev_end >= period_start):
+                available_field_ids.add(int(fid_r))
+        print(f"  Полей available в периоде {period_start}–{report_date}: {len(available_field_ids)}")
+        return crop_names_by_id, field_crop_by_id, available_field_ids
 
+    async def _prefetch_tasks_mtfmi_r5():
+        async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, semaphore):
+            return await asyncio.gather(
+                fetch_all_tasks_and_mtfmi(
+                    client, semaphore, day_start, cutoff, season_start,
+                    ALL_WT_IDS, label="Посев",
+                ),
+                fetch_all_tasks_and_mtfmi(
+                    client, semaphore, day_start, cutoff, season_start,
+                    VEG_WT_IDS, label="Овощи",
+                ),
+            )
+
+    (crop_names_by_id, field_crop_by_id, available_field_ids), task_parts = (
+        await run_parallel_refs_and_fetch(
+            _sync_refs_r5, _prefetch_tasks_mtfmi_r5, label="r5-tasks+mtfmi",
+        )
+    )
+    (tasks_today_seed, tasks_season_seed, mtfmi_seed), (
+        tasks_today_veg, tasks_season_veg, mtfmi_veg,
+    ) = task_parts
+
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, semaphore):
         seed_seasons = _editor_season_strings(_SEED_KEY)
         veg_seasons = _editor_season_strings(_VEG_KEY)
         _log_task_season_counts(tasks_today_seed + tasks_season_seed, "Посев", seed_seasons)
@@ -2222,7 +2189,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
 
 
 def build_report(report_date: date = REPORT_DATE) -> None:
-    asyncio.run(build_report_async(report_date))
+    run_report_async(build_report_async(report_date))
 
 
 if __name__ == "__main__":

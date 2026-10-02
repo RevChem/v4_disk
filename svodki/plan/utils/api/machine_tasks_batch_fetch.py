@@ -15,6 +15,12 @@ prefetch / 11 / 12 — на plan-API с url=):
         client, sem, wt_ids, base_params, fetch_pages,
         *, url=..., log_prefix="",
     )
+
+Ошибки: пакет, отвергнутый как некорректный (4xx), перезапрашивается поштучно, как раньше.
+Любой другой сбой (после retry) и сбой поштучного запроса в строгом режиме
+(SVODKI_FETCH_STRICT=1, по умолчанию) пробрасывается: раньше такой work_type_id молча
+выпадал из выборки, и итоги отчёта занижались без единого сообщения.
+SVODKI_FETCH_STRICT=0 возвращает прежнее поведение.
 """
 
 from __future__ import annotations
@@ -23,6 +29,8 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+from async_http import reraise_if_strict, should_fallback_single
 
 WT_BATCH_SIZE = max(
     1,
@@ -71,11 +79,24 @@ async def fetch_by_work_type_ids_async(
 ) -> list[dict]:
     """
     GET с work_type_id=1,2,3,... пачками по WT_BATCH_SIZE.
-    Пустой batch или ошибка → fallback по одному work_type_id.
+    Отвергнутый пакет (4xx) → fallback по одному work_type_id.
+    Пустой ответ — норма (нет задач по wt в окне), поштучно не перезапрашиваем.
     """
     wt_list = sorted({int(w) for w in work_type_ids})
     if not wt_list:
         return []
+
+    # Инкрементальное хранилище: только machine_tasks и только окно end_time (+season).
+    _u = str(url).rstrip("/")
+    if _u.endswith("/machine_tasks"):
+        try:
+            from svodki_task_store import eligible, get_store
+
+            _store = get_store(_u[: -len("/machine_tasks")]) if eligible(base_params) else None
+        except ImportError:
+            _store = None
+        if _store is not None:
+            return await _store.query_tasks(client, sem, wt_list, dict(base_params), log_prefix)
 
     base = dict(base_params or {})
     batches = _chunked(wt_list, WT_BATCH_SIZE)
@@ -92,12 +113,12 @@ async def fetch_by_work_type_ids_async(
     )
     for batch, res in zip(batches, batch_results):
         if isinstance(res, BaseException):
+            if not should_fallback_single(res):
+                raise res
             fallback_wts.extend(batch)
             continue
-        if not res:
-            fallback_wts.extend(batch)
-            continue
-        all_rows.extend(res)
+        if res:
+            all_rows.extend(res)
 
     fallback_wts = list(dict.fromkeys(fallback_wts))
     if fallback_wts:
@@ -113,18 +134,11 @@ async def fetch_by_work_type_ids_async(
         )
         for res in retry:
             if isinstance(res, BaseException):
+                reraise_if_strict(res)  # раньше: work_type_id молча выпадал
                 continue
             all_rows.extend(res)
 
-    rows = dedupe_rows_by_id(all_rows)
-    if "machine_tasks" in str(url):
-        try:
-            from season_mismatch_log import remember_tasks
-
-            remember_tasks(rows)
-        except Exception:
-            pass
-    return rows
+    return dedupe_rows_by_id(all_rows)
 
 
 async def fetch_machine_tasks_by_wt_async(
@@ -206,13 +220,13 @@ def fetch_by_work_type_ids_sync(
         params = {**base, "work_type_id": ",".join(str(w) for w in batch)}
         try:
             rows = get_all_from_id_fn(endpoint, params)
-        except Exception:
+        except Exception as exc:
+            if not should_fallback_single(exc):
+                raise
             fallback_wts.extend(batch)
             continue
-        if not rows:
-            fallback_wts.extend(batch)
-            continue
-        all_rows.extend(rows)
+        if rows:
+            all_rows.extend(rows)
 
     fallback_wts = list(dict.fromkeys(fallback_wts))
     if fallback_wts:
@@ -225,19 +239,12 @@ def fetch_by_work_type_ids_sync(
         for wt in fallback_wts:
             try:
                 rows = get_all_from_id_fn(endpoint, {**base, "work_type_id": wt})
-            except Exception:
+            except Exception as exc:
+                reraise_if_strict(exc)  # раньше: work_type_id молча выпадал
                 continue
             all_rows.extend(rows)
 
-    rows = dedupe_rows_by_id(all_rows)
-    if str(endpoint) == "machine_tasks":
-        try:
-            from season_mismatch_log import remember_tasks
-
-            remember_tasks(rows)
-        except Exception:
-            pass
-    return rows
+    return dedupe_rows_by_id(all_rows)
 
 
 def fetch_machine_tasks_by_wt_sync(

@@ -18,6 +18,7 @@ CROPWISE_API_TOKEN / CROPWISE_BASE_URL — переопределяют знач
 """
 from __future__ import annotations
 
+
 import asyncio
 import os
 import sys
@@ -33,6 +34,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from report_fetch_orchestration import report_async_client, run_report_async
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -143,7 +147,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
     results, from_id = [], 0
     for _ in range(500):
         r = session.get(f"{_BASE_URL}/{endpoint}",
-                        params={**p, "from_id": from_id, "limit": 1000},
+                        params={**p, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
                         timeout=120)
         r.raise_for_status()
         body  = r.json()
@@ -153,7 +157,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -318,7 +322,7 @@ async def _pages(client: httpx.AsyncClient, url: str,
     items, from_id = [], 0
     while True:
         async with sem:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
+            r = await client.get(url, params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT})
         body  = r.json()
         chunk = body.get("data", [])
         if not chunk:
@@ -326,27 +330,25 @@ async def _pages(client: httpx.AsyncClient, url: str,
         items.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return items
 
 
 async def _mtfmi_async(task_ids: list[int]) -> dict[int, list[dict]]:
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    url = f"{_BASE_URL}/machine_task_field_mapping_items"
-    async with httpx.AsyncClient(
-        headers={"X-User-Api-Token": _TOKEN}, timeout=120
-    ) as client:
-        results = await asyncio.gather(*[
-            _pages(client, url, {"machine_task_id": tid}, sem)
-            for tid in task_ids
-        ])
-    return {tid: items for tid, items in zip(task_ids, results)}
+    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
+
+    if not task_ids:
+        return {}
+    async with report_async_client(_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+        return await fetch_mtfmi_map_for_tasks(
+            client, sem, _BASE_URL, task_ids, log_prefix="[works] ",
+        )
 
 
 def fetch_mtfmi(task_ids: list[int]) -> dict[int, list[dict]]:
-    return asyncio.run(_mtfmi_async(task_ids))
+    return run_report_async(_mtfmi_async(task_ids))
 
 # =============================================================================
 # СБОР ДАННЫХ ЗА СЕЗОН
@@ -374,16 +376,17 @@ def collect(
     cutoff_end   = datetime(d_to.year, d_to.month, d_to.day,
                             DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
 
+    from svodki_prefetch_io import sync_machine_tasks_prefetch_or_batch
+
     _wt_label = f"{len(all_wt_ids)} id" + (f" ({', '.join(filter_groups)})" if filter_groups else "")
     print(f"  [{season_year}] Загружаем machine_tasks по {_wt_label}...")
-    all_tasks: list[dict] = []
-    for wt_id in sorted(all_wt_ids):
-        chunk = get_all("machine_tasks", {
-            "work_type_id":   wt_id,
-            "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
-            "end_time_lt":    cutoff_end.strftime("%Y-%m-%dT%H:%M:%S"),
-        })
-        all_tasks.extend(chunk)
+    mt_params = {
+        "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "end_time_lt": cutoff_end.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    all_tasks = sync_machine_tasks_prefetch_or_batch(
+        get_all, all_wt_ids, mt_params, log_prefix=f"[works-{season_year}] ",
+    )
 
     all_tasks = [t for t in all_tasks
                  if str(t.get("status") or "").strip().lower() != "canceled"]
@@ -631,10 +634,12 @@ def write_sheet(
 # ЗАГРУЗКА КУЛЬТУР ЗА СЕЗОН
 # =============================================================================
 
-def load_field_crop(season_year: int, crop_map: dict[int, str]) -> dict[int, str]:
-    his = get_all("history_items", {"year": str(season_year)})
+def _field_crop_from_history(
+    history_items: list[dict],
+    crop_map: dict[int, str],
+) -> dict[int, str]:
     field_crop: dict[int, str] = {}
-    for hi in his:
+    for hi in history_items:
         fid = hi.get("field_id")
         cid = hi.get("crop_id")
         if not (fid and cid and hi.get("active")):
@@ -643,6 +648,11 @@ def load_field_crop(season_year: int, crop_map: dict[int, str]) -> dict[int, str
         if cname and cname not in SKIP_CROPS:
             field_crop[fid] = cname
     return field_crop
+
+
+def load_field_crop(season_year: int, crop_map: dict[int, str]) -> dict[int, str]:
+    his = get_all("history_items", {"year": str(season_year)})
+    return _field_crop_from_history(his, crop_map)
 
 # =============================================================================
 # ГЛАВНЫЙ ПРОЦЕСС
@@ -704,26 +714,40 @@ def build_report() -> None:
     print(f"Фильтр культур    |  {', '.join(filter_crops)  if filter_crops  else 'все'}")
     print(f"Активных work_type_id: {len(all_wt_ids)} → {sorted(all_wt_ids)}")
 
-    # ── Справочники ───────────────────────────────────────────────────────────
-    print("  Загружаем поля / группы / папки...")
-    fields = get_all("fields")
-    fgs    = get_all("field_groups")
-    gfs    = get_all("group_folders")
+    # ── Справочники (параллельно, как _fetch_reference_raw в сводке 2) ─────
+    from svodki_pipeline import run_reference_jobs
+
+    print("  Загружаем поля / группы / папки / культуры / history_items...")
+    ref = run_reference_jobs(
+        {
+            "fields": lambda: get_all("fields"),
+            "field_groups": lambda: get_all("field_groups"),
+            "group_folders": lambda: get_all("group_folders"),
+            "crops": lambda: get_all("crops"),
+            f"history_{SEASON_YEAR}": lambda: get_all(
+                "history_items", {"year": str(SEASON_YEAR)},
+            ),
+            f"history_{PREV_YEAR}": lambda: get_all(
+                "history_items", {"year": str(PREV_YEAR)},
+            ),
+        },
+        thread_prefix="works-ref",
+    )
+    fields = ref["fields"]
+    fgs = ref["field_groups"]
+    gfs = ref["group_folders"]
     print(f"    {len(fields)} полей, {len(fgs)} групп, {len(gfs)} папок")
 
     field_firm = build_field_firm(fields, fgs, gfs)
 
-    print("  Загружаем культуры...")
-    crops_raw = get_all("crops")
-    crop_map  = {c["id"]: (c.get("name") or c.get("title", "")) for c in crops_raw}
+    crops_raw = ref["crops"]
+    crop_map = {c["id"]: (c.get("name") or c.get("title", "")) for c in crops_raw}
     print(f"    {len(crop_map)} культур в справочнике")
 
-    print(f"  Загружаем history_items за {SEASON_YEAR}...")
-    field_crop_26 = load_field_crop(SEASON_YEAR, crop_map)
+    field_crop_26 = _field_crop_from_history(ref[f"history_{SEASON_YEAR}"], crop_map)
     print(f"    {len(field_crop_26)} полей с культурой ({SEASON_YEAR})")
 
-    print(f"  Загружаем history_items за {PREV_YEAR}...")
-    field_crop_25 = load_field_crop(PREV_YEAR, crop_map)
+    field_crop_25 = _field_crop_from_history(ref[f"history_{PREV_YEAR}"], crop_map)
     print(f"    {len(field_crop_25)} полей с культурой ({PREV_YEAR})")
 
     # ── Сбор данных ───────────────────────────────────────────────────────────

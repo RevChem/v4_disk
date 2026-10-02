@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from proverka.task_names import tasks_for_groups
 from report_catalog import REPORT_CATALOG
 
 
@@ -33,7 +32,7 @@ def _entry_to_spec(entry) -> ReportSpec:
         module=entry.module or entry.script.replace(".py", ""),
         work_groups=entry.work_groups,
         season_rule=entry.season_rule,
-        fact_column_hints=tasks_for_groups(entry.work_groups) or entry.fact_column_hints,
+        fact_column_hints=entry.fact_column_hints,
         fact_by_all_fields=entry.fact_by_all_fields,
         cropwise_comparable=entry.cropwise_comparable or entry.cropwise_per_operation,
         cropwise_per_operation=entry.cropwise_per_operation,

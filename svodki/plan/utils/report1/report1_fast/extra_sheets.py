@@ -11,21 +11,25 @@ from typing import Any
 
 import openpyxl
 
-_PLAN_DIR = Path(__file__).resolve().parent.parent
 
-
-def _ensure_plan_on_syspath() -> None:
-    plan = str(_PLAN_DIR)
-    if plan not in sys.path:
-        sys.path.insert(0, plan)
+def _find_plan_script(script_name: str) -> Path:
+    """Скрипты лежат в svodki/plan/, этот файл — на несколько уровней глубже."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        cand = parent / script_name
+        if cand.is_file():
+            return cand
+    raise FileNotFoundError(
+        f"Не найден скрипт {script_name} выше {here.parent}"
+    )
 
 
 def _load_script_module(script_name: str, mod_name: str) -> Any:
     """Загрузка svodki/plan/*.py как модуля (dataclass требует запись в sys.modules)."""
-    _ensure_plan_on_syspath()
-    script_path = _PLAN_DIR / script_name
-    if not script_path.is_file():
-        raise FileNotFoundError(f"Не найден скрипт: {script_path}")
+    script_path = _find_plan_script(script_name)
+    plan = str(script_path.parent)
+    if plan not in sys.path:
+        sys.path.insert(0, plan)
     spec = importlib.util.spec_from_file_location(mod_name, str(script_path))
     if spec is None or spec.loader is None:
         raise ImportError(f"Не удалось загрузить {script_path}")

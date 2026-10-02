@@ -323,7 +323,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const crossCheckRows = job?.cross_check_rows ?? job?.cross_check?.operations ?? [];
   const sheetCheckRows = job?.sheet_checks ?? [];
   const sheetCheckDiffRows = useMemo(
-    () => sheetCheckRows.filter((r) => r.status === "DIFF"),
+    () => sheetCheckRows.filter((r) => r.status !== "OK"),
     [sheetCheckRows]
   );
   const sheetCheckEligible = useMemo(() => {
@@ -512,7 +512,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
 
   const sheetCheckRowsVisible = useMemo(() => {
     if (showAllRows) return sheetCheckRows;
-    return sheetCheckRows.filter((r) => r.status === "DIFF");
+    return sheetCheckRows.filter((r) => r.status !== "OK");
   }, [sheetCheckRows, showAllRows]);
 
   const cropwiseRowsVisible = useMemo(() => {
@@ -911,7 +911,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                       <TableRow
                         key={`${row.report_id}-${row.group_name}`}
                         sx={
-                          row.status === "DIFF"
+                          row.status !== "OK"
                             ? { backgroundColor: "rgba(252, 228, 214, 0.45)" }
                             : undefined
                         }
@@ -928,7 +928,9 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                           {(row.issues || [])
                             .map(
                               (i) =>
-                                `${i.label || i.kind}: ${i.expected} ↔ ${i.actual} (Δ ${i.diff_ha} га)`
+                                i.message
+                                  ? `${i.label || i.kind}: ${i.message}`
+                                  : `${i.label || i.kind}: ${i.expected} ↔ ${i.actual} (Δ ${i.diff_ha} га)`
                             )
                             .join("; ") || "—"}
                         </TableCell>

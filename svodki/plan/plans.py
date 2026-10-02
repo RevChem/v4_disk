@@ -1,5 +1,11 @@
 from datetime import date, datetime, timedelta, timezone
 
+try:
+    from plan_paths import ensure_plan_sys_path
+
+    ensure_plan_sys_path()
+except Exception:
+    pass
 
 API_TOKEN    = "6DayNcBDr9BWEZgst1Dy"
 BASE_URL     = "https://operations.cropwise.com/api/v3"
@@ -64,7 +70,7 @@ WORK_GROUPS: list[tuple[str, list[int]]] = [
     ("2.1 Боронование",                    [103, 81, 97, 12]),
     ("2.9 Дискование",                     [60]),
     ("2.4 Вспашка",                        [49, 57, 171]),
-    ("2.11 Культивация",                   [10, 20, 50, 51, 52, 63, 96]),
+    ("2.11 Культивация",                   [20, 50, 52, 63, 96]),
     ("4.0 Посев",                          [3, 4, 69, 70, 71, 72, 119, 120, 159, 160, 161, 163]),
     ("4.1 Посев (овощи)",                  [68, 148, 172]),
     ("3.1 Опрыскивание",                   [1, 64, 65, 66, 153]),

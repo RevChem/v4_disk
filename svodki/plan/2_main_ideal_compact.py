@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -35,6 +36,8 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from excel_number_fmt import NF_DEC1, NF_DEC2, NF_INT
 from task_area_shared import HARVESTER_GROUP_IDS
 
@@ -43,7 +46,7 @@ from task_area_shared import HARVESTER_GROUP_IDS
 # =============================================================================
 
 START_DATE   = date(2026, 3, 14)
-TODAY        = date(2026, 9, 7)
+TODAY        = date(2026, 10, 1)
 
 if os.environ.get("REPORT_DATE"):
     TODAY = date.fromisoformat(os.environ["REPORT_DATE"].strip())
@@ -515,6 +518,40 @@ SEMAPHORE_LIMIT = max(
     ),
 )
 
+def _parse_int_env(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        v = int(os.environ.get(name, str(default)).strip())
+        return max(lo, min(hi, v))
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "1" if default else "0").strip().lower()
+    if raw in ("1", "true", "yes", "on", "да"):
+        return True
+    if raw in ("0", "false", "no", "off", "нет"):
+        return False
+    return default
+
+
+from svodki_pipeline import (
+    BackgroundJob,
+    pipeline_enabled,
+    reference_workers,
+    run_reference_jobs,
+)
+from report_fetch_orchestration import report_async_client, run_report_async
+
+# Конвейер: справочники и «цепочка заданий» (задачи → смены → mtfmi → mtaomi)
+# грузятся одновременно. SVODKI_PIPELINE=0 / SVODKI_REPORT2_PIPELINE=0 — последовательно.
+PIPELINE = pipeline_enabled()
+REFERENCE_WORKERS = reference_workers(9)
+
+# Замеры этапов вынесены в utils/shared/svodki_timing.py (общие для всех сводок).
+from svodki_timing import stage as _stage, stage_add, timing_finish, timing_start
+
+
 def _fetch_machine_tasks_parallel(
     wt_ids: list[int],
     season_start_str: str,
@@ -554,13 +591,16 @@ def _build_global_mtfmi_map(task_ids: list[int], headers: dict) -> dict[int, lis
     if not unique:
         return {}
     out: dict[int, list[dict]] = {}
+    live_ids = list(unique)
     try:
-        from report2_prefetch_io import build_mtfmi_map
+        from svodki_prefetch_io import mtfmi_map_hybrid
 
-        pref_map = build_mtfmi_map(unique)
-        if pref_map is not None:
+        pref_map, missing = mtfmi_map_hybrid(unique)
+        if pref_map is not None and not missing:
             return pref_map
-        live_ids = list(unique)
+        if pref_map is not None and missing:
+            live_ids = missing
+            out = dict(pref_map)
     except Exception:
         live_ids = list(unique)
 
@@ -569,13 +609,15 @@ def _build_global_mtfmi_map(task_ids: list[int], headers: dict) -> dict[int, lis
         from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
 
         async def _fetch() -> dict[int, list[dict]]:
-            sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+            async with report_async_client(
+                API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120,
+            ) as (client, sem):
                 return await fetch_mtfmi_map_for_tasks(
                     client, sem, BASE_URL, live_ids, log_prefix="[r2] ",
                 )
 
-        out = asyncio.run(_fetch())
+        fetched = run_report_async(_fetch())
+        out.update(fetched)
     return out
 
 
@@ -604,28 +646,80 @@ def _widest_machine_tasks_window() -> tuple[str, str]:
 
 _LIVE_TASKS_BY_WT: dict[int, list[dict]] | None = None
 
+# Живая выгрузка machine_tasks: параллельно по окнам времени и пачкам work_type_id.
+# SVODKI_REPORT2_ASYNC_TASKS=0 — вернуть прежнюю последовательную выгрузку.
+ASYNC_TASKS = _parse_bool_env("SVODKI_REPORT2_ASYNC_TASKS", True)
+TASKS_WINDOW_DAYS = _parse_int_env("SVODKI_REPORT2_TASKS_WINDOW_DAYS", 14, 1, 366)
+_ISO_FMT = "%Y-%m-%dT%H:%M:%S"
 
-def _ensure_live_tasks_preloaded() -> dict[int, list[dict]]:
+
+def _split_windows(start_str: str, end_str: str, days: int) -> list[tuple[str, str]]:
+    from live_machine_tasks_fetch import split_time_windows
+
+    return split_time_windows(start_str, end_str, days)
+
+
+async def _fetch_tasks_live_async(
+    wt_ids: list[int] | set[int],
+    start_str: str,
+    end_str: str,
+    headers: dict,
+) -> list[dict]:
+    from live_machine_tasks_fetch import fetch_machine_tasks_windowed_async
+
+    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
+    limits = httpx.Limits(
+        max_connections=SEMAPHORE_LIMIT,
+        max_keepalive_connections=SEMAPHORE_LIMIT,
+    )
+    async with httpx.AsyncClient(headers=headers, timeout=120, limits=limits) as client:
+        return await fetch_machine_tasks_windowed_async(
+            client,
+            BASE_URL,
+            wt_ids,
+            {"end_time_gt_eq": start_str, "end_time_lt": end_str},
+            sem,
+            window_days=TASKS_WINDOW_DAYS,
+            log_prefix="[r2 live] ",
+        )
+
+
+
+def _ensure_live_tasks_preloaded(
+    window: tuple[str, str] | None = None,
+) -> dict[int, list[dict]]:
     """Один параллельный live-fetch всех work_type_id (fallback без prefetch)."""
     global _LIVE_TASKS_BY_WT
     if _LIVE_TASKS_BY_WT is not None:
         return _LIVE_TASKS_BY_WT
     all_wt = sorted({int(wt) for _, ids in WORK_GROUPS for wt in ids})
-    season_start_str, cutoff_str = _widest_machine_tasks_window()
+    season_start_str, cutoff_str = window or _widest_machine_tasks_window()
     print(
         f"  [r2 live] предзагрузка machine_tasks: {len(all_wt)} work types…",
         flush=True,
     )
     started = time.monotonic()
-    from machine_tasks_batch_fetch import fetch_by_work_type_ids_sync
+    rows: list[dict] | None = None
+    from live_machine_tasks_fetch import async_tasks_enabled
 
-    rows = fetch_by_work_type_ids_sync(
-        get_all_from_id,
-        "machine_tasks",
-        all_wt,
-        {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
-        log_prefix="[r2 live] ",
-    )
+    if ASYNC_TASKS and async_tasks_enabled():
+        try:
+            _split_windows(season_start_str, cutoff_str, 1)  # проверка формата дат
+            rows = run_report_async(_fetch_tasks_live_async(
+                all_wt, season_start_str, cutoff_str, {"X-User-Api-Token": API_TOKEN},
+            ))
+        except ValueError:
+            rows = None  # нестандартный формат окна → прежний путь
+    if rows is None:
+        from machine_tasks_batch_fetch import fetch_by_work_type_ids_sync
+
+        rows = fetch_by_work_type_ids_sync(
+            get_all_from_id,
+            "machine_tasks",
+            all_wt,
+            {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
+            log_prefix="[r2 live] ",
+        )
     by_wt: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
         wt = row.get("work_type_id")
@@ -638,6 +732,20 @@ def _ensure_live_tasks_preloaded() -> dict[int, list[dict]]:
         flush=True,
     )
     return _LIVE_TASKS_BY_WT
+
+
+def _get_tasks_index(window: tuple[str, str] | None = None) -> dict[int, list[dict]]:
+    """prefetch JSON, а при его отсутствии — live-выгрузка (как раньше в collect_work_data)."""
+    tasks_index: dict[int, list[dict]] | None = None
+    try:
+        from report2_prefetch_io import prefetch_tasks_by_wt
+
+        tasks_index = prefetch_tasks_by_wt()
+    except Exception:
+        tasks_index = None
+    if tasks_index is None:
+        tasks_index = _ensure_live_tasks_preloaded(window)
+    return tasks_index
 
 
 def _tasks_from_index(
@@ -783,7 +891,7 @@ def _merge_silage_harvest_tasks(
     return out
 
 
-def _load_silage_corn_field_ids() -> set[int]:
+def _fetch_silage_corn_field_ids() -> set[int]:
     """Поля с операцией «Скашивание» в сезоне — кукуруза на силос (как 10_main)."""
     from machine_tasks_batch_fetch import fetch_by_work_type_ids_sync
 
@@ -799,6 +907,18 @@ def _load_silage_corn_field_ids() -> set[int]:
             field_ids.add(int(fid))
     print(f"    кукуруза на силос (Скашивание): {len(field_ids)} полей")
     return field_ids
+
+
+_SILAGE_IDS_CACHE: set[int] | None = None  # заполняется при параллельной выгрузке справочников
+_CROPS_RAW: list[dict] | None = None           # сырой список crops (чтобы не грузить повторно)
+_MACHINES_ALL: list[dict] | None = None        # сырой список machines (то же)
+
+
+def _load_silage_corn_field_ids() -> set[int]:
+    """Поля «Скашивание»: из кэша справочников, иначе live-выгрузка."""
+    if _SILAGE_IDS_CACHE is not None:
+        return set(_SILAGE_IDS_CACHE)
+    return _fetch_silage_corn_field_ids()
 
 
 def _resolve_corn_subtype_harvest(crop_name: str, field_id: int | None, silage_ids: set[int]) -> str:
@@ -1257,18 +1377,52 @@ def parse_dt(s) -> datetime | None:
 # HTTP
 # =============================================================================
 
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+
 session = requests.Session()
 session.headers.update({"X-User-Api-Token": API_TOKEN})
 
+_TLS = threading.local()
+
+
+def _thread_session() -> requests.Session:
+    """requests.Session на поток: справочники и задачи грузятся параллельно.
+
+    Retry/backoff на 429 и 5xx (раньше один 502 валил весь отчёт). После
+    исчерпания попыток возвращается последний ответ, а raise_for_status()
+    в get_all_from_id бросает HTTPError, как и раньше.
+    """
+    sess = getattr(_TLS, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        sess.headers.update({"X-User-Api-Token": API_TOKEN})
+        kwargs = dict(
+            total=6, connect=6, read=6, status=6, backoff_factor=1.0,
+            status_forcelist=(429, 500, 502, 503, 504),
+            respect_retry_after_header=True, raise_on_status=False,
+        )
+        try:
+            retry = Retry(allowed_methods=frozenset({"GET"}), **kwargs)
+        except TypeError:  # urllib3 < 1.26
+            retry = Retry(method_whitelist=frozenset({"GET"}), **kwargs)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=16)
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+        _TLS.session = sess
+    return sess
+
+
 def get_all_from_id(endpoint: str,
                     extra_params: dict | None = None) -> list[dict]:
+    """Курсорная выгрузка endpoint (from_id). Потокобезопасна: сессия на поток."""
     params  = dict(extra_params or {})
     results = []
     from_id = 0
+    sess = _thread_session()
     for _ in range(500):
-        r = session.get(f"{BASE_URL}/{endpoint}",
-                        params={**params, "from_id": from_id, "limit": 1000},
-                        timeout=120)
+        r = sess.get(f"{BASE_URL}/{endpoint}",
+                     params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
+                     timeout=120)
         r.raise_for_status()
         body  = r.json()
         chunk = body.get("data", [])
@@ -1277,30 +1431,24 @@ def get_all_from_id(endpoint: str,
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
+    else:
+        print(f"  ВНИМАНИЕ: {endpoint}: достигнут лимит 500 страниц, выгрузка может быть неполной", flush=True)
     return results
 
 # =============================================================================
 # ЗАГРУЗКА СПРАВОЧНИКОВ
 # =============================================================================
 
-def _load_available_field_ids_on_date(target_date: date) -> set[int]:
-    """
-    Возвращает множество field_id, у которых available=True на конкретную дату.
-    Запись активна на дату, если:
-        event_start_at <= target_date
-        AND (event_end_at IS NULL OR event_end_at >= target_date)
-        AND available == True
-    """
-    print("  Загружаем inventory_history_items (архивный статус полей)...")
-    ihi_all = get_all_from_id("inventory_history_items", {
-        "historyable_type": "Field",
-    })
-    print(f"    Всего записей inventory_history_items: {len(ihi_all)}")
+class _IhiIntervals(list):
+    """Разобранные интервалы (field_id_raw, ev_start, ev_end) только для available=True."""
 
-    available_ids: set[int] = set()
+
+def _ihi_intervals(ihi_all: list[dict]) -> "_IhiIntervals":
+    """Один разбор дат inventory_history_items вместо трёх (plan / period / general)."""
+    out = _IhiIntervals()
     for r in ihi_all:
         if not r.get("available"):
             continue
@@ -1319,11 +1467,17 @@ def _load_available_field_ids_on_date(target_date: date) -> set[int]:
             ev_end = None
         if ev_start is None:
             continue
-        if ev_start <= target_date and (ev_end is None or ev_end >= target_date):
-            available_ids.add(int(fid))
+        out.append((fid, ev_start, ev_end))
+    return out
 
-    print(f"    Полей available=True на {target_date}: {len(available_ids)}")
-    return available_ids
+
+def _ids_from_intervals(intervals, period_start: date, period_end: date) -> set[int]:
+    """Пересечение: ev_start <= period_end AND (ev_end IS NULL OR ev_end >= period_start)."""
+    ids: set[int] = set()
+    for fid, ev_start, ev_end in intervals:
+        if ev_start <= period_end and (ev_end is None or ev_end >= period_start):
+            ids.add(int(fid))
+    return ids
 
 
 def _load_available_field_ids_in_period(period_start: date, period_end: date,
@@ -1333,33 +1487,53 @@ def _load_available_field_ids_in_period(period_start: date, period_end: date,
     периода [period_start, period_end]. Использует уже загруженный список ihi_all.
     Пересечение: ev_start <= period_end AND (ev_end IS NULL OR ev_end >= period_start).
     """
-    available_ids: set[int] = set()
-    for r in ihi_all:
-        if not r.get("available"):
-            continue
-        fid = r.get("historyable_id")
-        if fid is None:
-            continue
-        raw_start = r.get("event_start_at")
-        raw_end   = r.get("event_end_at")
-        try:
-            ev_start = date.fromisoformat(str(raw_start)[:10]) if raw_start else None
-        except ValueError:
-            ev_start = None
-        try:
-            ev_end = date.fromisoformat(str(raw_end)[:10]) if raw_end else None
-        except ValueError:
-            ev_end = None
-        if ev_start is None:
-            continue
-        if ev_start <= period_end and (ev_end is None or ev_end >= period_start):
-            available_ids.add(int(fid))
+    intervals = ihi_all if isinstance(ihi_all, _IhiIntervals) else _ihi_intervals(ihi_all)
+    available_ids = _ids_from_intervals(intervals, period_start, period_end)
 
     print(f"    Полей available=True в периоде {period_start}–{period_end}: {len(available_ids)}")
     return available_ids
 
 
-def load_reference_data() -> tuple[  # noqa: C901
+def _fetch_reference_raw(years_to_load: list[int]) -> dict:
+    """Независимые справочники грузятся ПАРАЛЛЕЛЬНО (между эндпоинтами курсоры независимы).
+
+    Результат не зависит от порядка выгрузки: история по годам собирается
+    потом в порядке years_to_load, как и раньше.
+    """
+    global _SILAGE_IDS_CACHE
+    jobs: dict[str, object] = {
+        "history:%d" % y: (lambda yy=y: get_all_from_id("history_items", {"year": yy}))
+        for y in years_to_load
+    }
+    jobs["inventory_history_items"] = lambda: get_all_from_id(
+        "inventory_history_items", {"historyable_type": "Field"})
+    jobs["crops"] = lambda: get_all_from_id("crops")
+    jobs["fields"] = lambda: get_all_from_id("fields")
+    jobs["field_groups"] = lambda: get_all_from_id("field_groups")
+    jobs["group_folders"] = lambda: get_all_from_id("group_folders")
+    jobs["machines"] = lambda: get_all_from_id("machines")
+    jobs["silage"] = _fetch_silage_corn_field_ids
+
+    results = run_reference_jobs(
+        jobs,
+        parallel=PIPELINE,
+        workers=REFERENCE_WORKERS,
+        thread_prefix="r2-ref",
+    )
+
+    _SILAGE_IDS_CACHE = results["silage"]
+    return {
+        "crops": results["crops"],
+        "history": {y: results["history:%d" % y] for y in years_to_load},
+        "fields": results["fields"],
+        "field_groups": results["field_groups"],
+        "group_folders": results["group_folders"],
+        "ihi": results["inventory_history_items"],
+        "machines": results["machines"],
+    }
+
+
+def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
     dict[int, str],
     dict[int, str],
     dict[int, str],
@@ -1378,10 +1552,10 @@ def load_reference_data() -> tuple[  # noqa: C901
     dict[int, str],
     dict[int, int],
 ]:
-    refresh_season_config()
-    print("  Загружаем crops...")
-    crops_map = {c["id"]: c.get("name") or c.get("title", "")
-                 for c in get_all_from_id("crops")}
+    global _CROPS_RAW, _MACHINES_ALL, _SILAGE_IDS_CACHE
+    if refresh:
+        refresh_season_config()
+    _CROPS_RAW = _MACHINES_ALL = _SILAGE_IDS_CACHE = None
 
     season_year = TODAY.year + 1
     years_to_load = [season_year, TODAY.year]
@@ -1394,11 +1568,22 @@ def load_reference_data() -> tuple[  # noqa: C901
             if y not in years_to_load:
                 years_to_load.append(y)
     years_to_load = sorted(set(years_to_load), reverse=True)
+
+    print(
+        f"  Загружаем справочники ({'параллельно' if PIPELINE else 'последовательно'}): "
+        f"crops, history_items {years_to_load}, fields, field_groups, group_folders, "
+        f"inventory_history_items, machines, силос..."
+    )
+    raw_ref = _fetch_reference_raw(years_to_load)
+    _CROPS_RAW = raw_ref["crops"]
+    _MACHINES_ALL = raw_ref["machines"]
+    crops_map = {c["id"]: c.get("name") or c.get("title", "")
+                 for c in raw_ref["crops"]}
+
     history_by_year: dict[int, list[dict]] = {}
     all_history_items: list[dict] = []
     for crop_year in years_to_load:
-        print(f"  Загружаем history_items year={crop_year}...")
-        chunk = get_all_from_id("history_items", {"year": crop_year})
+        chunk = raw_ref["history"][crop_year]
         history_by_year[crop_year] = chunk
         all_history_items.extend(chunk)
         print(f"    history_items year={crop_year}: {len(chunk)} записей")
@@ -1488,10 +1673,9 @@ def load_reference_data() -> tuple[  # noqa: C901
         f"(history_items {years_to_load}, приоритет {season_year})"
     )
 
-    print("  Загружаем fields / field_groups / group_folders...")
-    fields_all = get_all_from_id("fields")
-    fgs_all    = get_all_from_id("field_groups")
-    gfs_all    = get_all_from_id("group_folders")
+    fields_all = raw_ref["fields"]
+    fgs_all    = raw_ref["field_groups"]
+    gfs_all    = raw_ref["group_folders"]
 
     # Площадь полей (все поля, не только активные — на случай нужды)
     field_area: dict[int, float] = {}
@@ -1513,35 +1697,14 @@ def load_reference_data() -> tuple[  # noqa: C901
     # Определяем агрофирму для каждого поля через полную иерархию папок
     field_to_firm_all = load_field_to_firm(fields_all, fgs_all, gfs_all)
 
-    # Загружаем inventory_history_items один раз — используем дважды
-    print("  Загружаем inventory_history_items (архивный статус полей)...")
-    ihi_all = get_all_from_id("inventory_history_items", {
-        "historyable_type": "Field",
-    })
+    # inventory_history_items уже выгружены (параллельно со всеми справочниками);
+    # даты разбираем ОДИН раз и используем для плана, факта и general-периода.
+    ihi_all = raw_ref["ihi"]
     print(f"    Всего записей inventory_history_items: {len(ihi_all)}")
+    ihi_intervals = _ihi_intervals(ihi_all)
 
     # --- Для ПЛАНА: только поля, активные (available=True) на сегодня ---
-    plan_available_ids: set[int] = set()
-    for r in ihi_all:
-        if not r.get("available"):
-            continue
-        fid = r.get("historyable_id")
-        if fid is None:
-            continue
-        raw_start = r.get("event_start_at")
-        raw_end   = r.get("event_end_at")
-        try:
-            ev_start = date.fromisoformat(str(raw_start)[:10]) if raw_start else None
-        except ValueError:
-            ev_start = None
-        try:
-            ev_end = date.fromisoformat(str(raw_end)[:10]) if raw_end else None
-        except ValueError:
-            ev_end = None
-        if ev_start is None:
-            continue
-        if ev_start <= TODAY and (ev_end is None or ev_end >= TODAY):
-            plan_available_ids.add(int(fid))
+    plan_available_ids = _ids_from_intervals(ihi_intervals, TODAY, TODAY)
     print(f"    Полей available=True на сегодня ({TODAY}): {len(plan_available_ids)}")
 
     # field_to_firm для плана: поле есть в сезоне И активно сегодня
@@ -1553,10 +1716,10 @@ def load_reference_data() -> tuple[  # noqa: C901
 
     # --- Для ФАКТА: поля активные в периоде и с культурой (как сводка 1) ---
     period_available_ids = _load_available_field_ids_in_period(
-        START_DATE, TODAY, ihi_all
+        START_DATE, TODAY, ihi_intervals
     )
     period_available_ids_general = _load_available_field_ids_in_period(
-        FERT_PERIOD_START, FERT_PERIOD_END, ihi_all
+        FERT_PERIOD_START, FERT_PERIOD_END, ihi_intervals
     )
     field_to_firm = {
         fid: firm for fid, firm in field_to_firm_all.items()
@@ -1613,8 +1776,7 @@ def load_reference_data() -> tuple[  # noqa: C901
             continue
         firm_crop_area_ha[firm][crop] += field_area.get(fid, 0.0)
 
-    print("  Загружаем machines...")
-    machines_all = get_all_from_id("machines")
+    machines_all = raw_ref["machines"]
     machine_group: dict[int, int] = {
         m["id"]: (m.get("machine_group_id") or 0)
         for m in machines_all
@@ -1643,131 +1805,25 @@ def load_reference_data() -> tuple[  # noqa: C901
         history_item_to_year,
     )
 
-# =============================================================================
-# АСИНХРОННАЯ ЗАГРУЗКА MTFMI
-# =============================================================================
-
-async def fetch_all_pages_async(
-    client: httpx.AsyncClient,
-    url: str,
-    params: dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items   = []
-    from_id = 0
-    while True:
-        async with semaphore:
-            r = await client.get(url, params={**params,
-                                              "from_id": from_id,
-                                              "limit":   1000})
-        body  = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta    = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = last_id + 1
-    return items
-
-MTFMI_BATCH_SIZE = 300  # сколько machine_task_id класть в один запрос mtfmi
+# MTFMI / mtaomi / mass_request — utils/api/mtfmi_batch_fetch.py, mtaomi_batch_fetch.py
 
 
-def _chunked(items: list, size: int) -> list[list]:
-    return [items[i:i + size] for i in range(0, len(items), size)]
-
-
-async def fetch_mtfmi_for_tasks(
+async def _fetch_task_agro_ops_raw(
     task_ids: list[int],
     headers: dict,
-) -> dict[int, list[dict]]:
+) -> tuple[dict[int, set[int]], dict[int, int], dict[int, int]]:
     """
-    Забирает machine_task_field_mapping_items пачками по MTFMI_BATCH_SIZE
-    machine_task_id за один запрос (endpoint поддерживает фильтр по списку
-    значений machine_task_id), вместо одного запроса на каждую задачу.
+    СЫРЫЕ данные для культуры через AgroOperation (без history_item_to_crop):
+      task_id → {agro_operation_id}, agro_operation_id → history_item_id / field_id.
+
+    Не зависит от справочников, поэтому выполняется в фоне вместе с mtfmi и ОДИН
+    раз на все группы (а не по asyncio.run на каждую группу).
     """
-    semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    url       = f"{BASE_URL}/machine_task_field_mapping_items"
-    mtfmi_map: dict[int, list[dict]] = {tid: [] for tid in task_ids}
+    task_to_agro_ops: dict[int, set[int]] = defaultdict(set)
+    agro_op_to_history: dict[int, int] = {}
+    agro_op_to_field: dict[int, int] = {}
     if not task_ids:
-        return mtfmi_map
-
-    batches = _chunked(task_ids, MTFMI_BATCH_SIZE)
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        batch_results = await asyncio.gather(*[
-            fetch_all_pages_async(
-                client, url,
-                {"machine_task_id": ",".join(str(tid) for tid in batch)},
-                semaphore,
-            )
-            for batch in batches
-        ], return_exceptions=True)
-
-        failed_ids: list[int] = []
-        for batch, res in zip(batches, batch_results):
-            if isinstance(res, BaseException):
-                failed_ids.extend(batch)
-                continue
-            for item in res:
-                tid = item.get("machine_task_id")
-                if tid is not None and int(tid) in mtfmi_map:
-                    mtfmi_map[int(tid)].append(item)
-
-        if failed_ids:
-            print(f"    Повторяем поштучно {len(failed_ids)} задач (батч mtfmi не удался)...")
-            retry_results = await asyncio.gather(*[
-                fetch_all_pages_async(client, url, {"machine_task_id": tid}, semaphore)
-                for tid in failed_ids
-            ], return_exceptions=True)
-            for tid, res in zip(failed_ids, retry_results):
-                if not isinstance(res, BaseException):
-                    mtfmi_map[tid] = res
-
-    return mtfmi_map
-
-
-AGRO_OP_BATCH_SIZE = 300  # сколько agro_operation_id класть в один mass_request
-
-
-async def fetch_mass_request_async(
-    client: httpx.AsyncClient,
-    endpoint: str,
-    ids: list[int],
-    semaphore: asyncio.Semaphore,
-    batch_size: int = AGRO_OP_BATCH_SIZE,
-) -> list[dict]:
-    """POST .../{endpoint}/mass_request батчами по batch_size id."""
-    if not ids:
-        return []
-    url = f"{BASE_URL}/{endpoint}/mass_request"
-    out: list[dict] = []
-    for batch in _chunked(ids, batch_size):
-        async with semaphore:
-            r = await client.post(url, json={"data": batch})
-        try:
-            r.raise_for_status()
-            body = r.json()
-        except Exception:
-            continue
-        out.extend(body.get("data", []))
-    return out
-
-
-async def fetch_task_crop_via_agro_operation(
-    task_ids: list[int],
-    headers: dict,
-    history_item_to_crop: dict[int, str],
-) -> tuple[dict[int, str], dict[tuple[int, int], str]]:
-    """
-    Культура MachineTask через AgroOperation -> HistoryItem (точнее, чем поле+дата).
-    Второй словарь — (task_id, field_id) → культура: на одном задании бывают
-    пшеница, соя и картофель, и одна культура на всё задание их смешивает.
-    Сезон озимых фильтруется отдельно в `_crop_for_task_field` по MachineTask.season.
-    """
-    if not task_ids:
-        return {}
+        return task_to_agro_ops, agro_op_to_history, agro_op_to_field
 
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     from mtaomi_batch_fetch import fetch_mtaomi_by_machine_task_ids, mass_request_async
@@ -1776,7 +1832,6 @@ async def fetch_task_crop_via_agro_operation(
         mtaomi_map = await fetch_mtaomi_by_machine_task_ids(
             client, BASE_URL, task_ids, semaphore, log_prefix="[r2] ",
         )
-        task_to_agro_ops: dict[int, set[int]] = defaultdict(set)
         for tid, items in mtaomi_map.items():
             for item in items:
                 aoid = item.get("agro_operation_id")
@@ -1788,8 +1843,6 @@ async def fetch_task_crop_via_agro_operation(
             client, BASE_URL, "agro_operations", all_agro_op_ids, semaphore,
         )
 
-    agro_op_to_history: dict[int, int] = {}
-    agro_op_to_field: dict[int, int] = {}
     for ao in agro_ops:
         if ao.get("id") is None:
             continue
@@ -1798,10 +1851,33 @@ async def fetch_task_crop_via_agro_operation(
             agro_op_to_history[aoid] = int(ao["history_item_id"])
         if ao.get("field_id") is not None:
             agro_op_to_field[aoid] = int(ao["field_id"])
+    return task_to_agro_ops, agro_op_to_history, agro_op_to_field
 
+
+def _resolve_task_crops(
+    raw: tuple[dict[int, set[int]], dict[int, int], dict[int, int]] | None,
+    history_item_to_crop: dict[int, str],
+    only_task_ids=None,
+) -> tuple[dict[int, str], dict[tuple[int, int], str]]:
+    """
+    Культура MachineTask через AgroOperation -> HistoryItem (точнее, чем поле+дата).
+    Второй словарь — (task_id, field_id) → культура: на одном задании бывают
+    пшеница, соя и картофель, и одна культура на всё задание их смешивает.
+    Сезон озимых фильтруется отдельно в `_crop_for_task_field` по MachineTask.season.
+
+    only_task_ids — разбор только для задач одной группы (срез общей выгрузки).
+    Вызывается ПОСЛЕ _load_mtfmi_row_crops, который может дополнить
+    history_item_to_crop (порядок важен для идентичности результата).
+    """
     task_crop: dict[int, str] = {}
     task_field_crop: dict[tuple[int, int], str] = {}
+    if raw is None:
+        return task_crop, task_field_crop
+    task_to_agro_ops, agro_op_to_history, agro_op_to_field = raw
+    wanted = None if only_task_ids is None else set(only_task_ids)
     for tid, aoids in task_to_agro_ops.items():
+        if wanted is not None and tid not in wanted:
+            continue
         crops_found: set[str] = set()
         for aoid in aoids:
             hi_id = agro_op_to_history.get(aoid)
@@ -1816,8 +1892,17 @@ async def fetch_task_crop_via_agro_operation(
                 task_field_crop[(int(tid), fid)] = crop
         if len(crops_found) == 1:
             task_crop[tid] = next(iter(crops_found))
-
     return task_crop, task_field_crop
+
+
+async def fetch_task_crop_via_agro_operation(
+    task_ids: list[int],
+    headers: dict,
+    history_item_to_crop: dict[int, str],
+) -> tuple[dict[int, str], dict[tuple[int, int], str]]:
+    """Совместимость: выгрузка + разбор для одного набора задач (в конвейере не используется)."""
+    raw = await _fetch_task_agro_ops_raw(task_ids, headers)
+    return _resolve_task_crops(raw, history_item_to_crop)
 
 
 def _load_mtfmi_row_crops(
@@ -1845,18 +1930,19 @@ def _load_mtfmi_row_crops(
 
         crops_map = {
             int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
-            for c in get_all_from_id("crops")
+            for c in (_CROPS_RAW if _CROPS_RAW is not None else get_all_from_id("crops"))
             if c.get("id") is not None
         }
 
         async def _fetch() -> list[dict]:
-            sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+            async with report_async_client(
+                API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120,
+            ) as (client, sem):
                 return await mass_request_async(
                     client, BASE_URL, "history_items", sorted(missing), sem,
                 )
 
-        for hi in asyncio.run(_fetch()):
+        for hi in run_report_async(_fetch()):
             if hi.get("id") is None or hi.get("crop_id") is None:
                 continue
             name = crops_map.get(int(hi["crop_id"]), "")
@@ -2030,31 +2116,26 @@ def _task_in_report_shift_window(
     return shift_ds >= day_start and shift_co <= cutoff
 
 
-def collect_work_data(
-    field_to_crop: dict[int, str],
-    field_to_crop_general: dict[int, str],
-    field_to_crop_harvest: dict[int, str],
-    field_to_crop_plow: dict[int, str],
-    field_to_crop_veg: dict[int, str],
-    field_to_crop_report3: dict[int, str],
-    field_to_firm: dict[int, str],
-    field_to_firm_general: dict[int, str],
-    field_to_firm_veg: dict[int, str],
-    field_to_firm_all: dict[int, str],
-    crop_field_ids_report3: set[int],
-    period_available_ids: set[int],
-    period_available_ids_general: set[int],
-    field_area:    dict[int, float],
-    machine_group: dict[int, int],
-    headers:       dict,
-    history_item_to_crop: dict[int, str] | None = None,
-    history_item_to_year: dict[int, int] | None = None,
+def _prepare_group_selection(
+    headers: dict,
+    *,
+    refresh: bool = True,
+    tasks_window: tuple[str, str] | None = None,
 ) -> dict:
-    refresh_season_config()
+    """
+    Фаза A сводки: НЕ зависит от справочников, поэтому в конвейере идёт в фоне
+    параллельно с load_reference_data.
+
+      machine_tasks (prefetch/live) → отбор по группам и сменам → mtfmi
+      и сырые связи mtaomi/agro_operations (культура через агрооперацию).
+
+    Карты полей/фирм здесь не нужны: в pending_groups хранятся только ИМЕНА
+    карт, фаза B (collect_work_data) подставляет сами карты.
+    """
+    if refresh:
+        refresh_season_config()
     data: dict[str, dict] = {}
     pending_groups: list[dict] = []
-    history_item_to_crop = history_item_to_crop or {}
-    history_item_to_year = history_item_to_year or {}
     use_crop_via_agro_op = _parse_bool_env("SVODKI_CROP_VIA_AGRO_OPERATION", True)
 
     DAY_START_HOUR = 6  # смена начинается в 06:00 МСК
@@ -2102,15 +2183,8 @@ def collect_work_data(
             return None
         return cal_date, day_start, cutoff
 
-    tasks_index: dict[int, list[dict]] | None = None
-    try:
-        from report2_prefetch_io import prefetch_tasks_by_wt
-
-        tasks_index = prefetch_tasks_by_wt()
-    except Exception:
-        tasks_index = None
-    if tasks_index is None:
-        tasks_index = _ensure_live_tasks_preloaded()
+    with _stage("задания: индекс machine_tasks (prefetch/live)"):
+        tasks_index = _get_tasks_index(tasks_window)
 
     for group_name, wt_ids in WORK_GROUPS:
         if group_name == HARVEST_GROUP_NAME:
@@ -2122,67 +2196,67 @@ def collect_work_data(
         is_harvest_grain = group_name == HARVEST_GROUP_NAME
         use_general_crop_map = group_name in GENERAL_CROP_GROUPS and not is_harvest_grain
         if use_report3_coverage_logic:
-            active_crop_map = field_to_crop_report3
-            active_firm_map = field_to_firm_all
-            active_available_ids = crop_field_ids_report3
+            active_crop_map = "field_to_crop_report3"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "crop_field_ids_report3"
             group_period_start, group_period_end = _merged_period_for_group(
                 group_name, date(TODAY.year, 3, 1)
             )
         elif is_harvest_veg:
-            active_crop_map = field_to_crop_veg
-            active_firm_map = field_to_firm_veg
-            active_available_ids = period_available_ids_general
+            active_crop_map = "field_to_crop_veg"
+            active_firm_map = "field_to_firm_veg"
+            active_available_ids = "period_available_ids_general"
             group_period_start, group_period_end = _merged_period_for_group(
                 group_name, date(TODAY.year, 3, 1)
             )
         elif is_harvest_grain:
             # Как 10_main_harvest: культура year=TODAY, фирма — полная карта.
-            active_crop_map = field_to_crop_harvest
-            active_firm_map = field_to_firm_all
-            active_available_ids = period_available_ids_general
+            active_crop_map = "field_to_crop_harvest"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "period_available_ids_general"
             group_period_start, group_period_end = _merged_period_for_group(
                 group_name, HARVEST_SEASON_START
             )
         elif group_name == PLOW_GROUP_NAME:
             # Факт: сезоны из редактора. Культура — как у остальных: HistoryItem
             # строки, иначе field_to_crop_plow (year+1, не общая карта 2026+2027).
-            active_crop_map = field_to_crop_plow
-            active_firm_map = field_to_firm_all
-            active_available_ids = period_available_ids
+            active_crop_map = "field_to_crop_plow"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "period_available_ids"
             group_period_start = START_DATE
             group_period_end = TODAY
         elif group_name == DEEP_GROUP_NAME:
             # Как 9_main_fixed: без обрезки period_end из season_ranges (иначе факт = 0).
-            active_crop_map = field_to_crop_general
-            active_firm_map = field_to_firm_all
-            active_available_ids = period_available_ids_general
+            active_crop_map = "field_to_crop_general"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "period_available_ids_general"
             group_period_start = START_DATE
             group_period_end = TODAY
         elif group_name == DISK_GROUP_NAME:
             # Дискование: оба сезона history (год отчёта + year+1), не sowing-мапа посева.
-            active_crop_map = field_to_crop_general
-            active_firm_map = field_to_firm_all
-            active_available_ids = period_available_ids_general
+            active_crop_map = "field_to_crop_general"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "period_available_ids_general"
             group_period_start = START_DATE
             group_period_end = TODAY
         elif use_general_crop_map:
-            active_crop_map = field_to_crop_general
-            active_firm_map = field_to_firm_general
-            active_available_ids = period_available_ids_general
+            active_crop_map = "field_to_crop_general"
+            active_firm_map = "field_to_firm_general"
+            active_available_ids = "period_available_ids_general"
             group_period_start, group_period_end = _merged_period_for_group(
                 group_name, date(TODAY.year, 3, 1)
             )
         elif group_name == CULTIVATION_GROUP_NAME:
             # Как 8_main_fixed.load_field_filters: active history_items текущего года.
-            active_crop_map = field_to_crop_report3
-            active_firm_map = field_to_firm_all
-            active_available_ids = period_available_ids
+            active_crop_map = "field_to_crop_report3"
+            active_firm_map = "field_to_firm_all"
+            active_available_ids = "period_available_ids"
             group_period_start = START_DATE
             group_period_end = TODAY
         else:
-            active_crop_map = field_to_crop
-            active_firm_map = field_to_firm
-            active_available_ids = period_available_ids
+            active_crop_map = "field_to_crop"
+            active_firm_map = "field_to_firm"
+            active_available_ids = "period_available_ids"
             group_period_start, group_period_end = _merged_period_for_group(group_name, START_DATE)
         # Боронование — как new/4.main.py (не hourly, сезон с 01.01, только задания с covered_area>0).
         use_report4_boron_logic = group_name == BORON_GROUP_NAME
@@ -2341,10 +2415,125 @@ def collect_work_data(
         continue
 
     all_task_ids = [tid for g in pending_groups for tid in g["task_ids"]]
-    global_mtfmi = _build_global_mtfmi_map(all_task_ids, headers)
-    mtfmi_row_crop = _load_mtfmi_row_crops(
-        global_mtfmi, history_item_to_crop, headers, history_item_to_year,
+
+    # Культура через AgroOperation нужна не всем группам; выгружаем ОДИН раз
+    # на объединение задач (раньше — отдельный asyncio.run на каждую группу).
+    agro_task_ids: list[int] = []
+    if use_crop_via_agro_op:
+        agro_task_ids = sorted({
+            int(tid)
+            for g in pending_groups
+            if g["group_name"] not in _CROP_VIA_OP_EXCLUDED_GROUPS
+            for tid in g["task_ids"]
+        })
+
+    def _mtfmi() -> dict:
+        with _stage("mtfmi: выгрузка"):
+            return _build_global_mtfmi_map(all_task_ids, headers)
+
+    def _agro_raw():
+        if not agro_task_ids:
+            return None
+        with _stage("agro_operations: выгрузка связей"):
+            return run_report_async(_fetch_task_agro_ops_raw(agro_task_ids, headers))
+
+    from report_pipeline import run_parallel_sync_pair
+
+    if PIPELINE:
+        global_mtfmi, agro_raw = run_parallel_sync_pair(
+            _mtfmi, _agro_raw, thread_prefix="r2-prep",
+        )
+    else:
+        global_mtfmi = _mtfmi()
+        agro_raw = _agro_raw()
+
+    return {
+        "data": data,
+        "pending_groups": pending_groups,
+        "global_mtfmi": global_mtfmi,
+        "agro_raw": agro_raw,
+        # ВНИМАНИЕ (унаследованное поведение): цикл обработки групп читает
+        # is_harvest_grain / use_report4_boron_logic, которые в оригинале
+        # «утекали» из ПОСЛЕДНЕЙ итерации цикла отбора (последняя группа
+        # WORK_GROUPS), а не относились к обрабатываемой группе. Значения
+        # сохранены как есть, чтобы цифры отчёта не изменились.
+        "leaked_flags": (is_harvest_grain, use_report4_boron_logic),
+    }
+
+
+# Группы, для которых культура НЕ берётся через AgroOperation (только с поля).
+_CROP_VIA_OP_EXCLUDED_GROUPS = frozenset({
+    HARVEST_GROUP_NAME,
+    PLOW_GROUP_NAME,
+    DEEP_GROUP_NAME,
+    DISK_GROUP_NAME,
+    SEEDING_GROUP_NAME,
+    VEG_SEEDING_GROUP_NAME,
+})
+
+
+def collect_work_data(
+    field_to_crop: dict[int, str],
+    field_to_crop_general: dict[int, str],
+    field_to_crop_harvest: dict[int, str],
+    field_to_crop_plow: dict[int, str],
+    field_to_crop_veg: dict[int, str],
+    field_to_crop_report3: dict[int, str],
+    field_to_firm: dict[int, str],
+    field_to_firm_general: dict[int, str],
+    field_to_firm_veg: dict[int, str],
+    field_to_firm_all: dict[int, str],
+    crop_field_ids_report3: set[int],
+    period_available_ids: set[int],
+    period_available_ids_general: set[int],
+    field_area:    dict[int, float],
+    machine_group: dict[int, int],
+    headers:       dict,
+    history_item_to_crop: dict[int, str] | None = None,
+    history_item_to_year: dict[int, int] | None = None,
+    prepared: dict | None = None,
+) -> dict:
+    """Фаза B: всё, что зависит от справочников. prepared — результат
+    _prepare_group_selection (из фона); если None, подготовка выполняется здесь."""
+    if prepared is None:
+        prepared = _prepare_group_selection(headers, refresh=True)
+    data: dict[str, dict] = prepared["data"]
+    pending_groups: list[dict] = prepared["pending_groups"]
+    global_mtfmi = prepared["global_mtfmi"]
+    agro_raw = prepared["agro_raw"]
+    is_harvest_grain, use_report4_boron_logic = prepared["leaked_flags"]
+    history_item_to_crop = history_item_to_crop or {}
+    history_item_to_year = history_item_to_year or {}
+    use_crop_via_agro_op = _parse_bool_env("SVODKI_CROP_VIA_AGRO_OPERATION", True)
+
+    DAY_START_HOUR = 6  # смена начинается в 06:00 МСК
+    REPORT_DAY_CUTOFF = datetime(
+        TODAY.year, TODAY.month, TODAY.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK,
     )
+    REPORT_DAY_START = REPORT_DAY_CUTOFF - timedelta(days=1)
+    REPORT_SHIFT_DATE = TODAY - timedelta(days=1)
+
+    _refs = {
+        "field_to_crop": field_to_crop,
+        "field_to_crop_general": field_to_crop_general,
+        "field_to_crop_harvest": field_to_crop_harvest,
+        "field_to_crop_plow": field_to_crop_plow,
+        "field_to_crop_veg": field_to_crop_veg,
+        "field_to_crop_report3": field_to_crop_report3,
+        "field_to_firm": field_to_firm,
+        "field_to_firm_general": field_to_firm_general,
+        "field_to_firm_veg": field_to_firm_veg,
+        "field_to_firm_all": field_to_firm_all,
+        "crop_field_ids_report3": crop_field_ids_report3,
+        "period_available_ids": period_available_ids,
+        "period_available_ids_general": period_available_ids_general,
+    }
+
+    with _stage("mtfmi: культура строк площади"):
+        mtfmi_row_crop = _load_mtfmi_row_crops(
+            global_mtfmi, history_item_to_crop, headers, history_item_to_year,
+        )
+
     try:
         from season_mismatch_log import log_row_season_mismatches
 
@@ -2368,9 +2557,9 @@ def collect_work_data(
         use_report6_spray_logic = g["use_report6_spray_logic"]
         use_report17_area_logic = g["use_report17_area_logic"]
         is_harvest_veg = g["is_harvest_veg"]
-        active_crop_map = g["active_crop_map"]
-        active_firm_map = g["active_firm_map"]
-        active_available_ids = g["active_available_ids"]
+        active_crop_map = _refs[g["active_crop_map"]]
+        active_firm_map = _refs[g["active_firm_map"]]
+        active_available_ids = _refs[g["active_available_ids"]]
         all_tasks = g["all_tasks"]
         no_shift_tasks = g["no_shift_tasks"]
         task_shift = g["task_shift"]
@@ -2391,17 +2580,10 @@ def collect_work_data(
         if (
             use_crop_via_agro_op
             and history_item_to_crop
-            and group_name not in {
-                HARVEST_GROUP_NAME,
-                PLOW_GROUP_NAME,
-                DEEP_GROUP_NAME,
-                DISK_GROUP_NAME,
-                SEEDING_GROUP_NAME,
-                VEG_SEEDING_GROUP_NAME,
-            }
+            and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS
         ):
-            task_crop_via_operation, task_field_crop = asyncio.run(
-                fetch_task_crop_via_agro_operation(task_ids, headers, history_item_to_crop)
+            task_crop_via_operation, task_field_crop = _resolve_task_crops(
+                agro_raw, history_item_to_crop, only_task_ids=task_ids,
             )
             print(
                 f"    культура через AgroOperation определена для "
@@ -2974,23 +3156,6 @@ def dates_with_any_activity(work_data: dict) -> list[date]:
                     active.add(dt)
     upper = TODAY - timedelta(days=1)
     return sorted(d for d in active if START_DATE <= d <= upper)
-
-
-def _parse_int_env(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        v = int(os.environ.get(name, str(default)).strip())
-        return max(lo, min(hi, v))
-    except (ValueError, TypeError):
-        return default
-
-
-def _parse_bool_env(name: str, default: bool) -> bool:
-    raw = os.environ.get(name, "1" if default else "0").strip().lower()
-    if raw in ("1", "true", "yes", "on", "да"):
-        return True
-    if raw in ("0", "false", "no", "off", "нет"):
-        return False
-    return default
 
 
 def dates_with_activity_for_firm(gd: dict, firm: str) -> list[date]:
@@ -3826,7 +3991,25 @@ def build_report() -> None:
 
     headers = {"X-User-Api-Token": API_TOKEN}
 
+    timing_start()
+
+    # Конвейер: цепочка заданий (machine_tasks → смены → mtfmi → агрооперации)
+    # не зависит от справочников, поэтому стартует в фоне и идёт параллельно
+    # с load_reference_data. Конфиг сезонов обновляем один раз ДО запуска потоков.
+    prepared_job: BackgroundJob | None = None
+    if PIPELINE:
+        refresh_season_config()
+        tasks_window = _widest_machine_tasks_window()
+        print("Фоном запускаем подготовку заданий (machine_tasks → mtfmi → агрооперации)...")
+        prepared_job = BackgroundJob(
+            lambda: _prepare_group_selection(
+                headers, refresh=False, tasks_window=tasks_window,
+            ),
+            "r2-prepare",
+        )
+
     print("Загружаем справочники...")
+    t_ref = time.monotonic()
     (field_to_crop, field_to_crop_general, field_to_crop_harvest,
      field_to_crop_plow,
      field_to_crop_veg,
@@ -3836,13 +4019,20 @@ def build_report() -> None:
      period_available_ids, period_available_ids_general,
      field_area, machine_group,
      firm_plan_ha, firm_crop_area_ha, firm_crop_area_ha_general,
-     history_item_to_crop, history_item_to_year) = load_reference_data()
+     history_item_to_crop, history_item_to_year) = load_reference_data(refresh=not PIPELINE)
+    stage_add("справочники (wall)", time.monotonic() - t_ref)
 
     print(f"\nПлан по агрофирмам (tillable_area активных полей):")
     for firm, ha in firm_plan_ha.items():
         print(f"  {firm}: {round(ha):,} га")
 
     print("\nСобираем данные по работам...")
+    prepared = None
+    if prepared_job is not None:
+        # Если фон уже закончился раньше справочников — ожидание ≈ 0.
+        with _stage("ожидание фоновой подготовки заданий"):
+            prepared = prepared_job.result()
+    t_collect = time.monotonic()
     work_data = collect_work_data(
         field_to_crop, field_to_crop_general, field_to_crop_harvest,
         field_to_crop_plow,
@@ -3854,14 +4044,19 @@ def build_report() -> None:
         field_area, machine_group, headers,
         history_item_to_crop=history_item_to_crop,
         history_item_to_year=history_item_to_year,
+        prepared=prepared,
     )
+    stage_add("сбор данных (без фона)", time.monotonic() - t_collect)
 
     if not _excel_period_export():
         try:
             from r23_from_report2 import export_r23_bundle_after_report2
 
             if os.environ.get("SVODKI_R23_WORK_DATA_BUNDLE_OUT"):
-                machines_all = get_all_from_id("machines")
+                machines_all = (
+                    _MACHINES_ALL if _MACHINES_ALL is not None
+                    else get_all_from_id("machines")
+                )
                 subtype_by_id = {
                     int(m["id"]): (m.get("machine_subtype") or "—")
                     for m in machines_all
@@ -3892,15 +4087,18 @@ def build_report() -> None:
         del wb["Sheet"]
 
     print("Пишем листы по операциям...")
-    write_report_sheet(
-        wb, work_data, display_dates, firm_plan_ha, firm_crop_area_ha,
-        firm_crop_area_ha_general=firm_crop_area_ha_general,
-    )
-    _audit_veg54_sheet(wb)
+    with _stage("Excel: листы"):
+        write_report_sheet(
+            wb, work_data, display_dates, firm_plan_ha, firm_crop_area_ha,
+            firm_crop_area_ha_general=firm_crop_area_ha_general,
+        )
+        _audit_veg54_sheet(wb)
 
     output_path = _resolve_output_xlsx_path()
-    wb.save(output_path)
+    with _stage("Excel: сохранение"):
+        wb.save(output_path)
     print(f"\nСохранено: {output_path.resolve()}")
+    timing_finish()
 
 if __name__ == "__main__":
     build_report()

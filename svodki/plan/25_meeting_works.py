@@ -10,6 +10,7 @@ Meeting report 25: посев, культивация (+ дискование + 
 """
 from __future__ import annotations
 
+
 import asyncio
 import os
 import sys
@@ -23,6 +24,10 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import report_async_client, run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 import requests
@@ -104,7 +109,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
     for _ in range(500):
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**p, "from_id": from_id, "limit": 1000},
+            params={**p, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=120,
         )
         r.raise_for_status()
@@ -115,7 +120,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
         results.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = int(last_id) + 1
     return results
@@ -138,42 +143,15 @@ def get_all_page(endpoint: str, params: dict | None = None) -> list[dict]:
     return results
 
 
-async def _fetch_pages_async(
-    client: httpx.AsyncClient,
-    url: str,
-    params: dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items: list[dict] = []
-    from_id = 0
-    while True:
-        async with semaphore:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-        r.raise_for_status()
-        body = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = int(last_id) + 1
-    return items
-
-
 async def fetch_mtfmi_async(task_ids: list[int]) -> dict[int, list[dict]]:
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    url = f"{BASE_URL}/machine_task_field_mapping_items"
-    async with httpx.AsyncClient(
-        headers={"X-User-Api-Token": API_TOKEN},
-        timeout=120,
-    ) as client:
-        results = await asyncio.gather(
-            *[_fetch_pages_async(client, url, {"machine_task_id": tid}, sem) for tid in task_ids]
+    from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
+
+    if not task_ids:
+        return {}
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+        return await fetch_mtfmi_map_for_tasks(
+            client, sem, BASE_URL, task_ids, log_prefix="[r25] ",
         )
-    return {tid: items for tid, items in zip(task_ids, results)}
 
 
 def parse_dt(value) -> datetime | None:
@@ -567,14 +545,21 @@ def _cov_spray_item(
     return cov
 
 
-def collect_totals(
-    field_to_firm: dict[int, str],
-    field_to_crop: dict[int, str],
-    available_field_ids: set[int],
-) -> dict[str, dict[str, float]]:
+def _fetch_tasks_bundle() -> tuple[
+    list[dict],
+    set[int],
+    set[int],
+    set[int],
+    set[int],
+    str,
+    datetime,
+    datetime,
+]:
     mode, day_start, cutoff = report_window()
     api_cutoff = _tasks_api_cutoff(mode, day_start, cutoff)
-    season_start_str = datetime(REPORT_DATE.year, 1, 1, tzinfo=TZ_MSK).strftime("%Y-%m-%dT%H:%M:%S")
+    season_start_str = datetime(REPORT_DATE.year, 1, 1, tzinfo=TZ_MSK).strftime(
+        "%Y-%m-%dT%H:%M:%S",
+    )
     api_cutoff_str = api_cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     print(
         f"  Загружаем задания: сезон с {season_start_str}, "
@@ -582,22 +567,15 @@ def collect_totals(
         f"{day_start:%Y-%m-%d %H:%M} .. {cutoff:%Y-%m-%d %H:%M}, mode={mode}"
     )
 
-    tasks_season: list[dict] = []
-    seen_tasks: set[int] = set()
-    for wt_id in sorted(ALL_WT_IDS):
-        for task in get_all(
-            "machine_tasks",
-            {
-                "work_type_id": wt_id,
-                "end_time_gt_eq": season_start_str,
-                "end_time_lt": api_cutoff_str,
-            },
-        ):
-            tid = task.get("id")
-            if tid is None or int(tid) in seen_tasks:
-                continue
-            seen_tasks.add(int(tid))
-            tasks_season.append(task)
+    from svodki_prefetch_io import sync_machine_tasks_prefetch_or_batch
+
+    mt_params = {
+        "end_time_gt_eq": season_start_str,
+        "end_time_lt": api_cutoff_str,
+    }
+    tasks_season = sync_machine_tasks_prefetch_or_batch(
+        get_all, ALL_WT_IDS, mt_params, log_prefix="[r25] ",
+    )
 
     today_seed_ids: set[int] = set()
     today_cult_ids: set[int] = set()
@@ -625,12 +603,58 @@ def collect_totals(
         f"(посев={len(today_seed_ids)}, посев_без_end={len(no_shift_seed_ids)}, "
         f"культ={len(today_cult_ids)})"
     )
+    return (
+        tasks_season,
+        today_seed_ids,
+        today_cult_ids,
+        no_shift_seed_ids,
+        all_today_ids,
+        mode,
+        day_start,
+        cutoff,
+    )
+
+
+async def _prefetch_tasks_and_mtfmi() -> tuple[tuple, dict[int, list[dict]]]:
+    bundle = await asyncio.to_thread(_fetch_tasks_bundle)
+    (
+        tasks_season,
+        today_seed_ids,
+        today_cult_ids,
+        no_shift_seed_ids,
+        all_today_ids,
+        mode,
+        day_start,
+        cutoff,
+    ) = bundle
+    if not all_today_ids:
+        return bundle, {}
+    mtfmi_map = await fetch_mtfmi_async(
+        [int(t["id"]) for t in tasks_season if int(t["id"]) in all_today_ids],
+    )
+    return bundle, mtfmi_map
+
+
+def _totals_from_bundle(
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+    available_field_ids: set[int],
+    bundle: tuple,
+    mtfmi_map: dict[int, list[dict]],
+) -> dict[str, dict[str, float]]:
+    (
+        tasks_season,
+        today_seed_ids,
+        today_cult_ids,
+        no_shift_seed_ids,
+        all_today_ids,
+        mode,
+        day_start,
+        cutoff,
+    ) = bundle
     if not all_today_ids:
         return defaultdict(lambda: defaultdict(float))
 
-    mtfmi_map = asyncio.run(
-        fetch_mtfmi_async([int(t["id"]) for t in tasks_season if int(t["id"]) in all_today_ids])
-    )
     totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     def _accumulate(task: dict, cov_fn) -> None:
@@ -694,6 +718,25 @@ def collect_totals(
                 )
 
     return totals
+
+
+def collect_totals(
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+    available_field_ids: set[int],
+) -> dict[str, dict[str, float]]:
+    bundle = _fetch_tasks_bundle()
+    tasks_season, _, _, _, all_today_ids, *_ = bundle
+    if not all_today_ids:
+        return defaultdict(lambda: defaultdict(float))
+    mtfmi_map = run_report_async(
+        fetch_mtfmi_async(
+            [int(t["id"]) for t in tasks_season if int(t["id"]) in all_today_ids],
+        ),
+    )
+    return _totals_from_bundle(
+        field_to_firm, field_to_crop, available_field_ids, bundle, mtfmi_map,
+    )
 
 
 def _fmt_area(value: float) -> str:
@@ -808,14 +851,23 @@ def write_workbook(totals: dict[str, dict[str, float]]) -> None:
     print(f"  Режим: {mode} (совещание {meeting})")
 
 
-def build_report() -> None:
+async def build_report_async() -> None:
     mode, start, end = report_window()
     print(
         f"=== Отчёт 25 ({mode}): {start:%Y-%m-%d %H:%M} — {end:%Y-%m-%d %H:%M} ==="
     )
-    field_to_firm, field_to_crop, available_field_ids = load_reference_data()
-    totals = collect_totals(field_to_firm, field_to_crop, available_field_ids)
+    refs, (bundle, mtfmi_map) = await run_parallel_refs_and_fetch(
+        load_reference_data, _prefetch_tasks_and_mtfmi, label="r25-tasks",
+    )
+    field_to_firm, field_to_crop, available_field_ids = refs
+    totals = _totals_from_bundle(
+        field_to_firm, field_to_crop, available_field_ids, bundle, mtfmi_map,
+    )
     write_workbook(totals)
+
+
+def build_report() -> None:
+    run_report_async(build_report_async())
 
 
 if __name__ == "__main__":

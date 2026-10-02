@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+
 import asyncio
 import os
 import sys
@@ -37,6 +38,11 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from svodki_timing import stage, timing_finish, timing_start
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import report_async_client, run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 import requests
@@ -94,7 +100,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
     for _ in range(500):
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**p, "from_id": from_id, "limit": 1000},
+            params={**p, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=120,
         )
         r.raise_for_status()
@@ -105,7 +111,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -127,31 +133,6 @@ def get_all_page(endpoint: str, params: dict | None = None) -> list[dict]:
             break
         page += 1
     return results
-
-
-async def _fetch_pages_async(
-    client: httpx.AsyncClient,
-    url: str,
-    params: dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items, from_id = [], 0
-    while True:
-        async with semaphore:
-            r = await client.get(
-                url, params={**params, "from_id": from_id, "limit": 1000}
-            )
-        body  = r.json()
-        chunk = body.get("data", [])
-        if not chunk:
-            break
-        items.extend(chunk)
-        meta    = body.get("meta", {}).get("response", {})
-        last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
-            break
-        from_id = last_id + 1
-    return items
 
 
 async def fetch_mtfmi_and_resources_async(
@@ -180,12 +161,21 @@ async def fetch_mtfmi_and_resources_async(
     if not task_ids:
         return {}, {}, {}, {}, {}, {}, {}
 
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    headers = {"X-User-Api-Token": API_TOKEN}
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        mtfmi_map = await fetch_mtfmi_map_for_tasks(
-            client, sem, BASE_URL, task_ids, log_prefix="[r24] ",
-        )
+    from svodki_prefetch_io import mtfmi_map_hybrid
+
+    pref_map, missing = mtfmi_map_hybrid(task_ids)
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+        if pref_map is None:
+            mtfmi_map = await fetch_mtfmi_map_for_tasks(
+                client, sem, BASE_URL, task_ids, log_prefix="[r24] ",
+            )
+        elif missing:
+            live = await fetch_mtfmi_map_for_tasks(
+                client, sem, BASE_URL, missing, log_prefix="[r24] ",
+            )
+            mtfmi_map = {**pref_map, **live}
+        else:
+            mtfmi_map = pref_map
         field_ids, machine_ids, implement_ids = collect_report_resource_ids(
             tasks, mtfmi_map,
         )
@@ -523,19 +513,7 @@ def load_static_reference_data() -> tuple[
 # СБОРКА ДАННЫХ ЗА СУТКИ
 # =============================================================================
 
-def collect_day_data(
-    fgs_all: list[dict],
-    gfs_all: list[dict],
-    crop_id_name: dict[int, str],
-    operators_map: dict[int, str],
-    work_type_map: dict[int, str],
-) -> list[dict]:
-    """
-    Собирает строки отчёта.
-    Одна строка = машина × поле за суточное окно (06:00 → 06:00 следующего дня).
-    """
-    # Суточное окно: REPORT_DATE − 1 день 06:00 → REPORT_DATE 06:00
-    # Например: REPORT_DATE=17.05 → окно 16.05 06:00 … 17.05 05:59
+def _day_window_for_report() -> tuple[datetime, datetime, str, str]:
     _day_end_date = REPORT_DATE
     _day_start_date = _day_end_date - timedelta(days=1)
     day_start = datetime(
@@ -547,32 +525,31 @@ def collect_day_data(
         MORNING_START_HOUR, 0, 0, tzinfo=TZ_MSK,
     )
     day_start_str = day_start.strftime("%Y-%m-%dT%H:%M:%S")
-    day_end_str   = day_end.strftime("%Y-%m-%dT%H:%M:%S")
+    day_end_str = day_end.strftime("%Y-%m-%dT%H:%M:%S")
+    return day_start, day_end, day_start_str, day_end_str
 
+
+def _fetch_day_machine_tasks() -> list[dict]:
+    day_start, day_end, day_start_str, day_end_str = _day_window_for_report()
     print(
         f"\n  Загружаем machine_tasks за {REPORT_DATE} "
         f"({day_start_str} — {day_end_str})..."
     )
-
-    all_tasks: list[dict] = []
     wt_ids_all: set[int] = set()
     for _group_name, wt_ids in WORK_GROUPS:
         wt_ids_all.update(wt_ids)
-
     mt_params = {
         "end_time_gt_eq": day_start_str,
-        "end_time_lt":    day_end_str,
+        "end_time_lt": day_end_str,
     }
-    if wt_ids_all:
-        from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_sync
+    from svodki_prefetch_io import sync_machine_tasks_prefetch_or_batch
 
-        all_tasks = fetch_machine_tasks_by_wt_sync(
+    if wt_ids_all:
+        all_tasks = sync_machine_tasks_prefetch_or_batch(
             get_all, wt_ids_all, mt_params, log_prefix="[r24] ",
         )
     else:
         all_tasks = get_all("machine_tasks", mt_params)
-
-    # Дедупликация
     seen_ids: set[int] = set()
     unique_tasks: list[dict] = []
     for t in all_tasks:
@@ -580,27 +557,28 @@ def collect_day_data(
         if tid not in seen_ids:
             seen_ids.add(tid)
             unique_tasks.append(t)
-    all_tasks = unique_tasks
-    print(f"    Задач за сутки: {len(all_tasks)}")
-    if not all_tasks:
-        return []
+    print(f"    Задач за сутки: {len(unique_tasks)}")
+    return unique_tasks
 
-    task_ids = [t["id"] for t in all_tasks]
-    print("  mtfmi + fields/machines/implements (mass_request)...")
-    (
-        mtfmi_map,
-        field_name,
-        field_to_firm,
-        machine_name,
-        machine_reg,
-        machine_vin,
-        implements_map,
-    ) = asyncio.run(
-        fetch_mtfmi_and_resources_async(task_ids, all_tasks, fgs_all, gfs_all)
-    )
+
+def _rows_from_tasks_and_resources(
+    all_tasks: list[dict],
+    fgs_all: list[dict],
+    gfs_all: list[dict],
+    crop_id_name: dict[int, str],
+    operators_map: dict[int, str],
+    work_type_map: dict[int, str],
+    mtfmi_map: dict[int, list[dict]],
+    field_name: dict[int, str],
+    field_to_firm: dict[int, str],
+    machine_name: dict[int, str],
+    machine_reg: dict[int, str],
+    machine_vin: dict[int, str],
+    implements_map: dict[int, dict],
+) -> list[dict]:
+    day_start, day_end, _, _ = _day_window_for_report()
     field_ids = set(field_name)
     field_to_crop = build_field_to_crop(crop_id_name, field_ids)
-
     rows: list[dict] = []
 
     for task in all_tasks:
@@ -715,6 +693,87 @@ def collect_day_data(
             ))
 
     return rows
+
+
+def collect_day_data(
+    fgs_all: list[dict],
+    gfs_all: list[dict],
+    crop_id_name: dict[int, str],
+    operators_map: dict[int, str],
+    work_type_map: dict[int, str],
+) -> list[dict]:
+    """Суточные строки отчёта (последовательная загрузка, для совместимости)."""
+    all_tasks = _fetch_day_machine_tasks()
+    if not all_tasks:
+        return []
+    task_ids = [t["id"] for t in all_tasks]
+    print("  mtfmi + fields/machines/implements (mass_request)...")
+    (
+        mtfmi_map,
+        field_name,
+        field_to_firm,
+        machine_name,
+        machine_reg,
+        machine_vin,
+        implements_map,
+    ) = run_report_async(
+        fetch_mtfmi_and_resources_async(task_ids, all_tasks, fgs_all, gfs_all)
+    )
+    return _rows_from_tasks_and_resources(
+        all_tasks,
+        fgs_all,
+        gfs_all,
+        crop_id_name,
+        operators_map,
+        work_type_map,
+        mtfmi_map,
+        field_name,
+        field_to_firm,
+        machine_name,
+        machine_reg,
+        machine_vin,
+        implements_map,
+    )
+
+
+async def collect_day_data_async() -> list[dict]:
+    """Справочники параллельно с загрузкой machine_tasks (конвейер _1)."""
+
+    async def _tasks():
+        return await asyncio.to_thread(_fetch_day_machine_tasks)
+
+    refs, all_tasks = await run_parallel_refs_and_fetch(
+        load_static_reference_data, _tasks, label="r24-tasks",
+    )
+    fgs_all, gfs_all, crop_id_name, operators_map, work_type_map = refs
+    if not all_tasks:
+        return []
+    task_ids = [t["id"] for t in all_tasks]
+    print("  mtfmi + fields/machines/implements (mass_request)...")
+    (
+        mtfmi_map,
+        field_name,
+        field_to_firm,
+        machine_name,
+        machine_reg,
+        machine_vin,
+        implements_map,
+    ) = await fetch_mtfmi_and_resources_async(task_ids, all_tasks, fgs_all, gfs_all)
+    return _rows_from_tasks_and_resources(
+        all_tasks,
+        fgs_all,
+        gfs_all,
+        crop_id_name,
+        operators_map,
+        work_type_map,
+        mtfmi_map,
+        field_name,
+        field_to_firm,
+        machine_name,
+        machine_reg,
+        machine_vin,
+        implements_map,
+    )
 
 
 def _make_row(**kw) -> dict:
@@ -986,13 +1045,9 @@ def build_report() -> None:
         f"по 6:00 {REPORT_DATE.strftime('%d.%m')} ===\n"
     )
 
-    fgs_all, gfs_all, crop_id_name, operators_map, work_type_map = (
-        load_static_reference_data()
-    )
-
-    all_rows = collect_day_data(
-        fgs_all, gfs_all, crop_id_name, operators_map, work_type_map,
-    )
+    timing_start()
+    with stage("загрузка (справочники ∥ tasks, mtfmi, ресурсы)"):
+        all_rows = run_report_async(collect_day_data_async())
 
     print(f"\n  Итого строк до фильтрации: {len(all_rows)}")
 
@@ -1109,8 +1164,10 @@ def build_report() -> None:
         if firm not in FIRM_ORDER:
             write_firm_sheet(wb, firm or "Неизвестно", rows_firm)
 
-    wb.save(OUTPUT_FILE)
+    with stage("сохранение xlsx"):
+        wb.save(OUTPUT_FILE)
     print(f"\n✓ Сохранено: {OUTPUT_FILE}")
+    timing_finish()
 
 
 if __name__ == "__main__":

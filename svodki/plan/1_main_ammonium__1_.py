@@ -1,12 +1,15 @@
 # 11.06.2026
 from __future__ import annotations
 
+
 import asyncio
 import importlib.util
 import json
 import math
 import os
 import sys
+import threading
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +21,34 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+
+try:
+    from svodki_timing import stage, stage_add, timing_finish, timing_start
+except ImportError:  # таймеры необязательны: без модуля работаем как раньше
+    from contextlib import contextmanager as _cm
+
+    @_cm
+    def stage(name):  # type: ignore[misc]
+        yield
+
+    def stage_add(name, seconds):  # type: ignore[misc]
+        pass
+
+    def timing_start():  # type: ignore[misc]
+        pass
+
+    def timing_finish():  # type: ignore[misc]
+        pass
+
+
+def _tprint(label: str, t0: float) -> float:
+    """Печатает «[timing] label: N с» (формат ловит tools/benchmark_svodki_timing.py), возвращает now."""
+    now = time.monotonic()
+    print(f"  [timing] {label}: {now - t0:.1f} с", flush=True)
+    return now
+
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
 import httpx
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -40,11 +71,8 @@ except ImportError:
 
 from task_area_shared import (
     CORN_SILAGE_CROP,
-    CUTOFF_BUFFER_HOURS,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
-    harvest_item_area_for_shift,
-    history_crop_name,
 )
 from plans import (
     API_TOKEN,
@@ -66,8 +94,6 @@ from plans import (
     MIN_DETAIL_AREA_HA,
     FIELD_NAME_FORCE_RULES,
     WORK_GROUPS,
-    SEEDING_CROP_ORDER,
-    build_field_to_crop,
     build_field_to_crop_general,
 )
 
@@ -224,9 +250,7 @@ PLOW_TASK_SEASON = "+".join(sorted(PLOW_TASK_SEASONS))
 def refresh_season_config() -> None:
     """Перечитать season_ranges.json (редактор планов / proverka env)."""
     global PERIOD_START_DATE, PERIOD_START_STR, PLOW_PERIOD_START, PLOW_TASK_SEASON, PLOW_TASK_SEASONS
-    global _seeding_sowing_cache
     clear_season_cache()
-    _seeding_sowing_cache = None
     fert = resolve_group_season_config(WORK_TYPE_NAME, REPORT_DATE, reload=True)
     PERIOD_START_DATE = date.fromisoformat(fert["period_start"])
     PERIOD_START_STR = PERIOD_START_DATE.strftime("%Y-%m-%d")
@@ -279,42 +303,6 @@ def _machine_qualifies_for_area(total: float, min_ha: float) -> bool:
     return tc >= min_ha
 
 
-_SEEDING_DISPLAY_CROPS = frozenset(SEEDING_CROP_ORDER)
-_seeding_sowing_cache: tuple[date, dict[int, str]] | None = None
-
-
-def _seeding_crop_for_field(fid: int, sowing: dict[int, str]) -> str:
-    """Культура посеянного поля. Только озимые строки «4.0 Посев», как во 2 сводке."""
-    crop = str(sowing.get(int(fid)) or "").strip()
-    return crop if crop in _SEEDING_DISPLAY_CROPS else ""
-
-
-def _seeding_sowing_field_crops() -> dict[int, str]:
-    """Поле → культура озимого сева: build_field_to_crop(season_year=год+1), как во 2 сводке."""
-    global _seeding_sowing_cache
-    if _seeding_sowing_cache is not None and _seeding_sowing_cache[0] == REPORT_DATE:
-        return _seeding_sowing_cache[1]
-    crops = get_all_from_id("crops")
-    crop_map = {
-        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
-        for c in crops if c.get("id")
-    }
-    season_year = REPORT_DATE.year + 1
-    history: list[dict] = []
-    for crop_year in (season_year, REPORT_DATE.year):
-        history.extend(get_all_from_id("history_items", {"year": str(crop_year)}))
-    field_crops = build_field_to_crop(
-        crop_map=crop_map,
-        history_items=history,
-        report_date=REPORT_DATE,
-        period_start=PLOW_PERIOD_START,
-        skip_crops=SKIP_CROPS,
-        season_year=season_year,
-    )
-    _seeding_sowing_cache = (REPORT_DATE, field_crops)
-    return field_crops
-
-
 def _group_period_start(group_name: str) -> date:
     """Нижняя граница смен — единый season_unified (редактор планов)."""
     try:
@@ -336,7 +324,9 @@ def _group_period_start(group_name: str) -> date:
 
 
 def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
-    crop = str(field_to_crop.get(fid_i) or "")
+    from mtfmi_batch_fetch import crop_of_field
+
+    crop = crop_of_field(fid_i, field_to_crop.get(fid_i) or "")
     if group_name == SPRAY_GROUP_NAME:
         return bool(crop and crop not in VEG_SPRAY_CROPS)
     if group_name == VEG_SPRAY_GROUP_NAME:
@@ -409,14 +399,12 @@ def _harvest_perf_10_style(
     cutoff: datetime,
     machines_map: dict[int, dict],
     *,
-    day_start: datetime,
     field_to_crop_map: dict[int, str] | None = None,
     field_to_firm_map: dict[int, str] | None = None,
 ) -> tuple[
     dict[str, float],
     dict[str, set[int]],
     dict[str, dict[int, float]],
-    dict[int, float],
 ]:
     """Площадь и комбайны за сутки — как _populate_harvest_cache_tables (10_main)."""
     ftc = field_to_crop_map if field_to_crop_map is not None else field_to_crop
@@ -429,14 +417,11 @@ def _harvest_perf_10_style(
     per_firm_area: dict[str, float] = defaultdict(float)
     per_firm_machines: dict[str, set[int]] = defaultdict(set)
     per_firm_mid_area: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
-    today_by_field: dict[int, float] = defaultdict(float)
 
     for t in tasks_with_area:
         if t["id"] not in today_task_ids:
             continue
         mid = t.get("machine_id")
-        if mid is None:
-            continue
         wt = t.get("work_type_id")
         if wt not in AREA_TASK_WT_IDS:
             continue
@@ -450,28 +435,19 @@ def _harvest_perf_10_style(
             firm = _firm_for_field(fid_i)
             if not firm:
                 continue
-            crop = history_crop_name(
-                item, ftc.get(fid_i) or "", mowing=is_mowing,
-            )
+            crop = ftc.get(fid_i)
             if is_mowing and crop != CORN_SILAGE_CROP:
                 continue
-            cov = harvest_item_area_for_shift(
-                item,
-                cutoff,
-                day_start=day_start,
-                work_type_id=wt_i,
-                parse_dt=parse_dt,
-            )
+            cov = _item_area_upto_cutoff(item, cutoff)
             if cov <= 0:
                 continue
             per_firm_area[firm] += cov
-            today_by_field[fid_i] += cov
-            if _is_harvest_combine(mid, machines_map):
+            if mid is not None and _is_harvest_combine(mid, machines_map):
                 mid_i = int(mid)
                 per_firm_machines[firm].add(mid_i)
                 per_firm_mid_area[firm][mid_i] += cov
 
-    return per_firm_area, per_firm_machines, per_firm_mid_area, dict(today_by_field)
+    return per_firm_area, per_firm_machines, per_firm_mid_area
 
 
 def _is_hired_machine_group(group) -> bool:
@@ -771,7 +747,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
     from_id = 0
     while True:
         r = session.get(f"{BASE_URL}/{endpoint}",
-                        params={**params, "from_id": from_id, "limit": 1000})
+                        params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT})
         r.raise_for_status()
         body  = r.json()
         chunk = body.get("data", [])
@@ -780,7 +756,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     _HTTP_GET_CACHE[cache_key] = results
@@ -887,7 +863,7 @@ async def fetch_pages(client: httpx.AsyncClient, url: str,
     items, from_id = [], 0
     while True:
         async with sem:
-            r     = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
+            r     = await client.get(url, params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT})
             body  = r.json()
             chunk = body.get("data", [])
         if not chunk:
@@ -895,7 +871,7 @@ async def fetch_pages(client: httpx.AsyncClient, url: str,
         items.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return items
@@ -924,6 +900,24 @@ field_id_resolved_firm: dict[int, str] = {}
 available_field_ids: set[int] = set()
 # Поля с активной культурой (history_items year, не SKIP_CROPS) — как 3_main.load_crop_field_ids
 crop_field_ids: set[int] = set()
+# Справочники грузятся в потоке параллельно с API. Пока событие не взведено,
+# расчёт групп/1.1 не должен читать field_to_crop, available_field_ids и crop_field_ids:
+# быстрая группа иначе тихо получает нули.
+_reference_ready = threading.Event()
+_reference_ready.set()
+# True на время пересечения load_reference_data с fetch: карты полей уже
+# сброшены снаружи, повторный сброс внутри затёр бы дописки групп.
+_skip_field_map_reset = False
+
+
+async def _wait_reference_data(label: str) -> None:
+    if _reference_ready.is_set():
+        return
+    t = time.monotonic()
+    await asyncio.to_thread(_reference_ready.wait)
+    dt = time.monotonic() - t
+    if dt >= 0.05:
+        print(f"  [timing] ожидание справочников ({label}): {dt:.1f} с", flush=True)
 
 
 def _folder_parent_map(group_folders: list[dict]) -> dict[int, int | None]:
@@ -1072,6 +1066,11 @@ def _rebuild_field_firm_resolution(
         )
 
 
+def reset_field_firm_resolution() -> None:
+    """Один раз очистить карту поле→фирма перед параллельной загрузкой 1.1 и групп."""
+    field_id_resolved_firm.clear()
+
+
 def _crop_name_from_op(op: dict) -> str:
     for key in ("crop_name", "crop_title", "culture_name", "culture_title"):
         v = str(op.get(key) or "").strip()
@@ -1147,10 +1146,20 @@ def _build_fert_field_to_crop(years: list[int]) -> None:
 
 
 def fert_crop_name(fid: int) -> str:
+    """Культура 1.1 — сначала карта history (её строит load_reference_data).
+
+    crop_of_field читает глобальные голоса mtfmi. Пока группы качаются параллельно
+    с 1.1, эти голоса ещё неполные и меняют факт по культурам от прогона к прогону.
+    """
+    from mtfmi_batch_fetch import crop_of_field
+
     name = fert_field_to_crop.get(int(fid))
     if name:
         return name
-    return str(field_to_crop.get(int(fid)) or "")
+    name = str(field_to_crop.get(int(fid)) or "")
+    if name:
+        return name
+    return crop_of_field(int(fid), "")
 
 
 def load_reference_data() -> None:
@@ -1171,10 +1180,12 @@ def load_reference_data() -> None:
     fgs          = get_all_page("field_groups")
     fg_to_folder = {fg["id"]: fg.get("group_folder_id") for fg in fgs}
     folder_to_firm = dict(FOLDER_TO_FIRM)
-    field_to_fg  = {}
-    field_area_map = {}
-    field_name_map = {}
     print(f"    {len(fgs)} групп")
+
+    if not _skip_field_map_reset:
+        field_to_fg = {}
+        field_area_map = {}
+        field_name_map = {}
 
     print("  Загружаем inventory_history_items (фильтр available)...")
     ihi_all = get_all_from_id("inventory_history_items", {"historyable_type": "Field"})
@@ -1245,13 +1256,22 @@ def load_reference_data() -> None:
             f"    Активных полей без культуры из agro_operations: {len(missing)} — "
             f"добираем history_items (fallback, сезон {season_year})..."
         )
-        print("  Загружаем crops...")
-        crops    = get_all_page("crops")
+        from svodki_pipeline import run_reference_jobs
+
+        hist_years = (int(SEASON), season_year)
+        jobs: dict[str, object] = {"crops": lambda: get_all_page("crops")}
+        for crop_year in hist_years:
+            jobs[f"history:{crop_year}"] = (
+                lambda yy=crop_year: get_all_from_id("history_items", {"year": str(yy)})
+            )
+        print("  Загружаем crops и history_items (fallback)...")
+        raw = run_reference_jobs(jobs)
+        crops = raw["crops"]
         crop_map = {c["id"]: c.get("name") or c.get("title", "") for c in crops}
         print(f"    {len(crop_map)} культур")
         history_by_year: dict[int, list[dict]] = {}
-        for crop_year in (int(SEASON), season_year):
-            chunk = get_all_from_id("history_items", {"year": str(crop_year)})
+        for crop_year in hist_years:
+            chunk = raw[f"history:{crop_year}"]
             history_by_year[crop_year] = chunk
             print(f"    history_items year={crop_year}: {len(chunk)} записей")
         extra = build_field_to_crop_general(
@@ -1364,6 +1384,8 @@ async def fetch_fertilizer_11_mtfmi(
     sem:       asyncio.Semaphore,
     day_start: datetime,
     cutoff:    datetime,
+    *,
+    merge_firm_map: bool = False,
 ) -> tuple[
     dict[str, dict[str, float]],   # fact_total: firm → crop → га (mtfmi)
     dict[str, dict],                # day_stats
@@ -1385,6 +1407,7 @@ async def fetch_fertilizer_11_mtfmi(
     cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     day_start_str = day_start.strftime("%Y-%m-%dT%H:%M:%S")
 
+    _t = time.monotonic()
     print("    [1.1] Загружаем machine_tasks за сутки и сезон (как 3_main_real)...")
     tasks_today, tasks_season = await asyncio.gather(
         fetch_pages(client, url, {
@@ -1399,22 +1422,11 @@ async def fetch_fertilizer_11_mtfmi(
         }, sem),
     )
 
+    _t = _tprint("1.1 machine_tasks", _t)
     print(
         f"    [1.1] Заданий за сутки: {len(tasks_today)}, "
         f"за сезон (с {PERIOD_START_DATE}): {len(tasks_season)}"
     )
-
-    try:
-        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
-
-        tasks_today = _filter_seasons(tasks_today, WORK_TYPE_NAME, REPORT_DATE)
-        tasks_season = _filter_seasons(tasks_season, WORK_TYPE_NAME, REPORT_DATE)
-        print(
-            f"    [1.1] После фильтра сезона ({WORK_TYPE_NAME}): "
-            f"сутки {len(tasks_today)}, сезон {len(tasks_season)}"
-        )
-    except Exception:
-        pass
 
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
     if not all_task_ids:
@@ -1434,6 +1446,7 @@ async def fetch_fertilizer_11_mtfmi(
     mtfmi_map = await fetch_mtfmi_map_for_tasks(
         client, sem, BASE_URL, all_task_ids, log_prefix="    [1.1] ",
     )
+    _t = _tprint("1.1 mtfmi", _t)
 
     from report_resources_fetch import (
         collect_report_resource_ids,
@@ -1442,12 +1455,13 @@ async def fetch_fertilizer_11_mtfmi(
         load_machines_map_async,
     )
 
-    global machines_map, implements_map
     all_tasks = tasks_today + tasks_season
     field_ids, machine_ids, implement_ids = collect_report_resource_ids(
         all_tasks, mtfmi_map,
     )
-    for op in get_fert_agro_operations():
+    # sync-HTTP (requests) с кэшем: в потоке, чтобы не вешать event loop, пока
+    # параллельно качаются остальные группы.
+    for op in await asyncio.to_thread(get_fert_agro_operations):
         fid = op.get("field_id")
         if fid is not None:
             field_ids.add(int(fid))
@@ -1455,11 +1469,16 @@ async def fetch_fertilizer_11_mtfmi(
         f"    [1.1] Ресурсы: полей={len(field_ids)}, "
         f"машин={len(machine_ids)}, орудий={len(implement_ids)}"
     )
-    fields_all, machines_map, implements_map = await asyncio.gather(
+    fields_all, _new_machines, _new_implements = await asyncio.gather(
         load_fields_list_async(client, BASE_URL, field_ids, sem),
         load_machines_map_async(client, BASE_URL, machine_ids, sem),
         load_implements_dict_async(client, BASE_URL, implement_ids, sem),
     )
+    # In-place (не переприсваивание): параллельно группы делают machines_map.update(...),
+    # иначе завершение 1.1 «позже» затёрло бы их машины/орудия.
+    machines_map.update(_new_machines)
+    implements_map.update(_new_implements)
+    _t = _tprint("1.1 поля/машины/орудия", _t)
     field_to_fg.update({
         int(f["id"]): f.get("field_group_id")
         for f in fields_all if f.get("id") is not None
@@ -1471,19 +1490,20 @@ async def fetch_fertilizer_11_mtfmi(
         fid_i = int(fid)
         field_area_map[fid_i] = f.get("tillable_area") or f.get("calculated_area") or 0.0
         field_name_map[fid_i] = f.get("name") or f.get("title") or f"field_{fid_i}"
-    _rebuild_field_firm_resolution(fields_all, get_all_page("field_groups"))
+    # merge_firm_map=True — когда группы качаются параллельно с 1.1: вызывающий один раз
+    # сбрасывает карту (reset_field_firm_resolution) до старта, иначе полный пересбор
+    # здесь затёр бы поля, уже домерженные группами. По умолчанию — прежнее поведение.
+    _rebuild_field_firm_resolution(
+        fields_all, get_all_page("field_groups"), merge=merge_firm_map,
+    )
+    await _wait_reference_data("1.1")
 
     DAY_START_HOUR = 6
     collect_debug_sheets = REPORT1_ENABLE_DEBUG_SHEETS
     today_task_ids = {t["id"] for t in tasks_today}
     print(f"    [1.1] Заданий за текущую смену (API end_time): {len(today_task_ids)}")
 
-    from mtfmi_batch_fetch import crop_of_item
-
     per_firm_machine: dict[str, dict[int, dict]] = {firm: {} for firm in AGROFIRMS}
-    firm_today_crop: dict[str, dict[str, float]] = {
-        firm: defaultdict(float) for firm in AGROFIRMS
-    }
     season_daily_area: dict[str, dict[str, float]] = {firm: defaultdict(float) for firm in AGROFIRMS}
     season_daily_machines: dict[str, dict[str, set[int]]] = {
         firm: defaultdict(set) for firm in AGROFIRMS
@@ -1541,11 +1561,7 @@ async def fetch_fertilizer_11_mtfmi(
                 cov += cov_item_in
                 fid = item.get("field_id")
                 if fid and cov_item_in > 0:
-                    fid_i = int(fid)
-                    field_cov_today[fid_i] += cov_item_in
-                    crop_name = crop_of_item(item, fert_crop_name(fid_i))
-                    if crop_name:
-                        firm_today_crop[firm][crop_name] += cov_item_in
+                    field_cov_today[int(fid)] += cov_item_in
                 ratio = cov_item_in / cov_item_total if cov_item_total > 0 else 0.0
                 track_area += (item.get("covered_area_by_track") or 0) * ratio
                 work_distance_km += ((item.get("work_distance") or 0) / 1000) * ratio
@@ -1689,12 +1705,15 @@ async def fetch_fertilizer_11_mtfmi(
         )
         avg_season = round(season_sum / machine_days, 1) if machine_days else 0.0
 
-        area_by_crop: dict[str, float] = dict(firm_today_crop.get(firm) or {})
+        area_by_crop: dict[str, float] = defaultdict(float)
         today_by_field: dict[int, float] = defaultdict(float)
         for fid, fid_cov in today_area_by_field.items():
             if fid_cov <= 0 or get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
+            crop = fert_crop_name(fid)
+            if crop:
+                area_by_crop[crop] += fid_cov
 
         if not pm:
             empty = _empty_stats()
@@ -2021,18 +2040,53 @@ async def fetch_fertilizer_11_mtfmi(
 # =============================================================================
 
 def _harvest_cutoff_buffer_hours() -> int:
-    """Как CUTOFF_BUFFER_HOURS в 10_main_harvest (env или task_area_shared, по умолчанию +2 ч)."""
-    raw = (
-        os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS")
-        or str(CUTOFF_BUFFER_HOURS)
-    ).strip()
+    """Как CUTOFF_BUFFER_HOURS в 10_main_harvest (по умолчанию 12 ч)."""
+    raw = (os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS") or "12").strip()
     try:
         return max(0, int(raw))
     except ValueError:
-        return CUTOFF_BUFFER_HOURS
+        return 12
+
+
+_GROUP_TIMING: dict[str, dict[str, float]] = {}
+
+
+def _gmark(group_name: str, key: str, t0: float) -> float:
+    """Накопить время фазы группы (tasks / mtfmi / res); возвращает now."""
+    now = time.monotonic()
+    d = _GROUP_TIMING.setdefault(group_name, {})
+    d[key] = d.get(key, 0.0) + (now - t0)
+    return now
 
 
 async def fetch_day_stats_for_work_types(
+    client:        httpx.AsyncClient,
+    sem:           asyncio.Semaphore,
+    day_start:     datetime,
+    cutoff:        datetime,
+    work_type_ids: list[int],
+    group_name:    str,
+) -> dict[str, dict]:
+    """Обёртка с таймером: одна строка «[timing] группа …» с разбивкой по фазам."""
+    _GROUP_TIMING[group_name] = {}
+    t0 = time.monotonic()
+    try:
+        return await _fetch_day_stats_for_work_types_impl(
+            client, sem, day_start, cutoff, work_type_ids, group_name,
+        )
+    finally:
+        total = time.monotonic() - t0
+        d = _GROUP_TIMING.get(group_name, {})
+        net = d.get("tasks", 0.0) + d.get("mtfmi", 0.0) + d.get("res", 0.0)
+        print(
+            f"  [timing] группа {group_name}: всего {total:.1f} с "
+            f"(machine_tasks {d.get('tasks', 0.0):.1f}, mtfmi {d.get('mtfmi', 0.0):.1f}, "
+            f"поля/машины {d.get('res', 0.0):.1f}, расчёт ~{max(total - net, 0.0):.1f})",
+            flush=True,
+        )
+
+
+async def _fetch_day_stats_for_work_types_impl(
     client:        httpx.AsyncClient,
     sem:           asyncio.Semaphore,
     day_start:     datetime,
@@ -2088,11 +2142,13 @@ async def fetch_day_stats_for_work_types(
     print(f"    [{group_name}] Загружаем machine_tasks за сезон (batch)...")
     from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
 
+    _tg = time.monotonic()
     tasks_season = await fetch_machine_tasks_by_wt_async(
         fetch_pages, client, BASE_URL, work_type_ids,
         {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_str},
         sem, log_prefix=f"[{group_name}] ",
     )
+    _gmark(group_name, "tasks", _tg)
 
     tasks_with_area = tasks_season  # не фильтруем по covered_area: площадь из covered_area_hourly
     print(f"    [{group_name}] Заданий за сезон: {len(tasks_with_area)}")
@@ -2130,10 +2186,12 @@ async def fetch_day_stats_for_work_types(
     print(f"    [{group_name}] Загружаем mtfmi...")
     from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
 
+    _tg = time.monotonic()
     mtfmi_map = await fetch_mtfmi_map_for_tasks(
         client, sem, BASE_URL, [t["id"] for t in tasks_with_area],
         log_prefix=f"    [{group_name}] ",
     )
+    _gmark(group_name, "mtfmi", _tg)
 
     from report_resources_fetch import (
         collect_report_resource_ids,
@@ -2151,11 +2209,13 @@ async def fetch_day_stats_for_work_types(
             f"    [{group_name}] Ресурсы: полей={len(field_ids)}, "
             f"машин={len(machine_ids)}, орудий={len(implement_ids)}"
         )
+        _tg = time.monotonic()
         fields_all, new_machines, new_implements = await asyncio.gather(
             load_fields_list_async(client, BASE_URL, field_ids, sem),
             load_machines_map_async(client, BASE_URL, machine_ids, sem),
             load_implements_dict_async(client, BASE_URL, implement_ids, sem),
         )
+        _gmark(group_name, "res", _tg)
         machines_map.update(new_machines)
         implements_map.update(new_implements)
         field_to_fg.update({
@@ -2172,6 +2232,8 @@ async def fetch_day_stats_for_work_types(
         _rebuild_field_firm_resolution(
             fields_all, get_all_page("field_groups"), merge=True,
         )
+
+    await _wait_reference_data(group_name)
 
     from task_area_shared import task_cov_by_firm, task_field_cov_for_firm
 
@@ -2333,12 +2395,14 @@ async def fetch_day_stats_for_work_types(
                         for fid, fcov in field_cov.items():
                             pm[mid]["field_cov"][fid] += fcov
                             if _cap is not None and fcov > 0:
+                                from mtfmi_batch_fetch import crop_of_field
+
                                 mrec = machines_map.get(mid) or {}
                                 _cap[1](
                                     (group_name, firm, mid),
                                     group=group_name,
                                     firm=firm,
-                                    crop=str(field_to_crop.get(int(fid)) or ""),
+                                    crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
                                     field_id=int(fid),
                                     task_id=int(t["id"]),
                                     machine_id=int(mid) if mid is not None else None,
@@ -2492,12 +2556,14 @@ async def fetch_day_stats_for_work_types(
                 if fid_cov > 0:
                     pm[mid]["field_cov"][fid] += fid_cov
                     if _cap is not None:
+                        from mtfmi_batch_fetch import crop_of_field
+
                         mrec = machines_map.get(mid) or {}
                         _cap[1](
                             (group_name, firm, mid),
                             group=group_name,
                             firm=firm,
-                            crop=str(field_to_crop.get(int(fid)) or ""),
+                            crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
                             field_id=int(fid),
                             task_id=int(t["id"]),
                             machine_id=int(mid) if mid is not None else None,
@@ -2578,57 +2644,25 @@ async def fetch_day_stats_for_work_types(
             if day_area > 0:
                 season_daily_area[firm][day_key] = day_area
 
-    harvest_perf_10: tuple[
-        dict[str, float],
-        dict[str, set[int]],
-        dict[str, dict[int, float]],
-        dict[int, float],
-    ] | None = None
-    harvest_ftc: dict[int, str] = field_to_crop
-    if is_harvest:
-        harvest_maps = _load_harvest_maps_from_main10()
-        if harvest_maps:
-            harvest_ftc, harvest_f2f = harvest_maps
-            print(
-                f"    [{group_name}] field_to_crop/field_to_firm (10_main): "
-                f"{len(harvest_ftc)} / {len(harvest_f2f)} полей"
-            )
-        else:
-            harvest_f2f = None
-        harvest_perf_10 = _harvest_perf_10_style(
-            tasks_with_area,
-            mtfmi_map,
-            today_task_ids,
-            cutoff,
-            machines_map,
-            day_start=day_start,
-            field_to_crop_map=harvest_ftc,
-            field_to_firm_map=harvest_f2f,
-        )
-
-    # Суточная площадь по полям — как 10_main (в т.ч. кукуруза на силос).
+    # Суточная площадь по полям — из машин, прошедших порог площади.
     today_area_by_field: dict[int, float] = defaultdict(float)
-    if is_harvest and harvest_perf_10 is not None:
-        for fid, fid_cov in harvest_perf_10[3].items():
-            if fid_cov > 0:
-                today_area_by_field[int(fid)] += float(fid_cov)
-    else:
-        for firm in AGROFIRMS:
-            for mid, d in per_firm_machine[firm].items():
-                if is_plow:
-                    for fid, fid_cov in d["field_cov"].items():
-                        if fid_cov > 0:
-                            today_area_by_field[int(fid)] += float(fid_cov)
-                elif is_harvest:
-                    if float(d.get("grain_area") or 0) <= 0:
-                        continue
-                    for fid, fid_cov in d["field_cov"].items():
-                        if fid_cov > 0:
-                            today_area_by_field[int(fid)] += float(fid_cov)
-                elif _machine_qualifies_for_area(d["cov_total"], area_min_ha):
-                    for fid, fid_cov in d["field_cov"].items():
-                        if fid_cov > 0:
-                            today_area_by_field[int(fid)] += float(fid_cov)
+    for firm in AGROFIRMS:
+        for mid, d in per_firm_machine[firm].items():
+            if is_plow:
+                for fid, fid_cov in d["field_cov"].items():
+                    if fid_cov > 0:
+                        today_area_by_field[int(fid)] += float(fid_cov)
+            elif is_harvest:
+                # Выраб. 5.0 — grain_area (11_main), без порога.
+                if float(d.get("grain_area") or 0) <= 0:
+                    continue
+                for fid, fid_cov in d["field_cov"].items():
+                    if fid_cov > 0:
+                        today_area_by_field[int(fid)] += float(fid_cov)
+            elif _machine_qualifies_for_area(d["cov_total"], area_min_ha):
+                for fid, fid_cov in d["field_cov"].items():
+                    if fid_cov > 0:
+                        today_area_by_field[int(fid)] += float(fid_cov)
     if _cap is not None:
         if is_plow:
             _cap[2](group_name, None)
@@ -2643,12 +2677,33 @@ async def fetch_day_stats_for_work_types(
                 },
             )
 
+    harvest_perf_10: tuple[
+        dict[str, float],
+        dict[str, set[int]],
+        dict[str, dict[int, float]],
+    ] | None = None
+    if is_harvest:
+        harvest_maps = _load_harvest_maps_from_main10()
+        if harvest_maps:
+            harvest_ftc, harvest_f2f = harvest_maps
+            print(
+                f"    [{group_name}] field_to_crop/field_to_firm (10_main): "
+                f"{len(harvest_ftc)} / {len(harvest_f2f)} полей"
+            )
+        else:
+            harvest_ftc, harvest_f2f = field_to_crop, None
+        harvest_perf_10 = _harvest_perf_10_style(
+            tasks_with_area,
+            mtfmi_map,
+            today_task_ids,
+            cutoff,
+            machines_map,
+            field_to_crop_map=harvest_ftc,
+            field_to_firm_map=harvest_f2f,
+        )
+
     # --- Собираем результат ---
     result: dict[str, dict] = {}
-    # 4.0 Посев: культура поля из карты озимого сева, а не из голосов mtfmi.
-    seeding_sowing = (
-        _seeding_sowing_field_crops() if group_name == SEEDING_GROUP_NAME else None
-    )
 
     for firm in AGROFIRMS:
         pm = per_firm_machine[firm]
@@ -2677,19 +2732,15 @@ async def fetch_day_stats_for_work_types(
 
         area_by_crop:   dict[str, float] = defaultdict(float)
         today_by_field: dict[int, float] = defaultdict(float)
-        crop_map_today = harvest_ftc if is_harvest else field_to_crop
         for fid, fid_cov in today_area_by_field.items():
             if fid_cov <= 0:
                 continue
             if get_firm_for_field(fid) != firm:
                 continue
-            if seeding_sowing is not None:
-                crop = _seeding_crop_for_field(fid, seeding_sowing)
-                if not crop:
-                    continue
-            else:
-                crop = str(crop_map_today.get(fid) or "")
             today_by_field[fid] += fid_cov
+            from mtfmi_batch_fetch import crop_of_field
+
+            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
             if crop:
                 area_by_crop[crop] += fid_cov
 
@@ -2698,7 +2749,7 @@ async def fetch_day_stats_for_work_types(
             harvest_mids = harvest_perf_10[1].get(firm, set())
 
         if is_harvest and harvest_perf_10 is not None:
-            h_area = harvest_perf_10[0]
+            h_area, _, _ = harvest_perf_10
             area_today = round(h_area.get(firm, 0.0), 2)
         elif is_harvest:
             area_today = round(
@@ -2772,7 +2823,7 @@ async def fetch_day_stats_for_work_types(
                 detail_own.append(row_data)
 
         if is_harvest and harvest_perf_10 is not None:
-            h_mid_area = harvest_perf_10[2]
+            _, _, h_mid_area = harvest_perf_10
             seen_mids = {r["machine_id"] for r in detail_own + detail_hired}
             for mid in harvest_mids:
                 if mid in seen_mids:
@@ -2869,7 +2920,12 @@ async def _fetch_other_group_stats(
             )
 
     if to_fetch:
+        _t_groups = time.monotonic()
         await asyncio.gather(*[_one(gn, wt) for gn, wt in to_fetch])
+        _tprint(
+            f"остальные группы ({len(to_fetch)} шт., параллелизм "
+            f"{_report1_group_fetch_concurrency()}) wall", _t_groups,
+        )
 
     result: dict[str, dict[str, dict]] = {}
     for group_name, _ in other_groups:
@@ -3632,13 +3688,7 @@ def write_perf_sheet(
         row += 1
 
     avg_total = round(t_season_sum / t_machine_days, 1) if t_machine_days else 0.0
-    if group_name == HARVEST_GRAIN_GROUP_NAME:
-        t_area_total = round(
-            sum(float(day_stats.get(f, _empty_stats()).get("area_today") or 0) for f in target_firms),
-            2,
-        )
-    else:
-        t_area_total = _today_area_total_ha(day_stats, target_firms)
+    t_area_total = _today_area_total_ha(day_stats, target_firms)
     tot_rate = round(t_area_total / t_mach, 2) if t_mach else 0.0
     tot_eff_h = round(t_hours / t_mach, 4) if t_mach else 0.0
     totals = [
@@ -4576,117 +4626,6 @@ def _write_group_perf_sheet(
     )
 
 
-def _hhmmss_to_hours(value) -> float:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    parts = str(value or "").strip().split(":")
-    if len(parts) < 2:
-        return 0.0
-    try:
-        hours = int(parts[0]) + int(parts[1]) / 60.0
-        if len(parts) > 2:
-            hours += int(parts[2]) / 3600.0
-        return hours
-    except ValueError:
-        return 0.0
-
-
-def _harvest_today_ha_by_firm(cache) -> dict[str, float] | None:
-    """Сутки по агрофирмам — тот же area_by_firm_total, что «Факт за сутки» в «Общий намолот»."""
-    totals = getattr(cache, "area_by_firm_total", None)
-    if not totals:
-        return None
-    out: dict[str, float] = {}
-    for firm in AGROFIRMS:
-        pair = totals.get(firm) or (0.0, 0.0)
-        try:
-            out[firm] = round(float(pair[1]), 2)
-        except (TypeError, ValueError, IndexError):
-            out[firm] = 0.0
-    return out
-
-
-def _sync_harvest_perf_sheet(wb: openpyxl.Workbook, cache) -> None:
-    """
-    «Обработано за сутки» на «Выраб. — 5.0 Уборка» = «Факт за сутки» «Общий намолот».
-
-    Лист выработки считается своим проходом machine_tasks и занижает итог
-    (часть площади есть только в кэше сводки 10). Сверка с Cropwise берёт
-    этот кэш, поэтому в PDF обе цифры должны совпасть с ним.
-    """
-    by_firm = _harvest_today_ha_by_firm(cache)
-    if not by_firm:
-        return
-    title = f"Выраб. — {HARVEST_GRAIN_GROUP_NAME}"[:31]
-    if title not in wb.sheetnames:
-        return
-    ws = wb[title]
-    headers = [ws.cell(1, col).value for col in range(1, (ws.max_column or 1) + 1)]
-
-    def _col(name: str) -> int | None:
-        try:
-            return headers.index(name) + 1
-        except ValueError:
-            return None
-
-    firm_col = _col("Агрофирмы")
-    area_col = _col("Обработано за сутки, га")
-    rate_col = _col("Выработка за сутки, га/1 ед агрегата")
-    mach_col = _col("Количество задействованной техники в т.ч. Прицепных")
-    hours_col = _col("Общее время работы на полях, час")
-    hour_rate_col = _col("Часовая выработка в расчете на 1 агрегат, га")
-    if not all((firm_col, area_col, rate_col, mach_col, hours_col, hour_rate_col)):
-        return
-
-    def _num(value) -> float:
-        try:
-            return float(value or 0)
-        except (TypeError, ValueError):
-            return 0.0
-
-    def _paint_rate(row: int, rate: float, n_mach: float, firm: str, *, total: bool) -> None:
-        plan = get_plan_rate_for_group(HARVEST_GRAIN_GROUP_NAME, firm)
-        alert = bool(n_mach) and rate < plan
-        color = _COLOR_ALERT_PROD if alert else (_COLOR_TOTAL if total else _COLOR_DATA)
-        ws.cell(row, rate_col).fill = PatternFill("solid", fgColor=color)
-
-    old_total = None
-    total_row = None
-    for row in range(2, (ws.max_row or 1) + 1):
-        label = str(ws.cell(row, firm_col).value or "").strip()
-        if not label:
-            continue
-        if label == "Итого":
-            total_row = row
-            old_total = ws.cell(row, area_col).value
-            break
-        if label not in by_firm:
-            continue
-        area = by_firm[label]
-        n_mach = _num(ws.cell(row, mach_col).value)
-        hours = _hhmmss_to_hours(ws.cell(row, hours_col).value)
-        rate = round(area / n_mach, 2) if n_mach else 0.0
-        ws.cell(row, area_col).value = area
-        ws.cell(row, rate_col).value = rate
-        ws.cell(row, hour_rate_col).value = round(area / hours, 1) if hours else 0.0
-        _paint_rate(row, rate, n_mach, label, total=False)
-
-    total = round(sum(by_firm.values()), 2)
-    if total_row is not None:
-        n_mach = _num(ws.cell(total_row, mach_col).value)
-        hours = _hhmmss_to_hours(ws.cell(total_row, hours_col).value)
-        rate = round(total / n_mach, 2) if n_mach else 0.0
-        ws.cell(total_row, area_col).value = total
-        ws.cell(total_row, rate_col).value = rate
-        ws.cell(total_row, hour_rate_col).value = round(total / hours, 1) if hours else 0.0
-        plan_firm = next(iter(AGROFIRMS), "")
-        _paint_rate(total_row, rate, n_mach, plan_firm, total=True)
-    print(
-        f"  Выраб. 5.0: «Обработано за сутки» {old_total} → {total} га "
-        f"(как «Факт за сутки» в «Общий намолот»)."
-    )
-
-
 async def _append_harvest_block_async(
     wb: openpyxl.Workbook,
     all_group_stats: dict[str, dict[str, dict]],
@@ -4748,8 +4687,6 @@ async def _append_harvest_block_async(
     except Exception:
         print("Лист «Общий намолот»: ошибка построения, лист пропущен:")
         traceback.print_exc()
-
-    _sync_harvest_perf_sheet(wb, harvest_cache)
 
     try:
         import asyncio as _asyncio
@@ -4859,7 +4796,6 @@ async def _append_harvest_tail_sheets(wb: openpyxl.Workbook) -> None:
             print("Лист «Общий намолот» добавлен (данные сводки 10).")
         else:
             print("Намolot: нет данных зерновых, лист пропущен.")
-        _sync_harvest_perf_sheet(wb, cache)
 
         vegetables = await asyncio.to_thread(mod10.build_vegetables_report, REPORT_DATE)
         if not vegetables.empty:
@@ -4966,6 +4902,7 @@ async def _append_dop_report1_tables(
         print(f"Доп. таблицы: ошибка подключения 1_main_dop.py: {e}")
 
 async def build_report_async() -> None:
+    timing_start()
     apply_report1_thresholds()
     refresh_season_config()
     day_start, cutoff = compute_time_range(REPORT_DATE)
@@ -4973,15 +4910,6 @@ async def build_report_async() -> None:
     print(f"Отчёт: {WORK_TYPE_NAME}  |  {REPORT_DATE}")
     print(f"Смена: {day_start.strftime('%d.%m %H:%M')} — {cutoff.strftime('%d.%m %H:%M')}\n")
 
-    print("Загружаем справочники...")
-    load_reference_data()
-
-    print("Строим план...")
-    plan_data = build_plan_ha()
-
-    print("\nЗагружаем данные (1.1 — mtfmi как в 1_main.py (1).py; остальные группы — параллельно)...")
-    headers       = {"X-User-Api-Token": API_TOKEN}
-    sem           = asyncio.Semaphore(SEMAPHORE_LIMIT)
     other_groups  = [wg for wg in WORK_GROUPS if wg[0] != WORK_TYPE_NAME]
     if _env_flag("REPORT1_STANDALONE", False):
         skipped_perf_groups = set()
@@ -4997,18 +4925,84 @@ async def build_report_async() -> None:
             f"({len(skipped_perf_groups)} групп без API)"
         )
 
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        season_data, day_stats_main, fert_data, cmp_mtfmi, cmp_agro, today_ops_detail = await fetch_fertilizer_11_mtfmi(
-            client, sem, day_start, cutoff,
+    async def _fetch_report1_api():
+        headers = {"X-User-Api-Token": API_TOKEN}
+        sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
+        sequential = _env_flag("REPORT1_SEQUENTIAL_FETCH", False)
+        mode = "последовательно (REPORT1_SEQUENTIAL_FETCH=1)" if sequential else "одновременно"
+        print(f"\nЗагружаем данные: группа 1.1 и остальные группы — {mode}...")
+        t_api = time.monotonic()
+        async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+            if sequential:
+                # Прежнее поведение (для A/B-замера): 1.1, потом остальные группы.
+                t = time.monotonic()
+                main = await fetch_fertilizer_11_mtfmi(client, sem, day_start, cutoff)
+                _tprint("загрузка 1.1 МУ (wall)", t)
+                t = time.monotonic()
+                other_group_stats = await _fetch_other_group_stats(
+                    client, sem, day_start, cutoff, other_groups, skipped_perf_groups,
+                )
+                _tprint("загрузка остальных групп (wall)", t)
+            else:
+                reset_field_firm_resolution()
+
+                async def _timed_main():
+                    t = time.monotonic()
+                    res = await fetch_fertilizer_11_mtfmi(
+                        client, sem, day_start, cutoff, merge_firm_map=True,
+                    )
+                    _tprint("загрузка 1.1 МУ (wall, параллельно)", t)
+                    return res
+
+                async def _timed_other():
+                    t = time.monotonic()
+                    res = await _fetch_other_group_stats(
+                        client, sem, day_start, cutoff, other_groups, skipped_perf_groups,
+                    )
+                    _tprint("загрузка остальных групп (wall, параллельно)", t)
+                    return res
+
+                main, other_group_stats = await asyncio.gather(
+                    _timed_main(), _timed_other(),
+                )
+        stage_add("API-загрузка 1.1 + группы (wall)", time.monotonic() - t_api)
+        return main, other_group_stats
+
+    from report_pipeline import run_parallel_refs_and_fetch
+
+    def _load_reference_timed() -> None:
+        global _skip_field_map_reset
+        t = time.monotonic()
+        try:
+            load_reference_data()
+        finally:
+            _skip_field_map_reset = False
+            _reference_ready.set()
+        stage_add("справочники (в потоке, wall)", time.monotonic() - t)
+
+    global field_to_fg, field_area_map, field_name_map, _skip_field_map_reset
+    _reference_ready.clear()
+    _skip_field_map_reset = True
+    field_to_fg = {}
+    field_area_map = {}
+    field_name_map = {}
+
+    print("Загружаем справочники...")
+    with stage("справочники ∥ API (общий wall)"):
+        _, (main_fetch, other_group_stats) = await run_parallel_refs_and_fetch(
+            _load_reference_timed, _fetch_report1_api, label="r1-api",
         )
-        other_group_stats = await _fetch_other_group_stats(
-            client, sem, day_start, cutoff, other_groups, skipped_perf_groups,
-        )
+    season_data, day_stats_main, fert_data, cmp_mtfmi, cmp_agro, today_ops_detail = main_fetch
+
+    print("Строим план...")
+    with stage("план"):
+        plan_data = build_plan_ha()
 
     all_group_stats: dict[str, dict[str, dict]] = {WORK_TYPE_NAME: day_stats_main}
     all_group_stats.update(other_group_stats)
 
     print("\nФормируем Excel...")
+    _t_excel = time.monotonic()
     wb = openpyxl.Workbook()
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
@@ -5083,12 +5077,15 @@ async def build_report_async() -> None:
                 own_count,
             )
 
-    await _append_dop_report1_tables(
-        wb,
-        seeding_day_stats=all_group_stats.get(SEEDING_GROUP_NAME),
-    )
+    stage_add("Excel: листы сводки 1 (+блок уборки в standalone)", time.monotonic() - _t_excel)
+    with stage("Excel: доп. таблицы (1_main_dop)"):
+        await _append_dop_report1_tables(
+            wb,
+            seeding_day_stats=all_group_stats.get(SEEDING_GROUP_NAME),
+        )
     if not standalone:
-        await _append_harvest_tail_sheets(wb)
+        with stage("Excel: хвост уборки (10/11)"):
+            await _append_harvest_tail_sheets(wb)
 
     # Переставляем листы в порядок эталона до PDF-конвертации,
     # чтобы шапки страниц совпадали с таблицами.
@@ -5101,12 +5098,16 @@ async def build_report_async() -> None:
             print(f"  Предупреждение: не удалось переставить листы — {_e}")
 
     output_file = f"1. fertilizer_report_{REPORT_DATE}.xlsx"
-    wb.save(output_file)
+    with stage("сохранение xlsx"):
+        wb.save(output_file)
     print(f"\nСохранено: {output_file}")
+    timing_finish()
 
 
 def build_report() -> None:
-    asyncio.run(build_report_async())
+    from report_fetch_orchestration import run_report_async
+
+    run_report_async(build_report_async())
 
 
 if __name__ == "__main__":

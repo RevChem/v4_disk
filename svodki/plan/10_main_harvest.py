@@ -11,6 +11,7 @@ Cropwise Operations API — сводный отчёт по уборке куль
 
 from __future__ import annotations
 
+
 import asyncio
 import base64
 import json
@@ -30,6 +31,15 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import (
+    fetch_all_pages,
+    fetch_machine_tasks_window,
+    report_async_client,
+    run_report_async,
+)
+from svodki_timing import stage
 import httpx
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -451,99 +461,15 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
     return agg
 
 
-_HARVEST_GROSS_ENV = "SVODKI_REPORT_HARVEST_GROSS_JSON"
-_manual_gross_raw: str | None = None
-_manual_gross_data: dict = {}
-
-
-def _load_manual_harvest_gross() -> dict:
-    """JSON из модального окна. Пустые ячейки в файл не попадают."""
-    global _manual_gross_raw, _manual_gross_data
-    raw = (os.environ.get(_HARVEST_GROSS_ENV) or "").strip()
-    if raw == _manual_gross_raw:
-        return _manual_gross_data
-    _manual_gross_raw = raw
-    if not raw:
-        _manual_gross_data = {}
-        return _manual_gross_data
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        print("  [harvest-gross] не удалось разобрать ручной валовый сбор", flush=True)
-        _manual_gross_data = {}
-        return _manual_gross_data
-    _manual_gross_data = parsed if isinstance(parsed, dict) else {}
-    return _manual_gross_data
-
-
-def _manual_crop_entry(crop_name: str) -> dict | None:
-    data = _load_manual_harvest_gross()
-    for section in ("crops", "vegetables"):
-        block = data.get(section)
-        if not isinstance(block, dict):
-            continue
-        entry = block.get(crop_name)
-        if isinstance(entry, dict):
-            return entry
-    return None
-
-
-def _optional_tonnes(entry: dict, field: str) -> float | None:
-    if field not in entry or entry[field] is None or entry[field] == "":
-        return None
-    try:
-        return float(entry[field])
-    except (TypeError, ValueError):
-        return None
-
-
-def _manual_firm_tonnes(firm_name: str, crop_name: str) -> tuple[float | None, float | None]:
-    entry = _manual_crop_entry(crop_name)
-    if not entry:
-        return None, None
-    by_firm = entry.get("by_firm")
-    if not isinstance(by_firm, dict):
-        return None, None
-    firm_entry = by_firm.get(firm_name)
-    if not isinstance(firm_entry, dict):
-        return None, None
-    return _optional_tonnes(firm_entry, "season_t"), _optional_tonnes(firm_entry, "day_t")
-
-
-def _harvest_tonnes_raw(
-    firm_name: str,
-    crop_name: str,
-    label_date: date,
-) -> tuple[float, float]:
-    """Тонны до округления: ручной ввод заменяет только заполненные ячейки."""
-    ov_season, ov_day = _manual_firm_tonnes(firm_name, crop_name)
-    season = day = 0.0
-    if ov_season is None or ov_day is None:
-        agg = _build_namolot_agg(label_date)
-        key = (firm_name, crop_name)
-        season = float(agg.season.get(key, 0.0))
-        day = float(agg.day.get(key, 0.0))
-    if ov_season is not None:
-        season = ov_season
-    if ov_day is not None:
-        day = ov_day
-    if ov_season is not None or ov_day is not None:
-        print(
-            f"  [harvest-gross] {firm_name} / {crop_name}: "
-            f"сезон {season} т, сутки {day} т (ручной ввод)",
-            flush=True,
-        )
-    return season, day
-
-
 def get_namolot_harvest(
     firm_name: str,
     crop_name: str,
     label_date: date,
 ) -> tuple[float, float]:
     """(валовый сбор за сезон, за сутки), т — по агрофирме и культуре."""
-    season, day = _harvest_tonnes_raw(firm_name, crop_name, label_date)
-    return round(season), round(day)
+    agg = _build_namolot_agg(label_date)
+    key = (firm_name, crop_name)
+    return round(agg.season.get(key, 0.0)), round(agg.day.get(key, 0.0))
 
 
 def get_namolot_harvest_holding(
@@ -551,25 +477,9 @@ def get_namolot_harvest_holding(
     label_date: date,
 ) -> tuple[float, float]:
     """(валовый сбор за сезон, за сутки), т — по культуре суммарно по холдингу."""
-    entry = _manual_crop_entry(crop_name)
-    by_firm = entry.get("by_firm") if isinstance(entry, dict) else None
-    if isinstance(by_firm, dict) and by_firm:
-        season = day = 0.0
-        for firm_name in AGROFARM_ORDER:
-            firm_season, firm_day = _harvest_tonnes_raw(firm_name, crop_name, label_date)
-            season += firm_season
-            day += firm_day
-        return round(season), round(day)
     agg = _build_namolot_agg(label_date)
     season = sum(v for (_, c), v in agg.season.items() if c == crop_name)
     day = sum(v for (_, c), v in agg.day.items() if c == crop_name)
-    if isinstance(entry, dict) and not by_firm:
-        ov_season = _optional_tonnes(entry, "season_t")
-        ov_day = _optional_tonnes(entry, "day_t")
-        if ov_season is not None:
-            season = ov_season
-        if ov_day is not None:
-            day = ov_day
     return round(season), round(day)
 
 def resolve_combine_season_start(report_date: date) -> date:
@@ -1025,47 +935,20 @@ _harvest_cache_date: date | None = None
 
 
 def _prefetch_endpoints() -> dict | None:
+    from svodki_prefetch_io import load_prefetch_endpoints
+
     global _PREFETCH_ENDPOINTS, _PREFETCH_LOAD_DONE
     if _PREFETCH_LOAD_DONE:
         return _PREFETCH_ENDPOINTS
     _PREFETCH_LOAD_DONE = True
-    raw = (os.environ.get("SVODKI_PREFETCH_DATA_PATH") or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        endpoints = data.get("endpoints")
-        if isinstance(endpoints, dict):
-            _PREFETCH_ENDPOINTS = endpoints
-            profile = str(data.get("prefetch_profile") or "").strip()
-            print(
-                f"  Prefetch JSON: {path.name}"
-                + (f" ({profile})" if profile else ""),
-                flush=True,
-            )
-    except Exception as exc:
-        print(f"  Prefetch JSON не прочитан ({exc}), живой API", flush=True)
+    _PREFETCH_ENDPOINTS = load_prefetch_endpoints()
     return _PREFETCH_ENDPOINTS
 
 
 def _mtfmi_map_from_prefetch(task_ids: set[int]) -> dict[int, list[dict]]:
-    endpoints = _prefetch_endpoints()
-    if not endpoints:
-        return {}
-    rows = endpoints.get("machine_task_field_mapping_items") or []
-    out: dict[int, list[dict]] = {}
-    for row in rows:
-        try:
-            tid = int(row.get("machine_task_id"))
-        except Exception:
-            continue
-        if tid not in task_ids:
-            continue
-        out.setdefault(tid, []).append(row)
-    return out
+    from svodki_prefetch_io import mtfmi_subset_from_prefetch
+
+    return mtfmi_subset_from_prefetch(task_ids)
 
 
 def parse_dt(s) -> datetime | None:
@@ -1102,7 +985,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
     for _ in range(500):
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**params, "from_id": from_id, "limit": 1000},
+            params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=REQUEST_TIMEOUT,
         )
         r.raise_for_status()
@@ -1113,7 +996,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
         results.extend(chunk)
         meta    = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -1354,13 +1237,26 @@ def get_cached_fields() -> list[dict]:
 
 
 def get_cached_field_groups() -> list[dict]:
-    global _cached_field_groups
-    if _cached_field_groups is None:
-        ep = _prefetch_endpoints()
-        if ep and ep.get("field_groups"):
-            _cached_field_groups = ep.get("field_groups") or []
-        else:
-            _cached_field_groups = get_all_from_id("field_groups")
+    global _cached_field_groups, _cached_group_folders
+    if _cached_field_groups is not None:
+        return _cached_field_groups
+    ep = _prefetch_endpoints()
+    if ep and ep.get("field_groups"):
+        _cached_field_groups = ep.get("field_groups") or []
+        if _cached_group_folders is None and ep.get("group_folders"):
+            _cached_group_folders = ep.get("group_folders") or []
+        return _cached_field_groups
+    if _cached_group_folders is None:
+        from svodki_pipeline import run_reference_jobs
+
+        ref = run_reference_jobs({
+            "field_groups": lambda: get_all_from_id("field_groups"),
+            "group_folders": lambda: get_all_from_id("group_folders"),
+        })
+        _cached_field_groups = ref["field_groups"]
+        _cached_group_folders = ref["group_folders"]
+    else:
+        _cached_field_groups = get_all_from_id("field_groups")
     return _cached_field_groups
 
 
@@ -1369,6 +1265,8 @@ _cached_group_folders: list[dict] | None = None
 
 def get_cached_group_folders() -> list[dict]:
     global _cached_group_folders
+    if _cached_group_folders is None:
+        get_cached_field_groups()
     if _cached_group_folders is None:
         ep = _prefetch_endpoints()
         if ep and ep.get("group_folders"):
@@ -1572,32 +1470,6 @@ def _get_ops_for_crop(crop_name: str, work_type_id: int) -> list[dict]:
 # =============================================================================
 # АСИНХРОННЫЕ ЗАПРОСЫ
 # =============================================================================
-
-async def fetch_all_pages(
-    client:    httpx.AsyncClient,
-    url:       str,
-    params:    dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items   = []
-    from_id = 0
-    async with semaphore:
-        while True:
-            r     = await client.get(url, params={**params,
-                                                   "from_id": from_id,
-                                                   "limit":   1000})
-            body  = r.json()
-            chunk = body.get("data", [])
-            if not chunk:
-                break
-            items.extend(chunk)
-            meta    = body.get("meta", {}).get("response", {})
-            last_id = meta.get("last_record_id")
-            if not last_id or meta.get("obtained_records", 0) < 100:
-                break
-            from_id = last_id + 1
-    return items
-
 
 async def fetch_mtfmi(
     client:    httpx.AsyncClient,
@@ -2172,6 +2044,53 @@ async def _fetch_mtfmi_for_tasks(
     return await fetch_mtfmi_batch(client, task_ids, semaphore)
 
 
+async def _fetch_today_and_season_live(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    wt_ids: set[int] | list[int],
+    day_start: datetime,
+    season_start: datetime,
+    cutoff_ext: datetime,
+    *,
+    log_prefix: str,
+    use_prefetch: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """machine_tasks (сутки, сезон) из API: окна по датам × пачки work_type.
+
+    Если сутки лежат внутри сезона, сезон качается одним проходом, а сутки
+    фильтруются локально по end_time (как в сводках 2/3/5…). SVODKI_DUAL_TASK_FETCH=1 —
+    два независимых запроса, как раньше.
+    """
+    from svodki_prefetch_io import filter_tasks_end_time_window
+
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    day_s, season_s, cut_s = (
+        day_start.strftime(fmt), season_start.strftime(fmt), cutoff_ext.strftime(fmt),
+    )
+    wts = set(wt_ids)
+    dual = os.environ.get("SVODKI_DUAL_TASK_FETCH", "").strip().lower() in ("1", "true", "yes")
+    if day_start >= season_start and not dual:
+        season_rows = await fetch_machine_tasks_window(
+            client, semaphore, BASE_URL, wts,
+            {"end_time_gt_eq": season_s, "end_time_lt": cut_s}, log_prefix=log_prefix,
+            use_prefetch=use_prefetch,
+        )
+        return filter_tasks_end_time_window(season_rows, day_s, cut_s), season_rows
+    today_rows, season_rows = await asyncio.gather(
+        fetch_machine_tasks_window(
+            client, semaphore, BASE_URL, wts,
+            {"end_time_gt_eq": day_s, "end_time_lt": cut_s}, log_prefix=log_prefix,
+            use_prefetch=use_prefetch,
+        ),
+        fetch_machine_tasks_window(
+            client, semaphore, BASE_URL, wts,
+            {"end_time_gt_eq": season_s, "end_time_lt": cut_s}, log_prefix=log_prefix,
+            use_prefetch=use_prefetch,
+        ),
+    )
+    return today_rows, season_rows
+
+
 async def _fetch_tasks_and_mtfmi_like_11(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
@@ -2224,20 +2143,10 @@ async def _fetch_tasks_and_mtfmi_like_11(
             flush=True,
         )
         # Prefetch часто без wt скашивания (вне «5.0 Уборка») — догружаем из API.
-        from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
-
         silage_wts = sorted(SILAGE_CORN_MOWING_WT_IDS)
-        sup_today_raw, sup_season_raw = await asyncio.gather(
-            fetch_machine_tasks_by_wt_async(
-                fetch_all_pages, client, BASE_URL, silage_wts,
-                {"end_time_gt_eq": day_start_str, "end_time_lt": cutoff_ext_str},
-                semaphore, log_prefix="[r10] silage+ ",
-            ),
-            fetch_machine_tasks_by_wt_async(
-                fetch_all_pages, client, BASE_URL, silage_wts,
-                {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_ext_str},
-                semaphore, log_prefix="[r10] silage+ ",
-            ),
+        sup_today_raw, sup_season_raw = await _fetch_today_and_season_live(
+            client, semaphore, silage_wts, day_start, season_start,
+            cutoff + timedelta(hours=CUTOFF_BUFFER_HOURS), log_prefix="[r10] silage+ ",
         )
         for t in sup_today_raw:
             tid_i = int(t["id"])
@@ -2256,20 +2165,11 @@ async def _fetch_tasks_and_mtfmi_like_11(
                 flush=True,
             )
     else:
-        from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
-
-        tasks_today_raw, tasks_season_raw = await asyncio.gather(
-            fetch_machine_tasks_by_wt_async(
-                fetch_all_pages, client, BASE_URL, ALL_WT_IDS,
-                {"end_time_gt_eq": day_start_str, "end_time_lt": cutoff_ext_str},
-                semaphore, log_prefix="[r10] ",
-            ),
-            fetch_machine_tasks_by_wt_async(
-                fetch_all_pages, client, BASE_URL, ALL_WT_IDS,
-                {"end_time_gt_eq": season_start_str, "end_time_lt": cutoff_ext_str},
-                semaphore, log_prefix="[r10] ",
-            ),
-        )
+        with stage("machine_tasks (live: окна)"):
+            tasks_today_raw, tasks_season_raw = await _fetch_today_and_season_live(
+                client, semaphore, ALL_WT_IDS, day_start, season_start,
+                cutoff + timedelta(hours=CUTOFF_BUFFER_HOURS), log_prefix="[r10] ",
+            )
         seen_today = set()
         tasks_today = []
         for t in tasks_today_raw:
@@ -2329,16 +2229,24 @@ async def prepare_harvest_cache_async(report_date: date) -> HarvestDataCache:
     label_date = _label_report_date(day_start)
 
     preload_wt_ids = _harvest_preload_wt_ids()
-    preload_agro_operations(preload_wt_ids, SEASON_YEAR)
-    extra_field_ids = _field_ids_from_preloaded_agro_ops(preload_wt_ids)
+
+    def _preload_agro_ops() -> set[int]:
+        # sync-запросы (requests) в потоке: идут параллельно с async-выгрузкой заданий/mtfmi
+        with stage("agro_operations (preload)"):
+            preload_agro_operations(preload_wt_ids, SEASON_YEAR)
+        return _field_ids_from_preloaded_agro_ops(preload_wt_ids)
 
     headers = {"X-User-Api-Token": API_TOKEN}
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
     async with httpx.AsyncClient(headers=headers, timeout=REQUEST_TIMEOUT, limits=pool) as client:
-        tasks_today, tasks_season, mtfmi_map = await _fetch_tasks_and_mtfmi_like_11(
-            client, semaphore, day_start, cutoff, season_start,
-        )
+        with stage("задания+mtfmi ∥ agro_operations (wall)"):
+            (tasks_today, tasks_season, mtfmi_map), extra_field_ids = await asyncio.gather(
+                _fetch_tasks_and_mtfmi_like_11(
+                    client, semaphore, day_start, cutoff, season_start,
+                ),
+                asyncio.to_thread(_preload_agro_ops),
+            )
         field_ids = _collect_report_field_ids(
             tasks_today + tasks_season, mtfmi_map, extra_field_ids,
         )
@@ -2370,7 +2278,7 @@ def prepare_harvest_cache(report_date: date) -> HarvestDataCache:
     global _harvest_cache, _harvest_cache_date
     if _harvest_cache is not None and _harvest_cache_date == report_date:
         return _harvest_cache
-    _harvest_cache = asyncio.run(prepare_harvest_cache_async(report_date))
+    _harvest_cache = run_report_async(prepare_harvest_cache_async(report_date))
     _harvest_cache_date = report_date
     return _harvest_cache
 
@@ -2805,7 +2713,7 @@ def build_crop_report(
         plan_ids and day_start and cutoff and not USE_FAST_MODE
         for _, (_, plan_ids) in firm_order_with_plans
     ):
-        async_results = asyncio.run(fetch_all_firms())
+        async_results = run_report_async(fetch_all_firms())
 
     for i, (firm_name, (plan_ha, plan_ids)) in \
             enumerate(firm_order_with_plans, start=1):
@@ -3579,16 +3487,14 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         return result
 
     task_ids = [t["id"] for t in all_tasks_for_mtfmi]
-    headers  = {"X-User-Api-Token": API_TOKEN}
 
     async def _fetch_all_mtfmi() -> dict[int, list[dict]]:
-        semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
-        pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
-        async with httpx.AsyncClient(headers=headers, timeout=REQUEST_TIMEOUT,
-                                      limits=pool) as client:
+        async with report_async_client(
+            API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=REQUEST_TIMEOUT,
+        ) as (client, semaphore):
             return await fetch_mtfmi_batch(client, task_ids, semaphore)
 
-    mtfmi_map = asyncio.run(_fetch_all_mtfmi())
+    mtfmi_map = run_report_async(_fetch_all_mtfmi())
     print(f"    [VEG] mtfmi загружено для {len(mtfmi_map)} заданий", flush=True)
 
     field_to_crop_map = get_field_to_crop()
@@ -3608,10 +3514,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         shift = _veg_shift_info(task.get("end_time"), report_date)
         if not shift:
             continue
-        _t_date, _day_start, _hourly_cutoff = shift
-        del _t_date, _hourly_cutoff
-        from task_area_shared import area_ha_by_shift_date
-
+        t_date, _day_start, hourly_cutoff = shift
         for item in mtfmi_map.get(tid, []):
             fid = item.get("field_id")
             if not fid:
@@ -3622,30 +3525,24 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             crop = _normalize_veg_crop_name(field_to_crop_map.get(fid_i))
             if not crop:
                 continue
-            portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-            if not portions:
-                raw_cov = float(item.get("covered_area") or 0)
-                portions = {_day_start.date(): raw_cov} if raw_cov > 0 else {}
-            for t_date, cov in portions.items():
-                if t_date < VEG_SEASON_START or t_date >= report_date:
-                    continue
-                if cov <= _VEG_MIN_AREA_HA:
-                    continue
-                agg[crop][t_date] += cov
-                if t_date == report_shift_date and task.get("machine_id") is not None:
-                    veg_machines_today.add(task["machine_id"])
-                if _note is not None and t_date == report_shift_date:
-                    _mid = task.get("machine_id")
-                    _note(
-                        group="5.4 Уборка картофеля, лука",
-                        firm=_VEG_HARVEST_FIRM,
-                        crop=crop,
-                        field_id=fid_i,
-                        task_id=int(tid),
-                        machine_id=int(_mid) if _mid is not None else None,
-                        ha=cov,
-                        season=str(task.get("season") or ""),
-                    )
+            cov = _veg_mtfmi_cov(item, hourly_cutoff)
+            if cov <= _VEG_MIN_AREA_HA:
+                continue
+            agg[crop][t_date] += cov
+            if t_date == report_shift_date and task.get("machine_id") is not None:
+                veg_machines_today.add(task["machine_id"])
+            if _note is not None and t_date == report_shift_date:
+                _mid = task.get("machine_id")
+                _note(
+                    group="5.4 Уборка картофеля, лука",
+                    firm=_VEG_HARVEST_FIRM,
+                    crop=crop,
+                    field_id=fid_i,
+                    task_id=int(tid),
+                    machine_id=int(_mid) if _mid is not None else None,
+                    ha=cov,
+                    season=str(task.get("season") or ""),
+                )
 
     for task in no_shift_tasks:
         tid = task["id"]

@@ -211,60 +211,6 @@ def _sheet_firms(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
     _autowidth(ws, len(headers))
 
 
-def _sheet_sheet_checks(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
-    """Листы одной сводки (1 и 2) должны сходиться: выработка ↔ намолот ↔ культуры."""
-    checks = batch.get("sheet_checks") or []
-    if not checks:
-        return
-    ws = wb.create_sheet("Листы сводки")
-    ws.merge_cells("A1:J1")
-    ws["A1"].value = (
-        "Согласованность листов внутри сводки: итог, сумма по АФ, «Общий намолот», сумма по культурам"
-    )
-    ws["A1"].font = Font(bold=True, size=11)
-    headers = [
-        "Сводка",
-        "Операция",
-        "Итог листа выработки, га",
-        "Сумма по АФ, га",
-        "«Общий намолот» Итого, га",
-        "Сумма по культурам, га",
-        "Max diff",
-        "Статус",
-        "Источник",
-        "Что не сходится",
-    ]
-    hr = 3
-    for ci, h in enumerate(headers, 1):
-        ws.cell(row=hr, column=ci, value=h)
-    _style_header_row(ws, hr, len(headers))
-    r = hr + 1
-    for chk in checks:
-        why = "; ".join(
-            f"{i.get('label')}: {i.get('expected')} ↔ {i.get('actual')}"
-            for i in chk.get("issues") or []
-        )
-        _write_row(
-            ws,
-            r,
-            [
-                chk.get("report_id"),
-                chk.get("display_name") or chk.get("group_name"),
-                chk.get("total_ha", ""),
-                chk.get("firms_ha", ""),
-                chk.get("general_ha", ""),
-                chk.get("crops_ha", ""),
-                chk.get("max_diff_ha", ""),
-                chk.get("status"),
-                chk.get("source"),
-                why,
-            ],
-            fill=FILL_OK if chk.get("status") == "OK" else FILL_BAD,
-        )
-        r += 1
-    _autowidth(ws, len(headers))
-
-
 def _sheet_svodki_matrix(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
     """Сверка операций между сводками 1, 2, 3… (одинаковый вид работ)."""
     from proverka.operation_compare import build_cross_check
@@ -535,7 +481,6 @@ def build_workbook(batch: dict[str, Any]) -> openpyxl.Workbook:
     _sheet_summary(wb, rows, report_date, task_errors=task_errors)
     _sheet_firms(wb, batch)
     _sheet_svodki_matrix(wb, batch)
-    _sheet_sheet_checks(wb, batch)
     _sheet_details(wb, batch, "Детали сводок", "svodka")
     _sheet_details(wb, batch, "Детали Cropwise", "cropwise")
     _sheet_discrepancies(wb, batch)

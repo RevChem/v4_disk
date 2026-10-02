@@ -143,18 +143,6 @@ def request_cancel(job_id: str, *, report_ids: list[str] | None = None) -> dict[
     return st
 
 
-def daily_proverka_machines_job(report_date: date | None = None) -> str:
-    """Cron 21:00 MSK: проверка кол-ва машин по всем сводкам."""
-    _ensure_plan_path()
-    from proverka.reports_config import list_report_ids
-
-    rd = report_date or date.today()
-    return create_job(
-        report_date=rd,
-        report_ids=list_report_ids(),
-    )
-
-
 def create_job(
     *,
     report_date: date,

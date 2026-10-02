@@ -28,6 +28,7 @@
 """
 from __future__ import annotations
 
+
 import asyncio
 import os
 import sys
@@ -44,6 +45,10 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 import requests
@@ -154,7 +159,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
     while True:
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**p, "from_id": from_id, "limit": 1000},
+            params={**p, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=120,
         )
         r.raise_for_status()
@@ -165,7 +170,7 @@ def get_all(endpoint: str, params: dict | None = None) -> list[dict]:
         results.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -595,7 +600,7 @@ async def _fetch_mtfmi(client: httpx.AsyncClient, task_id: int, sem: asyncio.Sem
         async with sem:
             r = await client.get(
                 url,
-                params={"machine_task_id": task_id, "from_id": from_id, "limit": 1000},
+                params={"machine_task_id": task_id, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             )
         r.raise_for_status()
         body = r.json()
@@ -605,7 +610,7 @@ async def _fetch_mtfmi(client: httpx.AsyncClient, task_id: int, sem: asyncio.Sem
         items.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return items
@@ -1186,7 +1191,7 @@ def build_workbook(rows: dict[tuple[str, str], DriverRow]) -> openpyxl.Workbook:
 # MAIN
 # =============================================================================
 
-def main() -> None:
+async def main_async() -> None:
     _apply_period_from_env()
     win_start, win_end = _resolve_window()
     mode_label = "время остановок" if METRIC_MODE == "duration" else "количество остановок"
@@ -1199,34 +1204,63 @@ def main() -> None:
     )
     print(f"  Окно: {win_start.isoformat()} — {win_end.isoformat()}")
 
-    print("  Справочники Cropwise...")
-    users = get_all("users")
-    work_types_list = get_all("work_types")
-    work_types = {
-        int(w["id"]): (w.get("name") or w.get("title") or "—")
-        for w in work_types_list
-        if w.get("id") is not None
-    }
-    users_map = build_users_map(users)
-    machine_to_firm = build_machine_to_firm()
-    print(f"    машин с регионом: {len(machine_to_firm)}")
-
     task_fetch_from = win_start - timedelta(days=TASK_LOOKBACK_DAYS)
-    print("  Machine tasks...")
-    tasks = get_all(
-        "machine_tasks",
-        {
+
+    def _sync_refs_r27():
+        print("  Справочники Cropwise...")
+        users = get_all("users")
+        work_types_list = get_all("work_types")
+        work_types = {
+            int(w["id"]): (w.get("name") or w.get("title") or "—")
+            for w in work_types_list
+            if w.get("id") is not None
+        }
+        users_map = build_users_map(users)
+        machine_to_firm = build_machine_to_firm()
+        print(f"    машин с регионом: {len(machine_to_firm)}")
+        return work_types, users_map, machine_to_firm
+
+    async def _prefetch_tasks_r27():
+        from svodki_prefetch_io import (
+            machine_tasks_window_from_prefetch,
+            prefetch_tasks_by_wt,
+        )
+
+        print("  Machine tasks...")
+        mt_params = {
             "start_time_gt_eq": task_fetch_from.isoformat(),
             "start_time_lt_eq": win_end.isoformat(),
-        },
+        }
+        index = await asyncio.to_thread(prefetch_tasks_by_wt)
+        wt_scope = index.keys() if index else []
+        pref = None
+        if index:
+            pref = await asyncio.to_thread(
+                machine_tasks_window_from_prefetch,
+                wt_scope,
+                mt_params,
+                time_field="start_time",
+                log_prefix="[r27] ",
+            )
+        if pref is not None:
+            tasks = pref
+        else:
+            tasks = await asyncio.to_thread(
+                get_all,
+                "machine_tasks",
+                mt_params,
+            )
+        print(f"    задач (с lookback {TASK_LOOKBACK_DAYS} дн.): {len(tasks)}")
+        return tasks
+
+    refs, tasks = await run_parallel_refs_and_fetch(
+        _sync_refs_r27, _prefetch_tasks_r27, label="r27-tasks",
     )
-    print(f"    задач (с lookback {TASK_LOOKBACK_DAYS} дн.): {len(tasks)}")
+    work_types, users_map, machine_to_firm = refs
 
     print("  Простои Cropwise (телеметрия)...")
-    crop_counts, crop_secs, work_types_by_key = asyncio.run(
-        collect_cropwise_stops(
-            tasks, work_types, machine_to_firm, users_map, win_start, win_end,
-        )
+    crop_counts, crop_secs, work_types_by_key = await collect_cropwise_stops(
+        tasks, work_types, machine_to_firm, users_map, win_start, win_end,
     )
     print(f"    пар (агрофирма, ФИО) с остановками: {len(crop_counts)}")
 
@@ -1248,6 +1282,10 @@ def main() -> None:
     wb = build_workbook(rows)
     wb.save(OUTPUT_FILE)
     print(f"Готово: {OUTPUT_FILE}")
+
+
+def main() -> None:
+    run_report_async(main_async())
 
 
 if __name__ == "__main__":

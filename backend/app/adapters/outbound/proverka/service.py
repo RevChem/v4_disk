@@ -233,34 +233,6 @@ def _strip_env_value(value: str) -> str:
     return text
 
 
-def _dotenv_candidates() -> list[Path]:
-    paths = [Path("/app/.env"), Path(settings.svodki_root).resolve().parent / ".env"]
-    out: list[Path] = []
-    for path in paths:
-        if path not in out:
-            out.append(path)
-    return out
-
-
-def cropwise_session_cookie_from_dotenv() -> str:
-    """CROPWISE_SESSION_COOKIE из файла .env, без чужой cookie процесса."""
-    for path in _dotenv_candidates():
-        if not path.is_file():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            text = line.strip()
-            if not text or text.startswith("#") or "=" not in text:
-                continue
-            key, _, raw = text.partition("=")
-            if key.strip() != "CROPWISE_SESSION_COOKIE":
-                continue
-            cookie = _strip_env_value(raw)
-            if cookie:
-                os.environ["CROPWISE_SESSION_COOKIE"] = cookie
-                return cookie
-    return session_cookie_from_env()
-
-
 def session_cookie_from_env() -> str:
     _ensure_plan_path()
     from proverka.reconcile import load_env, session_cookie
@@ -334,31 +306,6 @@ def refresh_dashboard_check(report_date: date, *, run_ai_analysis: bool = False)
         run_ai_analysis=run_ai_analysis,
     )
     return job_id
-
-
-def daily_proverka_ai_job(report_date: date | None = None) -> str:
-    """Cron 21:00 MSK: proverka всех сводок за вчера + AI. Cookie — CROPWISE_SESSION_COOKIE из .env."""
-    _ensure_plan_path()
-    from datetime import timedelta
-    from zoneinfo import ZoneInfo
-
-    from proverka.reports_config import list_report_ids
-
-    rd = report_date or (
-        datetime.now(ZoneInfo(settings.schedule_timezone)).date() - timedelta(days=1)
-    )
-    rids = list_report_ids()
-    cookie = cropwise_session_cookie_from_dotenv()
-    if not cookie:
-        raise ValueError("CROPWISE_SESSION_COOKIE не задан в .env для вечерней проверки")
-    return create_job(
-        report_date=rd,
-        report_ids=rids,
-        compare_cropwise=True,
-        cookie=cookie,
-        season_overrides=editor_season_overrides(rd, rids),
-        run_ai_analysis=True,
-    )
 
 
 def ai_report_for_date(report_date: date) -> dict[str, Any]:

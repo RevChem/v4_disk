@@ -25,6 +25,16 @@ except Exception:
     BASE_URL = os.environ.get("CROPWISE_BASE_URL", "https://operations.cropwise.com/api/v3")
     WORK_GROUPS = []
 
+from cropwise_paging import from_id_should_continue
+
+try:
+    import plans  # noqa: F401
+except Exception:
+    from plan_paths import ensure_plan_sys_path
+
+    ensure_plan_sys_path()
+
+from report_fetch_orchestration import run_report_async
 
 TZ_MSK = timezone(timedelta(hours=3))
 PAGE_LIMIT = int(os.environ.get("SVODKI_PREFETCH_PAGE_LIMIT", "1000"))
@@ -332,7 +342,7 @@ async def _fetch_pages(
         last_id = meta.get("last_record_id")
         # Совпадает с поведением fetch_pages во всех plan-скриптах: остановка
         # происходит, когда API вернул меньше 100 записей или не отдал last_record_id.
-        if not last_id or int(meta.get("obtained_records") or 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = int(last_id) + 1
     return out
@@ -726,7 +736,7 @@ def main() -> None:
     if not raw:
         raise SystemExit("Output path argument is required (argv[1] or SVODKI_PREFETCH_DATA_PATH)")
     try:
-        asyncio.run(build_prefetch(Path(raw)))
+        run_report_async(build_prefetch(Path(raw)))
     except Exception as exc:
         print(f"[prefetch] FATAL: {exc}", flush=True)
         traceback.print_exc()

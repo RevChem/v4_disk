@@ -10,12 +10,13 @@ Cropwise Operations — отчёт "0.1 Статус ВПР на утро"
 
 from __future__ import annotations
 
+
 import asyncio
 import os
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Awaitable
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -24,6 +25,17 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import (
+    fetch_all_pages,
+    fetch_machine_tasks_window,
+    fetch_mtfmi_map_hybrid_async,
+    report_async_client,
+    run_report_async,
+)
+from svodki_timing import stage, timing_finish, timing_start
+from svodki_pipeline import run_reference_jobs
 import httpx
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -132,7 +144,7 @@ def get_all_from_id(endpoint: str, extra_params: dict[str, Any] | None = None) -
     while True:
         r = session.get(
             f"{BASE_URL}/{endpoint}",
-            params={**params, "from_id": from_id, "limit": 1000},
+            params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
             timeout=60,
         )
         r.raise_for_status()
@@ -143,31 +155,19 @@ def get_all_from_id(endpoint: str, extra_params: dict[str, Any] | None = None) -
         out.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = int(last_id) + 1
     return out
 
 
-async def fetch_pages(client: httpx.AsyncClient, endpoint: str, params: dict[str, Any], sem: asyncio.Semaphore) -> list[dict]:
-    out: list[dict] = []
-    from_id = 0
-    url = f"{BASE_URL}/{endpoint}"
-    async with sem:
-        while True:
-            r = await client.get(url, params={**params, "from_id": from_id, "limit": 1000})
-            r.raise_for_status()
-            body = r.json()
-            chunk = body.get("data", [])
-            if not chunk:
-                break
-            out.extend(chunk)
-            meta = body.get("meta", {}).get("response", {})
-            last_id = meta.get("last_record_id")
-            if not last_id or meta.get("obtained_records", 0) < 100:
-                break
-            from_id = int(last_id) + 1
-    return out
+async def fetch_pages(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    params: dict[str, Any],
+    sem: asyncio.Semaphore,
+) -> list[dict]:
+    return await fetch_all_pages(client, f"{BASE_URL}/{endpoint}", params, sem)
 
 
 def normalize_crop_name(raw: Any) -> str:
@@ -214,9 +214,19 @@ def percent(plan: float, fact: float) -> float:
 
 
 def load_field_crop_plan() -> tuple[dict[int, tuple[str, float]], dict[int, str]]:
-    fields = get_all_from_id("fields", {"only_active": "true"})
-    crops = get_all_from_id("crops")
-    history_items = get_all_from_id("history_items", {"year": str(SEASON_START.year)})
+    raw = run_reference_jobs(
+        {
+            "fields": lambda: get_all_from_id("fields", {"only_active": "true"}),
+            "crops": lambda: get_all_from_id("crops"),
+            "history_items": lambda: get_all_from_id(
+                "history_items", {"year": str(SEASON_START.year)},
+            ),
+        },
+        thread_prefix="r01-ref",
+    )
+    fields = raw["fields"]
+    crops = raw["crops"]
+    history_items = raw["history_items"]
 
     crop_map: dict[int, str] = {
         int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
@@ -252,9 +262,16 @@ def load_field_crop_plan() -> tuple[dict[int, tuple[str, float]], dict[int, str]
 
 
 
+async def _resolve_map(value):
+    """field_to_crop может прийти уже готовым dict или awaitable (справочники ещё грузятся)."""
+    import inspect
+
+    return await value if inspect.isawaitable(value) else value
+
+
 async def load_fact_by_crop(
     wt_ids: set[int],
-    field_to_crop: dict[int, str],
+    field_to_crop: "dict[int, str] | Awaitable[dict[int, str]]",
     cutoff: datetime,
 ) -> dict[str, float]:
     """
@@ -270,30 +287,31 @@ async def load_fact_by_crop(
     season_start = datetime(SEASON_START.year, 1, 1, 0, 0, 0, tzinfo=TZ_MSK)
     cutoff_str   = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     season_str   = season_start.strftime("%Y-%m-%dT%H:%M:%S")
-    headers = {"X-User-Api-Token": API_TOKEN}
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+        # prefetch → окна по датам × пачки work_type (live) → batch
+        with stage("посев: machine_tasks"):
+            task_rows = await fetch_machine_tasks_window(
+                client, sem, BASE_URL, set(wt_ids),
+                {"end_time_gt_eq": season_str, "end_time_lt": cutoff_str},
+                log_prefix="[r0.1] ",
+            )
 
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        chunks = await asyncio.gather(*[
-            fetch_pages(client, "machine_tasks", {
-                "work_type_id":   wt,
-                "end_time_gt_eq": season_str,
-                "end_time_lt":    cutoff_str,
-            }, sem)
-            for wt in sorted(wt_ids)
-        ])
-
-    uniq_tasks: dict[int, dict] = {}
-    for chunk in chunks:
-        for t in chunk:
+        uniq_tasks: dict[int, dict] = {}
+        for t in task_rows:
             tid = t.get("id")
-            # Не фильтруем по machine_tasks.covered_area: площадь в MTFMI
-            # может быть > 0 при нулевом covered_area задания (как в 5_main).
             if tid:
                 uniq_tasks[int(tid)] = t
 
-    if not uniq_tasks:
-        return {}
+        if not uniq_tasks:
+            return {}
+
+        task_ids = list(uniq_tasks.keys())
+        with stage("посев: mtfmi"):
+            mtfmi_map = await fetch_mtfmi_map_hybrid_async(
+                client, sem, BASE_URL, task_ids, log_prefix="[r0.1] ",
+            )
+
+    field_to_crop = await _resolve_map(field_to_crop)
 
     # Определяем cutoff смены для каждого задания
     def _shift_cutoff(end_time_raw) -> datetime | None:
@@ -310,13 +328,6 @@ async def load_fact_by_crop(
         return anchor + timedelta(days=1)  # cutoff = D+1 06:00
 
     task_ids = list(uniq_tasks.keys())
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        from mtfmi_batch_fetch import fetch_mtfmi_map_for_tasks
-
-        mtfmi_map = await fetch_mtfmi_map_for_tasks(
-            client, sem, BASE_URL, task_ids, log_prefix="[r0.1] ",
-        )
-
     fact_by_crop: dict[str, float] = {}
     for tid in task_ids:
         items = mtfmi_map.get(tid, [])
@@ -416,7 +427,7 @@ def build_crop_rows(
 
 
 async def load_fert_facts_from_agro_ops(
-    field_to_crop: dict[int, str],
+    field_to_crop: "dict[int, str] | Awaitable[dict[int, str]]",
     cutoff: datetime,
 ) -> dict[str, float]:
     """
@@ -440,12 +451,16 @@ async def load_fert_facts_from_agro_ops(
     - если в операции несколько удобрений — площадь делится поровну между ними
       (area_share = area / len(fert_ids_in_op)).
     """
-    headers = {"X-User-Api-Token": API_TOKEN}
-    sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
-
-    async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-        # Загружаем справочник удобрений
-        ferts_raw = await fetch_pages(client, "fertilizers", {}, sem)
+    async with report_async_client(API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120) as (client, sem):
+        # Справочник удобрений и agro_operations — независимые запросы, грузим одновременно
+        with stage("подкормка: fertilizers + agro_operations"):
+            ferts_raw, ops_raw = await asyncio.gather(
+                fetch_pages(client, "fertilizers", {}, sem),
+                fetch_pages(client, "agro_operations", {
+                    "work_type_id": FERTILIZER_WORK_TYPE_ID,
+                    "season":       str(SEASON),
+                }, sem),
+            )
         fert_name_map: dict[int, str] = {}
         for f in ferts_raw:
             fid = f.get("id")
@@ -453,11 +468,7 @@ async def load_fert_facts_from_agro_ops(
             if fid and name:
                 fert_name_map[int(fid)] = name
 
-        # Загружаем agro_operations за сезон
-        ops_raw = await fetch_pages(client, "agro_operations", {
-            "work_type_id": FERTILIZER_WORK_TYPE_ID,
-            "season":       str(SEASON),
-        }, sem)
+    field_to_crop = await _resolve_map(field_to_crop)
 
     SKIP_STATUSES = {"canceled"}
     result: dict[str, float] = {
@@ -682,25 +693,38 @@ def write_report(
 async def build_report_async(report_date: date = REPORT_DATE) -> None:
     cutoff = datetime(report_date.year, report_date.month, report_date.day, 6, 0, 0, tzinfo=TZ_MSK)
 
-    # Загружаем справочник полей → культура
-    field_crop_plan, crop_map = load_field_crop_plan()
-    # Нам нужен просто dict[int, str]: field_id -> crop_name
-    field_to_crop: dict[int, str] = {fid: info[0] for fid, info in field_crop_plan.items()}
+    timing_start()
+
+    # Справочники полей → культура грузятся в потоке и ПАРАЛЛЕЛЬНО с сетевой выгрузкой
+    # заданий/агроопераций: field_to_crop нужен только на этапе расчёта, не для запросов.
+    async def _load_refs() -> dict[int, str]:
+        with stage("справочники (поля/культуры)"):
+            plan, _crop_map = await asyncio.to_thread(load_field_crop_plan)
+        # Нам нужен просто dict[int, str]: field_id -> crop_name
+        return {fid: info[0] for fid, info in plan.items()}
+
+    field_to_crop_task = asyncio.ensure_future(_load_refs())
 
     # Параллельно загружаем факт по посеву и по подкормке
-    seeding_fact_by_crop, fert_facts = await asyncio.gather(
-        load_fact_by_crop(SEEDING_WT_IDS, field_to_crop, cutoff),
-        load_fert_facts_from_agro_ops(field_to_crop, cutoff),
-    )
+    with stage("справочники ∥ посев ∥ подкормка (wall)"):
+        try:
+            seeding_fact_by_crop, fert_facts = await asyncio.gather(
+                load_fact_by_crop(SEEDING_WT_IDS, field_to_crop_task, cutoff),
+                load_fert_facts_from_agro_ops(field_to_crop_task, cutoff),
+            )
+        finally:
+            await asyncio.gather(field_to_crop_task, return_exceptions=True)
 
     crop_rows   = build_crop_rows(seeding_fact_by_crop)
     winter_rows = _build_winter_feeding_rows(fert_facts)
-    output = write_report(report_date, crop_rows, winter_rows)
+    with stage("Excel: сохранение"):
+        output = write_report(report_date, crop_rows, winter_rows)
     print(f"\nСохранено: {output}")
+    timing_finish()
 
 
 def build_report(report_date: date = REPORT_DATE) -> None:
-    asyncio.run(build_report_async(report_date))
+    run_report_async(build_report_async(report_date))
 
 
 if __name__ == "__main__":

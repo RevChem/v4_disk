@@ -48,6 +48,7 @@ Cropwise Operations — отчёт "Простои транспорта и ко�
 
 from __future__ import annotations
 
+
 import asyncio
 import json
 import math
@@ -65,6 +66,11 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from svodki_timing import stage, timing_finish, timing_start
+from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
+from report_fetch_orchestration import fetch_all_pages, report_async_client, run_report_async
+from report_pipeline import run_parallel_refs_and_fetch
 import httpx
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -261,47 +267,20 @@ def _object_has_polygon(obj: dict) -> bool:
 
 
 def _prefetch_endpoints() -> dict | None:
+    from svodki_prefetch_io import load_prefetch_endpoints
+
     global _PREFETCH_ENDPOINTS, _PREFETCH_LOAD_DONE
     if _PREFETCH_LOAD_DONE:
         return _PREFETCH_ENDPOINTS
     _PREFETCH_LOAD_DONE = True
-    raw = (os.environ.get("SVODKI_PREFETCH_DATA_PATH") or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        endpoints = data.get("endpoints")
-        if isinstance(endpoints, dict):
-            _PREFETCH_ENDPOINTS = endpoints
-            profile = str(data.get("prefetch_profile") or "").strip()
-            print(
-                f"  Prefetch JSON: {path.name}"
-                + (f" ({profile})" if profile else ""),
-                flush=True,
-            )
-    except Exception as exc:
-        print(f"  Prefetch JSON не прочитан ({exc}), живой API", flush=True)
+    _PREFETCH_ENDPOINTS = load_prefetch_endpoints()
     return _PREFETCH_ENDPOINTS
 
 
 def _mtfmi_map_from_prefetch(task_ids: set[int]) -> dict[int, list[dict]]:
-    endpoints = _prefetch_endpoints()
-    if not endpoints:
-        return {}
-    rows = endpoints.get("machine_task_field_mapping_items") or []
-    out: dict[int, list[dict]] = {}
-    for row in rows:
-        try:
-            tid = int(row.get("machine_task_id"))
-        except Exception:
-            continue
-        if tid not in task_ids:
-            continue
-        out.setdefault(tid, []).append(row)
-    return out
+    from svodki_prefetch_io import mtfmi_subset_from_prefetch
+
+    return mtfmi_subset_from_prefetch(task_ids)
 
 
 def _folder_parent_map(gfs_all: list[dict]) -> dict[int, int | None]:
@@ -613,7 +592,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
             try:
                 r = session.get(
                     f"{BASE_URL}/{endpoint}",
-                    params={**params, "from_id": from_id, "limit": 1000},
+                    params={**params, "from_id": from_id, "limit": CROPWISE_PAGE_LIMIT},
                     timeout=120,
                 )
                 r.raise_for_status()
@@ -636,7 +615,7 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
         results.extend(chunk)
         meta = body.get("meta", {}).get("response", {})
         last_id = meta.get("last_record_id")
-        if not last_id or meta.get("obtained_records", 0) < 100:
+        if not from_id_should_continue(meta, chunk):
             break
         from_id = last_id + 1
     return results
@@ -645,55 +624,6 @@ def get_all_from_id(endpoint: str, extra_params: dict | None = None) -> list[dic
 # =============================================================================
 # АСИНХРОННЫЕ ЗАПРОСЫ
 # =============================================================================
-
-async def fetch_all_pages(
-    client:    httpx.AsyncClient,
-    url:       str,
-    params:    dict,
-    semaphore: asyncio.Semaphore,
-) -> list[dict]:
-    items: list[dict] = []
-    from_id = 0
-    max_attempts = max(1, int(os.environ.get("SVODKI_PREFETCH_HTTP_RETRIES", "5") or 5))
-    async with semaphore:
-        while True:
-            last_exc: Exception | None = None
-            body: dict | None = None
-            for attempt in range(max_attempts):
-                try:
-                    r = await client.get(
-                        url,
-                        params={**params, "from_id": from_id, "limit": 1000},
-                        timeout=120,
-                    )
-                    r.raise_for_status()
-                    parsed = r.json()
-                    if not isinstance(parsed, dict):
-                        raise ValueError(f"Unexpected JSON from {url}")
-                    body = parsed
-                    last_exc = None
-                    break
-                except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError, ValueError) as exc:
-                    last_exc = exc
-                    retryable = True
-                    if isinstance(exc, httpx.HTTPStatusError):
-                        retryable = exc.response.status_code in {429, 502, 503, 504}
-                    if not retryable or attempt >= max_attempts - 1:
-                        raise
-                    await asyncio.sleep(min(30.0, 1.5 * (2 ** attempt)))
-            if last_exc is not None or body is None:
-                raise last_exc or RuntimeError(f"Empty response from {url}")
-            chunk = body.get("data", [])
-            if not chunk:
-                break
-            items.extend(chunk)
-            meta = body.get("meta", {}).get("response", {})
-            last_id = meta.get("last_record_id")
-            if not last_id or meta.get("obtained_records", 0) < 100:
-                break
-            from_id = last_id + 1
-    return items
-
 
 async def fetch_mtfmi_for_tasks(
     client:    httpx.AsyncClient,
@@ -909,29 +839,55 @@ async def collect_idle_data(report_date: date) -> dict[str, dict]:
     print(f"  Подпись «Сводка за»: {label_date.strftime('%d.%m.%Y')}")
     print(f"  Диапазон: {day_start} — {cutoff}")
 
-    ep = _prefetch_endpoints()
-    if ep and ep.get("machines"):
-        machines_map = {m["id"]: m for m in ep.get("machines") or []}
-        print(f"  Машин из prefetch: {len(machines_map)}", flush=True)
-    else:
-        print("  Загружаем machines...")
-        machines_map = {m["id"]: m for m in get_all_from_id("machines")}
-        print(f"  Всего машин: {len(machines_map)}")
+    async def _prefetch_r12():
+        async with report_async_client(
+            API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120,
+        ) as (client, semaphore):
+            tasks = await fetch_harvest_tasks_for_day(
+                client, semaphore, day_start_str, cutoff_ext_str,
+            )
+            task_ids = list({t["id"] for t in tasks})
+            mtfmi_map = (
+                await fetch_mtfmi_for_tasks(client, task_ids, semaphore)
+                if task_ids else {}
+            )
+            return tasks, mtfmi_map
 
-    field_to_firm = load_field_to_firm()
-    machine_to_firms = load_machine_to_firms(report_date.strftime("%Y-%m-%d"))
-    object_to_firm, objects_map = load_additional_object_to_firm()
-
-    headers = {"X-User-Api-Token": API_TOKEN}
-    semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
-    pool = httpx.Limits(max_connections=60, max_keepalive_connections=30)
-
-    async with httpx.AsyncClient(headers=headers, timeout=120, limits=pool) as client:
-        tasks = await fetch_harvest_tasks_for_day(
-            client, semaphore, day_start_str, cutoff_ext_str,
+    def _sync_refs_r12():
+        ep = _prefetch_endpoints()
+        if ep and ep.get("machines"):
+            machines_map_local = {m["id"]: m for m in ep.get("machines") or []}
+            print(f"  Машин из prefetch: {len(machines_map_local)}", flush=True)
+        else:
+            print("  Загружаем machines...")
+            machines_map_local = {m["id"]: m for m in get_all_from_id("machines")}
+            print(f"  Всего машин: {len(machines_map_local)}")
+        field_to_firm = load_field_to_firm()
+        machine_to_firms = load_machine_to_firms(report_date.strftime("%Y-%m-%d"))
+        object_to_firm, objects_map = load_additional_object_to_firm()
+        return (
+            machines_map_local,
+            field_to_firm,
+            machine_to_firms,
+            object_to_firm,
+            objects_map,
         )
-        task_ids = list({t["id"] for t in tasks})
-        mtfmi_map = await fetch_mtfmi_for_tasks(client, task_ids, semaphore) if task_ids else {}
+
+    refs, harvest = await run_parallel_refs_and_fetch(
+        _sync_refs_r12, _prefetch_r12, label="r12-idle",
+    )
+    (
+        machines_map,
+        field_to_firm,
+        machine_to_firms,
+        object_to_firm,
+        objects_map,
+    ) = refs
+    tasks, mtfmi_map = harvest
+
+    async with report_async_client(
+        API_TOKEN, semaphore_limit=SEMAPHORE_LIMIT, timeout=120,
+    ) as (client, semaphore):
         intersections = await fetch_object_intersections_for_day(
             client, semaphore, day_start, cutoff,
         )
@@ -1502,7 +1458,9 @@ def write_firm_sheet(
 async def build_report_async(report_date: date = REPORT_DATE) -> None:
     print(f"Отчёт 'Простои транспорта и комбайнов'  |  Дата: {report_date}\n")
 
-    data = await collect_idle_data(report_date)
+    timing_start()
+    with stage("загрузка и расчёт (collect_idle_data)"):
+        data = await collect_idle_data(report_date)
     label_date = data.pop("_label_date", report_date)
 
     output_file = f"12. report_harvest_idle_{report_date}.xlsx"
@@ -1525,8 +1483,10 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
                                if c["idle_field_secs"] > IDLE_THRESHOLD_SEC])
         print(f"  {firm_name}: грузовых={trucks_count}, комбайнов={combines_count}")
 
-    wb.save(output_file)
+    with stage("сохранение xlsx"):
+        wb.save(output_file)
     print(f"\nСохранено: {output_file}")
+    timing_finish()
 
     # Консольный превью (каждый простой > 40 мин — отдельная строка)
     print("\n=== Элеваторы (простои > 40 мин) ===")
@@ -1542,7 +1502,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
 
 
 def build_report(report_date: date = REPORT_DATE) -> None:
-    asyncio.run(build_report_async(report_date))
+    run_report_async(build_report_async(report_date))
 
 
 if __name__ == "__main__":

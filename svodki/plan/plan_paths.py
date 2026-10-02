@@ -28,7 +28,11 @@ def plan_pythonpath_entries() -> list[Path]:
 
 def ensure_plan_sys_path() -> None:
     """Добавляет plan + utils/* в sys.path (proverka, редактор планов, in-process)."""
+    import os
     import sys
+
+    os.environ.setdefault("SVODKI_PIPELINE", "1")
+    os.environ.setdefault("SVODKI_REPORT2_PIPELINE", "1")
 
     for entry in plan_pythonpath_entries():
         s = str(entry)

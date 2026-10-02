@@ -195,7 +195,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service=~\"api|worker|beat\"} | json | level=~\"error|warning\"",
+          "expr": "{service=~\"api|worker|worker-heavy|beat\"} | json | level=~\"error|warning\"",
           "refId": "A"
         }
       ],
@@ -219,7 +219,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service=~\"api|worker|beat\"} | json | event=~\"reports\\\\..*\"",
+          "expr": "{service=~\"api|worker|worker-heavy|beat\"} | json | event=~\"reports\\\\..*\"",
           "refId": "A"
         }
       ],
