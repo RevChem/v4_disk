@@ -1,0 +1,56 @@
+{
+  "base": "https://operations.cropwise.com/api/v3",
+  "started": "2026-10-02T09:00:22.404171+03:00",
+  "tests": {
+    "connect": {
+      "status": 200
+    },
+    "page_size": {
+      "limit_100": 100,
+      "limit_500": 500,
+      "limit_1000": 1000,
+      "limit_5000": 1000
+    },
+    "changes_ids": {
+      "status": 200,
+      "rows": 3424,
+      "unique": 3424,
+      "order": "desc",
+      "meta": {
+        "request": {
+          "from_time": "2026-10-01T09:00:34.000+03:00",
+          "to_time": "2026-10-02T09:00:34.000+03:00",
+          "server_time": "2026-10-02T09:00:34.696+03:00"
+        },
+        "response": {
+          "obtained_records": 3424,
+          "first_record_time": "2026-10-02T09:00:06.552+03:00",
+          "last_record_time": "2026-10-01T09:00:45.192+03:00"
+        }
+      },
+      "list_count": 3424,
+      "diff": 0
+    },
+    "changes_pagination": {
+      "pages": 2,
+      "got": 3424,
+      "dups": 0,
+      "missing": 0,
+      "from_id_supported": false
+    },
+    "changes_full": {},
+    "ids": {
+      "status": 200
+    },
+    "versions": {
+      "MachineTask_destroy_30d": 818,
+      "MachineTaskFieldMappingItem_destroy_30d": 1000
+    },
+    "mtfmi": {
+      "max_task_ids_per_filter_ok": 2000
+    }
+  },
+  "finished": "2026-10-02T09:02:24.515216+03:00",
+  "requests_total": 42,
+  "rate_limit_headers": {}
+}

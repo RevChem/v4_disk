@@ -1,0 +1,211 @@
+# api + web + postgres + redis + rabbitmq + celery worker/beat
+# Запуск: docker compose up -d --build
+
+# Общая часть worker-ов (YAML-якоря). Переопределяются в самих сервисах.
+x-worker-env: &worker-env
+  SVODKI_SERVICE: worker
+  UPLOAD_DIR: /app/uploads
+  SVODKI_ROOT: /app/svodki
+  DATABASE_URL: postgresql+psycopg2://svodki:svodki@postgres:5432/svodki
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  CELERY_HEAVY_QUEUE: ${CELERY_HEAVY_QUEUE:-heavy}
+  CROPWISE_API_TOKEN: ${CROPWISE_API_TOKEN}
+  PROVERKA_MAX_WORKERS: ${PROVERKA_MAX_WORKERS:-4}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+  PROVERKA_AI_MODEL: ${PROVERKA_AI_MODEL:-deepseek-flash}
+  PROVERKA_AI_THINKING: ${PROVERKA_AI_THINKING:-disabled}
+  PROVERKA_AI_MAX_OUTPUT_TOKENS: ${PROVERKA_AI_MAX_OUTPUT_TOKENS:-2048}
+  PROVERKA_AI_ENABLED: ${PROVERKA_AI_ENABLED:-1}
+  PROVERKA_AI_MAX_TASK_ERRORS: ${PROVERKA_AI_MAX_TASK_ERRORS:-20}
+  PROVERKA_AI_MAX_FINDINGS: ${PROVERKA_AI_MAX_FINDINGS:-15}
+  PROVERKA_AI_TIMEOUT_SEC: ${PROVERKA_AI_TIMEOUT_SEC:-120}
+  # glibc по умолчанию заводит арену на поток; при ThreadPool в генерации RSS раздувается
+  # фрагментацией и не возвращается ОС. Две арены — типовое безопасное значение.
+  MALLOC_ARENA_MAX: ${MALLOC_ARENA_MAX:-2}
+
+x-worker-common: &worker-common
+  build: ./backend
+  env_file:
+    - .env
+  volumes:
+    - disk_uploads:/app/uploads
+    - ./svodki:/app/svodki:ro
+    - ./backend/app:/app/app:ro
+    - ./.env:/app/.env:ro
+  depends_on:
+    api:
+      condition: service_started
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: svodki
+      POSTGRES_PASSWORD: svodki
+      POSTGRES_DB: svodki
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U svodki -d svodki"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    labels:
+      logging: promtail
+      logging.service: api
+    env_file:
+      - .env
+    environment:
+      SVODKI_SERVICE: api
+      UPLOAD_DIR: /app/uploads
+      SVODKI_ROOT: /app/svodki
+      DATABASE_URL: postgresql+psycopg2://svodki:svodki@postgres:5432/svodki
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CELERY_ENABLED: "true"
+      CELERY_HEAVY_QUEUE: ${CELERY_HEAVY_QUEUE:-heavy}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      CROPWISE_API_TOKEN: ${CROPWISE_API_TOKEN}
+      CROPWISE_BASE_URL: ${CROPWISE_BASE_URL:-https://operations.cropwise.com/api/v3}
+      CROPWISE_SEASON_YEAR: ${CROPWISE_SEASON_YEAR:-2026}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-svodki@chistai.ru}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-changeme-svodki-2026}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - disk_uploads:/app/uploads
+      - ./svodki:/app/svodki:ro
+      - ./backend/app:/app/app:ro
+      - ./.env:/app/.env:ro
+    ports:
+      - "${API_BIND_HOST:-127.0.0.1}:${API_HOST_PORT:-6757}:6757"
+    expose:
+      - "6757"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6757/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 240s
+    restart: unless-stopped
+
+  # Лёгкий worker: check_schedules (каждую минуту), рассылки. Не стоит в очереди за генерацией
+  # и не держит гигабайты. Вместе с worker-heavy — не больше 3 рабочих процессов.
+  worker:
+    <<: *worker-common
+    labels:
+      logging: promtail
+      logging.service: worker
+    command: [
+      "celery", "-A", "app.infrastructure.celery_app.celery_app", "worker",
+      "-Q", "celery", "-n", "light@%h", "-l", "info",
+      "--concurrency", "${WORKER_CONCURRENCY:-2}",
+      "--max-memory-per-child", "${WORKER_MAX_MEMORY_PER_CHILD_KB:-400000}",
+    ]
+    environment:
+      <<: *worker-env
+      SVODKI_SERVICE: worker
+      # Рестарт лёгкого worker не должен помечать задачи тяжёлого как «потерянные».
+      CELERY_RECONCILE_ON_START: "0"
+    mem_limit: ${WORKER_MEM_LIMIT:-1g}
+
+  # Тяжёлый worker: генерация сводок и proverka. Одна задача за раз,
+  # процесс пересоздаётся после каждой задачи — RAM возвращается ОС.
+  worker-heavy:
+    <<: *worker-common
+    labels:
+      logging: promtail
+      logging.service: worker-heavy
+    command: [
+      "celery", "-A", "app.infrastructure.celery_app.celery_app", "worker",
+      "-Q", "${CELERY_HEAVY_QUEUE:-heavy}", "-n", "heavy@%h", "-l", "info",
+      "--concurrency", "${WORKER_HEAVY_CONCURRENCY:-1}",
+      "--max-tasks-per-child", "1",
+    ]
+    environment:
+      <<: *worker-env
+      SVODKI_SERVICE: worker-heavy
+    # Потолок на весь контейнер, включая скрипты сводок и LibreOffice. При OOM скрипт
+    # получает SIGKILL и перезапускается (см. TRANSIENT_EXIT_SIGNALS).
+    mem_limit: ${WORKER_HEAVY_MEM_LIMIT:-8g}
+
+  beat:
+    build: ./backend
+    labels:
+      logging: promtail
+      logging.service: beat
+    command: ["celery", "-A", "app.infrastructure.celery_app.celery_app", "beat", "-l", "info"]
+    env_file:
+      - .env
+    environment:
+      SVODKI_SERVICE: beat
+      SVODKI_ROOT: /app/svodki
+      DATABASE_URL: postgresql+psycopg2://svodki:svodki@postgres:5432/svodki
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      SCHEDULE_TIMEZONE: ${SCHEDULE_TIMEZONE:-Europe/Moscow}
+      CELERY_HEAVY_QUEUE: ${CELERY_HEAVY_QUEUE:-heavy}
+    volumes:
+      - ./backend/app:/app/app:ro
+      - ./svodki:/app/svodki:ro
+    depends_on:
+      worker:
+        condition: service_started
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.frontend
+    ports:
+      - "${WEB_BIND_HOST:-127.0.0.1}:${WEB_HOST_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  disk_uploads:
+  postgres_data:
