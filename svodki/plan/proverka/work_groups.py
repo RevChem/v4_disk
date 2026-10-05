@@ -20,7 +20,7 @@ _HARVEST_GRAIN_WT: list[int] = sorted(
 # plans.WORK_GROUPS здесь другой набор: 20 и 52 вместо 10 и 51.
 # Запрос work.json с плановым набором за сутки возвращает 0,
 # хотя факт в Cropwise есть.
-_CULTIVATION_WT: list[int] = [10, 50, 51, 63, 96]
+_CULTIVATION_WT: list[int] = [10, 20, 50, 51, 52, 63, 96]
 
 WORK_GROUP_WT_OVERRIDES: dict[str, list[int]] = {
     "5.4 Уборка картофеля, лука": _VEG_54_WT,

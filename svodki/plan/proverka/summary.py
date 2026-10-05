@@ -142,9 +142,14 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
     file_values = result.get("file_values") or {}
     file_ha: float | None = None
     file_diff_ha: float | None = None
+    warnings = list(cmp_.get("warnings") or [])
     if file_values.get("found"):
         file_ha = float(file_values.get("file_ha") or 0)
         file_diff_ha = round(file_ha - sv_ha, 2)
+    if file_values.get("error"):
+        warnings.append(str(file_values["error"]))
+    if result.get("file_internal_error"):
+        warnings.append(str(result["file_internal_error"]))
 
     return {
         "id": rid,
@@ -162,7 +167,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
         "season": (sp.get("label") or sp.get("task_season_label") or "")[:80],
         "firms_with_diff": firms_with_diff,
         "work_type_ids": svodka.get("work_type_ids") or [],
-        "warnings": list(cmp_.get("warnings") or []),
+        "warnings": warnings,
     }
 
 
@@ -176,9 +181,11 @@ def compute_violations(
     cross_check_rows: list[dict[str, Any]] | None = None,
     *,
     job_error: str | None = None,
+    sheet_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Сводка нарушений для UI: Cropwise + сверка сводок между собой."""
+    """Сводка нарушений для UI: Cropwise + сверка сводок + согласованность листов 1/2."""
     cross_check_rows = cross_check_rows or []
+    sheet_checks = sheet_checks or []
     violations: list[dict[str, Any]] = []
     error_logs: list[dict[str, str]] = []
 
@@ -298,10 +305,32 @@ def compute_violations(
                 }
             )
 
+    for chk in sheet_checks:
+        if chk.get("status") != "DIFF":
+            continue
+        detail = _violation_detail_sheet(chk)
+        violations.append(
+            {
+                "kind": "sheet_consistency",
+                "report_id": chk.get("report_id"),
+                "title": chk.get("display_name") or chk.get("group_name"),
+                "status": "DIFF",
+                "max_diff_ha": chk.get("max_diff_ha"),
+                "detail": detail,
+            }
+        )
+        error_logs.append(
+            {
+                "source": f"листы сводки {chk.get('report_id')}",
+                "message": detail,
+            }
+        )
+
     cropwise_count = sum(1 for v in violations if v["kind"] == "cropwise")
     cropwise_crop_count = sum(1 for v in violations if v["kind"] == "cropwise_crop")
     cross_count = sum(1 for v in violations if v["kind"] == "cross_check")
     cross_crop_count = sum(1 for v in violations if v["kind"] == "cross_check_crop")
+    sheet_consistency_count = sum(1 for v in violations if v["kind"] == "sheet_consistency")
     cropwise_diff_count = sum(
         1 for r in summary_rows
         if str(r.get("status") or "") == "DIFF" and not r.get("is_crop_row")
@@ -313,6 +342,7 @@ def compute_violations(
         "cropwise_crop_violation_count": cropwise_crop_count,
         "cross_check_violation_count": cross_count,
         "cross_check_crop_violation_count": cross_crop_count,
+        "sheet_consistency_violation_count": sheet_consistency_count,
         "violations": violations,
         "error_logs": error_logs,
     }
@@ -350,7 +380,38 @@ def _violation_detail_cropwise(row: dict[str, Any]) -> str:
     return status
 
 
+def _violation_detail_sheet(chk: dict[str, Any]) -> str:
+    name = chk.get("display_name") or chk.get("group_name")
+    bits = []
+    for i in chk.get("issues") or []:
+        bits.append(
+            f"{i.get('label', i.get('kind'))}: {i.get('expected')} ↔ {i.get('actual')} "
+            f"(Δ {i.get('diff_ha')} га)"
+        )
+    nums = []
+    if chk.get("total_ha") is not None:
+        nums.append(f"выработка {chk.get('total_ha')} га")
+    if chk.get("general_ha") is not None:
+        nums.append(f"«Общий намолот» {chk.get('general_ha')} га")
+    if chk.get("crops_ha") is not None:
+        nums.append(f"культуры {chk.get('crops_ha')} га")
+    head = f"Сводка {chk.get('report_id')}, «{name}»"
+    if nums:
+        head += f" ({'; '.join(nums)})"
+    return head + (": " + "; ".join(bits) if bits else "")
+
+
 def _violation_detail_cross(row: dict[str, Any]) -> str:
+    reasons = row.get("status_reason") or []
+    if "file_totals" in reasons:
+        ft = row.get("file_totals") or {}
+        parts = [f"{rid}: {ha} га" for rid, ha in sorted(ft.items())]
+        md = row.get("file_max_diff_ha")
+        name = row.get("display_name") or row.get("group_name")
+        return (
+            f"В готовых файлах сводок расходятся цифры по «{name}»: "
+            f"{'; '.join(parts)} (max Δ {md} га)"
+        )
     totals = row.get("totals") or {}
     parts = [f"{rid}: {ha} га" for rid, ha in sorted(totals.items())]
     md = row.get("max_diff_ha")

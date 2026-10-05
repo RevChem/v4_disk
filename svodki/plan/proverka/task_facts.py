@@ -516,7 +516,7 @@ def format_for_llm(
     """
     if max_rows is None:
         try:
-            max_rows = int(os.environ.get("PROVERKA_FACTS_MAX_ROWS", "120"))
+            max_rows = int(os.environ.get("PROVERKA_FACTS_MAX_ROWS", "360"))
         except ValueError:
             max_rows = 120
     max_rows = max(1, int(max_rows))

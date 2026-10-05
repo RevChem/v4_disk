@@ -12,6 +12,24 @@ from proverka.cropwise_ui import (
 from proverka.ha_thresholds import compare_ha_status
 
 
+def _body_is_corn_silage_mowing(body: dict | None, fact_hints: list[str]) -> bool:
+    """Колонка факта только из скашивания кукурузы (6.3 …) — культура = силос."""
+    if not isinstance(body, dict):
+        return False
+    from proverka.cropwise_ui import column_work_types, matching_fact_columns
+
+    cols = body.get("cropColumns") or body.get("regionColumns") or []
+    fact_cols = matching_fact_columns(cols, list(fact_hints))
+    text = " ".join(
+        name for col in fact_cols for name in column_work_types(col)
+    ).casefold()
+    if "скашив" in text and "кукуруз" in text:
+        return True
+    if "6.3" in text:
+        return True
+    return False
+
+
 def _crop_label(raw: str) -> str:
     try:
         from proverka.extractors import _crop_label as label_fn
@@ -44,6 +62,14 @@ def cropwise_area_by_firm_crop(
         if not parts:
             continue
         crop = _crop_label(parts[0])
+        if _body_is_corn_silage_mowing(body, list(fact_hints)):
+            if "кукуруз" in crop.casefold() and "зерно" in crop.casefold():
+                try:
+                    from utils.shared.task_area_shared import CORN_SILAGE_CROP
+
+                    crop = CORN_SILAGE_CROP
+                except ImportError:
+                    crop = "Кукуруза на силос"
         firm = str(d.get("firm") or "").strip()
         if not firm and len(parts) > 1:
             firm = parts[1].strip()

@@ -50,19 +50,34 @@ CROPWISE_SESSION_COOKIE = ""
 # =============================================================================
 
 
+def _strip_env_value(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1].strip()
+    return text
+
+
 def load_env() -> None:
     env_path = PLAN_DIR.parents[1] / ".env"
+    if not env_path.exists():
+        env_path = Path("/app/.env")
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip())
+            key = k.strip()
+            value = _strip_env_value(v)
+            if key == "CROPWISE_SESSION_COOKIE":
+                if value:
+                    os.environ[key] = value
+                continue
+            os.environ.setdefault(key, value)
 
 
 def session_cookie() -> str:
-    return (
+    return _strip_env_value(
         os.environ.get("CROPWISE_SESSION_COOKIE", "").strip()
         or CROPWISE_SESSION_COOKIE.strip()
     )
@@ -193,11 +208,8 @@ def _cropwise_retry_warranted(
 def _annotate_quality(cmp_: dict[str, Any], parsed: dict[str, Any], work: dict[str, Any]) -> None:
     """Явные предупреждения вместо молчаливых допущений парсера."""
     warns: list[str] = []
-    if parsed.get("fact_column_confidence") == "guess":
-        warns.append(
-            f"колонка факта выбрана по догадке ({parsed.get('fact_column')!r}) — "
-            "проверьте fact_column_hints сводки"
-        )
+    if parsed.get("fact_column_error"):
+        warns.append(str(parsed["fact_column_error"]))
     balance = cmp_.get("cropwise_ui_balance") or {}
     if balance and not balance.get("balanced"):
         warns.append(

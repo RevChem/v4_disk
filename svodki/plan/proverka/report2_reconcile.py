@@ -124,9 +124,9 @@ async def _load_canonical_svodka_ops(
 
 
 def _fact_hints_for_group(group_name: str) -> tuple[str, ...]:
-    if group_name.startswith("5."):
-        return ("Убор", "Кормозаготов", "Скашиван", "Обработ")
-    return ("Обработ",)
+    from proverka.task_names import tasks_for_group
+
+    return tasks_for_group(group_name)
 
 
 def _cropwise_spec_for_group(group_name: str) -> ReportSpec:
@@ -214,7 +214,7 @@ def fetch_work_for_operation(
     wt_ids = work_type_ids_for_group(group_name) or [
         int(x) for x in (_WORK_GROUP_WT.get(group_name) or [])
     ]
-    hints = list(cw_spec.fact_column_hints)
+    hints = list(_fact_hints_for_group(group_name)) or list(cw_spec.fact_column_hints)
     pref = None
     if cw_spec.season_rule in ("both_years", "year_plus_one", "plow_year_plus_one"):
         group_cfg = resolve_group_season_policy(group_name, report_date, run_override)
@@ -320,7 +320,7 @@ def _reconcile_one_operation(
     canon_spec, season_cfg, task_years, season_rule = _canonical_season_for_operation(
         group_name, report_date, run_override,
     )
-    hints = list(canon_spec.fact_column_hints)
+    hints = list(_fact_hints_for_group(group_name)) or list(canon_spec.fact_column_hints)
     wt_ids = _wt_ids_for_operation(group_name, op)
     if not wt_ids:
         return {
@@ -605,19 +605,35 @@ def _reconcile_one_operation(
 
         cw_crop = work.get("editor_crop_areas")
         if cw_crop is None:
-            from proverka.cropwise_crops import cropwise_crops_all_seasons
+            from proverka.cropwise_crops import (
+                cropwise_crops_all_seasons,
+                cropwise_crops_api_by_operation,
+            )
             from proverka.season_cropwise import _parse_dt
 
-            cw_crop = cropwise_crops_all_seasons(
-                work.get("body"),
-                firm_names,
-                hints,
-                shift_cache=shift_cache,
-                task_years=list(task_years),
-                ui_session=ui_session if isinstance(ui_session, int) else None,
-                wt_ids=wt_ids,
-                cutoff=_parse_dt(t1),
-            )
+            cutoff_dt = _parse_dt(t1)
+            if group_name in ("2.4 Вспашка", "2.8 Глубокорыхление") and shift_cache is not None:
+                cw_crop = cropwise_crops_api_by_operation(
+                    wt_ids,
+                    shift_cache,
+                    cutoff_dt,
+                    list(task_years or []),
+                    plow_season_only=(
+                        group_name == "2.4 Вспашка"
+                        and bool(season_cfg.get("task_season_plow_only"))
+                    ),
+                )
+            else:
+                cw_crop = cropwise_crops_all_seasons(
+                    work.get("body"),
+                    firm_names,
+                    hints,
+                    shift_cache=shift_cache,
+                    task_years=list(task_years),
+                    ui_session=ui_session if isinstance(ui_session, int) else None,
+                    wt_ids=wt_ids,
+                    cutoff=cutoff_dt,
+                )
         crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
         if crop_cmp:
             out["crop_comparisons"] = crop_cmp
