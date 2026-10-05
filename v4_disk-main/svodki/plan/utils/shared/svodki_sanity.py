@@ -275,9 +275,11 @@ def _file_checks_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", "нет"}
 
 
-def _log_immediate(severity: str, code: str, message: str) -> None:
+def _log_immediate(severity: str, code: str, message: str) -> str:
     label = (os.environ.get("SVODKI_REPORT_ID") or "").strip() or "?"
-    print(f"{MARK} [{severity}] сводка={label} {code}: {message}", flush=True)
+    line = f"{MARK} [{severity}] сводка={label} {code}: {message}"
+    print(line, flush=True)
+    return line
 
 
 def _check_task_season(task: dict) -> None:
@@ -404,33 +406,34 @@ def publish_cross_op_snapshot(operations: dict[str, float]) -> None:
         pass
 
 
-def finalize_cross_op_checks(report_date: date | None = None) -> None:
+def finalize_cross_op_checks(report_date: date | None = None) -> list[str]:
     """Сверка факта за смену между сводками по JSON-снимкам (без proverka batch)."""
     if not ENABLED:
-        return
+        return []
     rd = report_date or _report_date()
     if rd is None:
-        return
+        return []
+    lines: list[str] = []
     folder = _cross_op_dir(rd)
     by_report: dict[str, dict[str, float]] = {}
     for path in folder.glob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            _log_immediate("WARN", "CROSS_OP", f"не прочитан снимок {path.name}")
+            lines.append(_log_immediate("WARN", "CROSS_OP", f"не прочитан снимок {path.name}"))
             continue
         rid = str(data.get("report_id") or path.stem)
         ops = data.get("operations") or {}
         if isinstance(ops, dict):
             by_report[rid] = {str(k): float(v or 0) for k, v in ops.items()}
     if len(by_report) < 2:
-        return
+        return lines
     try:
         from proverka.ha_thresholds import diff_is_significant
         from proverka.operation_registry import OPERATION_PEERS, peer_reports_for_group
     except Exception as exc:
-        _log_immediate("WARN", "CROSS_OP", f"модуль сверки недоступен: {exc!r}")
-        return
+        lines.append(_log_immediate("WARN", "CROSS_OP", f"модуль сверки недоступен: {exc!r}"))
+        return lines
     present = set(by_report)
     for group_name in OPERATION_PEERS:
         peers = [p for p in peer_reports_for_group(group_name) if p in present]
@@ -444,11 +447,14 @@ def finalize_cross_op_checks(report_date: date | None = None) -> None:
         if not diff_is_significant(max_diff):
             continue
         parts = ", ".join(f"{p}={totals[p]:.2f}" for p in peers if totals.get(p) is not None)
-        _log_immediate(
-            "CRIT",
-            "CROSS_OP",
-            f"операция={group_name} расхождение={max_diff:.2f} га ({parts})",
+        lines.append(
+            _log_immediate(
+                "CRIT",
+                "CROSS_OP",
+                f"операция={group_name} расхождение={max_diff:.2f} га ({parts})",
+            )
         )
+    return lines
 
 
 def log_cross_op_data_check(all_results: dict) -> None:
@@ -479,38 +485,36 @@ def check_file_total_after_save(
     xlsx_path: Path | str | None = None,
     report_date: date | None = None,
     report_id: str | None = None,
-) -> None:
+) -> str | None:
     """Сверка «Итого» в xlsx с расчётом модуля (SVODKI_SANITY_FILE=0 отключает)."""
     if not _file_checks_enabled():
-        return
+        return None
     rd = report_date or _report_date()
     rid = (report_id or os.environ.get("SVODKI_REPORT_ID") or "").strip() or "?"
     if rd is None:
-        return
+        return None
     try:
         from proverka.file_values import read_file_total_ha, read_file_total_ha_from_path
     except Exception as exc:
-        _log_immediate("WARN", "FILE_TOTAL", f"модуль чтения xlsx недоступен: {exc!r}")
-        return
+        return _log_immediate("WARN", "FILE_TOTAL", f"модуль чтения xlsx недоступен: {exc!r}")
     fv: dict
     if xlsx_path is not None:
         fv = read_file_total_ha_from_path(Path(xlsx_path))
     else:
         fv = read_file_total_ha(rd, rid)
     if fv.get("error"):
-        _log_immediate("WARN", "FILE_TOTAL", str(fv.get("error")))
-        return
+        return _log_immediate("WARN", "FILE_TOTAL", str(fv.get("error")))
     if not fv.get("found"):
-        return
+        return None
     file_ha = float(fv.get("file_ha") or 0)
     if calc_ha is None:
-        return
+        return None
     calc = round(float(calc_ha), 2)
     diff = abs(calc - file_ha)
     tol = max(_FILE_TOTAL_ABS, _FILE_TOTAL_REL * max(calc, file_ha, 0.01))
     if diff <= tol:
-        return
-    _log_immediate(
+        return None
+    return _log_immediate(
         "CRIT",
         "FILE_TOTAL",
         f"расчёт={calc:.2f} га файл={file_ha:.2f} га Δ={diff:.2f} га",

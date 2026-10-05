@@ -154,6 +154,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [checkedAt, setCheckedAt] = useState(null);
+  const [dataChecks, setDataChecks] = useState([]);
   const runningRef = useRef(false);
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
@@ -188,6 +189,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     try {
       const latest = await fetchLatestProverkaJob(summaryDate);
       if (runningRef.current) return; // уже идёт запуск из этого окна
+      setDataChecks(Array.isArray(latest?.data_checks) ? latest.data_checks : []);
       if (!latest?.job_id) {
         setJobId(null);
         setJob(null);
@@ -544,6 +546,28 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
           <Typography variant="body2" color="text.secondary">
             Дата отчёта: <strong>{summaryDate}</strong> · Сводки ↔ Cropwise UI (Отчёт об агро работах машин)
           </Typography>
+
+          {dataChecks.length > 0 && (
+            <Alert severity="warning">
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                Замечания при создании сводок
+              </Typography>
+              {dataChecks.slice(0, 40).map((line, idx) => (
+                <Typography
+                  key={`${idx}-${line.slice(0, 24)}`}
+                  variant="body2"
+                  sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
+                >
+                  {line}
+                </Typography>
+              ))}
+              {dataChecks.length > 40 && (
+                <Typography variant="caption" color="text.secondary">
+                  Ещё {dataChecks.length - 40} строк в логе генерации.
+                </Typography>
+              )}
+            </Alert>
+          )}
 
           <TextField
             label="Cookie Cropwise"

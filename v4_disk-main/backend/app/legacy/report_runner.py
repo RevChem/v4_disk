@@ -43,7 +43,8 @@ from app.legacy.report_generation import (
     _reorder_report1_workbook_file,
     _run_api_data_prefetch,
     _run_report_script,
-    _season_mismatch_log_lines,
+    _append_script_stdout_logs,
+    save_generation_data_checks,
     _split_report_execution_lanes,
     _uses_unified_prefetch_data,
     USE_API_CACHE_ENV_VAR,
@@ -346,12 +347,11 @@ def _execute_single_report_to_disk(
             except Exception as exc:
                 local_logs.append(f"[{cfg.title}] Не удалось сохранить XLSX: {exc}")
 
-        if stdout.strip():
-            local_logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-            local_logs.extend(
-                f"[{cfg.title}] {line}" for line in stdout.splitlines()[-5:]
-                if line.strip() and "SEASON_MISMATCH" not in line
-            )
+        save_generation_data_checks(
+            summary_date,
+            cfg_id,
+            _append_script_stdout_logs(local_logs, stdout, cfg.title, tail=5),
+        )
 
         duration_seconds = round(time.monotonic() - report_started, 1)
         record_report_duration(summary_date, cfg_id, duration_seconds)

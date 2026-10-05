@@ -397,12 +397,15 @@ def cancel_proverka_job(
     return st
 
 
-def _latest_job_payload(found: tuple[str, float] | None) -> dict:
+def _latest_job_payload(found: tuple[str, float] | None, report_date: date | None = None) -> dict:
+    from app.legacy.report_generation import load_generation_data_checks
+
+    data_checks = load_generation_data_checks(report_date) if report_date else []
     if not found:
-        return {"job_id": None, "checked_at": None}
+        return {"job_id": None, "checked_at": None, "data_checks": data_checks}
     job_id, mtime = found
     checked_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None
-    return {"job_id": job_id, "checked_at": checked_at}
+    return {"job_id": job_id, "checked_at": checked_at, "data_checks": data_checks}
 
 
 @router.get("/latest-job")
@@ -413,7 +416,7 @@ def get_latest_proverka_job(
     """Последний запуск «Проверки сводок» за дату — чтобы диалог показывал прошлые данные."""
     from app.adapters.outbound.proverka.service import latest_job_for_date_light
 
-    return _latest_job_payload(latest_job_for_date_light(report_date))
+    return _latest_job_payload(latest_job_for_date_light(report_date), report_date)
 
 
 @router.get("/machines/latest-job")
@@ -438,6 +441,14 @@ def get_proverka_job(job_id: str, _: User = Depends(require_developer_access)):
         st = enrich_job_file_column(st)
         if st.get("file_enriched"):
             write_job_status(job_id, st)
+    from app.legacy.report_generation import load_generation_data_checks
+
+    raw_date = st.get("report_date")
+    if raw_date:
+        try:
+            st["data_checks"] = load_generation_data_checks(date.fromisoformat(str(raw_date)))
+        except ValueError:
+            st["data_checks"] = []
     if st.get("status") == "completed" and "violation_count" not in st:
         from app.adapters.outbound.proverka.service import _attach_violations
 

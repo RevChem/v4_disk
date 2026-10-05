@@ -412,6 +412,71 @@ def _season_mismatch_log_lines(stdout: str, title: str) -> list[str]:
     return out
 
 
+def _data_check_log_lines(stdout: str, title: str) -> list[str]:
+    """Строки DATA_CHECK из всего stdout. Служебный маркер суммы в лог не кладём."""
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if "DATA_CHECK" not in text or text.startswith("DATA_CHECK_CALC_TOTAL="):
+            continue
+        out.append(f"[{title}] {text}")
+        if len(out) >= 80:
+            break
+    return out
+
+
+def _append_script_stdout_logs(logs: list[str], stdout: str, title: str, *, tail: int) -> list[str]:
+    """Сезоны и DATA_CHECK — целиком; остальной хвост скрипта — как раньше, без дублей."""
+    checks = _data_check_log_lines(stdout, title)
+    if not (stdout or "").strip():
+        return checks
+    logs.extend(_season_mismatch_log_lines(stdout, title))
+    logs.extend(checks)
+    logs.extend(
+        f"[{title}] {line}"
+        for line in stdout.splitlines()[-tail:]
+        if line.strip() and "SEASON_MISMATCH" not in line and "DATA_CHECK" not in line
+    )
+    return checks
+
+
+def _data_check_sanity_dir(report_date: date) -> Path:
+    return Path(settings.upload_dir) / report_date.isoformat() / ".data_check" / "sanity"
+
+
+def save_generation_data_checks(report_date: date, report_id: str, lines: list[str]) -> None:
+    """WARN/CRIT при создании сводки — файл, который читает «Проверка сводок»."""
+    folder = _data_check_sanity_dir(report_date)
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^0-9A-Za-z._-]+", "_", str(report_id)) or "report"
+    path = folder / f"{safe}.json"
+    alerts = [ln for ln in lines if "[CRIT]" in ln or "[WARN]" in ln]
+    if not alerts:
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(
+        json.dumps({"report_id": str(report_id), "lines": alerts}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def load_generation_data_checks(report_date: date) -> list[str]:
+    folder = _data_check_sanity_dir(report_date)
+    if not folder.is_dir():
+        return []
+    out: list[str] = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for line in data.get("lines") or []:
+            text = str(line).strip()
+            if text:
+                out.append(text)
+    return out
+
+
 def _subprocess_should_retry(rc: int, stdout: str, stderr: str, attempt: int, max_attempts: int) -> bool:
     if rc == 0 or attempt >= max_attempts:
         return False
@@ -1635,9 +1700,14 @@ def _generate_server_reports_locked(
                 )
             logs.append(f"Время этапа публикации: {_elapsed_seconds(publish_started)}")
             try:
-                _finalize_data_check_cross_op(summary_date)
+                cross_lines = _finalize_data_check_cross_op(summary_date)
             except Exception:
                 logger.debug("CROSS_OP DATA_CHECK skipped", exc_info=True)
+                cross_lines = []
+            if cross_lines:
+                tagged = [f"[сверка сводок] {line}" for line in cross_lines]
+                logs.extend(tagged)
+                save_generation_data_checks(summary_date, "cross", tagged)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
         try:
@@ -2067,13 +2137,11 @@ def _execute_resolved_report(
                     + hint
                 )
             if r23_auto_report2:
-                if stdout.strip():
-                    logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-                    logs.extend(
-                        f"[{cfg.title}] {line}"
-                        for line in stdout.splitlines()[-10:]
-                        if line.strip() and "SEASON_MISMATCH" not in line
-                    )
+                save_generation_data_checks(
+                    summary_date,
+                    cfg_id,
+                    _append_script_stdout_logs(logs, stdout, cfg.title, tail=10),
+                )
                 logs.append(
                     f"[{cfg.title}] Автозапуск для сводки 23: PDF сводки 2 не публикуем."
                 )
@@ -2088,13 +2156,11 @@ def _execute_resolved_report(
                 except OSError as exc:
                     logs.append(f"[{cfg.title}] не сохранён снимок текста для редактора: {exc}")
         logs.append(f"[{cfg.title}] XLSX: {xlsx_path.name}")
-        if stdout.strip():
-            logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-            logs.extend(
-                f"[{cfg.title}] {line}"
-                for line in stdout.splitlines()[-10:]
-                if line.strip() and "SEASON_MISMATCH" not in line
-            )
+        save_generation_data_checks(
+            summary_date,
+            cfg_id,
+            _append_script_stdout_logs(logs, stdout, cfg.title, tail=10),
+        )
 
         _normalize_excel_sheet_titles_file(xlsx_path, cfg_id, logs)
 
@@ -2660,12 +2726,11 @@ def _prefetch_reports_parallel(
                 generation_job_id=generation_job_id,
                 should_cancel=should_cancel,
             )
-            if stdout.strip():
-                p_logs.extend(
-                    f"[{cfg.title}] {line}"
-                    for line in stdout.splitlines()[-8:]
-                    if line.strip()
-                )
+            save_generation_data_checks(
+                request_report_date,
+                cfg.id,
+                _append_script_stdout_logs(p_logs, stdout, cfg.title, tail=8),
+            )
             p_logs.append(f"[{cfg.title}] Prefetch API: OK")
             return None, p_logs
         except ReportGenerationCancelled:
@@ -3261,9 +3326,12 @@ def _run_report_script(
 
     saved_path = _extract_saved_xlsx_path(last_out, output_dir, cfg.title, report_date)
     try:
-        _data_check_file_total_after_script(saved_path, last_out, report_date, cfg_id)
+        file_note = _data_check_file_total_after_script(saved_path, last_out, report_date, cfg_id)
     except Exception:
         logger.debug("FILE_TOTAL DATA_CHECK skipped for report %s", cfg_id, exc_info=True)
+        file_note = None
+    if file_note:
+        last_out = f"{last_out.rstrip()}\n{file_note}\n"
     return saved_path, last_out
 
 
@@ -3296,24 +3364,40 @@ def _data_check_file_total_after_script(
     stdout: str,
     report_date: date,
     report_id: str,
-) -> None:
+) -> str | None:
     _data_check_plan_sys_path()
     from svodki_sanity import check_file_total_after_save
 
-    calc = _parse_calc_total_ha_from_stdout(stdout)
-    check_file_total_after_save(
-        calc,
-        xlsx_path=saved_path,
-        report_date=report_date,
-        report_id=str(report_id),
-    )
+    prev = os.environ.get("SVODKI_REPORT_ID")
+    os.environ["SVODKI_REPORT_ID"] = str(report_id)
+    try:
+        calc = _parse_calc_total_ha_from_stdout(stdout)
+        return check_file_total_after_save(
+            calc,
+            xlsx_path=saved_path,
+            report_date=report_date,
+            report_id=str(report_id),
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("SVODKI_REPORT_ID", None)
+        else:
+            os.environ["SVODKI_REPORT_ID"] = prev
 
 
-def _finalize_data_check_cross_op(summary_date: date) -> None:
+def _finalize_data_check_cross_op(summary_date: date) -> list[str]:
     _data_check_plan_sys_path()
     from svodki_sanity import finalize_cross_op_checks
 
-    finalize_cross_op_checks(summary_date)
+    prev = os.environ.get("SVODKI_REPORT_ID")
+    os.environ["SVODKI_REPORT_ID"] = "сверка"
+    try:
+        return list(finalize_cross_op_checks(summary_date) or [])
+    finally:
+        if prev is None:
+            os.environ.pop("SVODKI_REPORT_ID", None)
+        else:
+            os.environ["SVODKI_REPORT_ID"] = prev
 
 
 def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_date: date) -> Path:
