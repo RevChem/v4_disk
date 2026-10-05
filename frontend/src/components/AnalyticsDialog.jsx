@@ -70,7 +70,9 @@ function useLoad(path, params, enabled) {
 function Loaded({ state, children }) {
   if (state.loading) return <Box sx={{ py: 4, textAlign: "center" }}><CircularProgress size={28} /></Box>;
   if (state.error) return <Alert severity="error">{state.error}</Alert>;
-  if (!state.data) return null;
+  if (!state.data || typeof state.data !== "object") {
+    return <Alert severity="error">Ответ сервера не JSON — проверьте, что API проксирует /analytics.</Alert>;
+  }
   return children(state.data);
 }
 
@@ -107,7 +109,8 @@ function PaceTab({ range, group }) {
   return (
     <Loaded state={st}>
       {(d) => {
-        const series = d.series.slice(0, 8);
+        const series = (Array.isArray(d.series) ? d.series : []).slice(0, 8);
+        const days = Array.isArray(d.days) ? d.days : [];
         if (!series.length) return <Alert severity="info">Нет данных за период.</Alert>;
         return (
           <Stack spacing={2}>
@@ -118,9 +121,12 @@ function PaceTab({ range, group }) {
             </Stack>
             <LineChart
               height={340}
-              xAxis={[{ scaleType: "point", data: d.days, tickLabelStyle: { fontSize: 10 } }]}
+              xAxis={[{ scaleType: "point", data: days, tickLabelStyle: { fontSize: 10 } }]}
               series={series.map((s, i) => ({
-                data: s[mode], label: s.group, showMark: false, color: PALETTE[i % PALETTE.length],
+                data: Array.isArray(s[mode]) ? s[mode] : [],
+                label: s.group,
+                showMark: false,
+                color: PALETTE[i % PALETTE.length],
                 valueFormatter: (v) => `${fmt(v)} га`,
               }))}
             />
@@ -424,8 +430,16 @@ export default function AnalyticsDialog({ open, onClose }) {
 
   const load = useCallback(() => {
     setErr("");
+    setOverview(null);
     fetchAnalytics("overview")
-      .then(setOverview)
+      .then((data) => {
+        if (!data || typeof data !== "object" || !Array.isArray(data.groups)) {
+          setErr("Ответ /analytics/overview не JSON — обновите nginx (прокси /analytics) и перезапустите API.");
+          setOverview(null);
+          return;
+        }
+        setOverview(data);
+      })
       .catch((e) => setErr(errText(e)));
   }, []);
   useEffect(() => {

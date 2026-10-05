@@ -1652,7 +1652,7 @@ def _build_report14_harvest_facts(report_date: date) -> dict[str, Any]:
         if t.get("work_type_id") is not None
     }
     fmi_list = m._normalize_fmi_for_shift(
-        fmi_list, report_date, task_to_wt=task_to_wt,
+        fmi_list, report_date, task_to_wt,
     )
     summary = m.build_summary_report(
         report_date,
