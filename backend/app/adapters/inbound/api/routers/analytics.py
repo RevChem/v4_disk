@@ -9,7 +9,8 @@ from app.adapters.inbound.api.deps import get_current_active_user
 from app.legacy.analytics import module
 from app.models import User
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+# Под /summaries/* — nginx уже проксирует (отдельный /analytics часто отдаёт index.html SPA).
+router = APIRouter(prefix="/summaries/analytics", tags=["analytics"])
 
 
 def _run(fn, *args, **kwargs):

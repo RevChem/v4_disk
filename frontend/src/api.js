@@ -1244,9 +1244,14 @@ export async function downloadReport1PageOrderPreview(
   return data;
 }
 
-// ---------- Аналитика по хранилищу заданий ----------
+// ---------- Аналитика по хранилищу заданий (через /summaries — тот же nginx location, что и комментарии PDF) ----------
 export async function fetchAnalytics(path, params = {}) {
   const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""));
-  const { data } = await api.get(`/analytics/${path}`, { params: clean });
+  const { data } = await api.get(`/summaries/analytics/${path}`, { params: clean });
+  if (typeof data === "string" && data.trimStart().startsWith("<")) {
+    throw new Error(
+      "Сервер вернул HTML вместо JSON. Пересоберите frontend (nginx) или задайте VITE_API_URL на порт API."
+    );
+  }
   return data;
 }

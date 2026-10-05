@@ -14,7 +14,6 @@ export default defineConfig({
       "/reports": apiTarget,
       "/proverka": apiTarget,
       "/activity": apiTarget,
-      "/analytics": apiTarget,
       "/convert": apiTarget,
       "/summaries": apiTarget,
       "/field-season": apiTarget,

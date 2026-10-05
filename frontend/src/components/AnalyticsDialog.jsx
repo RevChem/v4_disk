@@ -433,12 +433,20 @@ export default function AnalyticsDialog({ open, onClose }) {
     setOverview(null);
     fetchAnalytics("overview")
       .then((data) => {
-        if (!data || typeof data !== "object" || !Array.isArray(data.groups)) {
-          setErr("Ответ /analytics/overview не JSON — обновите nginx (прокси /analytics) и перезапустите API.");
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+          setErr("Ответ /summaries/analytics/overview не похож на JSON. Перезапустите API (docker compose restart api).");
           setOverview(null);
           return;
         }
-        setOverview(data);
+        if (typeof data.detail === "string") {
+          setErr(data.detail);
+          setOverview(null);
+          return;
+        }
+        setOverview({
+          ...data,
+          groups: Array.isArray(data.groups) ? data.groups : [],
+        });
       })
       .catch((e) => setErr(errText(e)));
   }, []);
