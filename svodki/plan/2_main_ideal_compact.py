@@ -1828,6 +1828,22 @@ async def _fetch_task_agro_ops_raw(
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     from mtaomi_batch_fetch import fetch_mtaomi_by_machine_task_ids, mass_request_async
 
+    # Связи «задание → агрооперация» лежат в sqlite-хранилище и обновляются только изменённым
+    # (svodki_task_store_links). Раньше они качались заново целиком на каждый запуск.
+    try:
+        from svodki_task_store import get_store
+        from svodki_task_store_links import links_enabled
+
+        _store = get_store(BASE_URL) if links_enabled() else None
+    except ImportError:
+        _store = None
+    if _store is not None and hasattr(_store, "get_task_agro_ops_raw"):
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+                return await _store.get_task_agro_ops_raw(client, semaphore, task_ids, log="[r2] ")
+        except Exception as exc:  # хранилище — оптимизация: при сбое качаем как раньше
+            print(f"  [r2] связи агроопераций из хранилища недоступны ({exc!r}) — выгрузка из API", flush=True)
+
     async with httpx.AsyncClient(headers=headers, timeout=120) as client:
         mtaomi_map = await fetch_mtaomi_by_machine_task_ids(
             client, BASE_URL, task_ids, semaphore, log_prefix="[r2] ",
@@ -2132,6 +2148,7 @@ def _prepare_group_selection(
     Карты полей/фирм здесь не нужны: в pending_groups хранятся только ИМЕНА
     карт, фаза B (collect_work_data) подставляет сами карты.
     """
+    _season_cache_snapshot()
     if refresh:
         refresh_season_config()
     data: dict[str, dict] = {}
@@ -2472,6 +2489,143 @@ _CROP_VIA_OP_EXCLUDED_GROUPS = frozenset({
 })
 
 
+# =============================================================================
+# КЭШ ВКЛАДОВ ЗАДАНИЙ В СЕЗОННЫЕ СУММЫ (utils/shared/season_contrib_cache.py)
+# =============================================================================
+# SVODKI_SEASON_CACHE=off|shadow|on. Вклад задания хранится в sqlite-хранилище и пересчитывается только если
+# изменилась версия задания (оно само, строки площади, связи/привязка агроопераций) или то, на что оно смотрит.
+_SEASON_CACHE_CTX: dict = {}
+
+
+def _season_cache_snapshot() -> None:
+    """Версии заданий ДО чтения заданий и строк площади (см. svodki_calc_cache). Вызывается в начале фазы A."""
+    _SEASON_CACHE_CTX.clear()
+    try:
+        from season_contrib_cache import cache_mode
+
+        mode = cache_mode()
+        if mode == "off":
+            return
+        from svodki_task_store import get_store
+
+        store = get_store(BASE_URL)
+        if store is None or not hasattr(store, "calc_snapshot"):
+            print("  [season-cache] нет sqlite-хранилища (SVODKI_TASK_STORE_DIR) — полный пересчёт", flush=True)
+            return
+        _SEASON_CACHE_CTX.update(mode=mode, store=store, snap=store.calc_snapshot())
+    except Exception as exc:  # кэш — оптимизация
+        print(f"  [season-cache] отключён: {exc!r}", flush=True)
+        _SEASON_CACHE_CTX.clear()
+
+
+def _make_stamp_parts(
+    *, group_name, task_machine, task_shift, mtfmi_map, task_crop_via_operation, task_field_crop,
+    mtfmi_row_crop, machine_group, active_crop_map, active_firm_map, active_available_ids, field_to_firm_all,
+):
+    """Всё, на что вклад задания смотрит СНАРУЖИ самого задания (версию задания хранилище ведёт само):
+    смена, машина и её группа, культура строк/задания/агрооперации, карты полей (культура, фирма, доступность).
+    Берётся с запасом (лишнее приводит только к лишнему пересчёту, забытое — к неверной цифре),
+    поэтому в режиме shadow эти данные сверяются с полным пересчётом."""
+    from mtfmi_batch_fetch import crop_of_item
+
+    by_task_field: dict[int, list] = defaultdict(list)
+    for (tid_, fid_), crop_ in task_field_crop.items():
+        by_task_field[int(tid_)].append([int(fid_), crop_])
+    for v in by_task_field.values():
+        v.sort()
+    is_fert = group_name == FERT_GROUP_NAME
+    is_disk = group_name == DISK_GROUP_NAME
+
+    def parts(task: dict):
+        tid = task["id"]
+        mid = task_machine.get(tid)
+        rows = []
+        for item in mtfmi_map.get(tid, []):
+            rid = item.get("id")
+            fid = item.get("field_id")
+            try:
+                f = int(fid) if fid else None
+            except (TypeError, ValueError):
+                f = None
+            rows.append([
+                rid, f,
+                mtfmi_row_crop.get(int(rid), "") if rid is not None else "",
+                crop_of_item(item, "") if is_fert else None,
+                (f in active_available_ids) if f is not None else None,
+                active_crop_map.get(f) if f is not None else None,
+                active_firm_map.get(f) if f is not None else None,
+                field_to_firm_all.get(f) if f is not None else None,
+                _FIELD_CROP_BY_YEAR.get(f) if (is_disk and f is not None) else None,
+            ])
+        return [
+            mid, (machine_group.get(int(mid), 0) if mid is not None else None),
+            task_shift.get(tid), task_crop_via_operation.get(tid), by_task_field.get(int(tid), []), rows,
+        ]
+
+    return parts
+
+
+def _accumulate_group_with_cache(
+    *, group_name, all_tasks, no_shift_tasks, group_acc, acc_run, capture_on, ckey_parts, stamp_parts,
+) -> bool:
+    """Заполнить аккумуляторы группы: полным пересчётом (по умолчанию) или через кэш вкладов заданий."""
+    ctx = _SEASON_CACHE_CTX
+    mode = ctx.get("mode", "off")
+    if mode == "off" or CUSTOM_WINDOW_START is not None or not ctx.get("store"):
+        return acc_run(all_tasks, no_shift_tasks, group_acc)
+    import season_contrib_cache as sc
+    from svodki_calc_cache import calc_key
+
+    store, snap = ctx["store"], ctx["snap"]
+    plan_dir = Path(__file__).resolve().parent
+    ckey = calc_key(
+        "r2-contrib", 1,
+        sc.code_hash(Path(__file__).resolve(), plan_dir / "utils" / "shared" / "task_area_shared.py",
+                     plan_dir / "utils" / "shared" / "season_contrib_cache.py"),
+        FIRM_ORDER, ckey_parts,
+    )
+    hot_cut = datetime(TODAY.year, TODAY.month, TODAY.day, 6, 0, 0, tzinfo=TZ_MSK) - timedelta(days=1 + sc.hot_days())
+
+    def is_hot(task: dict) -> bool:
+        dt = parse_dt(task.get("end_time"))
+        return dt is None or dt >= hot_cut
+
+    kwargs = dict(
+        store=store, snapshot=snap, ckey=ckey, label=group_name, tasks=all_tasks, no_shift=no_shift_tasks,
+        new_acc_fn=lambda: sc.new_acc(FIRM_ORDER), accumulate=acc_run, stamp_parts=stamp_parts,
+        is_hot=is_hot, audit=sc.audit_fraction(mode), log="    ",
+    )
+    if mode == "shadow":
+        shadow_acc = sc.new_acc(FIRM_ORDER)
+        capture_on[0] = False  # контрольный проход не должен дублировать захват фактов для проверки
+        try:
+            sc.cached_pass(target=shadow_acc, **{**kwargs, "audit": 0.0})
+        except Exception as exc:
+            print(f"    [season-cache shadow] {group_name}: проход через кэш не удался ({exc!r})", flush=True)
+            shadow_acc = None
+        finally:
+            capture_on[0] = True
+        has = acc_run(all_tasks, no_shift_tasks, group_acc)  # результат — полный пересчёт, как раньше
+        if shadow_acc is not None:
+            n, bad = sc.diff_flat(sc.flatten(group_acc), sc.flatten(shadow_acc))
+            if n:
+                print(f"    [season-cache shadow] {group_name}: РАСХОЖДЕНИЙ {n}: {bad}", flush=True)
+            else:
+                print(f"    [season-cache shadow] {group_name}: кэш == полный пересчёт", flush=True)
+        return has
+    try:
+        has, _st = sc.cached_pass(target=group_acc, **kwargs)
+        return has
+    except Exception as exc:
+        print(f"    [season-cache] {group_name}: ошибка кэша ({exc!r}) — полный пересчёт", flush=True)
+        for key in group_acc:  # частично залитое обнуляем (в on-режиме заливка происходит в самом конце)
+            group_acc[key].clear()
+        fresh = sc.new_acc(FIRM_ORDER)
+        for key in group_acc:
+            group_acc[key].update(fresh[key])
+        return acc_run(all_tasks, no_shift_tasks, group_acc)
+
+
 def collect_work_data(
     field_to_crop: dict[int, str],
     field_to_crop_general: dict[int, str],
@@ -2714,6 +2868,7 @@ def collect_work_data(
         count_threshold = _group_count_threshold(group_name)
 
         group_has_data = False
+        _capture_on = [True]  # кэш вкладов на время контрольного прохода (shadow) отключает захват фактов
         _cap = None
         if group_name != HARVEST_GROUP_NAME:
             try:
@@ -2724,7 +2879,7 @@ def collect_work_data(
                 _cap = None
 
         def _note_shift(firm_s, mid_s, tid_s, fid_s, crop_s, ha_s, task_s, t_date_s) -> None:
-            if _cap is None or t_date_s != REPORT_SHIFT_DATE or ha_s <= 0:
+            if _cap is None or not _capture_on[0] or t_date_s != REPORT_SHIFT_DATE or ha_s <= 0:
                 return
             _cap[1](
                 (group_name, firm_s, mid_s),
@@ -2738,304 +2893,353 @@ def collect_work_data(
                 season=str(task_s.get("season") or ""),
             )
 
-        def _note_harvest_portion(
-            firm_s, mid_s, tid_s, fid_s, crop_s, crop_agg_s, ha_s, task_s, shift_date,
-        ) -> None:
-            """Площадь уборки — в смену часа работы, не в день закрытия задания."""
-            machine_day_area[firm_s][shift_date][mid_s] += float(ha_s)
-            _note_shift(firm_s, mid_s, tid_s, fid_s, crop_agg_s or crop_s, ha_s, task_s, shift_date)
-            if mid_s is not None:
-                machine_day_group[firm_s][shift_date][mid_s] = machine_group.get(mid_s, 0)
-            if crop_agg_s:
-                machine_day_items[firm_s][shift_date][mid_s].append(
-                    (fid_s, crop_agg_s, float(ha_s))
-                )
-            elif is_harvest_grain and crop_s in HARVEST_VEG_CROPS:
-                agg[firm_s][crop_s][shift_date] += float(ha_s)
-                firm_crop_fields[firm_s][crop_s].add(fid_s)
+        def _accumulate(
+            tasks_a, tasks_b, machine_day_area, machine_day_group, field_day_area,
+            machine_day_items, agg, firm_crop_fields,
+        ) -> bool:
+            """Исходные циклы сводки: вклады заданий tasks_a (со сменой) и tasks_b (без смены) в аккумуляторы.
 
-        for task in all_tasks:
-            tid  = task["id"]
-            mid  = task_machine.get(tid)
-            # Как 10_main_harvest: задания без machine_id не учитываем.
-            if group_name == HARVEST_GROUP_NAME and mid is None:
-                continue
-            if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
-                continue
-            # Вспашка: сезоны редактора. Посев: только year+1.
-            if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
-                continue
-            shift_info = task_shift.get(tid)
-            if not shift_info:
-                continue
-            t_date, day_start, cutoff = shift_info
-
-            if use_report6_spray_logic:
-                from task_area_shared import task_cov_by_firm, task_crop_cov_for_firm
-
-                items = mtfmi_map.get(tid, [])
-
-                def _spray_row_crop(item: dict) -> str:
-                    fid = item.get("field_id")
-                    try:
-                        fid_i = int(fid) if fid is not None else 0
-                    except (TypeError, ValueError):
-                        fid_i = 0
-                    return _crop_for_task_field(tid, fid_i, "Не определена", item)
-
-                def _spray_row_ok(item: dict) -> bool:
-                    crop_s = _spray_row_crop(item)
-                    if group_name == SPRAY_GROUP_NAME:
-                        return crop_s not in VEG_SPRAY_CROPS
-                    if group_name == VEG_SPRAY_GROUP_NAME:
-                        return crop_s in VEG_SPRAY_CROPS
-                    return True
-
-                def _spray_field_ok(fid_i: int) -> bool:
-                    return (
-                        fid_i in active_available_ids
-                        and fid_i in active_crop_map
+            Вынесено в функцию без изменения расчёта: полный пересчёт зовёт её для всех заданий группы, кэш вкладов
+            (season_contrib_cache) — для одного задания. Возвращает «в группе есть данные».
+            """
+            group_has_data = False
+            def _note_harvest_portion(
+                firm_s, mid_s, tid_s, fid_s, crop_s, crop_agg_s, ha_s, task_s, shift_date,
+            ) -> None:
+                """Площадь уборки — в смену часа работы, не в день закрытия задания."""
+                machine_day_area[firm_s][shift_date][mid_s] += float(ha_s)
+                _note_shift(firm_s, mid_s, tid_s, fid_s, crop_agg_s or crop_s, ha_s, task_s, shift_date)
+                if mid_s is not None:
+                    machine_day_group[firm_s][shift_date][mid_s] = machine_group.get(mid_s, 0)
+                if crop_agg_s:
+                    machine_day_items[firm_s][shift_date][mid_s].append(
+                        (fid_s, crop_agg_s, float(ha_s))
                     )
+                elif is_harvest_grain and crop_s in HARVEST_VEG_CROPS:
+                    agg[firm_s][crop_s][shift_date] += float(ha_s)
+                    firm_crop_fields[firm_s][crop_s].add(fid_s)
 
-                def _spray_firm_for_field(fid_i: int) -> str:
-                    return _resolve_firm_for_fact(
-                        fid_i, group_name, active_crop_map,
-                        active_firm_map, field_to_firm_all, active_available_ids,
-                    ) or ""
-
-                firm_cov = task_cov_by_firm(
-                    task,
-                    items,
-                    cutoff=cutoff,
-                    window_start=day_start,
-                    field_ok=_spray_field_ok,
-                    firm_for_field=_spray_firm_for_field,
-                    parse_dt=parse_dt,
-                    row_allowed=_spray_row_ok,
-                )
-                if not firm_cov:
+            for task in tasks_a:
+                tid  = task["id"]
+                mid  = task_machine.get(tid)
+                # Как 10_main_harvest: задания без machine_id не учитываем.
+                if group_name == HARVEST_GROUP_NAME and mid is None:
                     continue
-                group_has_data = True
-                for firm_s, cov_for_firm in firm_cov.items():
-                    crop_cov = task_crop_cov_for_firm(
+                if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
+                    continue
+                # Вспашка: сезоны редактора. Посев: только year+1.
+                if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
+                    continue
+                shift_info = task_shift.get(tid)
+                if not shift_info:
+                    continue
+                t_date, day_start, cutoff = shift_info
+
+                if use_report6_spray_logic:
+                    from task_area_shared import task_cov_by_firm, task_crop_cov_for_firm
+
+                    items = mtfmi_map.get(tid, [])
+
+                    def _spray_row_crop(item: dict) -> str:
+                        fid = item.get("field_id")
+                        try:
+                            fid_i = int(fid) if fid is not None else 0
+                        except (TypeError, ValueError):
+                            fid_i = 0
+                        return _crop_for_task_field(tid, fid_i, "Не определена", item)
+
+                    def _spray_row_ok(item: dict) -> bool:
+                        crop_s = _spray_row_crop(item)
+                        if group_name == SPRAY_GROUP_NAME:
+                            return crop_s not in VEG_SPRAY_CROPS
+                        if group_name == VEG_SPRAY_GROUP_NAME:
+                            return crop_s in VEG_SPRAY_CROPS
+                        return True
+
+                    def _spray_field_ok(fid_i: int) -> bool:
+                        return (
+                            fid_i in active_available_ids
+                            and fid_i in active_crop_map
+                        )
+
+                    def _spray_firm_for_field(fid_i: int) -> str:
+                        return _resolve_firm_for_fact(
+                            fid_i, group_name, active_crop_map,
+                            active_firm_map, field_to_firm_all, active_available_ids,
+                        ) or ""
+
+                    firm_cov = task_cov_by_firm(
                         task,
                         items,
-                        firm_s,
-                        cov_for_firm,
                         cutoff=cutoff,
                         window_start=day_start,
                         field_ok=_spray_field_ok,
                         firm_for_field=_spray_firm_for_field,
-                        crop_for_field=lambda fid: _crop_for_task_field(tid, fid, "Не определена"),
                         parse_dt=parse_dt,
                         row_allowed=_spray_row_ok,
-                        crop_for_item=_spray_row_crop,
                     )
-                    for crop_s, crop_area in crop_cov.items():
-                        if crop_area <= 0:
-                            continue
-                        rep_fid = 0
-                        for item in items:
-                            fid = item.get("field_id")
-                            if not fid:
-                                continue
-                            fid_i = int(fid)
-                            if (
-                                _spray_field_ok(fid_i)
-                                and _spray_row_ok(item)
-                                and _spray_firm_for_field(fid_i) == firm_s
-                                and _spray_row_crop(item) == crop_s
-                            ):
-                                rep_fid = fid_i
-                                break
-                        machine_day_items[firm_s][t_date][mid].append(
-                            (rep_fid, crop_s, float(crop_area))
-                        )
-                    machine_day_area[firm_s][t_date][mid] += cov_for_firm
-                    machine_day_group[firm_s][t_date][mid] = machine_group.get(mid, 0)
-                    if len(crop_cov) == 1:
-                        only_crop = next(iter(crop_cov))
-                        _note_shift(firm_s, mid, tid, 0, only_crop, cov_for_firm, task, t_date)
-                    else:
-                        noted = 0.0
-                        for crop_s, crop_area in crop_cov.items():
-                            _note_shift(firm_s, mid, tid, 0, crop_s, crop_area, task, t_date)
-                            noted += float(crop_area or 0)
-                        _note_shift(firm_s, mid, tid, 0, "", cov_for_firm - noted, task, t_date)
-                continue
-
-            if group_name == PLOW_GROUP_NAME:
-                if t_date == REPORT_SHIFT_DATE:
-                    if not _task_in_report_shift_window(
-                        task.get("end_time"), REPORT_DAY_START, REPORT_DAY_CUTOFF,
-                    ):
+                    if not firm_cov:
                         continue
-                    hourly_cutoff = REPORT_DAY_CUTOFF
+                    group_has_data = True
+                    for firm_s, cov_for_firm in firm_cov.items():
+                        crop_cov = task_crop_cov_for_firm(
+                            task,
+                            items,
+                            firm_s,
+                            cov_for_firm,
+                            cutoff=cutoff,
+                            window_start=day_start,
+                            field_ok=_spray_field_ok,
+                            firm_for_field=_spray_firm_for_field,
+                            crop_for_field=lambda fid: _crop_for_task_field(tid, fid, "Не определена"),
+                            parse_dt=parse_dt,
+                            row_allowed=_spray_row_ok,
+                            crop_for_item=_spray_row_crop,
+                        )
+                        for crop_s, crop_area in crop_cov.items():
+                            if crop_area <= 0:
+                                continue
+                            rep_fid = 0
+                            for item in items:
+                                fid = item.get("field_id")
+                                if not fid:
+                                    continue
+                                fid_i = int(fid)
+                                if (
+                                    _spray_field_ok(fid_i)
+                                    and _spray_row_ok(item)
+                                    and _spray_firm_for_field(fid_i) == firm_s
+                                    and _spray_row_crop(item) == crop_s
+                                ):
+                                    rep_fid = fid_i
+                                    break
+                            machine_day_items[firm_s][t_date][mid].append(
+                                (rep_fid, crop_s, float(crop_area))
+                            )
+                        machine_day_area[firm_s][t_date][mid] += cov_for_firm
+                        machine_day_group[firm_s][t_date][mid] = machine_group.get(mid, 0)
+                        if len(crop_cov) == 1:
+                            only_crop = next(iter(crop_cov))
+                            _note_shift(firm_s, mid, tid, 0, only_crop, cov_for_firm, task, t_date)
+                        else:
+                            noted = 0.0
+                            for crop_s, crop_area in crop_cov.items():
+                                _note_shift(firm_s, mid, tid, 0, crop_s, crop_area, task, t_date)
+                                noted += float(crop_area or 0)
+                            _note_shift(firm_s, mid, tid, 0, "", cov_for_firm - noted, task, t_date)
+                    continue
+
+                if group_name == PLOW_GROUP_NAME:
+                    if t_date == REPORT_SHIFT_DATE:
+                        if not _task_in_report_shift_window(
+                            task.get("end_time"), REPORT_DAY_START, REPORT_DAY_CUTOFF,
+                        ):
+                            continue
+                        hourly_cutoff = REPORT_DAY_CUTOFF
+                    else:
+                        hourly_cutoff = cutoff
                 else:
                     hourly_cutoff = cutoff
-            else:
-                hourly_cutoff = cutoff
 
-            for item in mtfmi_map.get(tid, []):
-                fid = item.get("field_id")
-                if not fid:
-                    continue
-
-                fid_i = int(fid)
-                firm = _resolve_firm_for_fact(
-                    fid_i, group_name, active_crop_map,
-                    active_firm_map, field_to_firm_all, active_available_ids,
-                    use_report3_field_filter=use_report3_coverage_logic,
-                )
-                if not firm:
-                    continue
-                crop_raw = _crop_for_task_field(tid, fid_i, item=item)
-                if is_harvest_veg:
-                    crop = crop_raw or None
-                    if not crop:
-                        continue
-                else:
-                    crop = crop_raw or "Не определена"
-                    if is_harvest_grain:
-                        crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
-                    if group_name == DISK_GROUP_NAME and not crop_raw:
-                        crop = ""
-                    if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
-                        continue
-                    if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
+                for item in mtfmi_map.get(tid, []):
+                    fid = item.get("field_id")
+                    if not fid:
                         continue
 
-                crop_for_agg = (
-                    crop if _harvest_grain_field_allowed(group_name, crop) else None
-                )
-
-                if is_harvest_grain or is_harvest_veg:
-                    from task_area_shared import area_ha_by_shift_date
-
-                    portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-                    if not portions:
-                        raw_cov = float(item.get("covered_area") or 0)
-                        portions = {t_date: raw_cov} if raw_cov > 0 else {}
-                    for shift_date, shift_cov in portions.items():
-                        if shift_date < harvest_period_start or shift_date >= TODAY:
+                    fid_i = int(fid)
+                    firm = _resolve_firm_for_fact(
+                        fid_i, group_name, active_crop_map,
+                        active_firm_map, field_to_firm_all, active_available_ids,
+                        use_report3_field_filter=use_report3_coverage_logic,
+                    )
+                    if not firm:
+                        continue
+                    crop_raw = _crop_for_task_field(tid, fid_i, item=item)
+                    if is_harvest_veg:
+                        crop = crop_raw or None
+                        if not crop:
                             continue
-                        if shift_cov <= 0:
+                    else:
+                        crop = crop_raw or "Не определена"
+                        if is_harvest_grain:
+                            crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
+                        if group_name == DISK_GROUP_NAME and not crop_raw:
+                            crop = ""
+                        if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
                             continue
-                        _note_harvest_portion(
-                            firm, mid, tid, fid_i, crop, crop_for_agg,
-                            float(shift_cov), task, shift_date,
+                        if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
+                            continue
+
+                    crop_for_agg = (
+                        crop if _harvest_grain_field_allowed(group_name, crop) else None
+                    )
+
+                    if is_harvest_grain or is_harvest_veg:
+                        from task_area_shared import area_ha_by_shift_date
+
+                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                        if not portions:
+                            raw_cov = float(item.get("covered_area") or 0)
+                            portions = {t_date: raw_cov} if raw_cov > 0 else {}
+                        for shift_date, shift_cov in portions.items():
+                            if shift_date < harvest_period_start or shift_date >= TODAY:
+                                continue
+                            if shift_cov <= 0:
+                                continue
+                            _note_harvest_portion(
+                                firm, mid, tid, fid_i, crop, crop_for_agg,
+                                float(shift_cov), task, shift_date,
+                            )
+                        continue
+
+                    if use_report4_boron_logic:
+                        # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
+                        cov = float(item.get("covered_area") or 0)
+                    elif CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None:
+                        cov = _cov_from_hourly(item, day_start, cutoff)
+                    else:
+                        hourly = item.get("covered_area_hourly") or []
+                        cov = 0.0
+                        for entry in hourly:
+                            h = parse_dt(entry[0])
+                            if h and h < hourly_cutoff:
+                                cov += entry[1] or 0
+                        if not hourly and not use_report3_coverage_logic:
+                            cov = item.get("covered_area") or 0
+
+                    if cov <= 0:
+                        continue
+
+                    if group_name == PLOW_GROUP_NAME:
+                        # «Выполнено» = все поля с season==year+1 (фирма из field_to_firm_all).
+                        field_day_area[firm][t_date][fid_i] += float(cov)
+                        _note_shift(firm, mid, tid, fid_i, crop, cov, task, t_date)
+                        agg[firm][crop][t_date] += float(cov)
+                        firm_crop_fields[firm][crop].add(fid_i)
+                        group_has_data = True
+                        if mid is not None:
+                            machine_day_area[firm][t_date][mid] += float(cov)
+                            machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
+                        continue
+
+                    machine_day_area[firm][t_date][mid] += float(cov)
+                    _note_shift(firm, mid, tid, fid_i, crop_for_agg or crop, cov, task, t_date)
+                    if mid is not None:
+                        machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
+                    if crop_for_agg:
+                        machine_day_items[firm][t_date][mid].append(
+                            (fid_i, crop_for_agg, float(cov))
                         )
-                    continue
+                    elif (
+                        is_harvest_grain
+                        and crop in HARVEST_VEG_CROPS
+                    ):
+                        # Cropwise UI: картофель в колонке 5.0, не только 5.4.
+                        agg[firm][crop][t_date] += float(cov)
+                        firm_crop_fields[firm][crop].add(fid_i)
+                    if use_report17_area_logic:
+                        field_day_area[firm][t_date][int(fid)] += float(cov)
 
-                if use_report4_boron_logic:
-                    # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
+            for task in tasks_b:
+                tid = task["id"]
+                if use_report3_coverage_logic or use_report6_spray_logic:
+                    continue  # для 1.1 без смены не считаем; опрыскивание — только по смене (как в сводке 6)
+                if group_name == HARVEST_GROUP_NAME and task.get("machine_id") is None:
+                    continue
+                if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
+                    continue
+                for item in mtfmi_map.get(tid, []):
+                    fid = item.get("field_id")
+                    if not fid:
+                        continue
+                    fid_i = int(fid)
+                    firm = _resolve_firm_for_fact(
+                        fid_i, group_name, active_crop_map,
+                        active_firm_map, field_to_firm_all, active_available_ids,
+                        use_report3_field_filter=use_report3_coverage_logic,
+                    )
+                    if not firm:
+                        continue
+                    crop_raw = _crop_for_task_field(tid, fid_i, item=item)
+                    if is_harvest_veg:
+                        crop = crop_raw or None
+                        if not crop:
+                            continue
+                    else:
+                        crop = crop_raw or "Не определена"
+                        if is_harvest_grain:
+                            crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
+                        if group_name == DISK_GROUP_NAME and not crop_raw:
+                            crop = ""
+                        if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
+                            continue
+                        if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
+                            continue
                     cov = float(item.get("covered_area") or 0)
-                elif CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None:
-                    cov = _cov_from_hourly(item, day_start, cutoff)
-                else:
-                    hourly = item.get("covered_area_hourly") or []
-                    cov = 0.0
-                    for entry in hourly:
-                        h = parse_dt(entry[0])
-                        if h and h < hourly_cutoff:
-                            cov += entry[1] or 0
-                    if not hourly and not use_report3_coverage_logic:
-                        cov = item.get("covered_area") or 0
-
-                if cov <= 0:
-                    continue
-
-                if group_name == PLOW_GROUP_NAME:
-                    # «Выполнено» = все поля с season==year+1 (фирма из field_to_firm_all).
-                    field_day_area[firm][t_date][fid_i] += float(cov)
-                    _note_shift(firm, mid, tid, fid_i, crop, cov, task, t_date)
-                    agg[firm][crop][t_date] += float(cov)
-                    firm_crop_fields[firm][crop].add(fid_i)
-                    group_has_data = True
-                    if mid is not None:
-                        machine_day_area[firm][t_date][mid] += float(cov)
-                        machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
-                    continue
-
-                machine_day_area[firm][t_date][mid] += float(cov)
-                _note_shift(firm, mid, tid, fid_i, crop_for_agg or crop, cov, task, t_date)
-                if mid is not None:
-                    machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
-                if crop_for_agg:
-                    machine_day_items[firm][t_date][mid].append(
-                        (fid_i, crop_for_agg, float(cov))
+                    mid = task_machine.get(tid)
+                    if cov <= 0:
+                        continue
+                    crop_for_agg = (
+                        crop if _harvest_grain_field_allowed(group_name, crop) else None
                     )
-                elif (
-                    is_harvest_grain
-                    and crop in HARVEST_VEG_CROPS
-                ):
-                    # Cropwise UI: картофель в колонке 5.0, не только 5.4.
-                    agg[firm][crop][t_date] += float(cov)
-                    firm_crop_fields[firm][crop].add(fid_i)
-                if use_report17_area_logic:
-                    field_day_area[firm][t_date][int(fid)] += float(cov)
-
-        for task in no_shift_tasks:
-            tid = task["id"]
-            if use_report3_coverage_logic or use_report6_spray_logic:
-                continue  # для 1.1 без смены не считаем; опрыскивание — только по смене (как в сводке 6)
-            if group_name == HARVEST_GROUP_NAME and task.get("machine_id") is None:
-                continue
-            if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
-                continue
-            for item in mtfmi_map.get(tid, []):
-                fid = item.get("field_id")
-                if not fid:
-                    continue
-                fid_i = int(fid)
-                firm = _resolve_firm_for_fact(
-                    fid_i, group_name, active_crop_map,
-                    active_firm_map, field_to_firm_all, active_available_ids,
-                    use_report3_field_filter=use_report3_coverage_logic,
-                )
-                if not firm:
-                    continue
-                crop_raw = _crop_for_task_field(tid, fid_i, item=item)
-                if is_harvest_veg:
-                    crop = crop_raw or None
-                    if not crop:
+                    t_date = TODAY
+                    if group_name == PLOW_GROUP_NAME:
+                        field_day_area[firm][t_date][fid_i] += float(cov)
+                        agg[firm][crop][t_date] += float(cov)
+                        firm_crop_fields[firm][crop].add(fid_i)
+                        group_has_data = True
+                        if mid is not None:
+                            machine_day_area[firm][t_date][mid] += float(cov)
+                            machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
                         continue
-                else:
-                    crop = crop_raw or "Не определена"
-                    if is_harvest_grain:
-                        crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
-                    if group_name == DISK_GROUP_NAME and not crop_raw:
-                        crop = ""
-                    if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
-                        continue
-                    if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
-                        continue
-                cov = float(item.get("covered_area") or 0)
-                mid = task_machine.get(tid)
-                if cov <= 0:
-                    continue
-                crop_for_agg = (
-                    crop if _harvest_grain_field_allowed(group_name, crop) else None
-                )
-                t_date = TODAY
-                if group_name == PLOW_GROUP_NAME:
-                    field_day_area[firm][t_date][fid_i] += float(cov)
-                    agg[firm][crop][t_date] += float(cov)
-                    firm_crop_fields[firm][crop].add(fid_i)
-                    group_has_data = True
+                    machine_day_area[firm][t_date][mid] += float(cov)
                     if mid is not None:
-                        machine_day_area[firm][t_date][mid] += float(cov)
                         machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
-                    continue
-                machine_day_area[firm][t_date][mid] += float(cov)
-                if mid is not None:
-                    machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
-                if crop_for_agg:
-                    machine_day_items[firm][t_date][mid].append(
-                        (fid_i, crop_for_agg, float(cov))
-                    )
-                if use_report17_area_logic:
-                    field_day_area[firm][t_date][int(fid)] += float(cov)
+                    if crop_for_agg:
+                        machine_day_items[firm][t_date][mid].append(
+                            (fid_i, crop_for_agg, float(cov))
+                        )
+                    if use_report17_area_logic:
+                        field_day_area[firm][t_date][int(fid)] += float(cov)
+            return group_has_data
+
+        _group_acc = {
+            "mda": machine_day_area, "mdg": machine_day_group, "fda": field_day_area,
+            "mdi": machine_day_items, "agg": agg, "fcf": firm_crop_fields,
+        }
+
+        def _acc_run(tasks_a, tasks_b, acc) -> bool:
+            return _accumulate(
+                tasks_a, tasks_b, acc["mda"], acc["mdg"], acc["fda"], acc["mdi"], acc["agg"], acc["fcf"],
+            )
+
+        group_has_data = _accumulate_group_with_cache(
+            group_name=group_name,
+            all_tasks=all_tasks,
+            no_shift_tasks=no_shift_tasks,
+            group_acc=_group_acc,
+            acc_run=_acc_run,
+            capture_on=_capture_on,
+            ckey_parts=[
+                group_name,
+                [use_report3_coverage_logic, use_report6_spray_logic, use_report17_area_logic,
+                 is_harvest_veg, is_harvest_grain, use_report4_boron_logic],
+                harvest_period_start.isoformat(),
+                sorted(_season_task_seasons or []),
+                sorted(_winter_keep),
+                sorted(_winter_season_only),
+                bool(use_crop_via_agro_op and history_item_to_crop
+                     and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
+            ],
+            stamp_parts=_make_stamp_parts(
+                group_name=group_name, task_machine=task_machine, task_shift=task_shift,
+                mtfmi_map=mtfmi_map, task_crop_via_operation=task_crop_via_operation,
+                task_field_crop=task_field_crop, mtfmi_row_crop=mtfmi_row_crop,
+                machine_group=machine_group, active_crop_map=active_crop_map,
+                active_firm_map=active_firm_map, active_available_ids=active_available_ids,
+                field_to_firm_all=field_to_firm_all,
+            ),
+        )
 
         if group_name != PLOW_GROUP_NAME:
             group_has_data = _flush_area_from_machines(

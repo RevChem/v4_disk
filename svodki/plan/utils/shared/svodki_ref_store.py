@@ -11,6 +11,11 @@ crops, field_groups, group_folders) рядом с хранилищем зада�
 список курсором, кладёт в кэш и отдаёт страницу. Любая ошибка кэша — запрос идёт в API как раньше.
 Синхронизация перед пачкой (tools/sync_task_store.py) обновляет типовые наборы принудительно.
 
+Инкрементальное обновление (синхронизация перед пачкой): вместо полной выгрузки (fields ~14 с) берётся
+дельта ``updated_at_gt_eq`` + журнал удалений ``/versions`` (event=destroy) и сливается с кэшем по id (~0,4 с).
+Полная выгрузка — раз в ``SVODKI_REF_FULL_REFRESH_SEC`` (86400), при отсутствии кэша, при недоступном /versions
+или при ``SVODKI_REF_INCREMENTAL=0``. Окно дельты — от последней синхронизации минус ``SVODKI_REF_DELTA_MARGIN_SEC`` (300).
+
 Выключить: ``SVODKI_REF_CACHE_DISABLE=1``; кэш работает только при заданном SVODKI_TASK_STORE_DIR.
 """
 from __future__ import annotations
@@ -119,6 +124,10 @@ def _db(d: Path) -> sqlite3.Connection:
     con.execute("PRAGMA synchronous=NORMAL")
     con.execute("CREATE TABLE IF NOT EXISTS ref (key TEXT PRIMARY KEY, endpoint TEXT, params TEXT, "
                 "fetched_at REAL, n INTEGER, rows BLOB)")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(ref)")}
+    if "full_at" not in cols:  # время последней ПОЛНОЙ выгрузки (для суточной полной перезагрузки)
+        with contextlib.suppress(sqlite3.OperationalError):
+            con.execute("ALTER TABLE ref ADD COLUMN full_at REAL")
     return con
 
 
@@ -144,19 +153,38 @@ def load(req: dict, max_age: float | None = None) -> tuple[list[int], list[dict]
     return ids, rows
 
 
-def store(req: dict, rows: list[dict]) -> None:
+def store(req: dict, rows: list[dict], *, full: bool = True, fetched_at: float | None = None) -> None:
+    """full=True — rows получены полной выгрузкой (обновляет и full_at); False — слияние дельты (full_at прежний)."""
     d = cache_dir()
     if d is None:
         return
     blob = zlib.compress(json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"), 3)
-    now = time.time()
+    now = time.time() if fetched_at is None else fetched_at
     con = _db(d)
     try:
-        con.execute("INSERT OR REPLACE INTO ref VALUES (?,?,?,?,?,?)",
-                    (req["key"], req["endpoint"], json.dumps(req["extra"], ensure_ascii=False), now, len(rows), blob))
+        prev = con.execute("SELECT full_at, fetched_at FROM ref WHERE key=?", (req["key"],)).fetchone()
+        prev_full = (prev[0] if prev and prev[0] else (prev[1] if prev else None))
+        full_at = now if (full or prev_full is None) else prev_full
+        con.execute("INSERT OR REPLACE INTO ref (key, endpoint, params, fetched_at, n, rows, full_at) VALUES (?,?,?,?,?,?,?)",
+                    (req["key"], req["endpoint"], json.dumps(req["extra"], ensure_ascii=False), now, len(rows), blob, full_at))
     finally:
         con.close()
     _MEMO.pop(req["key"], None)
+
+
+def load_any_age(req: dict) -> tuple[float, float, list[dict]] | None:
+    """(fetched_at, full_at, rows) без проверки TTL — основа для инкрементального обновления."""
+    d = cache_dir()
+    if d is None:
+        return None
+    con = _db(d)
+    try:
+        row = con.execute("SELECT fetched_at, full_at, rows FROM ref WHERE key=?", (req["key"],)).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return None
+    return float(row[0]), float(row[1] or row[0]), json.loads(zlib.decompress(row[2]).decode("utf-8"))
 
 
 @contextlib.contextmanager
@@ -204,31 +232,115 @@ def standard_sets(years: list[int]) -> list[tuple[str, dict]]:
     return sets
 
 
-async def refresh_standard(client, sem, base_url: str, years: list[int], log: str = "") -> int:
-    """Принудительно перезагрузить типовые справочники в кэш (вызывает синхронизация перед пачкой)."""
+# Тип записи в журнале /versions по справочнику. Недоступный/неверный item_type -> полная выгрузка
+# (исключение или None). Пустой ответ на неверный тип неотличим от «удалений не было», поэтому
+# полная выгрузка раз в сутки обязательна (SVODKI_REF_FULL_REFRESH_SEC), а новые типы сверять
+# через tools/test_ref_cache.py и tools/probe_changes_api.py.
+VERSION_ITEM_TYPES = {
+    "fields": "Field", "machines": "Machine", "crops": "Crop", "field_groups": "FieldGroup",
+    "group_folders": "GroupFolder", "history_items": "HistoryItem",
+    "inventory_history_items": "InventoryHistoryItem", "agro_operations": "AgroOperation",
+}
+
+
+def _env_f(name: str, default: float) -> float:
+    try:
+        return float((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _fmt_ts(ts: float) -> str:
+    try:
+        from svodki_task_store import fmt_ts  # та же зона/формат, что у синхронизации заданий
+
+        return fmt_ts(ts)
+    except Exception:
+        from datetime import datetime, timedelta, timezone
+
+        dt = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=3)))
+        return dt.strftime("%Y-%m-%dT%H:%M:%S") + "+03:00"
+
+
+def merge_delta(rows: list[dict], changed: list[dict], destroyed_ids: set[int]) -> list[dict]:
+    """Слить дельту: изменённые заменяют/добавляют по id, удалённые убираются; результат отсортирован по id."""
+    by_id = {int(r["id"]): r for r in rows if r.get("id") is not None}
+    for r in changed:
+        if r.get("id") is not None:
+            by_id[int(r["id"])] = r
+    for i in destroyed_ids:
+        by_id.pop(int(i), None)
+    return sorted(by_id.values(), key=lambda r: int(r["id"]))
+
+
+async def refresh_incremental(client, base_url: str, ep: str, params: dict, sem, req: dict) -> tuple[list[dict], int, int] | None:
+    """Обновить справочник дельтой. -> (rows, n_changed, n_destroyed) или None (нужна полная выгрузка)."""
     from async_http import fetch_pages
 
-    os.environ["SVODKI_REF_CACHE_BYPASS"] = "1"
-    n = 0
+    if (os.environ.get("SVODKI_REF_INCREMENTAL") or "1").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    item_type = VERSION_ITEM_TYPES.get(ep)
+    cached = load_any_age(req)
+    if item_type is None or cached is None:
+        return None
+    fetched_at, full_at, rows = cached
+    t_start = time.time()
+    if t_start - full_at > _env_f("SVODKI_REF_FULL_REFRESH_SEC", 86400):
+        return None
+    since = _fmt_ts(max(0.0, fetched_at - _env_f("SVODKI_REF_DELTA_MARGIN_SEC", 300)))
+    base = base_url.rstrip("/")
     try:
-        async def one(ep: str, params: dict) -> None:
+        import asyncio
+
+        changed, destroyed = await asyncio.gather(
+            fetch_pages(client, f"{base}/{ep}", {**params, "updated_at_gt_eq": since}, sem),
+            fetch_pages(client, f"{base}/versions",
+                        {"item_type": item_type, "event": "destroy", "created_at_gt_eq": since}, sem),
+        )
+    except Exception:
+        return None  # журнал/фильтр недоступны — безопаснее полная выгрузка
+    gone = {int(v["item_id"]) for v in destroyed if v.get("item_id") is not None}
+    merged = merge_delta(rows, changed, gone)
+    with key_lock(req):
+        store(req, merged, full=False, fetched_at=t_start)
+    return merged, len(changed), len(gone)
+
+
+async def refresh_standard(client, sem, base_url: str, years: list[int], log: str = "") -> int:
+    """Перезагрузить типовые справочники в кэш (вызывает синхронизация перед пачкой).
+
+    Сначала инкрементально (дельта + /versions), при невозможности — полной выгрузкой.
+    """
+    from async_http import fetch_pages
+
+    n = 0
+    # Ключи кэша считаем ДО включения BYPASS (parse_request при BYPASS возвращает None), а сами
+    # выгрузки идут с BYPASS — иначе перехватчик sitecustomize обслужит/запишет их как обычные запросы.
+    sets = [(ep, pr, parse_request("GET", f"{base_url.rstrip('/')}/{ep}", pr)) for ep, pr in standard_sets(years)]
+    os.environ["SVODKI_REF_CACHE_BYPASS"] = "1"
+    try:
+        async def one(ep: str, params: dict, req: dict | None) -> None:
             nonlocal n
             t0 = time.monotonic()
+            if req is not None:
+                inc = await refresh_incremental(client, base_url, ep, params, sem, req)
+                if inc is not None:
+                    rows, n_ch, n_del = inc
+                    n += 1
+                    print(f"  {log}[ref] {ep} {params or ''}: дельта +{n_ch}/-{n_del}, всего {len(rows)}, "
+                          f"{time.monotonic() - t0:.1f} с", flush=True)
+                    return
             rows = await fetch_pages(client, f"{base_url.rstrip('/')}/{ep}", params, sem)
-            os.environ.pop("SVODKI_REF_CACHE_BYPASS", None)
-            try:
-                req = parse_request("GET", f"{base_url.rstrip('/')}/{ep}", params)
-            finally:
-                os.environ["SVODKI_REF_CACHE_BYPASS"] = "1"
             if req is not None:
                 with key_lock(req):
-                    store(req, rows)
+                    store(req, rows, full=True)
                 n += 1
-                print(f"  {log}[ref] {ep} {params or ''}: {len(rows)} строк, {time.monotonic() - t0:.1f} с", flush=True)
+                print(f"  {log}[ref] {ep} {params or ''}: полная выгрузка, {len(rows)} строк, "
+                      f"{time.monotonic() - t0:.1f} с", flush=True)
 
         import asyncio
 
-        await asyncio.gather(*(one(ep, pr) for ep, pr in standard_sets(years)))
+        await asyncio.gather(*(one(ep, pr, rq) for ep, pr, rq in sets))
     finally:
         os.environ.pop("SVODKI_REF_CACHE_BYPASS", None)
     return n

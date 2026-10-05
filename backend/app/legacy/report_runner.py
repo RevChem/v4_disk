@@ -33,6 +33,7 @@ from app.legacy.report_generation import (
     _prepare_ordered_report_ids,
     _presync_task_store,
     _report1_required_donor_ids,
+    _report1_run_first_enabled,
     _report_execution_waves,
     _resolve_report_config,
     _resolve_scripts_dirs,
@@ -664,8 +665,6 @@ def _execute_disk_reports_parallel(
         if r2_lane_cfgs:
             lane_jobs.append(("сводка 2", r2_lane_cfgs, 1, False))
 
-        lane_pool = ThreadPoolExecutor(max_workers=len(lane_jobs))
-
         def _lane_job(
             label: str,
             lane_cfgs: list,
@@ -686,18 +685,30 @@ def _execute_disk_reports_parallel(
             )
             return lc, lf, ll
 
-        try:
-            futures = {
-                lane_pool.submit(_lane_job, label, lane_cfgs, workers, donor_retry): label
-                for label, lane_cfgs, workers, donor_retry in lane_jobs
-            }
-            for future in as_completed(futures):
-                lc, lf, ll = future.result()
-                logs.extend(ll)
-                created.extend(lc)
-                failed.extend(lf)
-        finally:
-            lane_pool.shutdown(wait=False, cancel_futures=True)
+        if r1_lane_cfgs and _report1_run_first_enabled() and r1_isolated:
+            logs.append(
+                "Сводка 1: старт до остальных дорожек (SVODKI_REPORT1_RUN_FIRST)."
+            )
+            lc, lf, ll = _lane_job("сводка 1", r1_lane_cfgs, 1, True)
+            logs.extend(ll)
+            created.extend(lc)
+            failed.extend(lf)
+            lane_jobs = [j for j in lane_jobs if j[0] != "сводка 1"]
+
+        if lane_jobs:
+            lane_pool = ThreadPoolExecutor(max_workers=len(lane_jobs))
+            try:
+                futures = {
+                    lane_pool.submit(_lane_job, label, lane_cfgs, workers, donor_retry): label
+                    for label, lane_cfgs, workers, donor_retry in lane_jobs
+                }
+                for future in as_completed(futures):
+                    lc, lf, ll = future.result()
+                    logs.extend(ll)
+                    created.extend(lc)
+                    failed.extend(lf)
+            finally:
+                lane_pool.shutdown(wait=False, cancel_futures=True)
     else:
         _run_parallel_waves(
             cfgs,

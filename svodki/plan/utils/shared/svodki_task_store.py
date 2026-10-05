@@ -59,7 +59,10 @@ try:  # Linux-сервер; на Windows хранилище работает б�
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-STORE_VERSION = 4  # 4 = + суточные факты (mtfmi_fact/mtfmi_daily); 3 = SQLite + raw; 1 = pickle
+from svodki_task_store_links import LinksMixin  # noqa: E402
+from svodki_calc_cache import CalcCacheMixin  # noqa: E402
+
+STORE_VERSION = 5  # 5 = + версии заданий, связи агроопераций, кэш вкладов; 4 = + суточные факты (mtfmi_fact/mtfmi_daily); 3 = SQLite + raw; 1 = pickle
 SHIFT_START_HOUR = 6  # сменный день [D 06:00, D+1 06:00) — как task_area_shared._shift_date_from_dt
 _ISO = "%Y-%m-%dT%H:%M:%S"
 ELIGIBLE_KEYS = {"end_time_gt_eq", "end_time_lt", "season"}
@@ -186,6 +189,24 @@ CREATE TABLE IF NOT EXISTS mtfmi_daily (
     rid INTEGER NOT NULL, shift_date TEXT NOT NULL, ha REAL NOT NULL,
     PRIMARY KEY (rid, shift_date)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS mtfmi_daily_date ON mtfmi_daily (shift_date);
+-- v5. Версия задания: растёт при ЛЮБОМ изменении самого задания, его строк площади (mtfmi), связей с
+-- агрооперациями (mtaomi) или привязанной агрооперации. По ней кэш вкладов понимает, что пересчитать.
+CREATE TABLE IF NOT EXISTS task_rev (task_id INTEGER PRIMARY KEY, rev INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS task_rev_rev ON task_rev (rev);
+-- Связи «задание → агрооперация» (раньше качались целиком на каждый запуск сводки 2).
+CREATE TABLE IF NOT EXISTS mtaomi_tasks (task_id INTEGER PRIMARY KEY, synced REAL);
+CREATE TABLE IF NOT EXISTS mtaomi (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, agro_operation_id INTEGER);
+CREATE INDEX IF NOT EXISTS mtaomi_task ON mtaomi (task_id);
+CREATE INDEX IF NOT EXISTS mtaomi_op ON mtaomi (agro_operation_id);
+CREATE TABLE IF NOT EXISTS agro_ops (id INTEGER PRIMARY KEY, history_item_id INTEGER, field_id INTEGER);
+-- Задания, чьи связи надо перечитать при ближайшей синхронизации связей (их изменила дельта заданий).
+CREATE TABLE IF NOT EXISTS links_dirty (task_id INTEGER PRIMARY KEY);
+-- Кэш вклада задания в сводку: (ключ расчёта, задание) → payload; верен, пока rev задания не изменился.
+CREATE TABLE IF NOT EXISTS calc_cache (
+    ckey TEXT NOT NULL, task_id INTEGER NOT NULL, rev INTEGER NOT NULL, stamp TEXT NOT NULL,
+    payload BLOB NOT NULL, PRIMARY KEY (ckey, task_id)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS calc_cache_task ON calc_cache (task_id);
+CREATE TABLE IF NOT EXISTS calc_keys (ckey TEXT PRIMARY KEY, label TEXT, used REAL NOT NULL);
 """
 def _hour_dt(raw: Any) -> datetime | None:
     """Метка hourly → datetime в поясе аккаунта (как parse_dt сводок: без пояса = МСК, число = epoch)."""
@@ -233,7 +254,7 @@ def _chunks(items: list, n: int = _CHUNK):
         yield items[i : i + n]
 
 
-class TaskStore:
+class TaskStore(LinksMixin, CalcCacheMixin):
     def __init__(self, directory: Path, base_url: str) -> None:
         self.dir = directory
         self.base_url = base_url.rstrip("/")
@@ -250,6 +271,9 @@ class TaskStore:
         self._locks: dict[int, asyncio.Lock] = {}
         self.versions_ok = True
         self.stats = {"live_tasks": 0, "delta_tasks": 0, "delta_mtfmi_tasks": 0}
+        self.changes_caps: dict = {}  # какие ресурсы умеют /changes (см. changes_feed), хранится в meta
+        self._rev_counter: int | None = None  # последняя выданная версия (растёт при каждой правке задания)
+        self._in_x = False  # внутри _xlock: счётчик версий сохраняется в _save_state, а не при каждой правке
 
     # ------------------------------------------------------------------ диск
     def _db(self) -> sqlite3.Connection:
@@ -268,15 +292,28 @@ class TaskStore:
         if row is not None and int(row[0]) == 3 and not (base and base[0] != self.base_url):
             self._migrate_3_to_4(con)
             row = (str(STORE_VERSION),)
+        if row is not None and int(row[0]) == 4 and not (base and base[0] != self.base_url):
+            # v4 → v5: новые таблицы уже созданы _SCHEMA, данные не меняются (версии заданий заполняются по мере правок)
+            con.execute("UPDATE meta SET v=? WHERE k='version'", (str(STORE_VERSION),))
+            self._init_revs(con)
+            row = (str(STORE_VERSION),)
         if row is None or int(row[0]) != STORE_VERSION or (self.base_url and base and base[0] != self.base_url):
             con.execute("BEGIN IMMEDIATE")
-            for tbl in ("meta", "cov", "tasks", "mtfmi_tasks", "mtfmi", "history_crop", "mtfmi_fact", "mtfmi_daily"):
+            for tbl in ("meta", "cov", "tasks", "mtfmi_tasks", "mtfmi", "history_crop", "mtfmi_fact", "mtfmi_daily",
+                        "task_rev", "mtaomi_tasks", "mtaomi", "agro_ops", "links_dirty", "calc_cache", "calc_keys"):
                 con.execute(f"DELETE FROM {tbl}")
             con.execute("INSERT INTO meta VALUES ('version', ?)", (str(STORE_VERSION),))
             con.execute("INSERT INTO meta VALUES ('base_url', ?)", (self.base_url,))
             con.execute("COMMIT")
         self._tl.con = con
         return con
+
+    @staticmethod
+    def _init_revs(con: sqlite3.Connection) -> None:
+        """Миграция: уже лежащим в базе заданиям — версия 1 (кэш вкладов считает задание «известным»)."""
+        con.execute("INSERT OR IGNORE INTO task_rev SELECT id, 1 FROM tasks")
+        con.execute("INSERT INTO meta VALUES ('rev', '1') ON CONFLICT(k) DO UPDATE SET "
+                    "v=CASE WHEN CAST(v AS INTEGER) < 1 THEN '1' ELSE v END")
 
     def _migrate_3_to_4(self, con: sqlite3.Connection) -> None:
         """v3 → v4 без перекачки: колонка tasks.machine_id и суточные факты из raw/data."""
@@ -288,6 +325,7 @@ class TaskStore:
             self._tl.con = con
             self._rebuild_facts_tx(con)
             con.execute("UPDATE meta SET v=? WHERE k='version'", (str(STORE_VERSION),))
+            self._init_revs(con)
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
@@ -384,13 +422,45 @@ class TaskStore:
         self.synced_ts = float(m.get("synced_ts", 0) or 0)
         self.full_ts = float(m.get("full_ts", 0) or 0)
         self.hard_ts = float(m.get("hard_ts", 0) or self.full_ts)
+        self._rev_counter = self._load_rev(m)
+        try:
+            self.changes_caps = json.loads(m.get("changes_caps") or "{}")
+        except ValueError:
+            self.changes_caps = {}
+
+    def _load_rev(self, meta: dict | None = None) -> int:
+        """Последняя выданная версия: максимум из счётчика в meta и из таблицы task_rev."""
+        con = self._db()
+        if meta is None:
+            meta = dict(con.execute("SELECT k, v FROM meta WHERE k='rev'"))
+        top = con.execute("SELECT MAX(rev) FROM task_rev").fetchone()[0] or 0
+        return max(int(float(meta.get("rev", 0) or 0)), int(top))
+
+    def _next_rev(self) -> int:
+        if self._rev_counter is None:
+            self._rev_counter = self._load_rev()
+        self._rev_counter += 1
+        if not self._in_x:  # правка вне _xlock (тесты, ручные скрипты): сразу сохраняем счётчик
+            self._db().execute("INSERT INTO meta VALUES ('rev', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                               (str(self._rev_counter),))
+        return self._rev_counter
+
+    def _bump(self, tid: int) -> None:
+        """Отметить, что задание изменилось (само, строки площади, связи с агрооперациями)."""
+        self._db().execute(
+            "INSERT INTO task_rev VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET rev=excluded.rev",
+            (int(tid), self._next_rev()),
+        )
 
     def _save_state(self) -> None:
         con = self._db()
+        rows = [("synced_ts", repr(self.synced_ts)), ("full_ts", repr(self.full_ts)),
+                ("hard_ts", repr(self.hard_ts))]
+        if self._rev_counter is not None:
+            rows.append(("rev", str(self._rev_counter)))
+        rows.append(("changes_caps", _dumps(self.changes_caps)))
         con.executemany(
-            "INSERT INTO meta VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-            [("synced_ts", repr(self.synced_ts)), ("full_ts", repr(self.full_ts)),
-             ("hard_ts", repr(self.hard_ts))],
+            "INSERT INTO meta VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", rows,
         )
         con.execute("DELETE FROM cov")
         con.executemany("INSERT INTO cov VALUES (?, ?)", list(self.cov_lo.items()))
@@ -416,14 +486,17 @@ class TaskStore:
                 con.execute("BEGIN IMMEDIATE")
                 try:
                     self._load_state()
+                    self._in_x = True
                     yield
                     self._save_state()
                 except BaseException:
                     with contextlib.suppress(Exception):
                         con.execute("ROLLBACK")
+                    self._in_x = False
                     self._load_state_quiet()
                     raise
                 else:
+                    self._in_x = False
                     con.execute("COMMIT")
             finally:
                 if fcntl is not None:
@@ -439,26 +512,39 @@ class TaskStore:
 
     # ------------------------------------------------------------- мутации
     def _remove_task(self, tid: int) -> None:
-        self._db().execute("DELETE FROM tasks WHERE id=?", (tid,))
+        con = self._db()
+        con.execute("DELETE FROM tasks WHERE id=?", (tid,))
+        con.execute("DELETE FROM task_rev WHERE task_id=?", (tid,))
+        con.execute("DELETE FROM calc_cache WHERE task_id=?", (tid,))
 
     def _drop_mtfmi(self, tid: int) -> bool:
         con = self._db()
         had = con.execute("DELETE FROM mtfmi_tasks WHERE task_id=?", (tid,)).rowcount > 0
         self._drop_facts(tid)
-        con.execute("DELETE FROM mtfmi WHERE task_id=?", (tid,))
+        n = con.execute("DELETE FROM mtfmi WHERE task_id=?", (tid,)).rowcount
+        if had or n:
+            self._bump(tid)
         return had
 
     def _set_mtfmi(self, tid: int, rows: list[dict]) -> None:
+        """Заменить строки площади задания. Если по сохраняемым полям ничего не изменилось —
+        ничего не пишем и версию задания не поднимаем (кэш вкладов остаётся верным)."""
         con = self._db()
+        new = [_dumps(_trim(r)) for r in rows]
+        if con.execute("SELECT 1 FROM mtfmi_tasks WHERE task_id=?", (tid,)).fetchone() is not None:
+            old = [d for (d,) in con.execute("SELECT data FROM mtfmi WHERE task_id=? ORDER BY rid", (tid,))]
+            if old == new:
+                return
         self._drop_facts(tid)
         con.execute("DELETE FROM mtfmi WHERE task_id=?", (tid,))
-        for r in rows:
+        for r, data in zip(rows, new):
             cur = con.execute(
                 "INSERT INTO mtfmi (task_id, data, raw) VALUES (?, ?, ?)",
-                (tid, _dumps(_trim(r)), _raw(r)),
+                (tid, data, _raw(r)),
             )
             self._put_fact(int(cur.lastrowid), tid, r)
         con.execute("INSERT OR IGNORE INTO mtfmi_tasks VALUES (?)", (tid,))
+        self._bump(tid)
 
     def _put_fact(self, rid: int, tid: int, r: dict) -> None:
         con = self._db()
@@ -508,17 +594,25 @@ class TaskStore:
         if ets is None or lo is None or ets < lo:
             self._remove_task(tid)
             return False
-        raw = _raw(t)
-        self._db().execute(
+        data = _dumps(_trim(t))
+        season = str(t.get("season"))
+        con = self._db()
+        old = con.execute("SELECT data, wt, end_ts, season FROM tasks WHERE id=?", (tid,)).fetchone()
+        if old is not None and old[0] == data and old[1] == wt and old[2] == ets and old[3] == season:
+            return True  # без изменений: не пишем, версию не поднимаем
+        con.execute(
             "INSERT OR REPLACE INTO tasks (id, wt, end_ts, season, data, raw, machine_id) VALUES (?,?,?,?,?,?,?)",
-            (tid, wt, ets, str(t.get("season")), _dumps(_trim(t)), raw, _int_or_none(t.get("machine_id"))),
+            (tid, wt, ets, season, data, _raw(t), _int_or_none(t.get("machine_id"))),
         )
+        self._bump(tid)
         return True
 
     def _wipe_all(self) -> None:
         con = self._db()
-        for tbl in ("tasks", "mtfmi_tasks", "mtfmi", "cov", "mtfmi_fact", "mtfmi_daily"):
+        for tbl in ("tasks", "mtfmi_tasks", "mtfmi", "cov", "mtfmi_fact", "mtfmi_daily", "task_rev", "calc_cache"):
             con.execute(f"DELETE FROM {tbl}")
+        # Связи с агрооперациями (mtaomi) и их справочник — отдельный срез со своей полной сверкой
+        # (links_hard_refresh), полный пересбор заданий их не трогает.
         self.cov_lo = {}
         self.synced_ts = 0.0
         self.full_ts = 0.0
@@ -558,12 +652,35 @@ class TaskStore:
                 flush=True,
             )
 
+    async def _changed(self, client, sem, resource: str, since_ts: float, log: str,
+                       *, source: str | None = None) -> list[dict]:
+        """Изменённые объекты ресурса с момента since_ts.
+
+        Источник дельты заданий и строк площади — ``SVODKI_STORE_DELTA_SOURCE``: ``filter`` (по умолчанию,
+        прежний проверенный путь: список с updated_at_gt_eq) | ``auto`` | ``verify`` (оба пути, расхождение
+        в лог) | ``changes``. Остальные ресурсы (связи агроопераций) вызывают с source="auto".
+        """
+        src = (source or os.environ.get("SVODKI_STORE_DELTA_SOURCE") or "filter").strip().lower()
+        if src == "filter":
+            from async_http import fetch_pages
+
+            return await fetch_pages(client, f"{self.base_url}/{resource}",
+                                     {"updated_at_gt_eq": fmt_ts(since_ts)}, sem)
+        from changes_feed import fetch_changed
+
+        rows, _how = await fetch_changed(
+            client, self.base_url, resource, since_ts, sem, caps=self.changes_caps,
+            log=f"{log}[store] ", mode={"changes": "force"}.get(src, src),
+        )
+        return rows
+
     async def _delta(self, client, sem, log: str) -> None:
         from async_http import fetch_pages
 
         t_start = time.time()
         margin = _env_float("SVODKI_STORE_MARGIN_SEC", 3600)
-        since = fmt_ts(max(0.0, self.synced_ts - margin))
+        since_ts = max(0.0, self.synced_ts - margin)
+        since = fmt_ts(since_ts)
         t0 = time.monotonic()
         base = self.base_url
 
@@ -579,9 +696,8 @@ class TaskStore:
                 return None
 
         changed_tasks, changed_mtfmi, del_tasks, del_mtfmi = await asyncio.gather(
-            fetch_pages(client, f"{base}/machine_tasks", {"updated_at_gt_eq": since}, sem),
-            fetch_pages(client, f"{base}/machine_task_field_mapping_items",
-                        {"updated_at_gt_eq": since}, sem),
+            self._changed(client, sem, "machine_tasks", since_ts, log),
+            self._changed(client, sem, "machine_task_field_mapping_items", since_ts, log),
             _destroyed("MachineTask"),
             _destroyed("MachineTaskFieldMappingItem"),
         )
@@ -633,6 +749,7 @@ class TaskStore:
             n_recent = len(rows)
 
         mt_ids = {int(r["machine_task_id"]) for r in changed_mtfmi if r.get("machine_task_id") is not None}
+        self._mark_links_dirty(touched | mt_ids)
         refetch = sorted(self._has_mtfmi(touched | mt_ids))
         if refetch:
             from mtfmi_batch_fetch import fetch_mtfmi_map_live
@@ -840,6 +957,7 @@ class TaskStore:
         """Пересобрать колонку data из raw (после смены списка полей) — без обращения к API."""
         con = self._db()
         con.execute("BEGIN IMMEDIATE")
+        con.execute("DELETE FROM calc_cache")  # состав сохраняемых полей мог измениться — вклады пересчитать
         n = 0
         rows = con.execute("SELECT id, raw FROM tasks WHERE raw IS NOT NULL").fetchall()
         for tid, raw in rows:

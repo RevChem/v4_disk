@@ -176,6 +176,29 @@ def _report1_standalone_enabled() -> bool:
     return bool(override) and "standalone" in override.lower()
 
 
+def _report1_hybrid_own_lane() -> bool:
+    """
+    Вариант Б: в standalone-режиме сводка 1 всегда идёт в своей дорожке и сама считает
+    уборку (10/11 не подставляются из доноров) — гибрид отключён.
+    По умолчанию выкл.: вариант А — гибрид, но сводка 1 стартует первой в общей очереди.
+    """
+    return _report1_standalone_enabled() and _env_flag("SVODKI_REPORT1_HYBRID_OWN_LANE", False)
+
+
+def _report1_run_first_enabled() -> bool:
+    """Сводка 1 / 1.18 — отдельный ранний этап (не хвост после 3–8).
+
+    SVODKI_REPORT1_RUN_FIRST=0 — старое поведение (fast-path: 1 после доноров).
+    Не задано — включено при SVODKI_REPORT1_STANDALONE=1.
+    """
+    raw = (os.environ.get("SVODKI_REPORT1_RUN_FIRST") or "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _report1_standalone_enabled()
+
+
 def _report1_uses_prefetch_json(cfg: ReportConfig | ResolvedReportConfig) -> bool:
     """Сводка 1 v2 использует единый prefetch (legacy 1 — живой mtfmi для 1.1 МУ)."""
     if _report1_standalone_enabled():
@@ -1150,6 +1173,11 @@ def _generate_server_reports_locked(
             "Сводка 1 standalone: листы уборки (10/11) считаются внутри скрипта сводки 1, "
             "отдельные PDF 10/11 не добавляются автоматически."
         )
+    if _report1_run_first_enabled() and (set(ordered_ids) & {"1", "1.18"}):
+        logs.append(
+            "Сводка 1 RUN_FIRST: отдельный ранний этап генерации "
+            "(SVODKI_REPORT1_RUN_FIRST=0 — снова после доноров 3–8)."
+        )
     if r23_auto_report2:
         logs.append(
             "Сводка 23: файл снимка сводки 2 не найден на диске (PDF мог быть сформирован "
@@ -1688,19 +1716,24 @@ def _resolve_report_config(primary_dir: Path, fallback_dir: Path | None, cfg: Re
 
 
 def _reorder_generation_ids(ids: list[str]) -> list[str]:
-    """Порядок: (2, 23) → доноры / уборка → 1, 1.18 → остальные."""
+    """Порядок: (2, 23) → …; при RUN_FIRST сводка 1 сразу после 2/23."""
     s = set(ids)
     w1 = [x for x in ("2", "23") if x in s]
+    run_first = _report1_run_first_enabled() and bool(s & {"1", "1.18"})
     if _report1_standalone_enabled() and (s & {"1", "1.18"}):
         w_harvest = [x for x in ("10", "11") if x in s]
         w2 = [x for x in ("1", "1.18") if x in s]
         used = set(w1) | set(w_harvest) | set(w2)
         tail = [x for x in ids if x not in used]
+        if run_first:
+            return w1 + w2 + w_harvest + tail
         return w1 + w_harvest + w2 + tail
     w_slave = [x for x in ("3", "4", "5", "6", "7", "8") if x in s]
     w2 = [x for x in ("1", "1.18") if x in s]
     used = set(w1) | set(w_slave) | set(w2)
     tail = [x for x in ids if x not in used]
+    if run_first:
+        return w1 + w2 + w_slave + tail
     return w1 + w_slave + w2 + tail
 
 
@@ -1712,7 +1745,7 @@ def _dedicated_heavy_report_lanes_enabled() -> bool:
 
 
 def _cfgs_standalone_harvest_hybrid(cfgs: list[ResolvedReportConfig]) -> bool:
-    if not _report1_standalone_enabled():
+    if not _report1_standalone_enabled() or _report1_hybrid_own_lane():
         return False
     ids = {_cfg_id_norm(c) for c in cfgs}
     return bool({"1", "1.18"} & ids) and REPORT1_HARVEST_DONOR_IDS <= ids
@@ -1731,8 +1764,12 @@ def _split_report_execution_lanes(
     r2 = [c for c in cfgs if _cfg_id_norm(c) == "2"]
     r1_all = [c for c in cfgs if _cfg_id_norm(c) in _REPORT1_FAMILY_IDS]
     hybrid = _cfgs_standalone_harvest_hybrid(cfgs)
+    # RUN_FIRST: сводка 1 всегда отдельной дорожкой, даже если в пачке есть 10/11
+    # (иначе она сидит в bulk и из‑за длины заканчивается последней).
     isolate_r1 = bool(r1_all) and (
-        (_report1_standalone_enabled() and not hybrid) or not report1_fast_slave_ids
+        _report1_run_first_enabled()
+        or (_report1_standalone_enabled() and not hybrid)
+        or not report1_fast_slave_ids
     )
     r1 = r1_all if isolate_r1 else []
     bulk = [c for c in cfgs if c not in r2 and c not in r1]
@@ -1758,9 +1795,11 @@ def _report_execution_waves(
     else:
         rest = list(cfgs)
 
-    defer_r1 = bool({"1", "1.18"} & ids) and (
-        bool(report1_fast_slave_ids) or _cfgs_standalone_harvest_hybrid(cfgs)
-    )
+    # Fast-path (не standalone): сводка 1 ждёт доноров 3–8 — отдельный этап после них.
+    defer_r1 = bool({"1", "1.18"} & ids) and bool(report1_fast_slave_ids)
+    if _report1_run_first_enabled() and ({"1", "1.18"} & ids):
+        defer_r1 = False
+
     if defer_r1:
         before_r1 = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
         r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
@@ -1768,6 +1807,19 @@ def _report_execution_waves(
             waves.append(before_r1)
         if r1_cfgs:
             waves.append(r1_cfgs)
+    elif _report1_run_first_enabled() and ({"1", "1.18"} & ids):
+        r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
+        rest2 = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
+        if r1_cfgs:
+            waves.append(r1_cfgs)
+        if rest2:
+            waves.append(rest2)
+    elif not defer_r1 and _cfgs_standalone_harvest_hybrid(cfgs):
+        r1_first = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
+        others = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
+        rest = r1_first + others
+        if rest:
+            waves.append(rest)
     elif rest:
         waves.append(rest)
 
@@ -2384,7 +2436,30 @@ def _execute_reports_parallel(
         if r2_lane_cfgs:
             lane_jobs.append(("сводка 2", r2_lane_cfgs, 1, False))
 
-        lane_pool = ThreadPoolExecutor(max_workers=len(lane_jobs))
+        if (
+            r1_lane_cfgs
+            and _report1_run_first_enabled()
+            and r1_isolated
+            and not cancelled
+        ):
+            logs.append(
+                "Сводка 1: старт до bulk-дорожки (SVODKI_REPORT1_RUN_FIRST, отдельная фаза)."
+            )
+            cancelled = _run_parallel_waves(
+                r1_lane_cfgs,
+                lane_workers=1,
+                lane_label="сводка 1",
+                donor_retry=True,
+                out_created=created,
+                out_failed=failed,
+                out_logs=logs,
+            )
+            lane_jobs = [j for j in lane_jobs if j[0] != "сводка 1"]
+
+        if cancelled or not lane_jobs:
+            lane_pool = None
+        else:
+            lane_pool = ThreadPoolExecutor(max_workers=len(lane_jobs))
 
         def _lane_job(
             label: str,
@@ -2406,29 +2481,30 @@ def _execute_reports_parallel(
             )
             return lc, lf, ll, stop
 
-        try:
-            futures = {
-                lane_pool.submit(_lane_job, label, lane_cfgs, workers, donor_retry): label
-                for label, lane_cfgs, workers, donor_retry in lane_jobs
-            }
-            for future in as_completed(futures):
-                try:
-                    lc, lf, ll, stop = future.result()
-                except ReportGenerationCancelled:
-                    cancelled = True
-                    logs.append("Генерация остановлена по запросу пользователя.")
-                    break
-                logs.extend(ll)
-                created.extend(lc)
-                failed.extend(lf)
-                if stop:
-                    cancelled = True
-                if should_cancel and should_cancel():
-                    cancelled = True
-                    logs.append("Генерация остановлена по запросу пользователя.")
-                    break
-        finally:
-            lane_pool.shutdown(wait=False, cancel_futures=True)
+        if lane_pool is not None:
+            try:
+                futures = {
+                    lane_pool.submit(_lane_job, label, lane_cfgs, workers, donor_retry): label
+                    for label, lane_cfgs, workers, donor_retry in lane_jobs
+                }
+                for future in as_completed(futures):
+                    try:
+                        lc, lf, ll, stop = future.result()
+                    except ReportGenerationCancelled:
+                        cancelled = True
+                        logs.append("Генерация остановлена по запросу пользователя.")
+                        break
+                    logs.extend(ll)
+                    created.extend(lc)
+                    failed.extend(lf)
+                    if stop:
+                        cancelled = True
+                    if should_cancel and should_cancel():
+                        cancelled = True
+                        logs.append("Генерация остановлена по запросу пользователя.")
+                        break
+            finally:
+                lane_pool.shutdown(wait=False, cancel_futures=True)
     else:
         cancelled = _run_parallel_waves(
             cfgs,
@@ -3387,7 +3463,7 @@ REPORT1_HARVEST_ONLY_GRAFT_SPEC: tuple[tuple[int, str, int], ...] = (
 
 def _report1_standalone_harvest_hybrid(ordered_ids: list[str]) -> bool:
     """Standalone 1 + доноры 10/11 в пачке: уборку не считаем в 1, подставляем из доноров."""
-    if not _report1_standalone_enabled():
+    if not _report1_standalone_enabled() or _report1_hybrid_own_lane():
         return False
     ids = set(ordered_ids)
     if not ({"1", "1.18"} & ids):
@@ -3404,6 +3480,8 @@ def _report1_harvest_donors_in_batch(ordered_ids: list[str]) -> frozenset[str]:
 
 def _report1_skip_harvest_fetch(ordered_ids: list[str]) -> bool:
     """Сводка 1 не тянет 10/11 повторно — листы из XLSX/PDF доноров той же пачки."""
+    if _report1_hybrid_own_lane():
+        return False
     return _report1_harvest_donors_in_batch(ordered_ids) >= REPORT1_HARVEST_DONOR_IDS
 
 

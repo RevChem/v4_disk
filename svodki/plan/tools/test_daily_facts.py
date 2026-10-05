@@ -107,7 +107,7 @@ c.execute("UPDATE tasks SET machine_id=NULL"); c.execute("UPDATE meta SET v='3' 
 tot_before = want_total
 ts._STORES.clear(); st = ts.get_store(BASE)
 st._db()
-ok("версия 4, задания и mtfmi сохранены", st._db().execute("SELECT v FROM meta WHERE k='version'").fetchone()[0] == "4"
+ok(f"версия {ts.STORE_VERSION} (миграция 3→актуальная), задания и mtfmi сохранены", st._db().execute("SELECT v FROM meta WHERE k='version'").fetchone()[0] == str(ts.STORE_VERSION)
    and st._db().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 400)
 ok("machine_id восстановлен из raw", st._db().execute("SELECT COUNT(*) FROM tasks WHERE machine_id IS NULL").fetchone()[0] == 0)
 ok("rebuild_facts работает", st.rebuild_facts() > 1000 and st._db().execute("SELECT COUNT(*) FROM mtfmi_daily").fetchone()[0] > 0)

@@ -32,11 +32,9 @@ def seasons_missing_from_ui(
     Годы, которых нет в плане, не добавляем: один сезон в редакторе
     проверяется отдельно, даже если в смене встретился другой год.
     """
-    _ = seasons_in_shift
+    _ = seasons_in_shift  # сохранён в сигнатуре для совместимости вызовов; в расчёте не участвует
     years = [str(int(y)) for y in (task_years or [])]
     if not years:
-        if not ui_has_crops and seasons_in_shift:
-            return [str(y) for y in seasons_in_shift if str(y)]
         return []
     if not ui_has_crops:
         return years

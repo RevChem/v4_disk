@@ -45,6 +45,12 @@ async def _run(wts: set[int], since: float, base: str, token: str) -> int:
         import mtfmi_batch_fetch as mb
 
         await st.fill_mtfmi(client, sem, "sync ", crops=mb._HISTORY_CROP, remember=mb.remember_history_crops)
+        # Связи «задание → агрооперация» (mtaomi) и их привязки: дельта через «Changed objects» + перечитывание
+        # изменённых заданий; сводка 2 берёт их из хранилища вместо выгрузки всего сезона.
+        try:
+            await st.sync_links(client, sem, "sync ")
+        except Exception as exc:  # некритично: сводка 2 докачает связи сама
+            print(f"[sync] связи агроопераций не обновлены: {exc}", flush=True)
         # Справочники (fields, history_items, ...) — один раз на пачку; сводки читают их из refs.sqlite.
         if os.environ.get("SVODKI_REF_CACHE_DISABLE", "").strip().lower() not in {"1", "true", "yes", "on"}:
             import svodki_ref_store as rs

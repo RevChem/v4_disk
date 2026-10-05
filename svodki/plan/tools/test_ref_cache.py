@@ -20,6 +20,7 @@ from cropwise_paging import from_id_should_continue  # noqa: E402
 DB = {"fields": [{"id": i * 3, "n": i} for i in range(1, 2501)], "machines": [{"id": i} for i in range(1, 150)],
       "history_items": [{"id": i, "year": 2026} for i in range(1, 450)]}
 calls = []
+CHANGED, DESTROYED = set(), []  # для инкрементального теста: id изменённых строк и журнал удалений
 failed = False
 
 
@@ -31,7 +32,13 @@ def ok(n, c):
 def handler(req):
     q = req.url.params; ep = req.url.path.rsplit("/", 1)[-1]
     calls.append((ep, dict(q)))
+    if ep == "versions":
+        vr = [v for v in DESTROYED if v["id"] >= int(q.get("from_id", 0))]
+        return httpx.Response(200, json={"data": vr[:100], "meta": {"response": {
+            "last_record_id": vr[:100][-1]["id"] if vr else None, "obtained_records": len(vr[:100])}}})
     rows = [r for r in DB.get(ep, []) if r["id"] >= int(q.get("from_id", 0))]
+    if "updated_at_gt_eq" in q:
+        rows = [r for r in rows if r["id"] in CHANGED]
     pg = rows[:100]  # реальный размер страницы ~100
     return httpx.Response(200, json={"data": pg, "meta": {"response": {
         "last_record_id": pg[-1]["id"] if pg else None, "obtained_records": len(pg)}}})
@@ -108,4 +115,24 @@ async def warm():
 calls.clear(); nw = asyncio.run(warm()); ok(f"прогрето наборов: {nw}", nw == 7)
 calls.clear(); a = get_all_requests("fields"); b = get_all_requests("history_items", {"year": 2026})
 ok("после прогрева 0 запросов, данные верны", not calls and a == DB["fields"] and b == DB["history_items"])
+print("8) инкрементальное обновление: дельта + /versions == полная выгрузка")
+async def warm2():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        return await rs.refresh_standard(c, asyncio.Semaphore(5), "http://x/api/v3", [2026])
+asyncio.run(warm2())  # кэш полон (после п.7); следующий вызов обязан быть инкрементальным
+DB["fields"][10] = {"id": DB["fields"][10]["id"], "n": -1}                      # изменена
+DB["fields"].append({"id": 99999, "n": 5})                                       # добавлена
+gone_id = DB["fields"][20]["id"]; DB["fields"] = [r for r in DB["fields"] if r["id"] != gone_id]  # удалена
+CHANGED.update({DB["fields"][10]["id"], 99999}); DESTROYED.append({"id": 1, "item_id": gone_id})
+calls.clear(); rs._MEMO.clear(); asyncio.run(warm2())
+inc_calls = [c for c in calls if c[0] == "fields"]
+ok(f"fields: запросов {len(inc_calls)} (дельта, не 25+ страниц)", 0 < len(inc_calls) <= 3)
+calls.clear(); rs._MEMO.clear(); got = get_all_requests("fields")
+ok("кэш после дельты == полная выгрузка (правка, добавление, удаление)", got == DB["fields"] and not calls)
+os.environ["SVODKI_REF_FULL_REFRESH_SEC"] = "0"; calls.clear(); rs._MEMO.clear(); asyncio.run(warm2())
+ok("истёк срок полной выгрузки → полная (много страниц)", len([c for c in calls if c[0] == "fields"]) > 10)
+os.environ.pop("SVODKI_REF_FULL_REFRESH_SEC", None)
+os.environ["SVODKI_REF_INCREMENTAL"] = "0"; calls.clear(); asyncio.run(warm2())
+ok("SVODKI_REF_INCREMENTAL=0 → полная выгрузка", len([c for c in calls if c[0] == "fields"]) > 10)
+os.environ.pop("SVODKI_REF_INCREMENTAL", None)
 print("\nИТОГ:", "ЕСТЬ ОШИБКИ" if failed else "всё прошло"); sys.exit(1 if failed else 0)

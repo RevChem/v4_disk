@@ -2867,6 +2867,23 @@ async def _fetch_day_stats_for_work_types_impl(
             "detail_hired":   sorted(detail_hired, key=lambda x: -x["area"]),
         }
 
+    from svodki_daily_facts_area import apply_report1_area_today_facts
+
+    result = apply_report1_area_today_facts(
+        result,
+        group_name=group_name,
+        work_type_ids=work_type_ids,
+        shift_date=REPORT_DATE,
+        day_start=day_start,
+        cutoff=cutoff,
+        area_min_ha=area_min_ha,
+        field_ok=_field_allowed_for_item,
+        firm_for_field=get_firm_for_field,
+        base_url=BASE_URL,
+        task_seasons=_fact_seasons,
+        firm_keys=list(AGROFIRMS),
+    )
+
     return result
  
 
