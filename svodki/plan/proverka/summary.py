@@ -172,7 +172,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
 
 
 CROPWISE_VIOLATION_STATUSES = frozenset({
-    "DIFF", "UI error", "blank", "season?", "UI degraded", "UI≠API",
+    "DIFF", "UI error", "blank", "season?", "UI degraded", "UI≠API", "ERROR",
 })
 
 
@@ -238,7 +238,7 @@ def compute_violations(
                     "detail": _violation_detail_cropwise(r),
                 }
             )
-            if status in ("UI error", "blank"):
+            if status in ("UI error", "blank", "ERROR"):
                 error_logs.append(
                     {
                         "source": f"сводка {r.get('id')}",
@@ -306,7 +306,7 @@ def compute_violations(
             )
 
     for chk in sheet_checks:
-        if chk.get("status") != "DIFF":
+        if chk.get("status") not in ("DIFF", "ERROR"):
             continue
         detail = _violation_detail_sheet(chk)
         violations.append(
@@ -314,7 +314,7 @@ def compute_violations(
                 "kind": "sheet_consistency",
                 "report_id": chk.get("report_id"),
                 "title": chk.get("display_name") or chk.get("group_name"),
-                "status": "DIFF",
+                "status": chk.get("status"),
                 "max_diff_ha": chk.get("max_diff_ha"),
                 "detail": detail,
             }
@@ -377,6 +377,9 @@ def _violation_detail_cropwise(row: dict[str, Any]) -> str:
         return "Cropwise UI вернул пустой отчёт (cookie или reportBlank)"
     if status == "UI error":
         return "Ошибка запроса Cropwise UI (cookie/сеть)"
+    if status == "ERROR":
+        why = "; ".join(str(w) for w in (row.get("warnings") or []) if w)
+        return f"Сбой сверки операции (исключение): {why or 'см. лог сервера'}"
     return status
 
 
@@ -384,6 +387,9 @@ def _violation_detail_sheet(chk: dict[str, Any]) -> str:
     name = chk.get("display_name") or chk.get("group_name")
     bits = []
     for i in chk.get("issues") or []:
+        if i.get("message"):
+            bits.append(f"{i.get('label', i.get('kind'))}: {i['message']}")
+            continue
         bits.append(
             f"{i.get('label', i.get('kind'))}: {i.get('expected')} ↔ {i.get('actual')} "
             f"(Δ {i.get('diff_ha')} га)"
@@ -485,7 +491,12 @@ def _row_from_per_operation(rid: str, group_name: str, oc: dict[str, Any]) -> di
             f"{row.get('season', '')} · {local_label} (Δ{float(local_diff):+.2f})"
         )[:120]
     work = oc.get("cropwise_work_report") or {}
-    if not work.get("ok") and not row.get("status"):
+    if oc.get("exception"):
+        # Сбой самой сверки (исключение), а не «Cropwise недоступен»: статус UI error
+        # при нулевой разнице скрывается из нарушений, а здесь скрывать нельзя.
+        row["status"] = "ERROR"
+        row["warnings"] = list(row.get("warnings") or []) + [f"сбой сверки: {oc.get('error')}"]
+    elif not work.get("ok") and not row.get("status"):
         row["status"] = "UI error"
     return row
 

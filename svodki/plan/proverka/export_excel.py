@@ -241,7 +241,9 @@ def _sheet_sheet_checks(wb: openpyxl.Workbook, batch: dict[str, Any]) -> None:
     r = hr + 1
     for chk in checks:
         why = "; ".join(
-            f"{i.get('label')}: {i.get('expected')} ↔ {i.get('actual')}"
+            f"{i.get('label')}: {i['message']}"
+            if i.get("message")
+            else f"{i.get('label')}: {i.get('expected')} ↔ {i.get('actual')}"
             for i in chk.get("issues") or []
         )
         _write_row(

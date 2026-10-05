@@ -36,6 +36,7 @@ import DocumentCellEditorDialog from "../components/DocumentCellEditorDialog";
 import SummaryCommentEditorDialog from "../components/SummaryCommentEditorDialog";
 import FieldSeasonDialog from "../components/FieldSeasonDialog";
 import WorksSummaryDialog from "../components/WorksSummaryDialog";
+import AnalyticsDialog from "../components/AnalyticsDialog";
 import Report1LayoutEditorDialog from "../components/Report1LayoutEditorDialog";
 import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
 import HarvestGrossDialog from "../components/HarvestGrossDialog";
@@ -88,6 +89,7 @@ export default function DashboardPage({
   const [failedJobId, setFailedJobId] = useState(null);
   const [fieldSeasonOpen, setFieldSeasonOpen] = useState(false);
   const [worksOpen, setWorksOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [pageOrderOpen, setPageOrderOpen] = useState(false);
   const [pdfLabelsOpen, setPdfLabelsOpen] = useState(false);
   const [cellEditOpen, setCellEditOpen] = useState(false);
@@ -550,6 +552,15 @@ export default function DashboardPage({
                     >
                       Работы 2025/2026
                     </Button>
+                    <Button
+                      variant="outlined"
+                      fullWidth
+                      size="small"
+                      sx={sidebarToolBtnSx}
+                      onClick={() => setAnalyticsOpen(true)}
+                    >
+                      Аналитика
+                    </Button>
                     {canProverka && (
                       <Button
                         variant="outlined"
@@ -718,6 +729,7 @@ export default function DashboardPage({
         onError={setError}
         onInfo={setInfo}
       />
+      <AnalyticsDialog open={analyticsOpen} onClose={() => setAnalyticsOpen(false)} />
       <Report1LayoutEditorDialog
         open={pageOrderOpen}
         onClose={() => setPageOrderOpen(false)}

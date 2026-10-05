@@ -1382,9 +1382,11 @@ def _internal_issues_for_report(report_date: date, report_id: str) -> dict[str, 
     if path is None:
         return {}
     try:
-        from proverka.file_consistency import report2_xlsx_internal_issues
+        from proverka.file_consistency import ReportFileError, report2_xlsx_internal_issues
 
         return report2_xlsx_internal_issues(path)
+    except ReportFileError:
+        raise  # в тексте уже есть имя файла и листы
     except Exception as exc:
         raise _read_failure(path, exc) from exc
 

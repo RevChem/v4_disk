@@ -292,3 +292,314 @@ def test_excel_export_has_sheet_with_checks():
     empty = openpyxl.Workbook()
     _sheet_sheet_checks(empty, {})
     assert "Листы сводки" not in empty.sheetnames
+
+
+# --- Сломанный/пустой файл сводки 2 не должен выглядеть как «нечего проверять» ---
+
+import pytest  # noqa: E402
+
+from proverka import file_consistency as fc  # noqa: E402
+from proverka.file_consistency import ReportFileError, read_report2_workbook_checked  # noqa: E402
+
+
+def _good_book_with_extra_sheet(tmp_path, extra_title, extra_rows=()):
+    path = _book(tmp_path, CROPS, [("АФ А", 320.0), ("АФ Б", 130.0)], 450.0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    ws = wb.create_sheet(extra_title)
+    for row in extra_rows:
+        ws.append(row)
+    wb.save(path)
+    return path
+
+
+def test_corrupt_file_raises_instead_of_returning_empty(tmp_path):
+    path = tmp_path / "2. report_crop_works_compact_2026-09-25.xlsx"
+    path.write_bytes(b"this is not an xlsx")
+    with pytest.raises(ReportFileError) as err:
+        read_report2_workbook(path)
+    assert path.name in str(err.value)
+    assert "не открылся" in str(err.value)
+    # все потребители идут через строгое чтение и тоже падают, а не отдают {}
+    for fn in (report2_xlsx_areas, report2_xlsx_firm_areas, report2_xlsx_crop_areas,
+               report2_xlsx_internal_issues):
+        with pytest.raises(ReportFileError):
+            fn(path)
+
+
+def test_missing_file_raises(tmp_path):
+    with pytest.raises(ReportFileError):
+        read_report2_workbook(tmp_path / "nope.xlsx")
+
+
+def test_workbook_without_operation_sheets_is_an_error_not_empty(tmp_path):
+    wb = Workbook()
+    wb.active.title = "Лист1"
+    path = tmp_path / "2. report.xlsx"
+    wb.save(path)
+    with pytest.raises(ReportFileError) as err:
+        read_report2_workbook(path)
+    assert "нет ни одного листа операции" in str(err.value)
+
+
+def test_operation_sheet_with_unrecognised_structure_is_an_error(tmp_path):
+    path = _good_book_with_extra_sheet(tmp_path, "2.1 Боронование", [["что-то не то"]])
+    with pytest.raises(ReportFileError) as err:
+        read_report2_workbook(path)
+    assert "2.1 Боронование" in str(err.value)
+    assert "структура не распознана" in str(err.value)
+
+
+def test_sheet_parse_exception_is_reported_with_sheet_name(tmp_path, monkeypatch):
+    path = _book(tmp_path, CROPS, [("АФ А", 320.0), ("АФ Б", 130.0)], 450.0)
+
+    def boom(ws):
+        raise ValueError("битая ячейка")
+
+    monkeypatch.setattr(fc, "read_report2_sheet", boom)
+    with pytest.raises(ReportFileError) as err:
+        read_report2_workbook(path)
+    assert "5.0 Уборка" in str(err.value)
+    assert "ValueError: битая ячейка" in str(err.value)
+    assert err.value.problems[0]["scope"].startswith("лист")
+
+
+def test_non_operation_sheets_are_still_ignored(tmp_path):
+    path = _good_book_with_extra_sheet(tmp_path, "Служебный лист", [["любой текст"]])
+    assert set(read_report2_workbook(path)) == {"5.0 Уборка"}
+
+
+def test_checked_reader_keeps_good_sheets_and_lists_problems(tmp_path):
+    path = _good_book_with_extra_sheet(tmp_path, "2.1 Боронование", [["что-то не то"]])
+    data, problems = read_report2_workbook_checked(path)
+    assert set(data) == {"5.0 Уборка"}
+    assert len(problems) == 1 and "2.1 Боронование" in problems[0]["scope"]
+
+
+def test_sheet_check_rows_keep_good_sheet_and_add_error_row_for_bad_one(tmp_path):
+    path = _good_book_with_extra_sheet(tmp_path, "2.1 Боронование", [["что-то не то"]])
+    rows = report2_sheet_check_rows(path)
+    statuses = {r["group_name"]: r["status"] for r in rows}
+    assert statuses["5.0 Уборка"] == "OK"
+    bad = [r for r in rows if r["status"] == "ERROR"]
+    assert len(bad) == 1 and "2.1 Боронование" in bad[0]["group_name"]
+    assert bad[0]["issues"][0]["kind"] == "read_error"
+
+
+def test_sheet_check_rows_for_corrupt_file_is_a_single_error_row(tmp_path):
+    path = tmp_path / "2. report.xlsx"
+    path.write_bytes(b"garbage")
+    rows = report2_sheet_check_rows(path)
+    assert [r["status"] for r in rows] == ["ERROR"]
+
+
+def test_error_sheet_check_becomes_a_violation(tmp_path):
+    from proverka.summary import compute_violations
+
+    path = tmp_path / "2. report.xlsx"
+    path.write_bytes(b"garbage")
+    result = compute_violations([], [], sheet_checks=report2_sheet_check_rows(path))
+    kinds = [(v["kind"], v["status"]) for v in result["violations"]]
+    assert kinds == [("sheet_consistency", "ERROR")]
+    assert result["sheet_consistency_violation_count"] == 1
+    assert "не открылся" in result["violations"][0]["detail"]
+    assert result["error_logs"]
+
+
+def test_build_sheet_checks_reports_failure_as_error_row_not_just_log(tmp_path, monkeypatch):
+    from proverka import file_values as fv
+
+    path = tmp_path / "2. report.xlsx"
+    path.write_bytes(b"garbage")
+    monkeypatch.setattr(fv, "find_report_xlsx", lambda d, rid: path if rid == "2" else None)
+    monkeypatch.setattr(fv, "find_report_file", lambda *a, **k: None)
+    rows = build_sheet_checks("2026-09-25", ["1", "2"])
+    assert [r["status"] for r in rows] == ["ERROR"]
+    assert rows[0]["report_id"] == "2"
+
+
+# --- Сводка 1: read_report1_workbook / read_report1_seeding_crops не глотают ошибки ---
+
+from proverka.file_consistency import (  # noqa: E402
+    read_report1_seeding_crops,
+    read_report1_workbook_checked,
+    report1_sheet_check_rows_from_path,
+)
+
+SEED_TITLE = "Посев — Сводно по всем агрофирмам"
+SEED_HDR = ["№ п/п", "Культура", "План, га", "Факт за сутки, га"]
+
+
+def _seeding_book(tmp_path, rows, *, header=True, title=True):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Итого (все АФ)"
+    if title:
+        ws.append([SEED_TITLE])
+    if header:
+        ws.append(SEED_HDR)
+    for crop, ha in rows:
+        ws.append([None, crop, 10, ha])
+    ws.append([None, "Итого", 10, sum(h for _c, h in rows)])
+    path = tmp_path / "5. report_seeding_2026-09-25.xlsx"
+    wb.save(path)
+    return path
+
+
+def _corrupt(tmp_path, name="1. report_main_2026-09-25.xlsx"):
+    path = tmp_path / name
+    path.write_bytes(b"this is not an xlsx")
+    return path
+
+
+def test_seeding_reader_reads_valid_table(tmp_path):
+    path = _seeding_book(tmp_path, [("Пшеница озимая", 1757.8), ("Рапс озимый", 3.38)])
+    assert read_report1_seeding_crops(path) == {
+        "4.0 Посев": {"Пшеница озимая": 1757.8, "Рапс озимый": 3.38}
+    }
+
+
+def test_seeding_reader_corrupt_file_raises(tmp_path):
+    with pytest.raises(ReportFileError) as err:
+        read_report1_seeding_crops(_corrupt(tmp_path))
+    assert "не открылся" in str(err.value)
+
+
+def test_seeding_reader_without_openpyxl_raises(tmp_path, monkeypatch):
+    path = _seeding_book(tmp_path, [("Рапс озимый", 1.0)])
+    monkeypatch.setattr(fc, "load_workbook", None)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_seeding_crops(path)
+    assert "openpyxl" in str(err.value)
+
+
+def test_seeding_reader_title_without_header_raises(tmp_path):
+    path = _seeding_book(tmp_path, [("Рапс озимый", 1.0)], header=False)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_seeding_crops(path)
+    assert "шапка не распознана" in str(err.value) or "нет шапки" in str(err.value)
+    assert "Итого (все АФ)" in str(err.value)
+
+
+def test_seeding_reader_table_absent_is_legitimately_empty(tmp_path):
+    # в сводке 1 такой таблицы может не быть — это «нечего сравнивать», не ошибка
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+    assert read_report1_seeding_crops(path) == {}
+
+
+def test_report1_corrupt_file_raises_for_all_consumers(tmp_path):
+    path = _corrupt(tmp_path)
+    with pytest.raises(ReportFileError):
+        read_report1_workbook(path)
+    data, problems = read_report1_workbook_checked(path)
+    assert data == {"perf": {}, "general": None}
+    assert problems and "не открылся" in problems[0]["message"]
+
+
+def test_report1_missing_file_raises(tmp_path):
+    with pytest.raises(ReportFileError):
+        read_report1_workbook(tmp_path / "nope.xlsx")
+
+
+def test_report1_workbook_without_known_sheets_is_an_error(tmp_path):
+    wb = Workbook()
+    wb.active.title = "Лист1"
+    path = tmp_path / "1. report.xlsx"
+    wb.save(path)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_workbook(path)
+    assert "файл пуст или не тот" in str(err.value)
+
+
+def test_report1_perf_sheet_with_unrecognised_structure_is_an_error(tmp_path):
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    bad = wb.create_sheet("Выраб. — 2.1 Боронование")
+    bad.append(["что-то не то"])
+    wb.save(path)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_workbook(path)
+    assert "Выраб. — 2.1 Боронование" in str(err.value)
+    assert "структура не распознана" in str(err.value)
+
+
+def test_report1_general_sheet_without_total_is_an_error(tmp_path):
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    g = wb["Общий намолот"]
+    for row in g.iter_rows():
+        for c in row:
+            if c.value == "Итого":
+                c.value = "—"
+    wb.save(path)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_workbook(path)
+    assert "Общий намолот" in str(err.value)
+
+
+def test_report1_parse_exception_is_reported_with_sheet_name(tmp_path, monkeypatch):
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+
+    def boom(ws):
+        raise ValueError("битая ячейка")
+
+    monkeypatch.setattr(fc, "_read_perf_sheet", boom)
+    with pytest.raises(ReportFileError) as err:
+        read_report1_workbook(path)
+    assert "Выраб. — 5.0 Уборка" in str(err.value)
+    assert "ValueError: битая ячейка" in str(err.value)
+
+
+def test_report1_unrelated_sheets_are_ignored(tmp_path):
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    wb.create_sheet("Овощи").append(["любой текст"])
+    wb.save(path)
+    data = read_report1_workbook(path)
+    assert set(data["perf"]) == {"5.0 Уборка"} and data["general"] is not None
+
+
+def test_report1_rows_from_path_keep_good_sheets_and_add_error_row(tmp_path):
+    path = _report1_book(tmp_path, [("АФ А", 1.0)], 1.0, R1_CROPS, 1.0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    wb.create_sheet("Выраб. — 2.1 Боронование").append(["что-то не то"])
+    wb.save(path)
+    rows = report1_sheet_check_rows_from_path(path)
+    by_status = {r["status"] for r in rows}
+    assert by_status == {"OK", "ERROR"} or by_status == {"DIFF", "ERROR"}
+    (bad,) = [r for r in rows if r["status"] == "ERROR"]
+    assert "Выраб. — 2.1 Боронование" in bad["group_name"]
+    assert bad["report_id"] == "1" and bad["issues"][0]["kind"] == "read_error"
+
+
+def test_build_sheet_checks_report1_corrupt_xlsx_is_error_and_pdf_fallback_kept(tmp_path, monkeypatch):
+    from proverka import file_values as fv
+
+    xlsx = _corrupt(tmp_path)
+    pdf_row = {"report_id": "1", "group_name": "5.0 Уборка", "status": "OK", "issues": []}
+    monkeypatch.setattr(fv, "find_report_xlsx", lambda d, rid: xlsx if rid == "1" else None)
+    monkeypatch.setattr(fv, "find_report_file", lambda d, rid, ext: tmp_path / "x.pdf")
+    monkeypatch.setattr(fc, "_pdf_report1_rows", lambda p: [pdf_row])
+    rows = build_sheet_checks("2026-09-25", ["1"])
+    assert [r["status"] for r in rows] == ["OK", "ERROR"]  # PDF как запасной путь, но ошибка Excel видна
+
+
+def test_load_saved_areas_surfaces_report1_crop_read_error(tmp_path, monkeypatch):
+    from datetime import date
+
+    from proverka import file_values as fv
+
+    bad = _corrupt(tmp_path)
+    monkeypatch.setattr(fv, "_saved_report_files", lambda d: [bad])
+    _ops, crops, _firms, errors = fv.load_saved_areas(date(2026, 9, 25))
+    assert crops == {}
+    assert any(e.startswith("культуры:") and "не открылся" in e for e in errors.get("1", []))

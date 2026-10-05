@@ -1243,3 +1243,10 @@ export async function downloadReport1PageOrderPreview(
   );
   return data;
 }
+
+// ---------- Аналитика по хранилищу заданий ----------
+export async function fetchAnalytics(path, params = {}) {
+  const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""));
+  const { data } = await api.get(`/analytics/${path}`, { params: clean });
+  return data;
+}

@@ -5,7 +5,9 @@
 Сводка 1: лист «Выраб. — <операция>» (Обработано за сутки) ↔ «Общий намолот» (Факт за сутки)
 для уборки 5.0.
 
-Модуль ничего не бросает наружу.
+Ошибки чтения не прячутся за «пусто»: сводки 1 и 2 бросают ``ReportFileError``
+(или возвращают проблемы через ``read_report{1,2}_workbook_checked``), чтобы сломанный,
+пустой или нераспознанный файл не выглядел как «нечего проверять».
 """
 from __future__ import annotations
 
@@ -32,7 +34,19 @@ ISSUE_LABELS = {
     "firm_crops_vs_firm": "культуры по АФ ↔ строка АФ",
     "perf_vs_general": "лист выработки ↔ «Общий намолот»",
     "general_vs_crops": "«Общий намолот» Итого ↔ сумма культур",
+    "read_error": "файл сводки не прочитан",
 }
+
+class ReportFileError(RuntimeError):
+    """Файл сводки не открылся, пуст или разобран не полностью.
+
+    ``problems`` — список ``{"scope": лист или «файл», "message": текст}``.
+    """
+
+    def __init__(self, message: str, problems: list[dict[str, str]] | None = None) -> None:
+        super().__init__(message)
+        self.problems = list(problems or [])
+
 
 # Сводка 1
 PERF_PREFIX = "Выраб. —"
@@ -166,29 +180,75 @@ def read_report2_sheet(ws: Any) -> dict[str, Any] | None:
     }
 
 
-def read_report2_workbook(path: Path) -> dict[str, dict[str, Any]]:
-    """Группа работ → разобранный лист. Пусто, если файл не открылся."""
+def _problem(scope: str, message: str) -> dict[str, str]:
+    return {"scope": scope, "message": message}
+
+
+def read_report2_workbook_checked(
+    path: Path,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """(группа → разобранный лист, проблемы). Сама ничего не бросает.
+
+    Проблема — всё, что нельзя молча принять за «нечего проверять»:
+    файл не открылся; лист операции упал при разборе; на листе операции нет
+    блока «СОВОКУПНАЯ ПЛОЩАДЬ ПО АГРОФИРМАМ» / «Итого»; в книге нет ни одного
+    листа операции. Листы, имён которых нет в реестре операций, пропускаются
+    намеренно (это не листы операций).
+    """
     if load_workbook is None:
-        return {}
+        return {}, [_problem("файл", "openpyxl не установлен, Excel не прочитать")]
     try:
         wb = load_workbook(path, read_only=False, data_only=True)
-    except Exception:
-        return {}
+    except Exception as exc:
+        return {}, [_problem("файл", f"не открылся: {type(exc).__name__}: {exc}")]
+
     out: dict[str, dict[str, Any]] = {}
+    problems: list[dict[str, str]] = []
     try:
         for ws in wb.worksheets:
             group = group_for_sheet(ws.title)
             if not group:
                 continue
+            scope = f"лист «{ws.title}»"
             try:
                 data = read_report2_sheet(ws)
-            except Exception:
-                data = None
-            if data:
-                out[group] = data
+            except Exception as exc:
+                problems.append(_problem(scope, f"ошибка разбора: {type(exc).__name__}: {exc}"))
+                continue
+            if data is None:
+                problems.append(
+                    _problem(
+                        scope,
+                        "структура не распознана (нет блока "
+                        f"«{SUMMARY_TITLE}» или строки «{_TOTAL_LABEL}»)",
+                    )
+                )
+                continue
+            out[group] = data
     finally:
         wb.close()
-    return out
+    if not out and not problems:
+        problems.append(_problem("файл", "нет ни одного листа операции — файл пуст или не тот"))
+    return out, problems
+
+
+def _raise_if_problems(path: Path, problems: list[dict[str, str]]) -> None:
+    if not problems:
+        return
+    text = "; ".join(f"{p['scope']}: {p['message']}" for p in problems)
+    raise ReportFileError(f"{path.name}: {text}", problems)
+
+
+def read_report2_workbook(path: Path) -> dict[str, dict[str, Any]]:
+    """Группа работ → разобранный лист.
+
+    Бросает ``ReportFileError``, если файл не открылся, пуст или хотя бы один
+    лист операции не разобран. Раньше здесь возвращался ``{}``/пропуск листа,
+    и битый файл выглядел как «нечего проверять».
+    """
+    data, problems = read_report2_workbook_checked(path)
+    _raise_if_problems(path, problems)
+    return data
 
 
 def internal_issues(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -321,77 +381,129 @@ _SEEDING_GROUP = "4.0 Посев"
 
 
 def read_report1_seeding_crops(path: Path) -> dict[str, dict[str, float]]:
-    """Таблица «Посев — Сводно…» из xlsx сводки 1 → культура → га за сутки."""
+    """Таблица «Посев — Сводно…» из xlsx сводки 1/5 → культура → га за сутки.
+
+    ``{}`` — только когда таблицы в книге нет вообще (в сводке 1 это нормально:
+    сравнивать нечего). Всё остальное — ошибка ``ReportFileError``: нет openpyxl,
+    файл не открылся, лист не читается, таблица найдена, но шапка не распознана.
+    """
     if load_workbook is None:
-        return {}
+        raise ReportFileError(f"{path.name}: openpyxl не установлен, Excel не прочитать")
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise ReportFileError(
+            f"{path.name}: не открылся: {type(exc).__name__}: {exc}",
+            [_problem("файл", f"не открылся: {type(exc).__name__}: {exc}")],
+        ) from exc
     out: dict[str, float] = {}
     try:
         for ws in wb.worksheets:
-            rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
-            title_row = None
-            for i, r in enumerate(rows[:8]):
-                if any(_SEEDING_SUMMARY_TITLE in _text(c) for c in r):
-                    title_row = i
-                    break
-            if title_row is None:
-                continue
-            hdr_idx = crop_col = val_col = None
-            for i in range(title_row, min(title_row + 6, len(rows))):
-                texts = [_text(c).replace("\n", " ") for c in rows[i]]
-                if _GENERAL_CROP_HEADER in texts and _GENERAL_VALUE_HEADER in texts:
-                    hdr_idx = i
-                    crop_col = texts.index(_GENERAL_CROP_HEADER)
-                    val_col = texts.index(_GENERAL_VALUE_HEADER)
-                    break
-            if hdr_idx is None:
-                continue
-            for r in rows[hdr_idx + 1:]:
-                crop = _text(r[crop_col]) if crop_col < len(r) else ""
-                if not crop or crop == _TOTAL_LABEL:
-                    if crop == _TOTAL_LABEL:
+            scope = f"лист «{ws.title}»"
+            try:
+                rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
+                title_row = None
+                for i, r in enumerate(rows[:8]):
+                    if any(_SEEDING_SUMMARY_TITLE in _text(c) for c in r):
+                        title_row = i
                         break
+                if title_row is None:
                     continue
-                value = _num(r[val_col]) if val_col < len(r) else None
-                if value is None:
-                    continue
-                out[crop] = round(out.get(crop, 0.0) + value, 2)
+                hdr_idx = crop_col = val_col = None
+                for i in range(title_row, min(title_row + 6, len(rows))):
+                    texts = [_text(c).replace("\n", " ") for c in rows[i]]
+                    if _GENERAL_CROP_HEADER in texts and _GENERAL_VALUE_HEADER in texts:
+                        hdr_idx = i
+                        crop_col = texts.index(_GENERAL_CROP_HEADER)
+                        val_col = texts.index(_GENERAL_VALUE_HEADER)
+                        break
+                if hdr_idx is None:
+                    raise ReportFileError(
+                        f"{path.name}: {scope}: таблица «{_SEEDING_SUMMARY_TITLE}» найдена, но нет шапки "
+                        f"«{_GENERAL_CROP_HEADER}» / «{_GENERAL_VALUE_HEADER}»",
+                        [_problem(scope, "таблица посева найдена, шапка не распознана")],
+                    )
+                for r in rows[hdr_idx + 1:]:
+                    crop = _text(r[crop_col]) if crop_col < len(r) else ""
+                    if not crop or crop == _TOTAL_LABEL:
+                        if crop == _TOTAL_LABEL:
+                            break
+                        continue
+                    value = _num(r[val_col]) if val_col < len(r) else None
+                    if value is None:
+                        continue
+                    out[crop] = round(out.get(crop, 0.0) + value, 2)
+            except ReportFileError:
+                raise
+            except Exception as exc:
+                raise ReportFileError(
+                    f"{path.name}: {scope}: ошибка разбора: {type(exc).__name__}: {exc}",
+                    [_problem(scope, f"ошибка разбора: {type(exc).__name__}: {exc}")],
+                ) from exc
             if out:
                 break
-    except Exception:
-        return {}
     finally:
         wb.close()
     return {_SEEDING_GROUP: out} if out else {}
 
 
-def read_report1_workbook(path: Path) -> dict[str, Any]:
+def read_report1_workbook_checked(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """(``{"perf", "general"}``, проблемы). Сама ничего не бросает.
+
+    Проблема — лист «Выраб. — …» или «Общий намолот», который не прочитался
+    (исключение или нераспознанная структура), файл, который не открылся, и
+    книга без единого такого листа. Прочие листы пропускаются намеренно.
+    """
     out: dict[str, Any] = {"perf": {}, "general": None}
     if load_workbook is None:
-        return out
+        return out, [_problem("файл", "openpyxl не установлен, Excel не прочитать")]
     try:
         wb = load_workbook(path, read_only=False, data_only=True)
-    except Exception:
-        return out
+    except Exception as exc:
+        return out, [_problem("файл", f"не открылся: {type(exc).__name__}: {exc}")]
+    problems: list[dict[str, str]] = []
     try:
         for ws in wb.worksheets:
-            try:
-                if _text(ws.title) == GENERAL_SHEET:
-                    out["general"] = _read_general_sheet(ws)
-                    continue
-                group = _perf_group(ws.title)
-                if group:
-                    data = _read_perf_sheet(ws)
-                    if data:
-                        out["perf"][group] = data
-            except Exception:
+            is_general = _text(ws.title) == GENERAL_SHEET
+            group = None if is_general else _perf_group(ws.title)
+            if not is_general and not group:
                 continue
+            scope = f"лист «{ws.title}»"
+            try:
+                data = _read_general_sheet(ws) if is_general else _read_perf_sheet(ws)
+            except Exception as exc:
+                problems.append(_problem(scope, f"ошибка разбора: {type(exc).__name__}: {exc}"))
+                continue
+            if data is None:
+                hdr = (
+                    f"«{_GENERAL_CROP_HEADER}» / «{_GENERAL_VALUE_HEADER}»"
+                    if is_general
+                    else f"«{_PERF_FIRM_HEADER}» / «{_PERF_VALUE_HEADER}»"
+                )
+                problems.append(
+                    _problem(scope, f"структура не распознана (нет шапки {hdr} или строки «{_TOTAL_LABEL}»)")
+                )
+                continue
+            if is_general:
+                out["general"] = data
+            else:
+                out["perf"][group] = data
     finally:
         wb.close()
-    return out
+    if not out["perf"] and out["general"] is None and not problems:
+        problems.append(_problem("файл", "нет ни одного листа «Выраб. — …» / «Общий намолот» — файл пуст или не тот"))
+    return out, problems
+
+
+def read_report1_workbook(path: Path) -> dict[str, Any]:
+    """``{"perf": группа → лист, "general": лист «Общий намолот» | None}``.
+
+    Бросает ``ReportFileError``, если файл не открылся, пуст или хотя бы один
+    нужный лист не разобран. Раньше такие случаи давали пустой результат.
+    """
+    data, problems = read_report1_workbook_checked(path)
+    _raise_if_problems(path, problems)
+    return data
 
 
 def _spread_ha(values: dict[str, float | None]) -> float:
@@ -458,9 +570,38 @@ def report1_sheet_check_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _error_row(report_id: str, scope: str, message: str, source: str) -> dict[str, Any]:
+    """Строка таблицы «Листы сводки» для сбоя чтения: статус ERROR, а не OK и не пропуск."""
+    return {
+        "report_id": str(report_id),
+        "group_name": scope,
+        "display_name": scope,
+        "source": source,
+        "total_ha": None,
+        "firms_ha": None,
+        "general_ha": None,
+        "crops_ha": None,
+        "max_diff_ha": 0.0,
+        "status": "ERROR",
+        "issues": [
+            {
+                "kind": "read_error",
+                "label": ISSUE_LABELS["read_error"],
+                "message": message,
+                "expected": None,
+                "actual": None,
+                "diff_ha": None,
+            }
+        ],
+    }
+
+
 def report2_sheet_check_rows(path: Path) -> list[dict[str, Any]]:
+    """Строки проверки листов сводки 2. Исправные листы проверяются как обычно,
+    а нечитаемые получают строку со статусом ERROR — их нельзя пропускать молча."""
     rows: list[dict[str, Any]] = []
-    for group, data in read_report2_workbook(path).items():
+    data_by_group, problems = read_report2_workbook_checked(path)
+    for group, data in data_by_group.items():
         issues = internal_issues(data)
         firms = round(sum(data["by_firm"].values()), 2)
         crops = round(sum(data["by_crop"].values()), 2) if data["by_crop"] else None
@@ -477,6 +618,18 @@ def report2_sheet_check_rows(path: Path) -> list[dict[str, Any]]:
                 issues=issues,
             )
         )
+    for prob in problems:
+        rows.append(_error_row("2", f"{path.name}: {prob['scope']}", prob["message"], "xlsx"))
+    return rows
+
+
+def report1_sheet_check_rows_from_path(path: Path) -> list[dict[str, Any]]:
+    """Строки проверки листов сводки 1. Исправные листы проверяются как обычно,
+    нечитаемые получают строку ERROR (их нельзя пропускать молча)."""
+    data, problems = read_report1_workbook_checked(path)
+    rows = report1_sheet_check_rows(data)
+    for prob in problems:
+        rows.append(_error_row("1", f"{path.name}: {prob['scope']}", prob["message"], "xlsx"))
     return rows
 
 
@@ -509,25 +662,40 @@ def _pdf_report1_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def build_sheet_checks(report_date: Any, report_ids: Any) -> list[dict[str, Any]]:
-    """Строки «Согласованность листов» для сводок 1 и 2."""
+    """Строки «Согласованность листов» для сводок 1 и 2.
+
+    Сбой проверки одной сводки не останавливает другую и не теряется в логе:
+    он возвращается строкой со статусом ERROR.
+    """
+    import logging
+
     from proverka import file_values as fv
 
     wanted = {str(x) for x in report_ids}
     out: list[dict[str, Any]] = []
-    try:
-        if "1" in wanted:
+
+    if "1" in wanted:
+        try:
             xlsx = fv.find_report_xlsx(report_date, "1")
-            rows = report1_sheet_check_rows(read_report1_workbook(xlsx)) if xlsx else []
+            xlsx_rows = report1_sheet_check_rows_from_path(xlsx) if xlsx else []
+            rows = [r for r in xlsx_rows if r["status"] != "ERROR"]
+            errors = [r for r in xlsx_rows if r["status"] == "ERROR"]
             if not rows:
+                # Excel не дал ни одной проверки — берём PDF, но ошибки чтения Excel
+                # остаются в результате: запасной путь не должен их заглушать.
                 pdf = fv.find_report_file(report_date, "1", ".pdf")
                 rows = _pdf_report1_rows(pdf) if pdf else []
             out.extend(rows)
-        if "2" in wanted:
+            out.extend(errors)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("proverka: согласованность листов сводки 1 не посчитана")
+            out.append(_error_row("1", "сводка 1", f"{type(exc).__name__}: {exc}", "file"))
+    if "2" in wanted:
+        try:
             xlsx = fv.find_report_xlsx(report_date, "2")
             if xlsx:
                 out.extend(report2_sheet_check_rows(xlsx))
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("proverka: согласованность листов не посчитана")
+        except Exception as exc:
+            logging.getLogger(__name__).exception("proverka: согласованность листов сводки 2 не посчитана")
+            out.append(_error_row("2", "сводка 2", f"{type(exc).__name__}: {exc}", "file"))
     return out

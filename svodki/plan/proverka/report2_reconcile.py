@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
@@ -672,6 +674,46 @@ def _collect_all_wt_ids(ops: dict[str, dict[str, Any]]) -> list[int]:
     return sorted(out)
 
 
+logger = logging.getLogger(__name__)
+
+# Отмену пользователя (ProverkaCancelled / MachineProverkaCancelled) глотать нельзя:
+# иначе «Отмена» превратится в 15 «ошибок операций». Проверяем по имени класса,
+# чтобы не импортировать runner (он сам импортирует этот модуль).
+_CANCELLATION_NAMES = frozenset({"ProverkaCancelled", "MachineProverkaCancelled"})
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    return any(cls.__name__ in _CANCELLATION_NAMES for cls in type(exc).__mro__)
+
+
+def _operation_failure(
+    group_name: str,
+    source_report_id: str,
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Результат операции, которая упала с исключением, — вместо краха всей сверки.
+
+    Форма совместима с обычным результатом: нет ``comparison`` (не попадает в
+    ``operations_ok``), ``cropwise_work_report.ok`` ложно (попадает в
+    ``operations_error``). Флаг ``exception`` нужен, чтобы сводка нарушений
+    показала сбой, а не приняла его за «Cropwise недоступен, свод 0 га».
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    try:
+        canonical = canonical_cropwise_report(group_name)
+    except Exception:
+        canonical = None
+    return {
+        "group_name": group_name,
+        "canonical_report": canonical,
+        "svodka_source_report": source_report_id,
+        "exception": True,
+        "error": message,
+        "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:],
+        "cropwise_work_report": {"ok": False, "error": message, "exception": True},
+    }
+
+
 def reconcile_per_operation(
     spec: ReportSpec,
     report_date: date,
@@ -733,29 +775,52 @@ def reconcile_per_operation(
     workers = _max_op_workers(len(ops))
 
     def _run_one(group_name: str) -> tuple[str, dict[str, Any]]:
-        op = ops[group_name]
-        op_self = ops_local.get(group_name)
-        work_pref = (op_prefetch or {}).get(group_name) if op_prefetch else None
-        return group_name, _reconcile_one_operation(
-            group_name,
-            op,
-            source_report_id=spec.report_id,
-            report_date=report_date,
-            cookie=cookie,
-            firm_names=firm_names,
-            t0=t0,
-            t1=t1,
-            prefetched_work=work_pref,
-            run_override=run_override,
-            shift_cache=shift_cache,
-            op_local=op_self if group_name in canon_ops else None,
-        )
+        # Сбой одной операции из N не должен ронять всю сверку сводки:
+        # он записывается в результат этой операции (см. _operation_failure).
+        try:
+            op = ops[group_name]
+            op_self = ops_local.get(group_name)
+            work_pref = (op_prefetch or {}).get(group_name) if op_prefetch else None
+            return group_name, _reconcile_one_operation(
+                group_name,
+                op,
+                source_report_id=spec.report_id,
+                report_date=report_date,
+                cookie=cookie,
+                firm_names=firm_names,
+                t0=t0,
+                t1=t1,
+                prefetched_work=work_pref,
+                run_override=run_override,
+                shift_cache=shift_cache,
+                op_local=op_self if group_name in canon_ops else None,
+            )
+        except Exception as exc:
+            if _is_cancellation(exc):
+                raise
+            logger.exception(
+                "proverka r%s: сверка операции «%s» упала", spec.report_id, group_name,
+            )
+            return group_name, _operation_failure(group_name, spec.report_id, exc)
 
     if workers > 1 and len(ops) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_run_one, gn): gn for gn in sorted(ops.keys())}
             for fut in as_completed(futures):
-                gn, oc = fut.result()
+                name = futures[fut]
+                try:
+                    gn, oc = fut.result()
+                except Exception as exc:
+                    # Сюда попадает только то, что вырвалось мимо _run_one
+                    # (отмена пробрасывается выше намеренно).
+                    if _is_cancellation(exc):
+                        for other in futures:
+                            other.cancel()
+                        raise
+                    logger.exception(
+                        "proverka r%s: задача операции «%s» завершилась сбоем", spec.report_id, name,
+                    )
+                    gn, oc = name, _operation_failure(name, spec.report_id, exc)
                 operation_comparisons[gn] = oc
     else:
         for group_name in sorted(ops.keys()):
@@ -770,6 +835,8 @@ def reconcile_per_operation(
         1 for oc in operation_comparisons.values()
         if not (oc.get("cropwise_work_report") or {}).get("ok")
     )
+
+    exc_count = sum(1 for oc in operation_comparisons.values() if oc.get("exception"))
 
     merged_ops = dict(svodka_local.get("operations") or {})
     for gn, op_self in ops_local.items():
@@ -794,6 +861,7 @@ def reconcile_per_operation(
             "operations_total": len(operation_comparisons),
             "operations_ok": ok_count,
             "operations_error": err_count,
+            "operations_exception": exc_count,
         },
     }
 

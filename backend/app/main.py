@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.adapters.inbound.api.routers import (
     activity,
+    analytics,
     audit,
     auth,
     convert,
@@ -67,6 +68,7 @@ app.include_router(convert.router)
 app.include_router(schedule.router)
 app.include_router(audit.router)
 app.include_router(activity.router)
+app.include_router(analytics.router)
 app.include_router(summaries.router)
 app.include_router(page_order.router)
 app.include_router(field_season.router)

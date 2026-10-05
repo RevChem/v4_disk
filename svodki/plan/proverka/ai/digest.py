@@ -131,7 +131,7 @@ def _cross_check_crop_diffs(cross_rows: list[dict[str, Any]]) -> list[dict[str, 
 def _sheet_check_diffs(batch: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for chk in batch.get("sheet_checks") or []:
-        if chk.get("status") != "DIFF":
+        if chk.get("status") not in ("DIFF", "ERROR"):
             continue
         out.append({
             "report_id": chk.get("report_id"),
