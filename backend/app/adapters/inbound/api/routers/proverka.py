@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 
-from app.adapters.inbound.api.deps import get_client_ip, require_developer_access
+from app.adapters.inbound.api.deps import get_client_ip, require_developer_access, require_plans_access
 from app.adapters.outbound.persistence import repositories as repo
 from app.adapters.inbound.celery.tasks import (
     run_proverka_ai_task,
@@ -763,7 +763,7 @@ def post_cropwise_ask(
 def get_driver_work_people(
     date_from: date = Query(..., alias="date_from"),
     date_to: date = Query(..., alias="date_to"),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_plans_access),
 ):
     """Исполнители, у которых за период есть гектары в хранилище заданий."""
     try:
@@ -777,7 +777,7 @@ def get_driver_work(
     date_from: date = Query(..., alias="date_from"),
     date_to: date = Query(..., alias="date_to"),
     driver_id: int = Query(..., alias="driver_id", ge=1),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_plans_access),
 ):
     """День, агрофирма, поле, операция, гектары и ссылка на задание."""
     try:
