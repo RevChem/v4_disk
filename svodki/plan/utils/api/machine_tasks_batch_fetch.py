@@ -96,7 +96,14 @@ async def fetch_by_work_type_ids_async(
         except ImportError:
             _store = None
         if _store is not None:
-            return await _store.query_tasks(client, sem, wt_list, dict(base_params), log_prefix)
+            rows = await _store.query_tasks(client, sem, wt_list, dict(base_params), log_prefix)
+            try:
+                from season_mismatch_log import remember_tasks
+
+                remember_tasks(rows)  # раньше на этом пути не вызывался: проверки сезонов были слепы
+            except Exception:
+                pass
+            return rows
 
     base = dict(base_params or {})
     batches = _chunked(wt_list, WT_BATCH_SIZE)

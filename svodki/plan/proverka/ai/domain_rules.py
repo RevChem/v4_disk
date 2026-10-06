@@ -12,7 +12,8 @@ from proverka.task_errors import gosnumber_for, task_url
 
 _RULES_PATH = Path(__file__).resolve().parent / "rules.yaml"
 
-SILAGE_CORN_MOWING_WT_IDS = frozenset({74, 83, 84, 147, 149})
+# Только «6.3 Скашивание с измельчением кукурузы» (work_type 84).
+SILAGE_CORN_MOWING_WT_IDS = frozenset({84})
 CORN_SILAGE_CROP = "Кукуруза на силос"
 HARVEST_GROUP = "5.0 Уборка"
 

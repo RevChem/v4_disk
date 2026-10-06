@@ -1,6 +1,7 @@
 """Правки ячеек PDF-сводок."""
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,7 @@ from app.application.summary_pdf_layers import apply_future_comments_for_summary
 from app.application.summary_registry import report_id_from_title
 from app.database import get_db
 from app.infrastructure.logging import get_logger
+from app.legacy.json_store_io import store_rmw_lock
 from app.legacy.cell_edits_store import (
     cell_edits_store_path,
     delete_summary_cell_edit,
@@ -41,6 +43,18 @@ from app.schemas import (
 from fastapi import Request
 
 router = APIRouter(prefix="/summaries", tags=["summaries"])
+
+
+def _serialized(fn):
+    """Правки ячеек/комментариев — read-modify-write общего JSON: без сериализации параллельные
+    запросы теряют изменения друг друга."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with store_rmw_lock("summaries"):
+            return fn(*args, **kwargs)
+
+    return wrapper
 log = get_logger(__name__)
 
 
@@ -73,6 +87,7 @@ def get_summary_cell_edits(
 
 
 @router.put("/{summary_id}/cell-edits", response_model=SummaryCellEditsOut)
+@_serialized
 def save_summary_cell_edit(
     summary_id: int,
     payload: SummaryCellEditUpsertIn,
@@ -128,6 +143,7 @@ def save_summary_cell_edit(
 
 
 @router.delete("/{summary_id}/cell-edits/{edit_id}", response_model=SummaryCellEditsOut)
+@_serialized
 def delete_summary_cell_edit_route(
     summary_id: int,
     edit_id: str,
@@ -187,6 +203,7 @@ def get_summary_comments(
 
 
 @router.put("/{summary_id}/comments", response_model=SummaryCommentsOut)
+@_serialized
 def save_summary_comment(
     summary_id: int,
     payload: SummaryCommentUpsertIn,
@@ -242,6 +259,7 @@ def save_summary_comment(
 
 
 @router.put("/{summary_id}/comments/future", response_model=SummaryCommentsOut)
+@_serialized
 def toggle_summary_comment_future(
     summary_id: int,
     payload: SummaryCommentFutureToggleIn,
@@ -279,6 +297,7 @@ def toggle_summary_comment_future(
 
 
 @router.delete("/{summary_id}")
+@_serialized
 def delete_summary_route(
     summary_id: int,
     request: Request,
@@ -317,6 +336,7 @@ def delete_summary_route(
 
 
 @router.delete("/{summary_id}/comments/{comment_id}", response_model=SummaryCommentsOut)
+@_serialized
 def delete_summary_comment_route(
     summary_id: int,
     comment_id: str,

@@ -71,21 +71,19 @@ def area_today_by_firm_from_store(
 
     ts_from = day_start.timestamp()
     ts_to = cutoff.timestamp()
-    for wt, mid, fid, end_day, cov in store.flat_facts(wts, ts_from, ts_to):
-        if end_day != d0 or cov <= 0:
-            continue
-        try:
-            fid_i = int(fid) if fid is not None else None
-        except (TypeError, ValueError):
-            fid_i = None
-        if fid_i is None or not field_ok(fid_i):
-            continue
-        if task_seasons is not None:
-            # flat_facts не фильтрует season в SQL — отсечём по tasks при необходимости позже;
-            # для shadow достаточно без season на flat (редкие строки без hourly).
-            pass
-        key = (int(wt), mid if mid is None else int(mid), fid_i)
-        field_ha[key] += float(cov)
+    for season in seasons:
+        kw = {"season": season} if season is not None else {}
+        for wt, mid, fid, end_day, cov in store.flat_facts(wts, ts_from, ts_to, **kw):
+            if end_day != d0 or cov <= 0:
+                continue
+            try:
+                fid_i = int(fid) if fid is not None else None
+            except (TypeError, ValueError):
+                fid_i = None
+            if fid_i is None or not field_ok(fid_i):
+                continue
+            key = (int(wt), mid if mid is None else int(mid), fid_i)
+            field_ha[key] += float(cov)
 
     machine_totals: dict[tuple[int, int | None], float] = defaultdict(float)
     for (wt, mid, _fid), ha in field_ha.items():

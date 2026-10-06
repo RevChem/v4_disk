@@ -1,6 +1,8 @@
 """Настройки интерфейса пользователя (тема и фон) — uploads/_interface/{user_id}/."""
 from __future__ import annotations
 
+from app.legacy.json_store_io import atomic_write_text, read_json_dict
+
 import base64
 import json
 import re
@@ -46,9 +48,7 @@ def load_user_settings(user_id: int) -> dict[str, Any]:
 def _save_user_settings(user_id: int, data: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_interface_settings(data)
     path = settings_path(user_id)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(normalized, ensure_ascii=False, indent=2))
     return normalized
 
 

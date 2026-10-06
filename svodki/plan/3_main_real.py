@@ -1498,7 +1498,20 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             all_details[firm_name],
         )
 
+    daily_total_ha = round(
+        sum(float((all_details.get(f) or {}).get("area_today") or 0) for f in firm_names),
+        2,
+    )
     wb.save(output_file)
+    try:
+        from svodki_sanity import emit_calc_total_ha, publish_cross_op_snapshot
+
+        emit_calc_total_ha(daily_total_ha)
+        publish_cross_op_snapshot(
+            {"1.1 Внесение минеральных удобрений": daily_total_ha},
+        )
+    except Exception:
+        pass
     print(f"\nСохранено: {output_file}")
 
 

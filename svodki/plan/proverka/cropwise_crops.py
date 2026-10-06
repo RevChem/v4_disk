@@ -31,12 +31,13 @@ def seasons_missing_from_ui(
 
     Годы, которых нет в плане, не добавляем: один сезон в редакторе
     проверяется отдельно, даже если в смене встретился другой год.
+    Поэтому при пустом списке сезонов плана результат всегда пустой.
+    Параметр seasons_in_shift сохранён только для совместимости вызовов
+    и на результат не влияет.
     """
-    _ = seasons_in_shift
+    del seasons_in_shift  # намеренно не используется (см. docstring)
     years = [str(int(y)) for y in (task_years or [])]
     if not years:
-        if not ui_has_crops and seasons_in_shift:
-            return [str(y) for y in seasons_in_shift if str(y)]
         return []
     if not ui_has_crops:
         return years

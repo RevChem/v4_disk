@@ -150,7 +150,7 @@ def _donor_catalog_for_ui(mod) -> list[dict[str, Any]]:
     """Каталог сводок-доноров с типичными страницами для подстановки."""
     from app.legacy.report_generation import list_report_catalog_for_ui
 
-    skip = frozenset({"1", "1.18"})
+    skip = frozenset({"1"})
     hints = getattr(mod, "DONOR_PAGE_HINTS", {})
     common = frozenset(getattr(mod, "COMMON_GRAFT_DONOR_IDS", ()))
     out: list[dict[str, Any]] = []

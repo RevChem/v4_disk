@@ -16,8 +16,6 @@ from typing import Any
 from app.config import settings
 
 _REPORT_ID_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
-# Сводка 1.18 без собственного конфига наследует порядок сводки 1 (как раньше).
-_LEGACY_SHARED_FROM = {"1.18": "1"}
 
 
 def normalize_report_id(report_id: str | None) -> str:
@@ -83,14 +81,8 @@ def load_config(report_id: str | None = "1") -> dict:
 
 
 def resolve_config_report_id(report_id: str | None) -> str:
-    """Id конфига для применения: 1.18 без своего файла → конфиг «1»."""
-    rid = normalize_report_id(report_id)
-    if has_custom_order(rid):
-        return rid
-    shared_from = _LEGACY_SHARED_FROM.get(rid)
-    if shared_from and has_custom_order(shared_from):
-        return shared_from
-    return rid
+    """Id конфига для применения (нормализованный id сводки)."""
+    return normalize_report_id(report_id)
 
 
 def _normalize_int_list(values: list[int] | None) -> list[int]:
@@ -313,8 +305,6 @@ def _donor_catalog(master_report_id: str = "1") -> list[dict[str, Any]]:
     hints, common = _donor_layout_hints()
     master = normalize_report_id(master_report_id)
     skip = {master}
-    if master == "1":
-        skip.add("1.18")
     out: list[dict[str, Any]] = []
     for row in list_report_catalog_for_ui():
         rid = str(row.get("id") or "").strip()

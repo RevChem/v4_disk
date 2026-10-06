@@ -823,6 +823,12 @@ def main() -> int:
 
     if len(report_ids) > 1:
         all_results["cross_check"] = build_cross_check(all_results)
+        try:
+            from svodki_sanity import log_cross_op_data_check
+
+            log_cross_op_data_check(all_results)
+        except Exception:
+            pass
         batch_path = out_dir / f"reconcile_all_{report_date.isoformat()}.json"
         batch_path.write_text(json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\nСводный JSON: {batch_path}")

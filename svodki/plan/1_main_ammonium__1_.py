@@ -323,10 +323,9 @@ def _group_period_start(group_name: str) -> date:
         return date(REPORT_DATE.year, 1, 1)
 
 
-def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
-    from mtfmi_batch_fetch import crop_of_field
-
-    crop = crop_of_field(fid_i, field_to_crop.get(fid_i) or "")
+def _row_matches_group_crop(group_name: str, item: dict) -> bool:
+    """Овощное опрыскивание и уборка зерна отделяются культурой строки."""
+    crop = _history_crop(item)
     if group_name == SPRAY_GROUP_NAME:
         return bool(crop and crop not in VEG_SPRAY_CROPS)
     if group_name == VEG_SPRAY_GROUP_NAME:
@@ -338,22 +337,10 @@ def _spray_item_allowed(group_name: str, fid_i: int) -> bool:
 
 def _spray_field_ok(fid_i: int, group_name: str) -> bool:
     # Вспашка/глубокорыхление — все поля с фирмой (как 2_main / сводка 9), без available.
-    if group_name not in TILLAGE_GROUPS:
-        if group_name in SPRAY_TASK_GROUPS:
-            # Опрыскивание (3.1/3.2) в сводке 1 — только общий итог по
-            # агрофирме (деление по культурам нужно лишь чтобы отличить
-            # «овощное» от обычного, см. _spray_item_allowed). available_field_ids
-            # построен под окно группы «1.1» (Внесение МУ) — здесь он не
-            # применим и лишь отсекает реально обработанные поля,
-            # занижая итог по агрофирме.
-            if fid_i not in field_to_crop:
-                return False
-        else:
-            if fid_i not in available_field_ids:
-                return False
-            if fid_i not in field_to_crop:
-                return False
-    return _spray_item_allowed(group_name, fid_i)
+    # Культура строки не требует членства поля в карте культур.
+    if group_name in TILLAGE_GROUPS or group_name in SPRAY_TASK_GROUPS:
+        return True
+    return fid_i in available_field_ids
 
 
 def _item_area_upto_cutoff(item: dict, t_to: datetime) -> float:
@@ -1145,12 +1132,34 @@ def _build_fert_field_to_crop(years: list[int]) -> None:
     )
 
 
-def fert_crop_name(fid: int) -> str:
-    """Культура 1.1 — сначала карта history (её строит load_reference_data).
+def _history_crop(item: dict | None) -> str:
+    """Культура строки работы: только mtfmi.history_item_id."""
+    if not item:
+        return ""
+    from mtfmi_batch_fetch import crop_of_item
 
-    crop_of_field читает глобальные голоса mtfmi. Пока группы качаются параллельно
-    с 1.1, эти голоса ещё неполные и меняют факт по культурам от прогона к прогону.
-    """
+    return str(crop_of_item(item, "") or "")
+
+
+def _history_crop_for_field_items(items: list[dict], fid: int) -> str:
+    """Первая культура history_item среди строк этого поля в задании."""
+    for item in items:
+        raw = item.get("field_id")
+        if raw is None:
+            continue
+        try:
+            if int(raw) != int(fid):
+                continue
+        except (TypeError, ValueError):
+            continue
+        name = _history_crop(item)
+        if name:
+            return name
+    return "Не определена"
+
+
+def fert_crop_name(fid: int) -> str:
+    """Устаревшая культура поля. Факт сводки берёт _history_crop строки."""
     from mtfmi_batch_fetch import crop_of_field
 
     name = fert_field_to_crop.get(int(fid))
@@ -1490,6 +1499,11 @@ async def fetch_fertilizer_11_mtfmi(
         fid_i = int(fid)
         field_area_map[fid_i] = f.get("tillable_area") or f.get("calculated_area") or 0.0
         field_name_map[fid_i] = f.get("name") or f.get("title") or f"field_{fid_i}"
+    try:
+        from svodki_sanity import register_field_areas as _reg_fa
+        _reg_fa(field_area_map)
+    except ImportError:
+        pass
     # merge_firm_map=True — когда группы качаются параллельно с 1.1: вызывающий один раз
     # сбрасывает карту (reset_field_firm_resolution) до старта, иначе полный пересбор
     # здесь затёр бы поля, уже домерженные группами. По умолчанию — прежнее поведение.
@@ -1511,6 +1525,9 @@ async def fetch_fertilizer_11_mtfmi(
     season_field_cov: dict[str, dict[int, float]] = {
         firm: defaultdict(float) for firm in AGROFIRMS
     }
+    season_crop_cov: dict[str, dict[str, float]] = {
+        firm: defaultdict(float) for firm in AGROFIRMS
+    }
     cmp_mtfmi: dict[int, float] = defaultdict(float)
 
     # --- Сутки: как 3_main build_all_firm_stats (tasks_today) ---
@@ -1530,8 +1547,6 @@ async def fetch_fertilizer_11_mtfmi(
             if fid is None:
                 continue
             fid_i = int(fid)
-            if fid_i not in crop_field_ids:
-                continue
             firm = get_firm_for_field(fid_i)
             if firm:
                 firm_items[firm].append(item)
@@ -1598,13 +1613,16 @@ async def fetch_fertilizer_11_mtfmi(
                 pm[mid]["speeds"].append(sp)
             for fid, fid_cov in field_cov_today.items():
                 pm[mid]["field_cov"][fid] += fid_cov
+                crop_name = _history_crop_for_field_items(f_items, int(fid))
+                pm[mid].setdefault("crop_cov", defaultdict(float))
+                pm[mid]["crop_cov"][crop_name] += fid_cov
                 if _cap is not None and fid_cov > 0:
                     mrec = machines_map.get(mid) or {}
                     _cap[1](
                         (WORK_TYPE_NAME, firm, mid),
                         group=WORK_TYPE_NAME,
                         firm=firm,
-                        crop=fert_crop_name(int(fid)),
+                        crop=crop_name,
                         field_id=int(fid),
                         field=str(field_name_map.get(int(fid)) or ""),
                         task_id=int(t["id"]),
@@ -1641,8 +1659,6 @@ async def fetch_fertilizer_11_mtfmi(
             if fid is None:
                 continue
             fid_i = int(fid)
-            if fid_i not in crop_field_ids:
-                continue
             firm = get_firm_for_field(fid_i)
             if not firm:
                 continue
@@ -1659,6 +1675,7 @@ async def fetch_fertilizer_11_mtfmi(
             # Факт по культурам — дни строго до даты отчёта (листы сводки).
             if shift_date < REPORT_DATE:
                 season_field_cov[firm][fid_i] += cov
+                season_crop_cov[firm][_history_crop(item) or "Не определена"] += cov
                 if collect_debug_sheets:
                     cmp_mtfmi[fid_i] += cov
 
@@ -1679,12 +1696,9 @@ async def fetch_fertilizer_11_mtfmi(
 
     fact_total: dict[str, dict[str, float]] = {}
     for firm in AGROFIRMS:
-        fact_by_crop: dict[str, float] = defaultdict(float)
-        for fid, cov in season_field_cov[firm].items():
-            crop = fert_crop_name(fid)
-            if crop:
-                fact_by_crop[crop] += cov
-        fact_total[firm] = {c: round(v, 4) for c, v in fact_by_crop.items()}
+        fact_total[firm] = {
+            c: round(v, 4) for c, v in season_crop_cov[firm].items() if v
+        }
 
     season_cov_total = sum(sum(by_fid.values()) for by_fid in season_field_cov.values())
     print(
@@ -1711,9 +1725,12 @@ async def fetch_fertilizer_11_mtfmi(
             if fid_cov <= 0 or get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
-            crop = fert_crop_name(fid)
-            if crop:
-                area_by_crop[crop] += fid_cov
+        for mid, d in pm.items():
+            if round(d["cov_total"], 2) < MIN_DETAIL_AREA_HA:
+                continue
+            for crop, ha in (d.get("crop_cov") or {}).items():
+                if ha:
+                    area_by_crop[crop] += ha
 
         if not pm:
             empty = _empty_stats()
@@ -1829,6 +1846,20 @@ async def fetch_fertilizer_11_mtfmi(
         all_fert_ops: list[dict] = []
         today_ops_area_by_field: dict[int, float] = defaultdict(float)
  
+        from mtfmi_batch_fetch import crop_of_history_id, remember_history_crops
+
+        hist_ids = {
+            int(op["history_item_id"])
+            for op in ops
+            if op.get("history_item_id") is not None
+        }
+        if hist_ids:
+            await remember_history_crops(
+                client, BASE_URL,
+                {0: [{"history_item_id": hid} for hid in hist_ids]},
+                sem,
+            )
+
         for op in ops:
             op_id = op.get("id")
             if op_id and op_id in seen_op_ids:
@@ -1839,7 +1870,7 @@ async def fetch_fertilizer_11_mtfmi(
             field_id = op.get("field_id")
             if not field_id:
                 continue
-            crop = fert_crop_name(int(field_id))
+            crop = crop_of_history_id(op.get("history_item_id"))
             if crop not in FERT_TABLE_CROPS:
                 continue
             firm = get_firm_for_field(field_id)
@@ -2229,6 +2260,11 @@ async def _fetch_day_stats_for_work_types_impl(
             fid_i = int(fid)
             field_area_map[fid_i] = f.get("tillable_area") or f.get("calculated_area") or 0.0
             field_name_map[fid_i] = f.get("name") or f.get("title") or f"field_{fid_i}"
+        try:
+            from svodki_sanity import register_field_areas as _reg_fa
+            _reg_fa(field_area_map)
+        except ImportError:
+            pass
         _rebuild_field_firm_resolution(
             fields_all, get_all_page("field_groups"), merge=True,
         )
@@ -2237,28 +2273,23 @@ async def _fetch_day_stats_for_work_types_impl(
 
     from task_area_shared import task_cov_by_firm, task_field_cov_for_firm
 
-    def _task_item_allowed(fid_i: int) -> bool:
-        return _spray_item_allowed(group_name, fid_i)
+    def _task_row_allowed(item: dict) -> bool:
+        return _row_matches_group_crop(group_name, item)
 
     def _task_field_ok(fid_i: int) -> bool:
         return _spray_field_ok(fid_i, group_name)
 
     def _field_allowed_for_item(fid_i: int) -> bool:
-        # Вспашка — все поля с фирмой (без available); остальные — available + культура.
+        # Вспашка — все поля с фирмой (без available). Культура строки не отсекает поле.
         if is_plow or group_name in TILLAGE_GROUPS:
             return bool(get_firm_for_field(fid_i))
         if group_name in FACT_BY_ALL_FIELDS_GROUPS:
             return bool(get_firm_for_field(fid_i))
         if group_name in FIRM_ONLY_NO_CROP_GROUPS:
-            # Сводка 1 показывает эту группу только итогом по агрофирме
-            # (без разбивки по культурам) — available_field_ids/field_to_crop
-            # от группы «1.1» здесь не применимы, см. FIRM_ONLY_NO_CROP_GROUPS.
             return bool(get_firm_for_field(fid_i))
         if fid_i not in available_field_ids:
             return False
-        if fid_i not in field_to_crop:
-            return False
-        return _spray_item_allowed(group_name, fid_i)
+        return True
 
     # --- Сезонная статистика и машины ---
     # Сырые площади по машине-дню; финальная площадь — после порога (как _flush_area_from_machines).
@@ -2322,7 +2353,7 @@ async def _fetch_day_stats_for_work_types_impl(
                     field_ok=_task_field_ok,
                     firm_for_field=get_firm_for_field,
                     parse_dt=parse_dt,
-                    item_allowed=_task_item_allowed,
+                    row_allowed=_task_row_allowed,
                 )
                 for firm, cov_firm in firm_cov_season.items():
                     if cov_firm <= 0 or mid is None:
@@ -2339,7 +2370,7 @@ async def _fetch_day_stats_for_work_types_impl(
                         field_ok=_task_field_ok,
                         firm_for_field=get_firm_for_field,
                         parse_dt=parse_dt,
-                        item_allowed=_task_item_allowed,
+                        row_allowed=_task_row_allowed,
                     )
                     for fid, fcov in field_cov.items():
                         if fcov > 0:
@@ -2356,7 +2387,7 @@ async def _fetch_day_stats_for_work_types_impl(
                     field_ok=_task_field_ok,
                     firm_for_field=get_firm_for_field,
                     parse_dt=parse_dt,
-                    item_allowed=_task_item_allowed,
+                    row_allowed=_task_row_allowed,
                 )
                 if firm_cov_today:
                     work_dur = t.get("work_duration") or 0
@@ -2390,19 +2421,19 @@ async def _fetch_day_stats_for_work_types_impl(
                             field_ok=_task_field_ok,
                             firm_for_field=get_firm_for_field,
                             parse_dt=parse_dt,
-                            item_allowed=_task_item_allowed,
+                            row_allowed=_task_row_allowed,
                         )
                         for fid, fcov in field_cov.items():
                             pm[mid]["field_cov"][fid] += fcov
+                            pm[mid].setdefault("crop_cov", defaultdict(float))
+                            pm[mid]["crop_cov"][_history_crop_for_field_items(items, int(fid))] += fcov
                             if _cap is not None and fcov > 0:
-                                from mtfmi_batch_fetch import crop_of_field
-
                                 mrec = machines_map.get(mid) or {}
                                 _cap[1](
                                     (group_name, firm, mid),
                                     group=group_name,
                                     firm=firm,
-                                    crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
+                                    crop=_history_crop_for_field_items(items, int(fid)),
                                     field_id=int(fid),
                                     task_id=int(t["id"]),
                                     machine_id=int(mid) if mid is not None else None,
@@ -2428,6 +2459,8 @@ async def _fetch_day_stats_for_work_types_impl(
                 continue
             fid_i = int(fid)
             if not _field_allowed_for_item(fid_i):
+                continue
+            if not _row_matches_group_crop(group_name, item):
                 continue
             firm = get_firm_for_field(fid_i)
             if not firm:
@@ -2555,15 +2588,17 @@ async def _fetch_day_stats_for_work_types_impl(
             for fid, fid_cov in field_cov_today.items():
                 if fid_cov > 0:
                     pm[mid]["field_cov"][fid] += fid_cov
+                    pm[mid].setdefault("crop_cov", defaultdict(float))
+                    pm[mid]["crop_cov"][
+                        _history_crop_for_field_items([it for it, _c in fitems_cov], int(fid))
+                    ] += fid_cov
                     if _cap is not None:
-                        from mtfmi_batch_fetch import crop_of_field
-
                         mrec = machines_map.get(mid) or {}
                         _cap[1](
                             (group_name, firm, mid),
                             group=group_name,
                             firm=firm,
-                            crop=crop_of_field(int(fid), str(field_to_crop.get(int(fid)) or "")),
+                            crop=_history_crop_for_field_items(items, int(fid)),
                             field_id=int(fid),
                             task_id=int(t["id"]),
                             machine_id=int(mid) if mid is not None else None,
@@ -2598,6 +2633,8 @@ async def _fetch_day_stats_for_work_types_impl(
                     continue
                 fid_i = int(fid)
                 if not _field_allowed_for_item(fid_i):
+                    continue
+                if not _row_matches_group_crop(group_name, item):
                     continue
                 firm = get_firm_for_field(fid_i)
                 if not firm:
@@ -2738,11 +2775,17 @@ async def _fetch_day_stats_for_work_types_impl(
             if get_firm_for_field(fid) != firm:
                 continue
             today_by_field[fid] += fid_cov
-            from mtfmi_batch_fetch import crop_of_field
-
-            crop = crop_of_field(fid, field_to_crop.get(fid) or "")
-            if crop:
-                area_by_crop[crop] += fid_cov
+        for mid, d in pm.items():
+            qualifies = (
+                float(d.get("grain_area") or 0) > 0
+                if is_harvest
+                else _machine_qualifies_for_area(d["cov_total"], 0.0 if is_plow else area_min_ha)
+            )
+            if not qualifies:
+                continue
+            for crop, ha in (d.get("crop_cov") or {}).items():
+                if ha:
+                    area_by_crop[crop] += ha
 
         harvest_mids: set[int] = set()
         if is_harvest and harvest_perf_10 is not None:
@@ -4044,7 +4087,7 @@ def write_comparison_sheet(
         diff       = round(agro_area - mtfmi_area, 2)
 
         firm  = agro_entry["firm"] if agro_entry else get_firm_for_field(fid)
-        crop  = agro_entry["crop"] if agro_entry else fert_crop_name(fid)
+        crop  = agro_entry["crop"] if agro_entry else "Не определена"
         fname = field_name_map.get(fid, f"field_{fid}")
         farea = round(field_area_map.get(fid, 0.0), 2)
         ops_list = agro_entry.get("ops", []) if agro_entry else []

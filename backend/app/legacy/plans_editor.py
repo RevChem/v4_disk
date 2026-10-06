@@ -1,9 +1,12 @@
 """Редактор планов: база из svodki/plan/plans.py, правки только в JSON."""
 from __future__ import annotations
 
+from app.legacy.json_store_io import atomic_write_text, read_json_dict, serialized_rmw
+
 import importlib.util
 import json
 import sys
+import threading
 import uuid
 from copy import deepcopy
 from datetime import date
@@ -175,7 +178,35 @@ def fetch_work_types_catalog() -> list[dict[str, Any]]:
     return out
 
 
+_BASE_CACHE: dict[str, Any] = {"key": None, "value": None}
+_BASE_CACHE_LOCK = threading.Lock()
+
+
+def _base_cache_key() -> tuple[str, int, int] | None:
+    plans_path = _svodki_plan_dir() / "plans.py"
+    try:
+        st = plans_path.stat()
+    except OSError:
+        return None
+    return (str(plans_path), st.st_mtime_ns, st.st_size)
+
+
 def extract_base_plans() -> dict[str, Any]:
+    """База из plans.py. Кэшируется по mtime файла: plans.py исполняется только при изменении."""
+    key = _base_cache_key()
+    if key is not None:
+        with _BASE_CACHE_LOCK:
+            if _BASE_CACHE["key"] == key and _BASE_CACHE["value"] is not None:
+                return deepcopy(_BASE_CACHE["value"])
+    value = _extract_base_plans_uncached()
+    if key is not None:
+        with _BASE_CACHE_LOCK:
+            _BASE_CACHE["key"] = key
+            _BASE_CACHE["value"] = deepcopy(value)
+    return value
+
+
+def _extract_base_plans_uncached() -> dict[str, Any]:
     mod = _load_plans_module()
     base: dict[str, Any] = {}
     for key in EDITABLE_KEYS:
@@ -210,14 +241,8 @@ def plans_edits_path() -> Path:
 
 
 def load_edits_store() -> dict[str, Any]:
-    path = _resolve_edits_path()
-    if not path.is_file():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
+    raw = read_json_dict(_resolve_edits_path(), label="plans_edits")
+    if not raw:
         return {}
     out: dict[str, Any] = {}
     for key in EDITABLE_KEYS:
@@ -241,9 +266,7 @@ def save_edits_store(data: dict[str, Any]) -> Path:
                 cleaned[key] = _serialize_work_groups(val)
         elif isinstance(val, dict) and val:
             cleaned[key] = val
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(cleaned, ensure_ascii=False, indent=2))
     return path
 
 
@@ -358,7 +381,11 @@ def _prune_nested_3(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any
 
 
 def _prune_nested_3_int(base: dict[str, Any], cand: dict[str, Any]) -> dict[str, Any]:
-    """Как nested_3, но значения — int (флаги скрытия). 0 не храним."""
+    """Как nested_3, но значения — int-флаги скрытия.
+
+    1 храним, если в базе флага нет; 0 храним ТОЛЬКО если в базе стоит 1
+    (иначе нельзя снять скрытие, заданное в plans.py — deep-merge ничего не удаляет).
+    """
     out: dict[str, Any] = {}
     for g, firms in cand.items():
         if not isinstance(firms, dict):
@@ -372,18 +399,16 @@ def _prune_nested_3_int(base: dict[str, Any], cand: dict[str, Any]) -> dict[str,
             f_out: dict[str, Any] = {}
             for crop, val in crops.items():
                 try:
-                    iv = int(val)
+                    iv = 1 if int(val) > 0 else 0
                 except (TypeError, ValueError):
-                    continue
-                if iv <= 0:
                     continue
                 base_v = base_crops.get(crop)
                 try:
-                    base_i = int(base_v) if base_v is not None else 0
+                    base_i = 1 if (base_v is not None and int(base_v) > 0) else 0
                 except (TypeError, ValueError):
                     base_i = 0
                 if base_i != iv:
-                    f_out[str(crop)] = 1
+                    f_out[str(crop)] = iv
             if f_out:
                 g_out[str(firm)] = f_out
         if g_out:
@@ -412,6 +437,7 @@ def get_editor_state(report_date: date | None = None) -> dict[str, Any]:
     }
 
 
+@serialized_rmw(name="plans_edits")
 def set_plan_value(
     section_key: str,
     keys: list[str],
@@ -424,8 +450,7 @@ def set_plan_value(
     if section_key in LIST_EDITABLE_KEYS:
         raise ValueError(f"Секция {section_key} редактируется отдельным API (work-groups).")
 
-    state = get_editor_state(report_date)
-    base = state["base"]
+    base = extract_base_plans()["base"]
     edits = deepcopy(load_edits_store())
     effective = merge_plans(base, edits)
 
@@ -450,15 +475,8 @@ def set_plan_value(
             raise ValueError("Для CROP_FIRM_HIDDEN нужны keys: [группа, фирма, культура]")
         g, firm, crop = keys
         flag = 1 if int(round(float(value))) > 0 else 0
-        firm_map = sec_eff.setdefault(g, {}).setdefault(firm, {})
-        if flag > 0:
-            firm_map[crop] = 1
-        else:
-            firm_map.pop(crop, None)
-            if not firm_map:
-                sec_eff.get(g, {}).pop(firm, None)
-            if isinstance(sec_eff.get(g), dict) and not sec_eff.get(g):
-                sec_eff.pop(g, None)
+        # 0 сохраняем в effective: _prune_nested_3_int решит, нужен ли он (есть ли 1 в базе).
+        sec_eff.setdefault(g, {}).setdefault(firm, {})[crop] = flag
     else:
         if len(keys) != 1:
             raise ValueError(f"Для {section_key} нужен keys: [ключ]")
@@ -470,12 +488,19 @@ def set_plan_value(
     return get_editor_state(report_date)
 
 
+@serialized_rmw(name="plans_edits")
 def set_work_groups(groups: list[dict[str, Any]], report_date: date | None = None) -> dict[str, Any]:
     normalized = _serialize_work_groups(groups)
     if not normalized:
         raise ValueError("Добавьте хотя бы одну группу работ.")
-    state = get_editor_state(report_date)
-    base = state["base"]
+    seen_names: set[str] = set()
+    for g in normalized:
+        key = str(g["name"]).strip().casefold()
+        if key in seen_names:
+            raise ValueError(f"Название группы повторяется: «{g['name']}».")
+        seen_names.add(key)
+        g["ids"] = list(dict.fromkeys(int(x) for x in g["ids"]))
+    base = extract_base_plans()["base"]
     edits = deepcopy(load_edits_store())
     effective = merge_plans(base, edits)
     effective["WORK_GROUPS"] = normalized
@@ -489,7 +514,7 @@ def write_effective_plans_edits_for_generation(dest: Path) -> Path | None:
     if not edits:
         return None
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps(edits, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(dest, json.dumps(edits, ensure_ascii=False))
     return dest
 
 

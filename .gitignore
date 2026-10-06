@@ -29,3 +29,7 @@ compare_report*.json
 # Ручные бэкапы скриптов
 *.bak*
 *.bak_before_*
+
+# Редакторские/ручные копии
+*.save
+frontend/dist/

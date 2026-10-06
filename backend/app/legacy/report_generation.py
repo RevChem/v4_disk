@@ -56,14 +56,14 @@ def _keep_published_summary(
     True — не трогать уже опубликованную сводку.
     Ручная генерация (replace_visible_summaries=True) пересобирает выбранные отчёты.
     Фоновые задачи (расписание, почта) не перезаписывают опубликованное.
-    Сводку 1/1.18 не меняют доноры, если 1 не входит в запрос.
+    Сводку 1 не меняют доноры, если 1 не входит в запрос.
     """
     if _allow_replace_visible_summaries():
         return False
     rid = str(report_id or "").strip()
     if not replace_visible_summaries:
         return True
-    if rid in {"1", "1.18"}:
+    if rid in {"1"}:
         return rid not in requested_report_ids
     return False
 
@@ -111,13 +111,17 @@ _pdf_convert_semaphore: threading.BoundedSemaphore | None = None
 _pdf_convert_semaphore_size = 0
 
 
+_pdf_convert_semaphore_lock = threading.Lock()
+
+
 def _get_pdf_convert_semaphore() -> threading.BoundedSemaphore:
     global _pdf_convert_semaphore, _pdf_convert_semaphore_size
     n = _pdf_convert_max_workers()
-    if _pdf_convert_semaphore is None or _pdf_convert_semaphore_size != n:
-        _pdf_convert_semaphore = threading.BoundedSemaphore(n)
-        _pdf_convert_semaphore_size = n
-    return _pdf_convert_semaphore
+    with _pdf_convert_semaphore_lock:
+        if _pdf_convert_semaphore is None or _pdf_convert_semaphore_size != n:
+            _pdf_convert_semaphore = threading.BoundedSemaphore(n)
+            _pdf_convert_semaphore_size = n
+        return _pdf_convert_semaphore
 
 # Только одна пачка генерации одновременно — иначе параллельные prefetch + скрипты
 # перегружают Cropwise API (429 Too Many Requests).
@@ -186,7 +190,7 @@ def _report1_hybrid_own_lane() -> bool:
 
 
 def _report1_run_first_enabled() -> bool:
-    """Сводка 1 / 1.18 — отдельный ранний этап (не хвост после 3–8).
+    """Сводка 1 — отдельный ранний этап (не хвост после 3–8).
 
     SVODKI_REPORT1_RUN_FIRST=0 — старое поведение (fast-path: 1 после доноров).
     Не задано — включено при SVODKI_REPORT1_STANDALONE=1.
@@ -203,7 +207,7 @@ def _report1_uses_prefetch_json(cfg: ReportConfig | ResolvedReportConfig) -> boo
     """Сводка 1 v2 использует единый prefetch (legacy 1 — живой mtfmi для 1.1 МУ)."""
     if _report1_standalone_enabled():
         return False
-    return _cfg_id_norm(cfg) in {"1", "1.18"} and _report1_v2_script_enabled()
+    return _cfg_id_norm(cfg) in {"1"} and _report1_v2_script_enabled()
 
 
 def _uses_unified_prefetch_data(cfg: ReportConfig | ResolvedReportConfig) -> bool:
@@ -215,17 +219,17 @@ def _uses_unified_prefetch_data(cfg: ReportConfig | ResolvedReportConfig) -> boo
     """
     if not _env_flag(USE_PREFETCH_DATA_ENV_VAR, False):
         return False
-    if _report1_standalone_enabled() and _cfg_id_norm(cfg) in {"1", "1.18"}:
+    if _report1_standalone_enabled() and _cfg_id_norm(cfg) in {"1"}:
         return False
     if _report1_uses_prefetch_json(cfg):
         return True
     return _cfg_id_norm(cfg) not in {
-        "1", "1.18", "2", "14", "22", "23", "24", "25", "26", "27", "27.1",
+        "1", "2", "14", "22", "23", "24", "25", "26", "27", "27.1",
     }
 
 
 # Отчёты с той же структурой Excel/PDF, что «1» (шапки по листам, manual row breaks).
-_REPORT1_FAMILY_IDS: frozenset[str] = frozenset({"1", "1.18"})
+_REPORT1_FAMILY_IDS: frozenset[str] = frozenset({"1"})
 # Сводки 3–9: page setup (fitToWidth, поля, fitToHeight=0) задаётся в _prepare_xlsx_for_pdf;
 # авто-высота строк там для них уже отключена. Без prepare LO режет широкие листы по колонкам.
 _FAST_PDF_PREP_SKIP_IDS: frozenset[str] = frozenset()
@@ -409,6 +413,71 @@ def _season_mismatch_log_lines(stdout: str, title: str) -> list[str]:
         out.append(f"[{title}] {text}")
         if len(out) >= 80:
             break
+    return out
+
+
+def _data_check_log_lines(stdout: str, title: str) -> list[str]:
+    """Строки DATA_CHECK из всего stdout. Служебный маркер суммы в лог не кладём."""
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if "DATA_CHECK" not in text or text.startswith("DATA_CHECK_CALC_TOTAL="):
+            continue
+        out.append(f"[{title}] {text}")
+        if len(out) >= 80:
+            break
+    return out
+
+
+def _append_script_stdout_logs(logs: list[str], stdout: str, title: str, *, tail: int) -> list[str]:
+    """Сезоны и DATA_CHECK — целиком; остальной хвост скрипта — как раньше, без дублей."""
+    checks = _data_check_log_lines(stdout, title)
+    if not (stdout or "").strip():
+        return checks
+    logs.extend(_season_mismatch_log_lines(stdout, title))
+    logs.extend(checks)
+    logs.extend(
+        f"[{title}] {line}"
+        for line in stdout.splitlines()[-tail:]
+        if line.strip() and "SEASON_MISMATCH" not in line and "DATA_CHECK" not in line
+    )
+    return checks
+
+
+def _data_check_sanity_dir(report_date: date) -> Path:
+    return Path(settings.upload_dir) / report_date.isoformat() / ".data_check" / "sanity"
+
+
+def save_generation_data_checks(report_date: date, report_id: str, lines: list[str]) -> None:
+    """WARN/CRIT при создании сводки — файл, который читает «Проверка сводок»."""
+    folder = _data_check_sanity_dir(report_date)
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^0-9A-Za-z._-]+", "_", str(report_id)) or "report"
+    path = folder / f"{safe}.json"
+    alerts = [ln for ln in lines if "[CRIT]" in ln or "[WARN]" in ln]
+    if not alerts:
+        path.unlink(missing_ok=True)
+        return
+    path.write_text(
+        json.dumps({"report_id": str(report_id), "lines": alerts}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def load_generation_data_checks(report_date: date) -> list[str]:
+    folder = _data_check_sanity_dir(report_date)
+    if not folder.is_dir():
+        return []
+    out: list[str] = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for line in data.get("lines") or []:
+            text = str(line).strip()
+            if text:
+                out.append(text)
     return out
 
 
@@ -1069,7 +1138,7 @@ def generate_server_reports(
     should_cancel каждые ~0,2 с; ещё не начавшиеся задачи после отмены снимаются
     с очереди.
 
-    После пачки: для сводок 1 / 1.18 показатели отчётов 3,4,6,7,8 по умолчанию
+    После пачки: для сводки 1 показатели отчётов 3,4,6,7,8 по умолчанию
     копируются в их XLSX (листы «Выраб. — …») и PDF пересобирается; подстановка
     PDF-страниц для этих отчётов не выполняется. Отчёт 5 (стр. 28) — по-прежнему
     через PDF. Отключить Excel-этап: SVODKI_REPORT1_XLSX_SLAVE_FILL=0.
@@ -1168,12 +1237,12 @@ def _generate_server_reports_locked(
         f"Каталог скриптов (основной, plan): {primary_script_dir}",
         f"Порядок генерации: {', '.join(ordered_ids)}",
     ]
-    if _report1_standalone_enabled() and (set(ordered_ids) & {"1", "1.18"}):
+    if _report1_standalone_enabled() and (set(ordered_ids) & {"1"}):
         logs.append(
             "Сводка 1 standalone: листы уборки (10/11) считаются внутри скрипта сводки 1, "
             "отдельные PDF 10/11 не добавляются автоматически."
         )
-    if _report1_run_first_enabled() and (set(ordered_ids) & {"1", "1.18"}):
+    if _report1_run_first_enabled() and (set(ordered_ids) & {"1"}):
         logs.append(
             "Сводка 1 RUN_FIRST: отдельный ранний этап генерации "
             "(SVODKI_REPORT1_RUN_FIRST=0 — снова после доноров 3–8)."
@@ -1244,7 +1313,7 @@ def _generate_server_reports_locked(
         if "6" in report1_fast_slave_ids:
             report1_fast_groups.append("3.2 Опрыскивание (овощи)")
         standalone_hybrid_planned = _report1_standalone_harvest_hybrid(ordered_ids) and report1_skip_harvest_fetch
-        if _report1_standalone_enabled() and ("1" in ordered_ids or "1.18" in ordered_ids):
+        if _report1_standalone_enabled() and ("1" in ordered_ids):
             if standalone_hybrid_planned:
                 logs.append(
                     "Сводка 1 standalone hybrid: perf-листы из API; уборка — из доноров 10/11 "
@@ -1259,9 +1328,9 @@ def _generate_server_reports_locked(
                 "Сводка 1 fast-path: пропуск расчёта листов, которые заполняются донорами: "
                 + ", ".join(report1_fast_groups)
             )
-            if report1_fast_slave_ids and ("1" in ordered_ids or "1.18" in ordered_ids):
+            if report1_fast_slave_ids and ("1" in ordered_ids):
                 logs.append(
-                    "Сводка 1 fast-path: генерация 1 / 1.18 — отдельным этапом после доноров "
+                    "Сводка 1 fast-path: генерация 1 — отдельным этапом после доноров "
                     f"({', '.join(sorted(report1_required_donor_ids))})"
                 )
         if report1_skip_harvest_fetch:
@@ -1408,13 +1477,13 @@ def _generate_server_reports_locked(
             missing_donors = sorted(report1_required_donor_ids - created_ids)
             if missing_donors:
                 logs.append(
-                    "Сводка 1 fast-path: доноры не сформированы, сводки 1/1.18 не будут опубликованы: "
+                    "Сводка 1 fast-path: доноры не сформированы, сводка 1 не будет опубликованы: "
                     + ", ".join(missing_donors)
                 )
                 kept: list[Summary] = []
                 for item in created:
                     rid = _report_id_from_summary_title(item.title)
-                    if rid in {"1", "1.18"}:
+                    if rid in {"1"}:
                         failed.append(
                             {
                                 "report_id": rid,
@@ -1428,7 +1497,7 @@ def _generate_server_reports_locked(
                 created = kept
         logs.append(f"Время этапа скрипты+PDF+БД: {_elapsed_seconds(reports_started)}")
         has_report1 = any(
-            _report_id_from_summary_title(item.title) in {"1", "1.18"} for item in created
+            _report_id_from_summary_title(item.title) in {"1"} for item in created
         )
         standalone_hybrid = (
             has_report1
@@ -1634,6 +1703,15 @@ def _generate_server_reports_locked(
                     "Уже существовавшие опубликованные сводки не перезаписывались."
                 )
             logs.append(f"Время этапа публикации: {_elapsed_seconds(publish_started)}")
+            try:
+                cross_lines = _finalize_data_check_cross_op(summary_date)
+            except Exception:
+                logger.debug("CROSS_OP DATA_CHECK skipped", exc_info=True)
+                cross_lines = []
+            if cross_lines:
+                tagged = [f"[сверка сводок] {line}" for line in cross_lines]
+                logs.extend(tagged)
+                save_generation_data_checks(summary_date, "cross", tagged)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
         try:
@@ -1719,17 +1797,17 @@ def _reorder_generation_ids(ids: list[str]) -> list[str]:
     """Порядок: (2, 23) → …; при RUN_FIRST сводка 1 сразу после 2/23."""
     s = set(ids)
     w1 = [x for x in ("2", "23") if x in s]
-    run_first = _report1_run_first_enabled() and bool(s & {"1", "1.18"})
-    if _report1_standalone_enabled() and (s & {"1", "1.18"}):
+    run_first = _report1_run_first_enabled() and bool(s & {"1"})
+    if _report1_standalone_enabled() and (s & {"1"}):
         w_harvest = [x for x in ("10", "11") if x in s]
-        w2 = [x for x in ("1", "1.18") if x in s]
+        w2 = [x for x in ("1",) if x in s]
         used = set(w1) | set(w_harvest) | set(w2)
         tail = [x for x in ids if x not in used]
         if run_first:
             return w1 + w2 + w_harvest + tail
         return w1 + w_harvest + w2 + tail
     w_slave = [x for x in ("3", "4", "5", "6", "7", "8") if x in s]
-    w2 = [x for x in ("1", "1.18") if x in s]
+    w2 = [x for x in ("1",) if x in s]
     used = set(w1) | set(w_slave) | set(w2)
     tail = [x for x in ids if x not in used]
     if run_first:
@@ -1748,7 +1826,7 @@ def _cfgs_standalone_harvest_hybrid(cfgs: list[ResolvedReportConfig]) -> bool:
     if not _report1_standalone_enabled() or _report1_hybrid_own_lane():
         return False
     ids = {_cfg_id_norm(c) for c in cfgs}
-    return bool({"1", "1.18"} & ids) and REPORT1_HARVEST_DONOR_IDS <= ids
+    return bool({"1"} & ids) and REPORT1_HARVEST_DONOR_IDS <= ids
 
 
 def _split_report_execution_lanes(
@@ -1784,7 +1862,7 @@ def _report_execution_waves(
     """
     Разбиение пачки на этапы:
     - сводка 2 до 23 (снимок work_data);
-    - при fast-path сводки 1 — доноры 3–8 и остальные, затем 1 / 1.18 (меньше RAM и API).
+    - при fast-path сводки 1 — доноры 3–8 и остальные, затем 1 (меньше RAM и API).
     """
     ids = {_cfg_id_norm(c) for c in cfgs}
     waves: list[list[ResolvedReportConfig]] = []
@@ -1796,27 +1874,27 @@ def _report_execution_waves(
         rest = list(cfgs)
 
     # Fast-path (не standalone): сводка 1 ждёт доноров 3–8 — отдельный этап после них.
-    defer_r1 = bool({"1", "1.18"} & ids) and bool(report1_fast_slave_ids)
-    if _report1_run_first_enabled() and ({"1", "1.18"} & ids):
+    defer_r1 = bool({"1"} & ids) and bool(report1_fast_slave_ids)
+    if _report1_run_first_enabled() and ({"1"} & ids):
         defer_r1 = False
 
     if defer_r1:
-        before_r1 = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
-        r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
+        before_r1 = [c for c in rest if _cfg_id_norm(c) not in {"1"}]
+        r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1"}]
         if before_r1:
             waves.append(before_r1)
         if r1_cfgs:
             waves.append(r1_cfgs)
-    elif _report1_run_first_enabled() and ({"1", "1.18"} & ids):
-        r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
-        rest2 = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
+    elif _report1_run_first_enabled() and ({"1"} & ids):
+        r1_cfgs = [c for c in rest if _cfg_id_norm(c) in {"1"}]
+        rest2 = [c for c in rest if _cfg_id_norm(c) not in {"1"}]
         if r1_cfgs:
             waves.append(r1_cfgs)
         if rest2:
             waves.append(rest2)
     elif not defer_r1 and _cfgs_standalone_harvest_hybrid(cfgs):
-        r1_first = [c for c in rest if _cfg_id_norm(c) in {"1", "1.18"}]
-        others = [c for c in rest if _cfg_id_norm(c) not in {"1", "1.18"}]
+        r1_first = [c for c in rest if _cfg_id_norm(c) in {"1"}]
+        others = [c for c in rest if _cfg_id_norm(c) not in {"1"}]
         rest = r1_first + others
         if rest:
             waves.append(rest)
@@ -1912,7 +1990,7 @@ def _configs_for_ordered_ids(ids: list[str]) -> list[ReportConfig]:
 
 
 def _select_report_configs(report_ids: list[str] | None) -> list[ReportConfig]:
-    """Совместимость: все отчёты или выбранные, с порядком 2 → 23 → 1 → 1.18 → хвост."""
+    """Совместимость: все отчёты или выбранные, с порядком 2 → 23 → 1 → хвост."""
     return _configs_for_ordered_ids(_prepare_ordered_report_ids(report_ids))
 
 
@@ -2063,13 +2141,11 @@ def _execute_resolved_report(
                     + hint
                 )
             if r23_auto_report2:
-                if stdout.strip():
-                    logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-                    logs.extend(
-                        f"[{cfg.title}] {line}"
-                        for line in stdout.splitlines()[-10:]
-                        if line.strip() and "SEASON_MISMATCH" not in line
-                    )
+                save_generation_data_checks(
+                    summary_date,
+                    cfg_id,
+                    _append_script_stdout_logs(logs, stdout, cfg.title, tail=10),
+                )
                 logs.append(
                     f"[{cfg.title}] Автозапуск для сводки 23: PDF сводки 2 не публикуем."
                 )
@@ -2084,17 +2160,15 @@ def _execute_resolved_report(
                 except OSError as exc:
                     logs.append(f"[{cfg.title}] не сохранён снимок текста для редактора: {exc}")
         logs.append(f"[{cfg.title}] XLSX: {xlsx_path.name}")
-        if stdout.strip():
-            logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-            logs.extend(
-                f"[{cfg.title}] {line}"
-                for line in stdout.splitlines()[-10:]
-                if line.strip() and "SEASON_MISMATCH" not in line
-            )
+        save_generation_data_checks(
+            summary_date,
+            cfg_id,
+            _append_script_stdout_logs(logs, stdout, cfg.title, tail=10),
+        )
 
         _normalize_excel_sheet_titles_file(xlsx_path, cfg_id, logs)
 
-        if cfg_id in {"1", "1.18"}:
+        if cfg_id in {"1"}:
             _reorder_report1_workbook_file(xlsx_path, logs, report_label=cfg_id)
             _snapshot_report1_script_reference(
                 temp_root=temp_root,
@@ -2114,7 +2188,7 @@ def _execute_resolved_report(
             )
 
         db_started = time.monotonic()
-        publish_immediately = cfg_id not in {"1", "1.18"}
+        publish_immediately = cfg_id not in {"1"}
         report2_excel_only = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
         report27_excel_only = _is_report27_family(cfg_id)
         if report2_excel_only or report27_excel_only:
@@ -2141,7 +2215,7 @@ def _execute_resolved_report(
             )
             logs.append(f"[{cfg.title}] Время PDF-конвертации: {_elapsed_seconds(pdf_started)}")
             logs.append(f"[{cfg.title}] PDF: {pdf_path.name}")
-            if cfg_id in {"1", "1.18"}:
+            if cfg_id in {"1"}:
                 _snapshot_report1_script_reference(
                     temp_root=temp_root,
                     master_id=cfg_id,
@@ -2267,7 +2341,7 @@ def _execute_reports_parallel(
                 report_harvest_gross=report_harvest_gross,
                 generation_job_id=generation_job_id,
                 should_cancel=should_cancel,
-                report1_fast_groups=report1_fast_groups if _cfg_id_norm(cfg) in {"1", "1.18"} else None,
+                report1_fast_groups=report1_fast_groups if _cfg_id_norm(cfg) in {"1"} else None,
                 report1_skip_harvest_fetch=report1_skip_harvest_fetch,
                 r23_work_data_bundle_path=r23_work_data_bundle_path,
                 r23_auto_report2=r23_auto_report2,
@@ -2656,12 +2730,11 @@ def _prefetch_reports_parallel(
                 generation_job_id=generation_job_id,
                 should_cancel=should_cancel,
             )
-            if stdout.strip():
-                p_logs.extend(
-                    f"[{cfg.title}] {line}"
-                    for line in stdout.splitlines()[-8:]
-                    if line.strip()
-                )
+            save_generation_data_checks(
+                request_report_date,
+                cfg.id,
+                _append_script_stdout_logs(p_logs, stdout, cfg.title, tail=8),
+            )
             p_logs.append(f"[{cfg.title}] Prefetch API: OK")
             return None, p_logs
         except ReportGenerationCancelled:
@@ -2719,7 +2792,7 @@ def _report_id_filename_re(report_id: str) -> re.Pattern[str]:
 
 def _resolve_script_name(script_dir: Path, report_id: str, preferred_name: str) -> str:
     rid = str(report_id or "").strip()
-    if rid in {"1", "1.18"}:
+    if rid in {"1"}:
         override = (os.environ.get("SVODKI_REPORT1_SCRIPT") or "").strip()
         if override:
             override_path = script_dir / override
@@ -2983,16 +3056,16 @@ def _run_report_script(
     env.setdefault("PYTHONWARNINGS", "ignore")
     env["REPORT_DATE"] = report_date.isoformat()
     env["SVODKI_REPORT_ID"] = str(cfg.id)
-    if report1_fast_groups and _cfg_id_norm(cfg) in {"1", "1.18"} and not _report1_standalone_enabled():
+    if report1_fast_groups and _cfg_id_norm(cfg) in {"1"} and not _report1_standalone_enabled():
         env["REPORT1_SKIP_PERF_GROUPS"] = "|".join(report1_fast_groups)
-    if _report1_standalone_enabled() and _cfg_id_norm(cfg) in {"1", "1.18"}:
+    if _report1_standalone_enabled() and _cfg_id_norm(cfg) in {"1"}:
         env["REPORT1_STANDALONE"] = "1"
         env.pop("REPORT1_SKIP_PERF_GROUPS", None)
         if report1_skip_harvest_fetch:
             env["REPORT1_SKIP_HARVEST_FETCH"] = "1"
         else:
             env.pop("REPORT1_SKIP_HARVEST_FETCH", None)
-    elif report1_skip_harvest_fetch and _cfg_id_norm(cfg) in {"1", "1.18"}:
+    elif report1_skip_harvest_fetch and _cfg_id_norm(cfg) in {"1"}:
         env["REPORT1_SKIP_HARVEST_FETCH"] = "1"
     eff_manual = output_dir / f".manual_overrides_effective_{uuid.uuid4().hex}.json"
     write_effective_manual_store_for_date(report_date, eff_manual)
@@ -3040,11 +3113,11 @@ def _run_report_script(
     env.pop(PREFETCH_STRICT_ENV_VAR, None)
     if prefetch_data_path is not None and _uses_unified_prefetch_data(cfg):
         env[PREFETCH_DATA_ENV_VAR] = str(prefetch_data_path)
-        standalone_r1 = _report1_standalone_enabled() and cfg_id in {"1", "1.18"}
+        standalone_r1 = _report1_standalone_enabled() and cfg_id in {"1"}
         env[PREFETCH_STRICT_ENV_VAR] = (
             "0" if (_report1_uses_prefetch_json(cfg) or standalone_r1) else "1"
         )
-    elif cfg_id in {"1", "1.18"} and not _report1_standalone_enabled():
+    elif cfg_id in {"1"} and not _report1_standalone_enabled():
         env["SVODKI_REPORT1_LIVE_MTFMI"] = "1"
     elif _cfg_id_norm(cfg) == "2":
         env["SVODKI_REPORT2_LIVE_API"] = "1"
@@ -3194,12 +3267,12 @@ def _run_report_script(
     if cw_base:
         env["CROPWISE_BASE_URL"] = cw_base
     gross_norm = _normalize_report_harvest_gross(report_harvest_gross)
-    if gross_norm and cfg_id in {"1", "1.18", "10", "13"}:
+    if gross_norm and cfg_id in {"1", "10", "13"}:
         env[HARVEST_GROSS_ENV] = json.dumps(gross_norm, ensure_ascii=False)
 
     env["PYTHONPATH"] = _pythonpath_for_scripts(script_dir, plan_script_dir)
     _inject_cropwise_http_env(env)
-    if cfg_id in {"1", "1.18", "10", "13", "14"}:
+    if cfg_id in {"1", "10", "13", "14"}:
         _inject_namolot_env(env)
         _ensure_namolot_available(env)
 
@@ -3256,7 +3329,79 @@ def _run_report_script(
         return output_dir / "_prefetch_only.xlsx", last_out
 
     saved_path = _extract_saved_xlsx_path(last_out, output_dir, cfg.title, report_date)
+    try:
+        file_note = _data_check_file_total_after_script(saved_path, last_out, report_date, cfg_id)
+    except Exception:
+        logger.debug("FILE_TOTAL DATA_CHECK skipped for report %s", cfg_id, exc_info=True)
+        file_note = None
+    if file_note:
+        last_out = f"{last_out.rstrip()}\n{file_note}\n"
     return saved_path, last_out
+
+
+def _parse_calc_total_ha_from_stdout(stdout: str) -> float | None:
+    for line in (stdout or "").splitlines():
+        if not line.startswith("DATA_CHECK_CALC_TOTAL="):
+            continue
+        try:
+            return float(line.split("=", 1)[1].strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _data_check_plan_sys_path() -> None:
+    root = _resolve_svodki_root() / "plan"
+    s = str(root)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+    try:
+        from plan_paths import ensure_plan_sys_path
+
+        ensure_plan_sys_path()
+    except Exception:
+        pass
+
+
+def _data_check_file_total_after_script(
+    saved_path: Path,
+    stdout: str,
+    report_date: date,
+    report_id: str,
+) -> str | None:
+    _data_check_plan_sys_path()
+    from svodki_sanity import check_file_total_after_save
+
+    prev = os.environ.get("SVODKI_REPORT_ID")
+    os.environ["SVODKI_REPORT_ID"] = str(report_id)
+    try:
+        calc = _parse_calc_total_ha_from_stdout(stdout)
+        return check_file_total_after_save(
+            calc,
+            xlsx_path=saved_path,
+            report_date=report_date,
+            report_id=str(report_id),
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("SVODKI_REPORT_ID", None)
+        else:
+            os.environ["SVODKI_REPORT_ID"] = prev
+
+
+def _finalize_data_check_cross_op(summary_date: date) -> list[str]:
+    _data_check_plan_sys_path()
+    from svodki_sanity import finalize_cross_op_checks
+
+    prev = os.environ.get("SVODKI_REPORT_ID")
+    os.environ["SVODKI_REPORT_ID"] = "сверка"
+    try:
+        return list(finalize_cross_op_checks(summary_date) or [])
+    finally:
+        if prev is None:
+            os.environ.pop("SVODKI_REPORT_ID", None)
+        else:
+            os.environ["SVODKI_REPORT_ID"] = prev
 
 
 def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_date: date) -> Path:
@@ -3264,7 +3409,10 @@ def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_d
         if "Сохранено:" not in line:
             continue
         rest = line.split("Сохранено:", 1)[1].strip()
-        fname = rest.split()[0] if rest else ""
+        # Имя файла может содержать пробелы («3. report_fertilizer_….xlsx»): берём всё до «.xlsx»,
+        # а не первое слово, иначе выбирался чужой «самый свежий» xlsx из папки.
+        m_xlsx = re.match(r"(.+?\.xlsx)(?=\s|$)", rest, re.IGNORECASE)
+        fname = m_xlsx.group(1) if m_xlsx else (rest.split()[0] if rest else "")
         if not fname:
             continue
         original = Path(fname) if os.path.isabs(fname) else output_dir / fname
@@ -3466,14 +3614,14 @@ def _report1_standalone_harvest_hybrid(ordered_ids: list[str]) -> bool:
     if not _report1_standalone_enabled() or _report1_hybrid_own_lane():
         return False
     ids = set(ordered_ids)
-    if not ({"1", "1.18"} & ids):
+    if not ({"1"} & ids):
         return False
     return REPORT1_HARVEST_DONOR_IDS <= ids
 
 
 def _report1_harvest_donors_in_batch(ordered_ids: list[str]) -> frozenset[str]:
     ids = set(ordered_ids)
-    if not ({"1", "1.18"} & ids):
+    if not ({"1"} & ids):
         return frozenset()
     return REPORT1_HARVEST_DONOR_IDS & ids
 
@@ -3499,7 +3647,7 @@ def _report1_fast_slave_ids(ordered_ids: list[str]) -> frozenset[str]:
     if not _env_flag("SVODKI_REPORT1_SKIP_DONOR_PERF_FETCH", True):
         return frozenset()
     ids = set(ordered_ids)
-    if "1" not in ids and "1.18" not in ids:
+    if "1" not in ids:
         return frozenset()
     return frozenset(rid for rid in REPORT1_FAST_SLAVE_GROUPS_BY_ID if rid in ids)
 
@@ -3834,7 +3982,7 @@ def _finalize_report1_pdf_page_order(
     if not callable(reorder_pdf):
         return
     snap = temp_root / "_xlsx_snap"
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         item = next(
             (c for c in created if _report_id_from_summary_title(c.title) == master_id),
             None,
@@ -3910,7 +4058,7 @@ def _restamp_report1_pdf_headers(
         if page_order_mod is not None
         else None
     )
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         item = next(
             (c for c in created if _report_id_from_summary_title(c.title) == master_id),
             None,
@@ -4036,7 +4184,7 @@ def _restore_report1_own_calc_pdf_pages_batch(
     if not snap.is_dir():
         return False
     any_restored = False
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         item = next(
             (c for c in created if _report_id_from_summary_title(c.title) == master_id),
             None,
@@ -4086,7 +4234,7 @@ def _ensure_report1_seeding_pages_batch(
     if not snap.is_dir():
         return False
     any_fixed = False
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         item = next(
             (c for c in created if _report_id_from_summary_title(c.title) == master_id),
             None,
@@ -4170,7 +4318,7 @@ def _apply_report1_xlsx_slave_postprocess(
     if not snap.is_dir():
         return frozenset()
     exclude: set[str] = set()
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         src_master = snap / f"{master_id}.xlsx"
         if not src_master.is_file():
             continue
@@ -4197,7 +4345,7 @@ def _apply_report1_xlsx_slave_postprocess(
         initial_pdf = paths["initial_pdf"]
         if not initial_pdf.is_file():
             shutil.copy2(dest_pdf, initial_pdf)
-        # Имя с осмысленным stem (1 / 1.18), иначе штамп PDF берёт «._merge_…uuid» в заголовок.
+        # Имя с осмысленным stem (1), иначе штамп PDF берёт «._merge_…uuid» в заголовок.
         work = snap / f"{src_master.stem}_{uuid.uuid4().hex}_fill.xlsx"
         pristine = paths["pristine"]
         if paths["script_xlsx"].is_file():
@@ -4359,7 +4507,7 @@ def _apply_batch_pdf_grafts(
     page_order_mod = _load_report1_pdf_page_order_module()
     fill_mod = _load_report1_xlsx_slave_fill_module()
     snap_dir = (temp_root / "_xlsx_snap") if temp_root is not None else None
-    for master_id in ("1", "1.18"):
+    for master_id in ("1",):
         pdf_master = by_id.get(master_id)
         if not pdf_master or not pdf_master.is_file():
             continue
@@ -4587,7 +4735,7 @@ def _convert_report9_pdf_by_sheets(
     lo_profile_dir: Path,
     lo_timeout: float | None,
 ) -> None:
-    """Сводка 9: каждый лист Excel → отдельный PDF → склейка (сводка, культуры «Вспашка …», затем АФ)."""
+    """Сводка 9: каждый лист Excel → отдельный PDF → склейка (сводка, культуры «Вспашка …», «Итого (все АФ)», затем АФ)."""
     from openpyxl import load_workbook
     from pypdf import PdfReader, PdfWriter
 
@@ -4645,7 +4793,8 @@ def _convert_xlsx_to_pdf(
     tmp_for_pdf: Path | None = None
     lo_tmp_dir: Path | None = None
     lo_profile_dir: Path | None = None
-    _get_pdf_convert_semaphore().acquire()
+    pdf_sem = _get_pdf_convert_semaphore()
+    pdf_sem.acquire()
     try:
         lo_profile_dir = output_dir / f".lo_profile_{uuid.uuid4().hex}"
         lo_profile_dir.mkdir(parents=True, exist_ok=True)
@@ -4771,7 +4920,7 @@ def _convert_xlsx_to_pdf(
             shutil.rmtree(lo_tmp_dir, ignore_errors=True)
         if lo_profile_dir and lo_profile_dir.exists():
             shutil.rmtree(lo_profile_dir, ignore_errors=True)
-        _get_pdf_convert_semaphore().release()
+        pdf_sem.release()
 
 
 def _safe_delete_top_rows(ws, count: int) -> None:
@@ -5064,7 +5213,7 @@ def _prepare_xlsx_for_pdf(src: Path, output_dir: Path) -> Path | None:
                     pass
 
             # Не трогаем высоты: для 5 «Посев» вёрстка и ширины задаются в скрипте; auto_fit портит PDF.
-            # 1 / 1.18: после Excel-подстановки из доноров авто-высота строк может раздувать шапку таблицы
+            # 1: после Excel-подстановки из доноров авто-высота строк может раздувать шапку таблицы
             # и сбивать разрывы страниц и текст штампа по фирмам.
             if report_id not in _REPORT1_FAMILY_IDS | {"3", "4", "5", "6", "7", "8", "9", "10", "12", "25"}:
                 try:
@@ -5632,7 +5781,7 @@ def _extract_report_id_from_stem(stem: str) -> str:
     # «0.1 …» не должен определяться как отчёт «0» (иначе ломается шапка PDF и regex съедает только «0.»).
     if re.match(r"^0\.1(?:[\s._-]|$)", s):
         return "0.1"
-    # Десятичные id вида «1.18» в начале имени файла (до пробела/подчёркивания/даты).
+    # Десятичные id вида «27.1» в начале имени файла (до пробела/подчёркивания/даты).
     m_dec = re.match(r"^\s*(\d+\.\d+)(?:[\s._-]|$)", s)
     if m_dec:
         return m_dec.group(1)
@@ -5889,9 +6038,13 @@ def _is_detail_sheet_without_data(ws, sheet_title: str) -> bool:
         return False
     if sn in {"Уборка, овощи", "Уборка овощи", "Уборка овощей"}:
         return False
-    # Сводка 9: листы «Вспашка <культура>» — сводные таблицы, не пустая детализация АФ.
+    # Сводка 9: листы «Вспашка <культура>» и «Итого (все АФ)» — сводные таблицы, не пустая детализация АФ.
     if _report9_plow_crop_from_sheet(sn) is not None:
         return False
+    if sn == "Итого (все АФ)" or sn.startswith("Итого (все АФ)"):
+        a1 = ws.cell(1, 1).value
+        if isinstance(a1, str) and "Вспашка" in a1:
+            return False
     if _is_harvest_holding_sheet(ws, sheet_title):
         return False
     return not _sheet_has_own_or_hired_section(ws)
@@ -6090,12 +6243,15 @@ def _report5_seeding_crop_title(crop_name: str) -> str:
 
 
 def _report9_pdf_sheet_headers(sheet_name: str) -> tuple[str, str]:
-    """Отчёт 9: сводка + листы вспашки по культурам; АФ — ООО и оба вида работ."""
+    """Отчёт 9: сводка, листы вспашки по культурам, общий свод; АФ — ООО и оба вида работ."""
     sn = (sheet_name or "").strip()
     wt_both = "ВИД РАБОТ: 2.4 Вспашка, 2.8 Глубокорыхление"
     title = "ВЫРАБОТКА ТЕХНИКИ ПО АГРОФИРМАМ"
     if sn == "Сводка":
         return (title, wt_both)
+    # Общий свод по культурам (как стр. 4 сводки 5) — не штамповать как ООО.
+    if sn == "Итого (все АФ)" or sn.startswith("Итого (все АФ)"):
+        return (title, "ВИД РАБОТ: 2.4 Вспашка")
     # Листы культур (после фикса мультикультур) — не штамповать как ООО «ВСПАШКА …»:
     # иначе firm-continuation держит первую культуру и сдвигает шапки АФ.
     crop = _report9_plow_crop_from_sheet(sn)
@@ -6808,7 +6964,6 @@ def _resolve_pdf_header_text(src: Path) -> tuple[str, str]:
     multi_work_line = "ВИД РАБОТ: несколько групп (удобрения, обработка почвы, посев, защита, уборка и др.)"
     fixed_headers: dict[str, tuple[str, str]] = {
         "1": ("СВОДКА ХК Крупно", "ВИД РАБОТ: 1.1 Внесение минеральных удобрений"),
-        "1.18": ("СВОДКА ХК Крупно (за сутки)", "ВИД РАБОТ: 1.1 Внесение минеральных удобрений"),
         "2": ("ВЫРАБОТКА ТЕХНИКИ ПО АГРОФИРМАМ", multi_work_line),
         "3": ("ВЫРАБОТКА ТЕХНИКИ ПО АГРОФИРМАМ", "ВИД РАБОТ: 1.1 Внесение минеральных удобрений"),
         "4": ("ВЫРАБОТКА ТЕХНИКИ ПО АГРОФИРМАМ", "ВИД РАБОТ: 2.1 Боронование зяби"),

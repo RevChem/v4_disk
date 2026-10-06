@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.config import settings
+from app.legacy.json_store_io import atomic_write_text, read_json_dict
 
 _FUTURE_COMMENTS_KEY = "_future_comments"
 
@@ -17,23 +18,12 @@ def comments_store_path() -> Path:
 
 
 def load_comments_store() -> dict[str, Any]:
-    path = comments_store_path()
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        pass
-    return {}
+    return read_json_dict(comments_store_path(), label="comments")
 
 
 def save_comments_store(store: dict[str, Any]) -> Path:
     path = comments_store_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True))
     return path
 
 

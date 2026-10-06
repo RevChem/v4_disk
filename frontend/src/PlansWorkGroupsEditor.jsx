@@ -18,7 +18,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
-import { fetchPlansEditorWorkTypes, updatePlansEditorWorkGroups } from "./api";
+import { fetchPlansEditorWorkTypes, formatError, updatePlansEditorWorkGroups } from "./api";
 
 function normalizeGroups(raw) {
   return (raw || []).map((g, index) => {
@@ -36,13 +36,23 @@ function idsToText(ids) {
   return (ids || []).join(", ");
 }
 
-function textToIds(text) {
+function splitIdTokens(text) {
   return String(text || "")
     .split(/[,\s;]+/)
     .map((x) => x.trim())
-    .filter(Boolean)
-    .map((x) => Number(x))
-    .filter((x) => Number.isFinite(x));
+    .filter(Boolean);
+}
+
+function textToIds(text) {
+  return splitIdTokens(text)
+    .filter((x) => /^\d+$/.test(x))
+    .map((x) => Number(x));
+}
+
+function groupsKey(list) {
+  return JSON.stringify(
+    (list || []).map((g) => ({ name: String(g?.name || "").trim(), ids: g?.ids || [] }))
+  );
 }
 
 export default function PlansWorkGroupsEditor({
@@ -58,22 +68,35 @@ export default function PlansWorkGroupsEditor({
   const [workTypes, setWorkTypes] = useState([]);
   const [typesLoading, setTypesLoading] = useState(false);
   const [filter, setFilter] = useState("");
-  const groupsSnapshotRef = useRef("");
-  const appliedNormRef = useRef("");
+  const [conflict, setConflict] = useState(false);
+  // JSON серверной версии, с которой синхронизирован черновик ("" — ещё не загружали)
+  const baseKeyRef = useRef("");
   const nextRowIdRef = useRef(1);
 
+  const serverNormalized = useMemo(() => normalizeGroups(groups), [groups]);
+  const serverKey = useMemo(() => groupsKey(serverNormalized), [serverNormalized]);
+  const draftKey = useMemo(() => groupsKey(draft), [draft]);
+
   useEffect(() => {
-    const nextSnapshot = JSON.stringify(groups ?? []);
-    if (nextSnapshot === groupsSnapshotRef.current) return;
-    const serverKey = JSON.stringify(
-      normalizeGroups(groups).map(({ name, ids }) => ({ name, ids }))
-    );
-    const localKey = JSON.stringify(normalizeGroups(draft).map(({ name, ids }) => ({ name, ids })));
-    if (appliedNormRef.current && localKey !== appliedNormRef.current) return;
-    groupsSnapshotRef.current = nextSnapshot;
-    appliedNormRef.current = serverKey;
-    setDraft(normalizeGroups(groups));
-  }, [groups, draft]);
+    if (serverKey === baseKeyRef.current) return;
+    const isDirty = baseKeyRef.current !== "" && draftKey !== baseKeyRef.current;
+    if (!isDirty) {
+      baseKeyRef.current = serverKey;
+      setDraft(serverNormalized);
+      setConflict(false);
+    } else {
+      // Пока у нас несохранённый черновик, группы изменил кто-то другой.
+      setConflict(true);
+    }
+    // draftKey намеренно не в зависимостях: реагируем только на смену серверной версии
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverKey, serverNormalized]);
+
+  function reloadFromServer() {
+    baseKeyRef.current = serverKey;
+    setDraft(serverNormalized);
+    setConflict(false);
+  }
 
   const loadWorkTypes = useCallback(async () => {
     setTypesLoading(true);
@@ -81,7 +104,7 @@ export default function PlansWorkGroupsEditor({
       const data = await fetchPlansEditorWorkTypes();
       setWorkTypes(Array.isArray(data?.items) ? data.items : []);
     } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось загрузить справочник work_types.");
+      setError(formatError(e, "Не удалось загрузить справочник work_types."));
     } finally {
       setTypesLoading(false);
     }
@@ -121,24 +144,63 @@ export default function PlansWorkGroupsEditor({
   }
 
   async function handleSave() {
-    const normalized = normalizeGroups(draft)
-      .filter((g) => g.name)
-      .map(({ name, ids }) => ({ name, ids }));
-    if (!normalized.length) {
+    const rows = draft.map((row) => ({
+      name: String(row.name || "").trim(),
+      ids: row.idsText !== undefined ? textToIds(row.idsText) : row.ids || [],
+      bad: row.idsText !== undefined
+        ? splitIdTokens(row.idsText).filter((x) => !/^\d+$/.test(x))
+        : [],
+    }));
+    const named = rows.filter((g) => g.name);
+    if (!named.length) {
       setError("Добавьте хотя бы одну группу с названием.");
       return;
     }
+    const badRow = named.find((g) => g.bad.length);
+    if (badRow) {
+      setError(`Группа «${badRow.name}»: ID должны быть целыми числами, не подходит: ${badRow.bad.join(", ")}.`);
+      return;
+    }
+    const seen = new Set();
+    for (const g of named) {
+      const k = g.name.toLocaleLowerCase("ru");
+      if (seen.has(k)) {
+        setError(`Название группы повторяется: «${g.name}».`);
+        return;
+      }
+      seen.add(k);
+    }
+    const normalized = named.map(({ name, ids }) => ({ name, ids: [...new Set(ids)] }));
+
+    // Переименование/удаление группы «осиротит» правки планов, привязанные к её названию.
+    const newNames = new Set(normalized.map((g) => g.name));
+    const lost = serverNormalized.map((g) => g.name).filter((n) => n && !newNames.has(n));
+    if (lost.length) {
+      const ok = window.confirm(
+        `Группы будут удалены или переименованы: ${lost.join("; ")}.\n\n` +
+          "Площади, агрегаты, ранги и сезоны, заданные под старыми названиями, перестанут применяться. Продолжить?"
+      );
+      if (!ok) return;
+    }
+    if (conflict) {
+      const ok = window.confirm(
+        "Пока вы редактировали, группы работ изменил другой пользователь. Его изменения будут перезаписаны. Продолжить?"
+      );
+      if (!ok) return;
+    }
+
     setSaving(true);
     setError("");
     setSuccess("");
     try {
       const data = await updatePlansEditorWorkGroups(normalized, summaryDate);
-      appliedNormRef.current = "";
-      groupsSnapshotRef.current = "";
+      baseKeyRef.current = groupsKey(normalized);
+      setDraft(normalizeGroups(normalized));
+      setConflict(false);
       onSaved(data);
       setSuccess("WORK_GROUPS сохранены.");
     } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось сохранить WORK_GROUPS.");
+      setError(formatError(e, "Не удалось сохранить WORK_GROUPS."));
     } finally {
       setSaving(false);
     }
@@ -146,8 +208,21 @@ export default function PlansWorkGroupsEditor({
 
   return (
     <Grid container spacing={2}>
-      <Grid item xs={12} lg={8}>
+      <Grid size={{ xs: 12, lg: 8 }}>
         <Stack spacing={1.5}>
+          {conflict && (
+            <Alert
+              severity="warning"
+              action={
+                <Button color="inherit" size="small" onClick={reloadFromServer} disabled={saving}>
+                  Загрузить серверную версию
+                </Button>
+              }
+            >
+              Группы работ изменил другой пользователь, пока у вас открыт несохранённый черновик.
+              Сохранение перезапишет его изменения.
+            </Alert>
+          )}
           <Alert severity="info" sx={{ py: 0.5 }}>
             Каждая строка — блок в сводке 22. ID — это <strong>work_type</strong> из Cropwise API
             (<code>/work_types</code>). Несколько ID объединяются в одну группу.
@@ -225,7 +300,7 @@ export default function PlansWorkGroupsEditor({
           </Stack>
         </Stack>
       </Grid>
-      <Grid item xs={12} lg={4}>
+      <Grid size={{ xs: 12, lg: 4 }}>
         <Paper variant="outlined" sx={{ p: 1.5, height: "100%", minHeight: 320 }}>
           <Stack spacing={1}>
             <Typography variant="subtitle2">Справочник work_types (Cropwise API)</Typography>

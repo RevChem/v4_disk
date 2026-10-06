@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.legacy.json_store_io import atomic_write_text, read_json_dict, serialized_rmw
 from app.legacy.manual_overrides import combine_season_start_for_date
 
 # Как season_unified.GROUP_SEASON_RULE (year_plus_one)
@@ -91,14 +92,8 @@ def _season_calendar_module():
 
 def load_full_season_store(report_date: date | None = None) -> dict[str, Any]:
     path = season_ranges_path()
-    raw: dict[str, Any] = {}
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
-        except (OSError, json.JSONDecodeError):
-            pass
+    # Битый файл уходит в *.corrupt-<ts> с записью в лог; сбой чтения — исключение (не {}).
+    raw: dict[str, Any] = read_json_dict(path, label="season_ranges")
     cal_mod = _season_calendar_module()
     if cal_mod:
         calendar = cal_mod.normalize_calendar_seasons(raw.get("calendar_seasons"), report_date)
@@ -126,7 +121,7 @@ def save_full_season_store(store: dict[str, Any], report_date: date | None = Non
         calendar = cal_mod.normalize_calendar_seasons(calendar, report_date)
     by_group = store.get("by_group") if isinstance(store.get("by_group"), dict) else {}
     payload = {"calendar_seasons": calendar, "by_group": by_group}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return path
 
 
@@ -150,6 +145,7 @@ def load_season_range_overrides() -> dict[str, Any]:
     return load_full_season_store()["by_group"]
 
 
+@serialized_rmw(name="season_ranges")
 def save_season_range_overrides(by_group: dict[str, Any]) -> Path:
     store = load_full_season_store()
     cleaned: dict[str, Any] = {}
@@ -184,6 +180,7 @@ def _validate_calendar_seasons(calendar: dict[str, Any]) -> None:
             )
 
 
+@serialized_rmw(name="season_ranges")
 def set_calendar_seasons(calendar: dict[str, Any], report_date: date | None = None) -> dict[str, dict[str, str]]:
     _validate_calendar_seasons(calendar)
     store = load_full_season_store(report_date)
@@ -206,6 +203,7 @@ def _parse_iso_date(raw: Any) -> date | None:
         return None
 
 
+@serialized_rmw(name="season_ranges")
 def set_season_range_override(
     group_name: str,
     *,
@@ -294,6 +292,7 @@ def season_year_for_group(group_name: str, report_date: date) -> int:
     return years[-1] if years else report_date.year
 
 
+@lru_cache(maxsize=1)
 def _season_unified_module():
     plan_path = Path(settings.svodki_root).expanduser()
     if not plan_path.is_absolute():
@@ -357,13 +356,14 @@ def _build_group_meta(
     report_date: date,
     override: dict[str, Any] | None = None,
     calendar: dict[str, dict[str, str]] | None = None,
+    base_store: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     default_start = period_start_for_group(name, report_date)
     default_end = report_date
     default_years = season_years_for_group(name, report_date)
     su = _season_unified_module()
     if su is not None:
-        store = load_full_season_store(report_date)
+        store = base_store if base_store is not None else load_full_season_store(report_date)
         if calendar is not None:
             store = {**store, "calendar_seasons": calendar}
         if override:
@@ -456,7 +456,7 @@ def season_meta_for_groups(group_names: list[str], report_date: date | None = No
         name = str(raw_name or "").strip()
         if not name:
             continue
-        by_group[name] = _build_group_meta(name, end, overrides.get(name), calendar)
+        by_group[name] = _build_group_meta(name, end, overrides.get(name), calendar, store)
     return {
         "report_date": end.isoformat(),
         "report_date_ru": format_ru_date(end),

@@ -163,7 +163,13 @@ def item_area_in_window(
     *,
     parse_dt: Callable[[object], datetime | None],
 ) -> float:
-    """Площадь MTFMI в окне смены [window_start, window_end)."""
+    """Площадь MTFMI в окне смены [window_start, window_end).
+
+    Если почасовые данные есть (даже нулевые или нечитаемые) — площадь считается
+    только по ним, без отката к полной ``covered_area``: иначе фирма получала бы
+    площадь, отработанную в другие сутки. К ``covered_area`` откатываемся только
+    когда почасовых данных нет вовсе (или окно смены не задано).
+    """
     hourly = item.get("covered_area_hourly") or []
     if hourly and window_end is not None:
         total = 0.0
@@ -175,8 +181,7 @@ def item_area_in_window(
                 continue
             if h < window_end:
                 total += float(entry[1] or 0)
-        if total > 0:
-            return total
+        return total
     return float(item.get("covered_area") or 0)
 
 
@@ -227,6 +232,7 @@ def task_cov_by_firm(
         return {}
 
     firm_raw: dict[str, float] = defaultdict(float)
+    saw_hourly = False  # были строки с почасовыми данными (окно смены применимо)
     for item in items:
         fid = item.get("field_id")
         if not fid:
@@ -245,6 +251,8 @@ def task_cov_by_firm(
         firm = firm_for_field(fid_i)
         if not firm:
             continue
+        if item.get("covered_area_hourly"):
+            saw_hourly = True
         area = item_area_in_window(
             item, cutoff, window_start, parse_dt=parse_dt,
         )
@@ -252,6 +260,10 @@ def task_cov_by_firm(
             firm_raw[firm] += area
 
     if not firm_raw:
+        if saw_hourly:
+            # Почасовые данные есть, но в окне смены площади нет: задание в эту смену не даёт 0 га,
+            # а не «полную covered_area поровну между фирмами».
+            return {}
         firms = firms_from_task_items(
             items, field_ok=field_ok, firm_for_field=firm_for_field,
         )

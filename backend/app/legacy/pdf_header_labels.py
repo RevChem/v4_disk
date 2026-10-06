@@ -1,6 +1,8 @@
 """Пользовательские подписи «ВИД РАБОТ» в шапке PDF (uploads/pdf_header_labels.json)."""
 from __future__ import annotations
 
+from app.legacy.json_store_io import atomic_write_text, read_json_dict
+
 import json
 import re
 from copy import deepcopy
@@ -15,7 +17,7 @@ _GROUP_NUM_RE = re.compile(r"\d+\.\d+\s+")
 
 # Шаблоны по умолчанию → сводки, где они встречаются.
 _KNOWN_WORK_LINES: dict[str, list[str]] = {
-    "ВИД РАБОТ: 1.1 Внесение минеральных удобрений": ["1", "1.18", "3"],
+    "ВИД РАБОТ: 1.1 Внесение минеральных удобрений": ["1", "3"],
     "ВИД РАБОТ: 2.1 Боронование зяби": ["4"],
     "ВИД РАБОТ: 2.9 Дискование": ["7"],
     "ВИД РАБОТ: 2.11 Культивация": ["8"],
@@ -118,9 +120,7 @@ def save_pdf_header_labels(data: dict[str, Any]) -> Path:
             v = v[:240]
         cleaned_map[k] = v
     payload = {"version": 1, "work_line_map": cleaned_map}
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     return path
 
 

@@ -1349,6 +1349,17 @@ def _missing_total_error(path: Path) -> dict[str, Any]:
     }
 
 
+def read_file_total_ha_from_path(path: Path) -> dict[str, Any]:
+    """«Итого» с листа «Сводка» уже сохранённого .xlsx по пути (без поиска в uploads)."""
+    try:
+        blocks = _read_xlsx_blocks(path)
+    except Exception as exc:
+        return {"found": False, "error": str(exc), "path": str(path)}
+    if blocks:
+        return _values_from_blocks(blocks, path)
+    return _missing_total_error(path)
+
+
 def read_file_total_ha(report_date: date, report_id: str) -> dict[str, Any]:
     """Нет файла — {"found": False}. Сбой разбора — {"found": False, "error": "..."}."""
     xlsx_path = find_report_xlsx(report_date, report_id)

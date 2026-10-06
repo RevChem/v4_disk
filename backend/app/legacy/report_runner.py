@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,18 +45,40 @@ from app.legacy.report_generation import (
     _reorder_report1_workbook_file,
     _run_api_data_prefetch,
     _run_report_script,
-    _season_mismatch_log_lines,
+    _append_script_stdout_logs,
+    save_generation_data_checks,
     _split_report_execution_lanes,
     _uses_unified_prefetch_data,
     USE_API_CACHE_ENV_VAR,
     USE_PREFETCH_DATA_ENV_VAR,
 )
 
-_REPORT1_FAMILY_IDS = frozenset({"1", "1.18"})
+_REPORT1_FAMILY_IDS = frozenset({"1"})
 
 
 _DURATIONS_FILE = "generation_durations.json"
 _JOB_PROGRESS_DIR = ".generation_job_progress"
+
+# Сводки пишут прогресс/длительности из нескольких потоков: read-modify-write под локом,
+# запись — через уникальный временный файл + os.replace (иначе файл портится, а исключение
+# превращает успешно построенную сводку в «упавшую»).
+_STATE_FILES_LOCK = threading.RLock()
+# Одна пачка генерации за раз в процессе: параллельные пачки перегружают Cropwise (429)
+# и удаляют файлы друг друга при одной дате.
+_GENERATION_BATCH_LOCK = threading.Lock()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _job_progress_path(job_id: str) -> Path:
@@ -65,7 +89,8 @@ def _job_progress_path(job_id: str) -> Path:
 
 def init_job_progress(job_id: str) -> None:
     path = _job_progress_path(job_id)
-    path.write_text(json.dumps({"completed_report_ids": []}, ensure_ascii=False), encoding="utf-8")
+    with _STATE_FILES_LOCK:
+        _atomic_write_text(path, json.dumps({"completed_report_ids": []}, ensure_ascii=False))
 
 
 def save_job_options(job_id: str, options: dict | None) -> None:
@@ -73,7 +98,8 @@ def save_job_options(job_id: str, options: dict | None) -> None:
     if not jid or not options:
         return
     path = _job_progress_path(jid).with_suffix(".opts.json")
-    path.write_text(json.dumps(options, ensure_ascii=False), encoding="utf-8")
+    with _STATE_FILES_LOCK:
+        _atomic_write_text(path, json.dumps(options, ensure_ascii=False))
 
 
 def load_job_options(job_id: str | None) -> dict:
@@ -96,19 +122,18 @@ def record_job_report_completed(job_id: str | None, report_id: str) -> None:
     if not jid or not rid:
         return
     path = _job_progress_path(jid)
-    data: dict[str, list[str]] = {"completed_report_ids": []}
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and isinstance(raw.get("completed_report_ids"), list):
-                data["completed_report_ids"] = [str(x).strip() for x in raw["completed_report_ids"] if str(x).strip()]
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            pass
-    if rid not in data["completed_report_ids"]:
-        data["completed_report_ids"].append(rid)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    with _STATE_FILES_LOCK:
+        data: dict[str, list[str]] = {"completed_report_ids": []}
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("completed_report_ids"), list):
+                    data["completed_report_ids"] = [str(x).strip() for x in raw["completed_report_ids"] if str(x).strip()]
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if rid not in data["completed_report_ids"]:
+            data["completed_report_ids"].append(rid)
+        _atomic_write_text(path, json.dumps(data, ensure_ascii=False))
 
 
 def list_job_completed_report_ids(job_id: str, report_ids: list[str] | None = None) -> list[str]:
@@ -161,18 +186,17 @@ def record_report_duration(summary_date: date, report_id: str, seconds: float) -
     if not rid or seconds < 0:
         return
     path = _durations_path(summary_date)
-    data: dict[str, float] = {}
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                data = {str(k): float(v) for k, v in raw.items() if str(k).strip()}
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            data = {}
-    data[rid] = round(float(seconds), 1)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    with _STATE_FILES_LOCK:
+        data: dict[str, float] = {}
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data = {str(k): float(v) for k, v in raw.items() if str(k).strip()}
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                data = {}
+        data[rid] = round(float(seconds), 1)
+        _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def load_report_durations(summary_date: date) -> dict[str, float]:
@@ -239,7 +263,9 @@ def _report_id_from_filename(filename: str) -> str:
     return _report_id_from_title(stem)
 
 
-def _purge_same_report_files(folder: Path, report_id: str, *, ext: str | None = None) -> None:
+def _purge_same_report_files(
+    folder: Path, report_id: str, *, ext: str | None = None, keep: Path | None = None
+) -> None:
     """Удаляет старые файлы отчёта report_id в folder.
 
     Если ext не задан — чистит и .pdf, и .xlsx (обратная совместимость).
@@ -255,6 +281,8 @@ def _purge_same_report_files(folder: Path, report_id: str, *, ext: str | None = 
             continue
         if path.suffix.lower() not in exts:
             continue
+        if keep is not None and path.name == keep.name:
+            continue
         if _report_id_from_filename(path.name) == report_id:
             path.unlink(missing_ok=True)
 
@@ -262,9 +290,16 @@ def _purge_same_report_files(folder: Path, report_id: str, *, ext: str | None = 
 def _save_artifact(src: Path, summary_date: date, title: str, ext: str, report_id: str = "") -> Path:
     folder = _output_folder(summary_date)
     rid = report_id or _report_id_from_title(title)
-    _purge_same_report_files(folder, rid, ext=ext)
     dest = folder / _safe_filename(title, ext)
-    shutil.copy2(src, dest)
+    # Сначала атомарно кладём новый файл, и только потом чистим старые варианты:
+    # читатель никогда не увидит ни пустого места, ни недописанного файла.
+    part = folder / f".{dest.name}.{uuid.uuid4().hex}.part"
+    try:
+        shutil.copy2(src, part)
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
+    _purge_same_report_files(folder, rid, ext=ext, keep=dest)
     return dest
 
 
@@ -346,16 +381,18 @@ def _execute_single_report_to_disk(
             except Exception as exc:
                 local_logs.append(f"[{cfg.title}] Не удалось сохранить XLSX: {exc}")
 
-        if stdout.strip():
-            local_logs.extend(_season_mismatch_log_lines(stdout, cfg.title))
-            local_logs.extend(
-                f"[{cfg.title}] {line}" for line in stdout.splitlines()[-5:]
-                if line.strip() and "SEASON_MISMATCH" not in line
-            )
+        save_generation_data_checks(
+            summary_date,
+            cfg_id,
+            _append_script_stdout_logs(local_logs, stdout, cfg.title, tail=5),
+        )
 
         duration_seconds = round(time.monotonic() - report_started, 1)
-        record_report_duration(summary_date, cfg_id, duration_seconds)
-        record_job_report_completed(generation_job_id, cfg_id)
+        try:
+            record_report_duration(summary_date, cfg_id, duration_seconds)
+            record_job_report_completed(generation_job_id, cfg_id)
+        except Exception as exc:  # статистика/прогресс некритичны: файлы уже сохранены
+            local_logs.append(f"[{cfg.title}] Не удалось записать прогресс/время: {exc}")
         local_logs.append(f"[{cfg.title}] Общее время отчёта: {duration_seconds:.1f} с")
         item = GeneratedFile(
             report_id=cfg_id,
@@ -841,6 +878,30 @@ def _execute_disk_reports_parallel(
 
 
 def generate_reports_to_disk(
+    summary_date: date,
+    report_ids: list[str] | None = None,
+    *,
+    generation_job_id: str | None = None,
+    is_cancelled: Callable[[str], bool] | None = None,
+    cancelled: list[dict[str, str]] | None = None,
+) -> tuple[list[GeneratedFile], list[dict[str, str]], list[str]]:
+    """Один батч за раз в процессе; ожидающее задание можно отменить."""
+    while not _GENERATION_BATCH_LOCK.acquire(timeout=1.0):
+        if is_cancelled is not None and is_cancelled(None):
+            return [], [], ["Генерация отменена до старта (ожидала очереди)"]
+    try:
+        return _generate_reports_to_disk_impl(
+            summary_date,
+            report_ids,
+            generation_job_id=generation_job_id,
+            is_cancelled=is_cancelled,
+            cancelled=cancelled,
+        )
+    finally:
+        _GENERATION_BATCH_LOCK.release()
+
+
+def _generate_reports_to_disk_impl(
     summary_date: date,
     report_ids: list[str] | None = None,
     *,

@@ -240,14 +240,12 @@ def _crop_for_seeding_fact(raw: str, *, for_today: bool) -> str | None:
     """
     Культура для строк посева.
 
-    Сезон / сутки: культуры из FULL_SEEDING_CROP_ORDER (в т.ч. яровой рапс).
-    Сутки без культуры в sowing-карте — fallback на озимый рапс (как сводка 2).
+    Сезон и сутки: культуры из FULL_SEEDING_CROP_ORDER.
+    Пустая культура строки не подменяется озимым рапсом.
     """
     label = _crop_label_for_stats(raw)
     if label in _FULL_SEEDING_CROP_SET:
         return label
-    if for_today:
-        return _DEFAULT_SEEDING_CROP
     return None
 
 
@@ -841,9 +839,9 @@ async def fetch_all_crop_stats(
 
             from mtfmi_batch_fetch import crop_of_item
 
-            raw_crop = crop_of_item(item, field_to_crop.get(fid_i, ""))
-            crop_season = _crop_for_seeding_fact(raw_crop, for_today=False)
-            crop_today = _crop_for_seeding_fact(raw_crop, for_today=True)
+            raw_crop = crop_of_item(item, "")
+            crop_season = _crop_for_seeding_fact(raw_crop, for_today=False) if raw_crop else None
+            crop_today = _crop_for_seeding_fact(raw_crop, for_today=True) if raw_crop else None
 
             # Суммируем hourly до cutoff смены
             hourly = item.get("covered_area_hourly") or []
@@ -879,9 +877,9 @@ async def fetch_all_crop_stats(
 
             from mtfmi_batch_fetch import crop_of_item
 
-            raw_crop = crop_of_item(item, field_to_crop.get(fid_i, ""))
-            crop_season = _crop_for_seeding_fact(raw_crop, for_today=False)
-            crop_today = _crop_for_seeding_fact(raw_crop, for_today=True)
+            raw_crop = crop_of_item(item, "")
+            crop_season = _crop_for_seeding_fact(raw_crop, for_today=False) if raw_crop else None
+            crop_today = _crop_for_seeding_fact(raw_crop, for_today=True) if raw_crop else None
 
             cov = float(item.get("covered_area") or 0.0)
             if cov <= 0.5:
@@ -993,20 +991,13 @@ def _veg_label_for_item(
     field_to_crop: dict[int, str] | None,
     crop_names_by_id: dict[int, str] | None = None,
 ) -> str | None:
-    """Культура по полю MTFMI (приоритет), иначе по заданию."""
-    fid = item.get("field_id")
-    if field_to_crop is not None and fid is not None:
-        try:
-            from mtfmi_batch_fetch import crop_of_item
+    """Культура строки овощей: history_item_id."""
+    try:
+        from mtfmi_batch_fetch import crop_of_item
 
-            by_field = _map_veg_crop_label(
-                crop_of_item(item, field_to_crop.get(int(fid), "")),
-            )
-            if by_field:
-                return by_field
-        except (TypeError, ValueError):
-            pass
-    return _veg_crop_label(task, crop_names_by_id)
+        return _map_veg_crop_label(crop_of_item(item, ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def _veg_crop_label(task: dict, crop_names_by_id: dict[int, str] | None = None) -> str | None:

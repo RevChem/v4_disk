@@ -11,7 +11,7 @@ import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
-import { updatePlansEditorCalendarSeasons } from "./api";
+import { formatError, updatePlansEditorCalendarSeasons } from "./api";
 
 function formatRu(iso) {
   if (!iso) return "—";
@@ -79,7 +79,7 @@ export default function PlansSeasonsEditor({
       onSaved?.(data);
       setSuccess("Календарь сезонов сохранён");
     } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Ошибка сохранения");
+      setError(formatError(e, "Ошибка сохранения"));
     } finally {
       setSaving(false);
     }

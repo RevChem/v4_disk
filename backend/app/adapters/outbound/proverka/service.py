@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from app.config import settings
+from app.infrastructure.logging import get_logger
+from app.legacy.json_store_io import atomic_write_text, store_rmw_lock
+
+log = get_logger(__name__)
+_JOB_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+_STATUS_LOCK = "proverka_status"
 
 PLAN_DIR = Path(settings.svodki_root) / "plan"
 
@@ -25,18 +33,49 @@ def _ensure_plan_path() -> None:
         pass
 
 
+def _inject_proverka_runtime_env(report_date: date) -> None:
+    """Uploads, season_ranges и SQLite-хранилище — как при генерации сводок."""
+    upload = str(settings.upload_dir)
+    os.environ.setdefault("UPLOAD_DIR", upload)
+    os.environ.setdefault("SVODKI_UPLOAD_DIR", upload)
+    os.environ.setdefault("REPORT_DATE", report_date.isoformat())
+    if settings.svodki_task_store_enabled:
+        store_dir = (settings.svodki_task_store_dir or "").strip() or str(
+            Path(upload) / ".task_store"
+        )
+        os.environ.setdefault("SVODKI_TASK_STORE_DIR", store_dir)
+        os.environ.setdefault("SVODKI_STORE_READONLY", "1")
+
+
 def proverka_jobs_root() -> Path:
     return Path(settings.upload_dir) / "proverka"
 
 
 def job_dir(job_id: str) -> Path:
+    # job_id приходит из URL: допускаем только UUID-подобные имена (без «..», «/» и т.п.).
+    if not _JOB_ID_RE.fullmatch(str(job_id or "")):
+        raise ValueError("invalid_job_id")
     return proverka_jobs_root() / job_id
 
 
 def write_job_status(job_id: str, payload: dict[str, Any]) -> None:
+    """Атомарная запись (tmp + fsync + replace): читатель не увидит недописанный файл."""
     d = job_dir(job_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "status.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(d / "status.json", json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def update_job_status(job_id: str, mutate: Callable[[dict[str, Any]], bool | None]) -> dict[str, Any]:
+    """read-modify-write статуса под общей блокировкой (отмена и прогресс не затирают друг друга).
+
+    ``mutate`` меняет словарь на месте; вернув False, можно отказаться от записи.
+    """
+    with store_rmw_lock(_STATUS_LOCK):
+        st = read_job_status(job_id) or {}
+        if mutate(st) is False:
+            return st
+        write_job_status(job_id, st)
+        return st
 
 
 def make_proverka_cancel_checker(job_id: str) -> Callable[[str | None], bool]:
@@ -57,28 +96,33 @@ def make_proverka_cancel_checker(job_id: str) -> Callable[[str | None], bool]:
 
 
 def request_proverka_cancel(job_id: str, *, report_ids: list[str] | None = None) -> dict[str, Any]:
-    st = read_job_status(job_id)
-    if not st:
-        raise ValueError("job_not_found")
-    if st.get("status") not in ("pending", "running"):
-        raise ValueError("job_not_cancellable")
-    ids = [str(x).strip() for x in (report_ids or []) if str(x).strip()]
-    existing = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
-    if ids and existing:
-        ids = sorted(set(existing) | set(ids))
-    st["cancel_requested"] = True
-    st["cancel_report_ids"] = ids
-    st["error"] = None
-    if not ids:
-        # Полная отмена: файл виден worker-у сразу, статус — чтобы UI отпустило
-        # кнопку, не дожидаясь, пока дочерний процесс сам заметит флаг.
-        (job_dir(job_id) / "CANCEL").write_text("1", encoding="utf-8")
-        st["status"] = "cancelled"
-        st["progress"] = "Отменено"
-    else:
-        st["progress"] = st.get("progress") or "Отмена…"
-    write_job_status(job_id, st)
-    return st
+    try:
+        job_dir(job_id)
+    except ValueError as exc:
+        raise ValueError("job_not_found") from exc
+    with store_rmw_lock(_STATUS_LOCK):
+        st = read_job_status(job_id)
+        if not st:
+            raise ValueError("job_not_found")
+        if st.get("status") not in ("pending", "running"):
+            raise ValueError("job_not_cancellable")
+        ids = [str(x).strip() for x in (report_ids or []) if str(x).strip()]
+        existing = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
+        if ids and existing:
+            ids = sorted(set(existing) | set(ids))
+        st["cancel_requested"] = True
+        st["cancel_report_ids"] = ids
+        st["error"] = None
+        if not ids:
+            # Полная отмена: файл виден worker-у сразу, статус — чтобы UI отпустило
+            # кнопку, не дожидаясь, пока дочерний процесс сам заметит флаг.
+            atomic_write_text(job_dir(job_id) / "CANCEL", "1")
+            st["status"] = "cancelled"
+            st["progress"] = "Отменено"
+        else:
+            st["progress"] = st.get("progress") or "Отмена…"
+        write_job_status(job_id, st)
+        return st
 
 
 def reconcile_cancelled_proverka_jobs() -> int:
@@ -107,10 +151,24 @@ def reconcile_cancelled_proverka_jobs() -> int:
 
 
 def read_job_status(job_id: str) -> dict[str, Any] | None:
-    path = job_dir(job_id) / "status.json"
-    if not path.is_file():
+    try:
+        path = job_dir(job_id) / "status.json"
+    except ValueError:
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    for attempt in range(4):
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            # файл, записанный старой версией не атомарно, мог быть прочитан на середине
+            time.sleep(0.05 * (attempt + 1))
+            continue
+        return data if isinstance(data, dict) else None
+    log.warning("proverka.status_unreadable", job_id=job_id)
+    return None
 
 
 def enrich_job_file_column(status: dict[str, Any]) -> dict[str, Any]:
@@ -401,7 +459,7 @@ def create_job(
         "user_id": user_id,
         "run_ai_analysis": bool(run_ai_analysis),
     }
-    (d / "params.json").write_text(json.dumps(params, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(d / "params.json", json.dumps(params, ensure_ascii=False))
     write_job_status(
         job_id,
         {
@@ -426,6 +484,11 @@ def _ai_history_path() -> Path:
 
 
 def _append_ai_history(entry: dict[str, Any]) -> None:
+    with store_rmw_lock("proverka_ai_history"):
+        _append_ai_history_locked(entry)
+
+
+def _append_ai_history_locked(entry: dict[str, Any]) -> None:
     path = _ai_history_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     items: list[dict[str, Any]] = []
@@ -439,7 +502,7 @@ def _append_ai_history(entry: dict[str, Any]) -> None:
     jid = str(entry.get("job_id") or "")
     items = [x for x in items if str(x.get("job_id") or "") != jid]
     items.insert(0, entry)
-    path.write_text(json.dumps(items[:100], ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(items[:100], ensure_ascii=False, indent=2))
 
 
 def _write_ai_index(report_date: date, job_id: str, ai_payload: dict[str, Any]) -> None:
@@ -456,7 +519,7 @@ def _write_ai_index(report_date: date, job_id: str, ai_payload: dict[str, Any]) 
         "updated_at": updated_at,
     }
     path = root / f"ai_index_{report_date.isoformat()}.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     _append_ai_history(
         {
             "report_date": report_date.isoformat(),
@@ -581,9 +644,7 @@ def run_ai_job(job_id: str) -> dict[str, Any]:
     write_job_status(job_id, st)
 
     def on_progress(msg: str) -> None:
-        cur = read_job_status(job_id) or {}
-        cur["progress"] = msg
-        write_job_status(job_id, cur)
+        update_job_status(job_id, lambda cur: cur.__setitem__("progress", msg))
 
     ai_result = run_ai_for_job(d, prog=on_progress)
     st = read_job_status(job_id) or {}
@@ -642,6 +703,7 @@ def run_job(job_id: str) -> None:
 
     existing = read_job_status(job_id) or {}
     if existing.get("status") == "cancelled":
+        params_path.unlink(missing_ok=True)  # в params.json лежит cookie сессии
         return
 
     os.environ["PROVERKA_JOB_DIR"] = str(d)
@@ -655,7 +717,10 @@ def run_job(job_id: str) -> None:
         return
 
     params = json.loads(params_path.read_text(encoding="utf-8"))
+    # cookie нужна только в памяти: стираем с диска сразу после чтения
+    params_path.unlink(missing_ok=True)
     report_date = date.fromisoformat(params["report_date"])
+    _inject_proverka_runtime_env(report_date)
     report_ids = list(params["report_ids"])
     compare_cropwise = bool(params.get("compare_cropwise", True))
     cookie = str(params.get("cookie") or "")
@@ -664,17 +729,18 @@ def run_job(job_id: str) -> None:
     def on_progress(msg: str) -> None:
         if (d / "CANCEL").is_file():
             raise ProverkaCancelled("cancelled")
-        st = read_job_status(job_id) or {}
-        if st.get("status") == "cancelled":
-            raise ProverkaCancelled("cancelled")
-        ids = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
-        if st.get("cancel_requested") and not ids:
-            raise ProverkaCancelled("cancelled")
-        st["status"] = "running"
-        st["progress"] = msg
-        if (d / "CANCEL").is_file():
-            raise ProverkaCancelled("cancelled")
-        write_job_status(job_id, st)
+
+        def _mutate(st: dict[str, Any]) -> bool | None:
+            if st.get("status") == "cancelled":
+                raise ProverkaCancelled("cancelled")
+            ids = [str(x).strip() for x in (st.get("cancel_report_ids") or []) if str(x).strip()]
+            if st.get("cancel_requested") and not ids:
+                raise ProverkaCancelled("cancelled")
+            st["status"] = "running"
+            st["progress"] = msg
+            return None
+
+        update_job_status(job_id, _mutate)
 
     if (d / "CANCEL").is_file() or is_cancelled(None):
         write_job_status(
@@ -778,7 +844,7 @@ def run_job(job_id: str) -> None:
 
                 record_job_result(int(uid), report_date, job_id, completed)
             except Exception:
-                pass
+                log.warning("proverka.record_job_result_failed", job_id=job_id, exc_info=True)
     except ProverkaCancelled:
         params_path.unlink(missing_ok=True)
         st = read_job_status(job_id) or {}

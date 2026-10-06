@@ -2041,8 +2041,30 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             sheet_title=f"Овощи опрыск {_firm_table_label(firm_name)[:14]}",
         )
 
+    spray_total_ha = round(
+        sum(float((all_details.get(f) or {}).get("area_today") or 0) for f in firm_names),
+        2,
+    )
+    veg_total_ha = round(
+        sum(float((veg_details.get(f) or {}).get("area_today") or 0) for f in veg_firm_names),
+        2,
+    )
     with stage("Excel: сохранение"):
         wb.save(output_file)
+    try:
+        from svodki_sanity import emit_calc_total_ha, publish_cross_op_snapshot
+
+        cross_ops: dict[str, float] = {}
+        if spray_total_ha >= 0.01:
+            cross_ops["3.1 Опрыскивание"] = spray_total_ha
+        if veg_total_ha >= 0.01:
+            cross_ops["3.2 Опрыскивание (овощи)"] = veg_total_ha
+        if cross_ops:
+            publish_cross_op_snapshot(cross_ops)
+        if spray_total_ha + veg_total_ha >= 0.01:
+            emit_calc_total_ha(round(spray_total_ha + veg_total_ha, 2))
+    except Exception:
+        pass
     print(f"\nСохранено: {output_file}")
     timing_finish()
 

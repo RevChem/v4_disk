@@ -2,7 +2,7 @@
 """
 26 Cropwise Operations — отчёт "Культивация"
 ==========================================
-wt=10,50,51,63,96 (культивация, сводная таблица и листы по фирмам) + wt=73 (фрезерование — только отдельные листы)
+wt=10,50,63,96 (культивация, сводная таблица и листы по фирмам) + wt=73 (фрезерование — только отдельные листы)
 
 Логика:
 - Агрофирма определяется по ПОЛЮ из mtfmi (field → field_group → group_folder → фирма),
@@ -111,7 +111,6 @@ DAY_END_HOUR:   int = 6
 WORK_TYPES: dict[int, str] = {
     10:  "Культивация",
     50:  "Культивация междурядная",
-    51:  "2.10 Лущение и дискование, культивация стерни",
     63:  "Культивация 11 км/ч 8-10 см",
     96:  "2.11 Культивация",
 }
@@ -1031,7 +1030,7 @@ def build_all_firm_stats(
 ) -> tuple[dict[str, dict], dict[str, dict]]:
     """
     Возвращает:
-      cult_details — культивация (wt 10, 50, 51, 63, 96), без фрезерования
+      cult_details — культивация (wt 10, 50, 63, 96), без фрезерования
       frezer_details — фрезерование (wt=73), с фильтром полей по культуре/available
     """
     if implements_dict is None:
@@ -1664,7 +1663,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
 
-    # Лист 1: Сводка — только культивация (wt 10, 50, 51, 63, 96)
+    # Лист 1: Сводка — только культивация (wt 10, 50, 63, 96)
     write_summary_sheet(wb, report_date, day_start, cutoff,
                         firm_names, cult_details, manual_r8)
 

@@ -1,6 +1,8 @@
 """Кто сейчас держит редактор планов открытым. Сохранение не блокируется."""
 from __future__ import annotations
 
+from app.legacy.json_store_io import atomic_write_text, read_json_dict
+
 import fcntl
 import json
 import re
@@ -77,10 +79,7 @@ def _live_sessions(path: Path, now: float | None = None) -> list[dict[str, Any]]
 
 
 def _write(path: Path, sessions: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"sessions": sessions}, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps({"sessions": sessions}, ensure_ascii=False))
 
 
 def _others(sessions: list[dict[str, Any]], user_id: int) -> dict[str, Any]:

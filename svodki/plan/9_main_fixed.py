@@ -902,7 +902,7 @@ def build_plow_stats_by_crop(
 ) -> dict[str, dict[str, dict]]:
     """
     Факт вспашки по культурам PLOW_SEASON_CROPS — один проход по заданиям.
-    Культура — только field_to_crop_plow (history_items year=SEASON_YEAR).
+    Культура строки — mtfmi.history_item_id, затем перечень PLOW_SEASON_CROPS.
     """
     allowed_seasons = (
         {int(task_year)} if task_year is not None else set(PLOW_FACT_SEASONS)
@@ -965,9 +965,7 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or _plow_crop_for_field(
-                fid_i, field_to_crop_plow,
-            )
+            crop = _map_plow_crop_name(crop_of_item(item, ""))
             if not crop:
                 continue
 
@@ -1021,9 +1019,7 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or _plow_crop_for_field(
-                fid_i, field_to_crop_plow,
-            )
+            crop = _map_plow_crop_name(crop_of_item(item, ""))
             if not crop:
                 continue
 
@@ -1187,7 +1183,7 @@ def build_all_firm_stats(
 
                         _note(
                             group="2.4 Вспашка", firm=firm,
-                            crop=crop_of_item(item, str(field_to_crop.get(fid_i) or "")),
+                            crop=crop_of_item(item, ""),
                             field_id=fid_i, task_id=int(tid) if tid is not None else None,
                             machine_id=int(mid) if mid is not None else None, ha=cov_h,
                             season=str(t.get("season") or ""),
@@ -1199,7 +1195,7 @@ def build_all_firm_stats(
 
                         _note(
                             group="2.8 Глубокорыхление", firm=firm,
-                            crop=crop_of_item(item, str(field_to_crop.get(fid_i) or "")),
+                            crop=crop_of_item(item, ""),
                             field_id=fid_i, task_id=int(tid) if tid is not None else None,
                             machine_id=int(mid) if mid is not None else None, ha=cov_h,
                             season=str(t.get("season") or ""),
@@ -2162,6 +2158,160 @@ def write_all_crop_plow_sheets(
         )
 
 
+# Как лист «Итого (все АФ)» сводки 5 (PDF стр. 4): строки — культуры, сумма по всем АФ.
+PLOW_ALL_FIRMS_SHEET = "Итого (все АФ)"
+PLOW_ALL_FIRMS_COLS = [
+    "№",
+    "Культура",
+    "План, га",
+    "Факт общий, га",
+    "Остаток к выполнению, га",
+    "Доля факта от плана, %",
+    "Факт за сутки, га",
+    "Прогнозная дата завершения\nпо фактической выработке",
+]
+_PLOW_ALL_FIRMS_WIDTHS = [8, 26, 14, 16, 24, 18, 16, 36]
+
+
+def _plow_forecast_date(report_date: date, plan: float, fact: float, today: float) -> str:
+    """Прогнозная дата, как на стр. 4 сводки 5. Без суточного факта — средний темп от старта вспашки."""
+    if plan <= 0 or fact <= 0:
+        return ""
+    rem = max(plan - fact, 0.0)
+    if rem <= 0:
+        return report_date.strftime("%d.%m.%Y")
+    pace = today
+    if pace <= 0:
+        days_elapsed = max((report_date - SEASON_START).days + 1, 1)
+        pace = fact / days_elapsed
+    if pace <= 0:
+        return ""
+    return (report_date + timedelta(days=max(1, math.ceil(rem / pace)))).strftime("%d.%m.%Y")
+
+
+def write_plow_all_firms_summary_sheet(
+    wb: openpyxl.Workbook,
+    by_firm_crop: dict[str, dict[str, dict]],
+    report_date: date,
+    *,
+    sheet_index: int = 1,
+) -> None:
+    """Свод вспашки по всем агрофирмам: одна строка на культуру (как «Итого (все АФ)» в сводке 5)."""
+    styles = _make_styles()
+    n = len(PLOW_ALL_FIRMS_COLS)
+    title = PLOW_ALL_FIRMS_SHEET
+    if title in wb.sheetnames:
+        title = f"{title} вспашка"[:31]
+    ws = wb.create_sheet(title=title, index=sheet_index)
+    row = 1
+
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n)
+    c0 = ws.cell(row=row, column=1, value="2.4 Вспашка — Сводно по всем агрофирмам")
+    c0.font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+    c0.fill = styles["fill_hdr"]
+    c0.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    c0.border = styles["border"]
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    for ci, col_name in enumerate(PLOW_ALL_FIRMS_COLS, start=1):
+        cc = ws.cell(row=row, column=ci, value=col_name)
+        _sc(
+            cc, styles,
+            fill=styles["fill_hdr"],
+            font=Font(bold=True, color="FFFFFF", size=12),
+            align=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        )
+    ws.row_dimensions[row].height = 66
+    row += 1
+
+    num_fmt_by_col = {
+        3: "# ##0.00",
+        4: "# ##0.00",
+        5: "# ##0.00",
+        6: "0.0%",
+        7: "# ##0.00",
+    }
+
+    def _safe_float(v: object) -> float:
+        try:
+            x = float(v or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return x if math.isfinite(x) else 0.0
+
+    total_plan = total_fact = total_today = total_rem = 0.0
+    crops = _plow_crops_for_report(by_firm_crop)
+
+    for i, crop in enumerate(crops, start=1):
+        plan = fact = today = 0.0
+        for firm in FIRM_ORDER:
+            firm_stats = by_firm_crop.get(firm, {}).get(crop, _empty_crop_plow_stats())
+            plan += _plow_plan_ha(firm, crop)
+            fact += _safe_float(firm_stats.get("season_plow", 0.0))
+            today += _safe_float(firm_stats.get("plow_today", 0.0))
+        plan = round(plan, 2)
+        fact = round(fact, 2)
+        today = round(today, 2)
+        rem = round(plan - fact, 2)
+        share = (fact / plan) if plan > 0 else 0.0
+        forecast = _plow_forecast_date(report_date, plan, fact, today) if plan > 0 else ""
+
+        vals = [i, crop, plan, fact, rem, share, today, forecast]
+        for ci, v in enumerate(vals, start=1):
+            cell = ws.cell(row=row, column=ci, value=v)
+            cell.number_format = num_fmt_by_col.get(ci, "General")
+            _sc(
+                cell, styles,
+                fill=PatternFill("solid", fgColor="FFFFFF"),
+                font=Font(size=12),
+                align=Alignment(
+                    horizontal="left" if ci == 2 else "center",
+                    vertical="center",
+                    wrap_text=True,
+                ),
+            )
+        total_plan += plan
+        total_fact += fact
+        total_today += today
+        total_rem += rem
+        row += 1
+
+    total_share = (total_fact / total_plan) if total_plan > 0 else 0.0
+    totals = [
+        "",
+        "Итого",
+        round(total_plan, 2),
+        round(total_fact, 2),
+        round(total_rem, 2),
+        total_share,
+        round(total_today, 2),
+        "",
+    ]
+    for ci, v in enumerate(totals, start=1):
+        cell = ws.cell(row=row, column=ci, value=v)
+        cell.number_format = num_fmt_by_col.get(ci, "General")
+        _sc(
+            cell, styles,
+            fill=PatternFill("solid", fgColor="BDD7EE"),
+            font=Font(bold=True, size=12),
+            align=Alignment(
+                horizontal="left" if ci == 2 else "center",
+                vertical="center",
+                wrap_text=False,
+            ),
+        )
+    row += 1
+
+    for ci, width in enumerate(_PLOW_ALL_FIRMS_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(ci)].width = width
+
+    _auto_fit_row_heights(ws, start_row=1, end_row=row - 1, max_col=n)
+    hr = ws.row_dimensions[2].height or 0
+    ws.row_dimensions[2].height = max(hr, 66.0)
+    ws.freeze_panes = "A3"
+
+
 def write_tillage_combined_sheet(
     wb: openpyxl.Workbook,
     all_details: dict[str, dict],
@@ -2426,6 +2576,10 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
 
     write_tillage_combined_sheet(wb, all_details)
     write_all_crop_plow_sheets(wb, plow_by_crop, start_index=1)
+    write_plow_all_firms_summary_sheet(
+        wb, plow_by_crop, report_date, sheet_index=1 + len(crop_sheets),
+    )
+    print("  Лист «Итого (все АФ)»: вспашка сводно по всем агрофирмам")
     for firm_name in firm_names:
         write_detail_sheet(wb, firm_name, report_date, day_start, cutoff, all_details[firm_name])
 

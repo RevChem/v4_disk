@@ -213,6 +213,7 @@ class ProverkaJobOut(BaseModel):
     sheet_consistency_violation_count: int = 0
     violations: list[dict[str, Any]] = Field(default_factory=list)
     error_logs: list[dict[str, str]] = Field(default_factory=list)
+    data_checks: list[str] = Field(default_factory=list)
     checked_at: str | None = None
     ai_status: str | None = None
     ai_violation_count: int = 0

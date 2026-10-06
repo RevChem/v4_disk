@@ -139,6 +139,9 @@ PLOW_SEASON_CROPS: frozenset[str] = frozenset({
 SVODKA2_PLOW_SEASON_FIX = "2026-09-07a"
 # Дискование: культуры/учёт — history 2026+2027 (field_to_crop_general), не sowing-only.
 SVODKA2_DISK_SEASON_FIX = "2026-08-07a"
+# Факт: культура строки только из mtfmi.history_item_id. Карты поля остаются для учётной площади.
+SVODKA2_HISTORY_FIELD_FIX = "2026-10-06"
+_HISTORY_FIELD_ONLY = True
 FERT_GROUP_NAME = "1.1 Внесение минеральных удобрений"
 HARVEST_GROUP_NAME = "5.0 Уборка"
 HARVEST_VEG_PLAN_KEY = "5.4 Уборка картофеля, лука"
@@ -1608,7 +1611,7 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
         if hi_id is None or crop_id is None:
             continue
         cname = (crops_map.get(int(crop_id)) or "").strip()
-        if cname and not is_skip_crop(cname):
+        if cname:
             history_item_to_crop[int(hi_id)] = cname
             try:
                 history_item_to_year[int(hi_id)] = int(hi.get("year") or 0)
@@ -1685,6 +1688,11 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
             continue
         field_area[fid] = (f.get("tillable_area") or
                            f.get("calculated_area") or 0.0)
+    try:
+        from svodki_sanity import register_field_areas as _reg_fa
+        _reg_fa(field_area)
+    except ImportError:
+        pass
 
     for _diag_crop in ("Рапс озимый", "Пшеница озимая"):
         _diag_fids = [fid for fid, c in field_to_crop_general.items() if c == _diag_crop]
@@ -1930,10 +1938,14 @@ def _load_mtfmi_row_crops(
     """Культура строки площади: MachineTaskFieldMappingItem.history_item_id."""
     pairs: list[tuple[int, int]] = []
     missing: set[int] = set()
+    rows = no_hid = 0
     for items in mtfmi_map.values():
         for item in items:
+            rows += 1
             mid = item.get("id")
             hid = item.get("history_item_id")
+            if hid is None:
+                no_hid += 1
             if mid is None or hid is None:
                 continue
             mid_i, hid_i = int(mid), int(hid)
@@ -1965,8 +1977,7 @@ def _load_mtfmi_row_crops(
             if not name:
                 continue
             extra[int(hi["id"])] = name
-            if not is_skip_crop(name):
-                history_item_to_crop.setdefault(int(hi["id"]), name)
+            history_item_to_crop.setdefault(int(hi["id"]), name)
             try:
                 year = int(hi.get("year") or 0)
             except (TypeError, ValueError):
@@ -1979,7 +1990,8 @@ def _load_mtfmi_row_crops(
         if name:
             out[mid_i] = name
     print(
-        f"  культура строки площади: {len(out)} из {len(pairs)}, "
+        f"  культура строки площади: строк {rows}, без history_item_id {no_hid}, "
+        f"с культурой {len(out)} из {len(pairs)}, "
         f"history_item вне годовой карты: {len(missing)}",
         flush=True,
     )
@@ -2001,18 +2013,21 @@ def _resolve_firm_for_fact(
     *,
     use_report3_field_filter: bool = False,
 ) -> str | None:
-    """Фильтр полей: диск / глубокорыхление — все поля с фирмой (как сводка 9).
+    """Фильтр полей для факта.
 
-    2.4 Вспашка — фирма из полной карты (как уборка); отбор факта по
-    machine_task.season == year+1, без обязательной культуры в plow-мапе.
-
-    Боронование / прикатывание / посев — как 4_main (суточный факт): фирма из полной
-    карты полей, без period_available_ids и без обязательной культуры в sowing-карте
-    (иначе теряется факт, напр. поле 3324 ≈20–55 га).
-
-    5.0 Уборка — как 10_main_harvest: только привязка к агрофирме
-    (без available и без обязательной культуры в sowing-карте).
+    При _HISTORY_FIELD_ONLY культура строки уже известна из history_item,
+    поэтому членство поля в карте культур факт не отсекает. Фирма берётся
+    из полной карты, доступность периода — как раньше у группы.
     """
+    if _HISTORY_FIELD_ONLY:
+        if use_report3_field_filter or group_name in (
+            {DISK_GROUP_NAME, HARVEST_GROUP_NAME} | TILLAGE_GROUPS | FACT_BY_ALL_FIELDS_GROUPS
+        ):
+            return field_to_firm_all.get(fid_i)
+        if fid_i not in period_available_ids:
+            return None
+        return field_to_firm_all.get(fid_i)
+
     if use_report3_field_filter:
         if fid_i not in field_to_crop:
             return None
@@ -2687,6 +2702,8 @@ def collect_work_data(
         mtfmi_row_crop = _load_mtfmi_row_crops(
             global_mtfmi, history_item_to_crop, headers, history_item_to_year,
         )
+    if _HISTORY_FIELD_ONLY:
+        print("  факт: культура строки только из history_item_id, без карты поля")
 
     try:
         from season_mismatch_log import log_row_season_mismatches
@@ -2790,14 +2807,35 @@ def collect_work_data(
                 return default
             return crop_
 
+        def _history_row_crop(item: dict | None) -> str:
+            """Культура строки только из history_item_id. Пустая ссылка — пустая культура."""
+            if item is None:
+                return ""
+            raw_id = item.get("id")
+            if raw_id is not None:
+                named = mtfmi_row_crop.get(int(raw_id), "")
+                if named:
+                    return named
+            if item.get("history_item_id") is None:
+                return ""
+            from mtfmi_batch_fetch import crop_of_item
+
+            return str(crop_of_item(item, "") or "")
+
         def _crop_for_task_field(
             tid_: int,
             fid_i_: int,
             default: str = "",
             item: dict | None = None,
         ) -> str:
-            # 1.1 МУ — отдельно: crop_of_item и карта newest_year_wins.
-            # Вспашка идёт общим путём ниже: культура строки, иначе карта поля.
+            if _HISTORY_FIELD_ONLY:
+                named = _history_row_crop(item)
+                if group_name == DISK_GROUP_NAME and (not named or named == "Зябь"):
+                    return ""
+                if is_harvest_veg:
+                    return _map_harvest_veg_crop(named) or ""
+                return named
+            # Сравнение со старым путём: карта поля, агрооперация, сезон задания.
             if group_name == FERT_GROUP_NAME:
                 from mtfmi_batch_fetch import crop_of_item
 
@@ -2813,7 +2851,7 @@ def collect_work_data(
                 raw_id = item.get("id")
                 if raw_id is not None:
                     named = mtfmi_row_crop.get(int(raw_id), "")
-                    if named:
+                    if named and not is_skip_crop(named):
                         return named
             if group_name == DISK_GROUP_NAME:
                 try:
@@ -2957,6 +2995,8 @@ def collect_work_data(
                         return True
 
                     def _spray_field_ok(fid_i: int) -> bool:
+                        if _HISTORY_FIELD_ONLY:
+                            return fid_i in active_available_ids
                         return (
                             fid_i in active_available_ids
                             and fid_i in active_crop_map
@@ -3230,6 +3270,7 @@ def collect_work_data(
                 sorted(_winter_season_only),
                 bool(use_crop_via_agro_op and history_item_to_crop
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
+                bool(_HISTORY_FIELD_ONLY),
             ],
             stamp_parts=_make_stamp_parts(
                 group_name=group_name, task_machine=task_machine, task_shift=task_shift,
@@ -4301,8 +4342,114 @@ def build_report() -> None:
     output_path = _resolve_output_xlsx_path()
     with _stage("Excel: сохранение"):
         wb.save(output_path)
+    try:
+        from datetime import timedelta
+
+        from svodki_sanity import cross_op_daily_from_report2, publish_cross_op_snapshot
+
+        shift_day = TODAY - timedelta(days=1)
+        publish_cross_op_snapshot(cross_op_daily_from_report2(work_data, shift_day))
+    except Exception:
+        pass
     print(f"\nСохранено: {output_path.resolve()}")
     timing_finish()
 
+def _work_day_ha(work_data: dict, day: date) -> tuple[float, dict[tuple[str, str, str], float]]:
+    """Сумма «выполнено» за смену и гектары по группе/фирме/культуре."""
+    total = 0.0
+    by_crop: dict[tuple[str, str, str], float] = defaultdict(float)
+    for group, gd in work_data.items():
+        for firm, by_date in (gd.get("area_by_firm_date") or {}).items():
+            total += float(by_date.get(day, 0.0) or 0.0)
+        for firm, crops in (gd.get("crops") or {}).items():
+            for crop, cd in crops.items():
+                ha = float((cd.get("by_date") or {}).get(day, 0.0) or 0.0)
+                if ha:
+                    by_crop[(group, firm, crop)] += ha
+    return total, by_crop
+
+
+def _print_history_field_delta(old: dict, new: dict, days: list[date]) -> None:
+    print("\n=== Факт: карта поля → history_item_id ===")
+    for day in days:
+        old_total, old_crops = _work_day_ha(old, day)
+        new_total, new_crops = _work_day_ha(new, day)
+        print(
+            f"\n{day.isoformat()}  выполнено {old_total:.1f} → {new_total:.1f} га "
+            f"({new_total - old_total:+.1f})"
+        )
+        keys = sorted(set(old_crops) | set(new_crops))
+        shown = 0
+        for key in keys:
+            old_ha = round(old_crops.get(key, 0.0), 1)
+            new_ha = round(new_crops.get(key, 0.0), 1)
+            if abs(old_ha - new_ha) < 0.1:
+                continue
+            group, firm, crop = key
+            print(f"  {group} | {firm} | {crop}: {old_ha:.1f} → {new_ha:.1f} ({new_ha - old_ha:+.1f})")
+            shown += 1
+        if not shown:
+            print("  культуры без изменений ≥ 0.1 га")
+
+
+def compare_history_field(days: list[date]) -> None:
+    """Один проход заданий, затем старая карта поля и history_item_id."""
+    global _HISTORY_FIELD_ONLY
+    os.environ["SVODKI_SEASON_CACHE"] = "off"
+    headers = {"X-User-Api-Token": API_TOKEN}
+    refresh_season_config()
+    print(f"Сравнение культуры факта сводки 2  |  дни: {', '.join(d.isoformat() for d in days)}")
+    print("Загружаем справочники...")
+    (
+        field_to_crop, field_to_crop_general, field_to_crop_harvest,
+        field_to_crop_plow, field_to_crop_veg, field_to_crop_report3,
+        field_to_firm, field_to_firm_general, field_to_firm_veg,
+        field_to_firm_all, crop_field_ids_report3,
+        period_available_ids, period_available_ids_general,
+        field_area, machine_group,
+        _firm_plan_ha, _firm_crop_area_ha, _firm_crop_area_ha_general,
+        history_item_to_crop, history_item_to_year,
+    ) = load_reference_data(refresh=True)
+    print("Готовим задания...")
+    prepared = _prepare_group_selection(
+        headers, refresh=False, tasks_window=_widest_machine_tasks_window(),
+    )
+    collect_args = (
+        field_to_crop, field_to_crop_general, field_to_crop_harvest,
+        field_to_crop_plow, field_to_crop_veg, field_to_crop_report3,
+        field_to_firm, field_to_firm_general, field_to_firm_veg, field_to_firm_all,
+        crop_field_ids_report3,
+        period_available_ids, period_available_ids_general,
+        field_area, machine_group, headers,
+    )
+    print("\nСтарый расчёт: карта поля")
+    _HISTORY_FIELD_ONLY = False
+    old = collect_work_data(
+        *collect_args,
+        history_item_to_crop=history_item_to_crop,
+        history_item_to_year=history_item_to_year,
+        prepared=prepared,
+    )
+    import copy
+    old = copy.deepcopy(old)
+    print("\nНовый расчёт: history_item_id")
+    _HISTORY_FIELD_ONLY = True
+    new = collect_work_data(
+        *collect_args,
+        history_item_to_crop=history_item_to_crop,
+        history_item_to_year=history_item_to_year,
+        prepared=prepared,
+    )
+    _print_history_field_delta(old, new, days)
+
+
 if __name__ == "__main__":
-    build_report()
+    if "--history-check" in sys.argv:
+        raw_days = os.environ.get("SVODKI_HISTORY_CHECK_DAYS", "").strip()
+        if raw_days:
+            check_days = [date.fromisoformat(part) for part in raw_days.split(",") if part.strip()]
+        else:
+            check_days = [TODAY - timedelta(days=i) for i in (3, 2, 1)]
+        compare_history_field(check_days)
+    else:
+        build_report()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.legacy.json_store_io import atomic_write_text, read_json_dict
+
 import json
 import shutil
 from datetime import datetime, timezone
@@ -19,23 +21,12 @@ def cell_edits_store_path() -> Path:
 
 
 def load_cell_edits_store() -> dict[str, Any]:
-    path = cell_edits_store_path()
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        pass
-    return {}
+    return read_json_dict(cell_edits_store_path(), label="cell_edits")
 
 
 def save_cell_edits_store(store: dict[str, Any]) -> Path:
     path = cell_edits_store_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True))
     return path
 
 

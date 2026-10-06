@@ -154,8 +154,13 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [checkedAt, setCheckedAt] = useState(null);
+  const [dataChecks, setDataChecks] = useState([]);
   const runningRef = useRef(false);
   runningRef.current = running;
+  // onComplete приходит из родителя как новая стрелка на каждый рендер — держим в ref,
+  // иначе эффект опроса пересоздаётся (и делает лишний запрос) при любой перерисовке App.
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
   const [cancelling, setCancelling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState(false);
   /** false — скрыть строки OK / без существенного diff (как «только расхождения»). */
@@ -188,6 +193,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     try {
       const latest = await fetchLatestProverkaJob(summaryDate);
       if (runningRef.current) return; // уже идёт запуск из этого окна
+      setDataChecks(Array.isArray(latest?.data_checks) ? latest.data_checks : []);
       if (!latest?.job_id) {
         setJobId(null);
         setJob(null);
@@ -217,9 +223,15 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   useEffect(() => {
     if (!jobId || !running) return undefined;
     let cancelled = false;
+    let inFlight = false;
+    let failures = 0;
+    const MAX_FAILURES = 5; // единичный сбой сети/502 не должен останавливать слежение
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const st = await fetchProverkaJob(jobId);
+        failures = 0;
         if (cancelled) return;
         setJob(st);
         if (st.status === "completed" || st.status === "failed" || st.status === "cancelled") {
@@ -231,13 +243,17 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
           if (st.status === "cancelled") {
             setError("");
           }
-          onComplete?.();
+          onCompleteRef.current?.();
         }
       } catch (e) {
-        if (!cancelled) {
+        failures += 1;
+        const gone = e?.response?.status === 404 || e?.response?.status === 403;
+        if (!cancelled && (gone || failures >= MAX_FAILURES)) {
           setError(String(e.message || e));
           setRunning(false);
         }
+      } finally {
+        inFlight = false;
       }
     };
     tick();
@@ -246,7 +262,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       cancelled = true;
       clearInterval(id);
     };
-  }, [jobId, running, onComplete]);
+  }, [jobId, running]);
 
   function toggleId(id) {
     setSelectedIds((prev) =>
@@ -268,8 +284,11 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       setError("Введите cookie или задайте CROPWISE_SESSION_COOKIE в .env");
       return;
     }
-    setRunning(true);
+    // Сбрасываем старый jobId ДО running=true: иначе опрос успевает прочитать прошлый
+    // (уже завершённый) job и сразу выключает running, а новый job остаётся без слежения.
+    setJobId(null);
     setJob(null);
+    setRunning(true);
     try {
       const res = await runProverka({
         reportDate: summaryDate,
@@ -295,7 +314,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       setJob(st);
       if (st.status === "cancelled") {
         setRunning(false);
-        onComplete?.();
+        onCompleteRef.current?.();
       }
     } catch (e) {
       setError(String(e.message || e));
@@ -544,6 +563,28 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
           <Typography variant="body2" color="text.secondary">
             Дата отчёта: <strong>{summaryDate}</strong> · Сводки ↔ Cropwise UI (Отчёт об агро работах машин)
           </Typography>
+
+          {dataChecks.length > 0 && (
+            <Alert severity="warning">
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                Замечания при создании сводок
+              </Typography>
+              {dataChecks.slice(0, 40).map((line, idx) => (
+                <Typography
+                  key={`${idx}-${line.slice(0, 24)}`}
+                  variant="body2"
+                  sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
+                >
+                  {line}
+                </Typography>
+              ))}
+              {dataChecks.length > 40 && (
+                <Typography variant="caption" color="text.secondary">
+                  Ещё {dataChecks.length - 40} строк в логе генерации.
+                </Typography>
+              )}
+            </Alert>
+          )}
 
           <TextField
             label="Cookie Cropwise"

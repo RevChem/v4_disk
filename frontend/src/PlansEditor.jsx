@@ -29,6 +29,7 @@ import IconButton from "@mui/material/IconButton";
 import Tooltip from "@mui/material/Tooltip";
 import {
   fetchPlansEditor,
+  formatError,
   heartbeatPlansPresence,
   releasePlansPresence,
   releasePlansPresenceKeepalive,
@@ -192,14 +193,24 @@ export default function PlansEditor({ summaryDate = null }) {
   const [sectionKey, setSectionKey] = useState("CALENDAR_SEASONS");
   const [workGroup, setWorkGroup] = useState("");
   const [otherEditors, setOtherEditors] = useState([]);
-  const requestGen = useRef(0);
+  // loadGen — «последний загрузчик побеждает» только среди reload() (смена даты);
+  // writeGen растёт при каждом применении ответа записи: опрос, начатый до записи, отбрасывается.
+  const loadGen = useRef(0);
+  const writeGen = useRef(0);
+  const reloadInFlight = useRef(false);
+  const pollInFlight = useRef(false);
   const savingRef = useRef(false);
 
   const setSavingTracked = useCallback((value) => {
     const next = Boolean(value);
     savingRef.current = next;
-    if (next) requestGen.current += 1;
     setSaving(next);
+  }, []);
+
+  /** Ответ записи — самое свежее состояние: применяем и отменяем устаревшие опросы. */
+  const applyWriteState = useCallback((data) => {
+    writeGen.current += 1;
+    setState(data);
   }, []);
 
   useEffect(() => {
@@ -234,30 +245,41 @@ export default function PlansEditor({ summaryDate = null }) {
   }, []);
 
   const reload = useCallback(async () => {
-    const gen = ++requestGen.current;
+    const gen = ++loadGen.current;
+    const wGen = writeGen.current;
+    reloadInFlight.current = true;
     setLoading(true);
     setError("");
     try {
       const data = await fetchPlansEditor(summaryDate);
-      if (gen !== requestGen.current) return;
-      setState(data);
+      if (gen !== loadGen.current) return;
+      // если за время загрузки уже применён ответ записи — он новее
+      if (wGen === writeGen.current) setState(data);
     } catch (e) {
-      if (gen !== requestGen.current) return;
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось загрузить планы");
+      if (gen !== loadGen.current) return;
+      setError(formatError(e, "Не удалось загрузить планы"));
     } finally {
-      if (gen === requestGen.current) setLoading(false);
+      if (gen === loadGen.current) {
+        reloadInFlight.current = false;
+        setLoading(false);
+      }
     }
   }, [summaryDate]);
 
   const refreshSilent = useCallback(async () => {
-    if (savingRef.current) return;
-    const gen = ++requestGen.current;
+    // не конкурируем ни с записью, ни с явной загрузкой, ни с предыдущим опросом
+    if (savingRef.current || reloadInFlight.current || pollInFlight.current) return;
+    pollInFlight.current = true;
+    const gen = loadGen.current;
+    const wGen = writeGen.current;
     try {
       const data = await fetchPlansEditor(summaryDate);
-      if (gen !== requestGen.current || savingRef.current) return;
+      if (gen !== loadGen.current || wGen !== writeGen.current || savingRef.current) return;
       setState(data);
     } catch {
       // Фоновое обновление не затирает уже показанные планы.
+    } finally {
+      pollInFlight.current = false;
     }
   }, [summaryDate]);
 
@@ -335,11 +357,11 @@ export default function PlansEditor({ summaryDate = null }) {
         },
         summaryDate
       );
-      setState(data);
+      applyWriteState(data);
       clearSeasonSelectionDraft(workGroup);
       setSuccess(clear ? "Диапазон сброшен к расчётному." : "Диапазон дат и сезоны сохранены.");
     } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось сохранить диапазон дат");
+      setError(formatError(e, "Не удалось сохранить диапазон дат"));
     } finally {
       setSavingTracked(false);
     }
@@ -421,7 +443,16 @@ export default function PlansEditor({ summaryDate = null }) {
   }, [state, section, sectionKey, workGroup]);
 
   const saveValue = async (relativeKeys, rawValue) => {
-    const num = Number(String(rawValue).replace(",", ".").trim());
+    const text = String(rawValue ?? "").replace(",", ".").replace(/\s+/g, "").trim();
+    if (text === "") {
+      // пустое поле не сохраняем как 0: просто возвращаем прежнее значение
+      return false;
+    }
+    if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(text)) {
+      setError("Введите число");
+      return false;
+    }
+    const num = Number(text);
     if (!Number.isFinite(num)) {
       setError("Введите число");
       return false;
@@ -441,11 +472,11 @@ export default function PlansEditor({ summaryDate = null }) {
         value: num,
         summaryDate
       });
-      setState(data);
+      applyWriteState(data);
       setSuccess("Сохранено");
       return true;
     } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Не удалось сохранить");
+      setError(formatError(e, "Не удалось сохранить"));
       return false;
     } finally {
       setSavingTracked(false);
@@ -549,7 +580,7 @@ export default function PlansEditor({ summaryDate = null }) {
               calendarSeasons={state?.season_meta?.calendar_seasons || {}}
               reportDate={state?.season_meta?.report_date}
               summaryDate={summaryDate}
-              onSaved={setState}
+              onSaved={applyWriteState}
               saving={saving}
               setSaving={setSavingTracked}
               setError={setError}
@@ -559,9 +590,7 @@ export default function PlansEditor({ summaryDate = null }) {
             <PlansWorkGroupsEditor
               groups={state?.effective?.WORK_GROUPS ?? state?.base?.WORK_GROUPS ?? EMPTY_WORK_GROUPS}
               summaryDate={summaryDate}
-              onSaved={(data) => {
-                setState(data);
-              }}
+              onSaved={applyWriteState}
               saving={saving}
               setSaving={setSavingTracked}
               setError={setError}
@@ -655,7 +684,7 @@ export default function PlansEditor({ summaryDate = null }) {
                 const edited = isEdited(state?.base?.[sectionKey], state?.effective?.[sectionKey], relativeKeys);
                 const seasonHint = state?.season_meta?.by_group?.[key]?.label || "";
                 return (
-                  <Grid item xs={12} sm={6} md={4} lg={3} key={key}>
+                  <Grid key={key} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
                     <PlanNumberField
                       label={key}
                       relativeKeys={relativeKeys}
@@ -685,7 +714,7 @@ export default function PlansEditor({ summaryDate = null }) {
                 const baseVal = getNested(state?.base, fullPath);
                 const edited = isEdited(state?.base?.[sectionKey], state?.effective?.[sectionKey], relativeKeys);
                 return (
-                  <Grid item xs={12} sm={6} md={4} lg={3} key={firmName}>
+                  <Grid key={firmName} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
                     <Paper variant="outlined" sx={{ p: 1.5, height: "100%" }}>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                         {workGroup}
@@ -863,7 +892,7 @@ export default function PlansEditor({ summaryDate = null }) {
                                             value: firmHidden ? 0 : 1,
                                             summaryDate
                                           });
-                                          setState(data);
+                                          applyWriteState(data);
                                           setSuccess(
                                             firmHidden
                                               ? `«${crop}» снова видна для ${firmName}.`
@@ -871,9 +900,7 @@ export default function PlansEditor({ summaryDate = null }) {
                                           );
                                         } catch (e) {
                                           setError(
-                                            e?.response?.data?.detail ??
-                                              e?.message ??
-                                              "Не удалось сохранить скрытие по АФ"
+                                            formatError(e, "Не удалось сохранить скрытие по АФ")
                                           );
                                         } finally {
                                           setSavingTracked(false);
@@ -918,7 +945,8 @@ export default function PlansEditor({ summaryDate = null }) {
                             onSave={async (keys, raw) => {
                               const trimmed = String(raw).replace(",", ".").trim();
                               if (trimmed === "") {
-                                return true;
+                                // убрать ранг нельзя — вернём прежнее значение (0 = скрыть культуру)
+                                return false;
                               }
                               const num = Number(trimmed);
                               if (!Number.isFinite(num) || num < 0) {
@@ -935,12 +963,12 @@ export default function PlansEditor({ summaryDate = null }) {
                                   value: Math.trunc(num),
                                   summaryDate
                                 });
-                                setState(data);
+                                applyWriteState(data);
                                 setSuccess("Ранг культуры сохранён.");
                                 return true;
                               } catch (e) {
                                 setError(
-                                  e?.response?.data?.detail ?? e?.message ?? "Не удалось сохранить ранг"
+                                  formatError(e, "Не удалось сохранить ранг")
                                 );
                                 return false;
                               } finally {

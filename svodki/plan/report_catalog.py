@@ -33,13 +33,6 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
-        "1.18",
-        "1.18_main_ammonium__1__day.py",
-        "1.18. СВОДКА ХК Крупно (за сутки)",
-        module="1.18_main_ammonium__1__day",
-        picker_visible=False,
-    ),
-    ReportCatalogEntry(
         "2",
         "2_main_ideal_compact.py",
         "2.Сводка ХК Детальная",
@@ -85,6 +78,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         season_rule="year_plus_one",
         fact_column_hints=("Опрыск", "Обработ"),
         cropwise_comparable=True,
+        cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "7",
@@ -114,6 +108,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         season_rule="plow_year_plus_one",
         fact_column_hints=("Вспаш", "Глубок", "Обработ"),
         cropwise_comparable=True,
+        cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "10",
@@ -191,6 +186,34 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         explicit_only=True,
     ),
 )
+
+# Имена файлов / записей Summary при генерации (панель выбора — поле title выше).
+REPORT_ARTIFACT_TITLES: dict[str, str] = {
+    "1": "1. ХК Крупно",
+    "2": "2. ХК Детальная",
+    "3": "3. Внесение МУ",
+    "4": "4. Боронование",
+    "5": "5. Посев",
+    "6": "6. Опрыскивание",
+    "7": "7. Дискование",
+    "8": "8. Культивация",
+    "9": "9. Вспашка и глубокорыхление",
+    "10": "10. Уборка культур",
+    "11": "11. Уборка",
+    "12": "12. Статистика простоя",
+    "13": "13. Обзор ХК",
+    "14": "14. Выработка комбайнов",
+    "22": "22. Дневная",
+    "24": "24. Менее 0.5",
+}
+
+
+def artifact_title_for_report(report_id: str, fallback: str = "") -> str:
+    rid = str(report_id or "").strip()
+    if not rid:
+        return fallback
+    return REPORT_ARTIFACT_TITLES.get(rid) or fallback
+
 
 REPORT_ID_ALIASES: dict[str, str] = {"01": "0.1"}
 

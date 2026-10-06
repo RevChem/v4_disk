@@ -101,6 +101,12 @@ def _load_from_endpoints(legacy: Any, endpoints: dict) -> None:
         f["id"]: f.get("tillable_area") or f.get("calculated_area") or 0.0
         for f in fields
     }
+    try:
+        from svodki_sanity import register_field_areas
+
+        register_field_areas(legacy.field_area_map)
+    except ImportError:
+        pass
     legacy.field_name_map = {
         f["id"]: (f.get("name") or f.get("title") or f"field_{f['id']}")
         for f in fields

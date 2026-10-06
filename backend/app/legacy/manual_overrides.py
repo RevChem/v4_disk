@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.legacy.json_store_io import atomic_write_text, read_json_dict, serialized_rmw
 
 UI_ANNOTATIONS_KEY = "__ui_annotations__"
 SYNC_EXCLUSIONS_KEY = "__sync_exclusions__"
@@ -307,7 +308,6 @@ _MANUAL_OVERRIDES_DEFAULTS_FALLBACK: dict[str, dict[str, Any]] = {
     },
 }
 
-_MANUAL_OVERRIDES_DEFAULTS_FALLBACK["1.18"] = deepcopy(_MANUAL_OVERRIDES_DEFAULTS_FALLBACK["1"])
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -451,7 +451,6 @@ def _load_plans_defaults() -> dict[str, dict[str, Any]] | None:
             "own_count_by_firm": _group_own("5.0 Уборка"),
         },
     }
-    defaults["1.18"] = deepcopy(defaults["1"])
     return defaults
 
 
@@ -478,7 +477,6 @@ def get_manual_overrides_defaults() -> dict[str, dict[str, Any]]:
     out["26"].setdefault("combine_season_start_date", "")
     out.setdefault("27", deepcopy(_MANUAL_OVERRIDES_DEFAULTS_FALLBACK["27"]))
     out["27"].setdefault("rating_period_from_date", "")
-    out.setdefault("1.18", deepcopy(out.get("1", _MANUAL_OVERRIDES_DEFAULTS_FALLBACK["1"])))
     return out
 
 
@@ -540,7 +538,6 @@ def section_defs_by_report() -> dict[str, list[dict[str, str]]]:
     ]
     return {
         "1": report1_sections,
-        "1.18": deepcopy(report1_sections),
         "2": [
             {
                 "key": "plan_rate_by_group",
@@ -694,6 +691,7 @@ def resolve_linked_targets(report_id: str, section_key: str) -> list[tuple[str, 
     return targets
 
 
+@serialized_rmw(name="manual_overrides")
 def reset_manual_overrides_to_defaults(keep_annotations: bool = True) -> Path:
     raw = load_manual_store()
     preserved_annotations = raw.get(UI_ANNOTATIONS_KEY) if keep_annotations else None
@@ -729,6 +727,7 @@ def is_sync_excluded(report_id: str, section_key: str, exclusions: dict[str, dic
     return bool(ex.get(str(report_id), {}).get(str(section_key), False))
 
 
+@serialized_rmw(name="manual_overrides")
 def set_sync_exclusion(report_id: str, section_key: str, excluded: bool) -> Path:
     raw = load_manual_store()
     ex = raw.get(SYNC_EXCLUSIONS_KEY, {})
@@ -833,20 +832,12 @@ def resolve_r23_editor_body_for_generation(summary_date: date, *, rebuild_only: 
 
 
 def load_manual_store() -> dict[str, Any]:
-    path = _resolve_manual_overrides_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    return read_json_dict(_resolve_manual_overrides_path(), label="manual_overrides")
 
 
 def save_manual_store(data: dict[str, Any]) -> Path:
     path = _resolve_manual_overrides_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
     return path
 
 
@@ -925,8 +916,7 @@ def rating_period_from_for_date(report_date: date) -> date:
 def write_effective_manual_store_for_date(summary_date: date, dest_path: Path) -> None:
     """Записывает JSON в том виде, как его читают svodki-скрипты (без служебных ключей)."""
     data = merged_manual_store_for_date(summary_date)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    dest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(dest_path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def apply_manual_section_to_store(

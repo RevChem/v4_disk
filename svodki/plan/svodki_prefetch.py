@@ -47,7 +47,6 @@ _REPORT1_WORK_GROUP_NAMES: tuple[str, ...] = tuple(
 
 _REPORT_WORK_GROUPS: dict[str, tuple[str, ...]] = {
     "1": _REPORT1_WORK_GROUP_NAMES,
-    "1.18": _REPORT1_WORK_GROUP_NAMES,
     "3": ("1.1 Внесение минеральных удобрений",),
     "4": ("2.1 Боронование",),
     "5": ("4.0 Посев", "4.1 Посев (овощи)"),
@@ -63,7 +62,7 @@ _REPORT_WORK_GROUPS: dict[str, tuple[str, ...]] = {
     "14": ("5.0 Уборка", "5.4 Уборка картофеля, лука"),
 }
 
-# Сводка 2 — все группы из WORK_GROUPS; 1/1.18 — report-aware (см. _REPORT_WORK_GROUPS).
+# Сводка 2 — все группы из WORK_GROUPS; 1 — report-aware (см. _REPORT_WORK_GROUPS).
 _REPORT_ALL_WORK_GROUP_IDS: frozenset[str] = frozenset({"2"})
 
 # Сводка 22 (text_svodka_2.py): смена 06:00–06:00, только WORK_GROUPS из plans.

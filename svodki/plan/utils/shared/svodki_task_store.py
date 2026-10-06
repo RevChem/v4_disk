@@ -120,6 +120,14 @@ def eligible(params: dict | None) -> bool:
     )
 
 
+def _meta_dirty() -> bool:
+    try:
+        from svodki_sanity import has_dirty
+    except ImportError:
+        return False
+    return has_dirty()
+
+
 def _truthy(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -178,6 +186,8 @@ CREATE TABLE IF NOT EXISTS mtfmi (
     rid INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, data TEXT NOT NULL, raw BLOB);
 CREATE INDEX IF NOT EXISTS mtfmi_task ON mtfmi (task_id);
 CREATE TABLE IF NOT EXISTS history_crop (hid INTEGER PRIMARY KEY, crop TEXT);
+-- Для встроенных проверок (svodki_sanity): crop_id/год/поле history_item одним числом.
+CREATE TABLE IF NOT EXISTS history_meta (hid INTEGER PRIMARY KEY, packed INTEGER NOT NULL);
 -- Суточные факты: одна строка на строку площади (mtfmi_fact) и на её сменный день (mtfmi_daily).
 -- Считаются при записи mtfmi из ПОЛНОГО JSON (до обрезки полей) и всегда совпадают с
 -- task_area_shared.area_ha_by_shift_date / covered_area.
@@ -299,7 +309,7 @@ class TaskStore(LinksMixin, CalcCacheMixin):
             row = (str(STORE_VERSION),)
         if row is None or int(row[0]) != STORE_VERSION or (self.base_url and base and base[0] != self.base_url):
             con.execute("BEGIN IMMEDIATE")
-            for tbl in ("meta", "cov", "tasks", "mtfmi_tasks", "mtfmi", "history_crop", "mtfmi_fact", "mtfmi_daily",
+            for tbl in ("meta", "cov", "tasks", "mtfmi_tasks", "mtfmi", "history_crop", "history_meta", "mtfmi_fact", "mtfmi_daily",
                         "task_rev", "mtaomi_tasks", "mtaomi", "agro_ops", "links_dirty", "calc_cache", "calc_keys"):
                 con.execute(f"DELETE FROM {tbl}")
             con.execute("INSERT INTO meta VALUES ('version', ?)", (str(STORE_VERSION),))
@@ -403,15 +413,22 @@ class TaskStore(LinksMixin, CalcCacheMixin):
             d[mid] = d.get(mid, 0.0) + ha
         return out
 
-    def flat_facts(self, wts, ts_from: float, ts_to: float) -> list[tuple]:
-        """Строки площади без hourly: (wt, machine_id, field_id, task_end_date, covered_area) по end_time задания."""
+    def flat_facts(self, wts, ts_from: float, ts_to: float, *, season: str | None = None) -> list[tuple]:
+        """Строки площади без hourly: (wt, machine_id, field_id, task_end_date, covered_area) по end_time задания.
+
+        season — как в daily_facts: если задан, берутся только задания этого сезона (t.season).
+        """
         wts = sorted({int(w) for w in wts})
         q = ",".join("?" * len(wts))
         out = []
-        for wt, mid, fid, end_ts, cov in self._db().execute(
-            f"SELECT t.wt, t.machine_id, f.field_id, t.end_ts, f.covered_area FROM mtfmi_fact f "
-            f"JOIN tasks t ON t.id=f.task_id WHERE f.hourly_n=0 AND f.covered_area>0 AND t.wt IN ({q}) "
-            f"AND t.end_ts>=? AND t.end_ts<?", [*wts, ts_from, ts_to]):
+        sql = (f"SELECT t.wt, t.machine_id, f.field_id, t.end_ts, f.covered_area FROM mtfmi_fact f "
+               f"JOIN tasks t ON t.id=f.task_id WHERE f.hourly_n=0 AND f.covered_area>0 AND t.wt IN ({q}) "
+               f"AND t.end_ts>=? AND t.end_ts<?")
+        args: list[Any] = [*wts, ts_from, ts_to]
+        if season is not None:
+            sql += " AND t.season=?"
+            args.append(str(season))
+        for wt, mid, fid, end_ts, cov in self._db().execute(sql, args):
             out.append((wt, mid, fid, shift_date_of(datetime.fromtimestamp(end_ts, tz=_tz())), cov))
         return out
 
@@ -876,6 +893,7 @@ class TaskStore(LinksMixin, CalcCacheMixin):
         if crops is not None and not self._crops_loaded:
             for hid, crop in con.execute("SELECT hid, crop FROM history_crop"):
                 crops.setdefault(int(hid), crop)
+            self._load_meta(con)
             self._crops_loaded = True
         if len(self._has_mtfmi(ids)) < len(ids):
             async with self._xlock():
@@ -904,7 +922,7 @@ class TaskStore(LinksMixin, CalcCacheMixin):
             try:
                 n0 = len(crops) if crops is not None else 0
                 await remember(client, base_url, result, sem)
-                if crops is not None and len(crops) != n0:
+                if crops is not None and (len(crops) != n0 or _meta_dirty()):
                     async with self._xlock():
                         self._save_crops(crops)
             except Exception as exc:  # некритично, как в live-пути
@@ -916,6 +934,26 @@ class TaskStore(LinksMixin, CalcCacheMixin):
             "INSERT OR REPLACE INTO history_crop VALUES (?, ?)",
             [(int(k), v) for k, v in crops.items()],
         )
+        self._save_meta()
+
+    @staticmethod
+    def _load_meta(con: sqlite3.Connection) -> None:
+        try:
+            from svodki_sanity import load_meta
+        except ImportError:
+            return
+        for hid, packed in con.execute("SELECT hid, packed FROM history_meta"):
+            load_meta(hid, packed)
+
+    def _save_meta(self) -> None:
+        """Только новые history_item (список копится в svodki_sanity и сбрасывается здесь)."""
+        try:
+            from svodki_sanity import take_dirty
+        except ImportError:
+            return
+        rows = take_dirty()
+        if rows:
+            self._db().executemany("INSERT OR REPLACE INTO history_meta VALUES (?, ?)", rows)
 
     async def fill_mtfmi(self, client, sem, log: str = "", *, crops: dict | None = None,
                          remember: Callable[..., Awaitable[None]] | None = None,

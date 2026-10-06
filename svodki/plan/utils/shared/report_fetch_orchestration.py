@@ -187,6 +187,12 @@ async def fetch_mtfmi_map_hybrid_async(
             await remember_history_crops(client, base_url, result, semaphore)
         except Exception as exc:  # некритично: crop_of_item вернёт fallback
             print(f"  {log_prefix}культура history_item: {exc}", flush=True)
+    try:
+        from mtfmi_batch_fetch import _check_loaded
+
+        _check_loaded(result, ids, crops_known=remember_crops)  # prefetch-строки не проходили проверки в этом процессе
+    except Exception as exc:  # noqa: BLE001
+        print(f"  {log_prefix}проверки данных: {exc}", flush=True)
     return result
 
 

@@ -830,30 +830,30 @@ def build_all_firm_stats(
             if mid is not None:
                 season_daily_machines[firm][shift_date].add(int(mid))
 
-        # Овощные факты за сезон — культура берётся по полю из field_crop_by_id,
-        # а не из задания (как в эталоне 2_main: crop = field_to_crop.get(fid))
-        if field_crop_by_id:
-            for item in items:
-                fid  = item.get("field_id")
-                if fid is None:
-                    continue
-                fid_i = int(fid)
-                firm = field_to_firm.get(fid_i)
-                if not firm:
-                    continue
-                if available_field_ids is not None and fid_i not in available_field_ids:
-                    continue
-                if fid_i not in field_crop_by_id:
-                    continue
-                raw_crop = field_crop_by_id[fid_i]
-                veg_label = _map_veg_crop_label(raw_crop) if raw_crop else None
-                if not veg_label:
-                    continue
-                cov = float(item.get("covered_area") or 0)
-                if cov > 0:
-                    veg_fact_by_firm_crop[firm][veg_label] += cov
+        # Овощные факты за сезон — культура строки из history_item_id.
+        from mtfmi_batch_fetch import crop_of_item
 
-    # Овощные факты за сутки — та же логика: культура по полю из field_crop_by_id
+        for item in items:
+            fid  = item.get("field_id")
+            if fid is None:
+                continue
+            fid_i = int(fid)
+            firm = field_to_firm.get(fid_i)
+            if not firm:
+                continue
+            if available_field_ids is not None and fid_i not in available_field_ids:
+                continue
+            raw_crop = crop_of_item(item, "")
+            veg_label = _map_veg_crop_label(raw_crop) if raw_crop else None
+            if not veg_label:
+                continue
+            cov = float(item.get("covered_area") or 0)
+            if cov > 0:
+                veg_fact_by_firm_crop[firm][veg_label] += cov
+
+    # Овощные факты за сутки — культура строки из history_item_id.
+    from mtfmi_batch_fetch import crop_of_item
+
     for t in tasks_today:
         if t.get("work_type_id") not in work_type_ids:
             continue
@@ -868,9 +868,7 @@ def build_all_firm_stats(
                 continue
             if available_field_ids is not None and fid_i not in available_field_ids:
                 continue
-            if field_crop_by_id is None or fid_i not in field_crop_by_id:
-                continue
-            raw_crop = field_crop_by_id[fid_i]
+            raw_crop = crop_of_item(item, "")
             veg_label = _map_veg_crop_label(raw_crop) if raw_crop else None
             if not veg_label:
                 continue
@@ -1130,8 +1128,10 @@ def build_crop_seeding_day_stats(
                 field_crop_by_id=field_crop_by_id,
             ):
                 continue
-            raw_crop = field_crop_by_id.get(fid_i, "")
-            if crop_for_field(raw_crop, for_today=True) != target_crop:
+            from mtfmi_batch_fetch import crop_of_item
+
+            raw_crop = crop_of_item(item, "")
+            if not raw_crop or crop_for_field(raw_crop, for_today=True) != target_crop:
                 continue
 
             cov_item = 0.0
@@ -2184,7 +2184,29 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         + ("…" if len(front) > 3 else "")
     )
 
+    seed_total_ha = round(
+        sum(float((seeding_details.get(f) or {}).get("area_today") or 0) for f in firm_names),
+        2,
+    )
+    veg_total_ha = round(
+        sum(float((veg_details.get(f) or {}).get("area_today") or 0) for f in veg_firm_names),
+        2,
+    )
     wb.save(output_file)
+    try:
+        from svodki_sanity import emit_calc_total_ha, publish_cross_op_snapshot
+
+        cross_ops: dict[str, float] = {}
+        if seed_total_ha >= 0.01:
+            cross_ops["4.0 Посев"] = seed_total_ha
+        if veg_total_ha >= 0.01:
+            cross_ops["4.1 Посев (овощи)"] = veg_total_ha
+        if cross_ops:
+            publish_cross_op_snapshot(cross_ops)
+        if seed_total_ha + veg_total_ha >= 0.01:
+            emit_calc_total_ha(round(seed_total_ha + veg_total_ha, 2))
+    except Exception:
+        pass
     print(f"\nСохранено: {output_file}")
 
 

@@ -72,11 +72,25 @@ async def fetch_mtfmi_map_for_tasks(
     except ImportError:
         store = None
     if store is not None:
-        return await store.get_mtfmi(
+        result = await store.get_mtfmi(
             client, sem, base_url, task_ids, fetch_mtfmi_map_live,
             log_prefix=log_prefix, crops=_HISTORY_CROP, remember=remember_history_crops,
         )
+        _check_loaded(result, task_ids)  # live-путь проверяет сам, хранилище — нет
+        return result
     return await fetch_mtfmi_map_live(client, sem, base_url, task_ids, log_prefix=log_prefix)
+
+
+def _check_loaded(mtfmi_map: dict, requested=None, *, crops_known: bool = True) -> None:
+    """Сезоны + встроенные проверки данных для строк, пришедших из хранилища."""
+    try:
+        from season_mismatch_log import log_loaded_mtfmi
+        import svodki_sanity
+
+        svodki_sanity.on_mtfmi(mtfmi_map, requested, crops_known=crops_known)  # в т.ч. задания без строк
+        log_loaded_mtfmi(mtfmi_map)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  проверки данных: {exc}", flush=True)
 
 
 async def fetch_mtfmi_map_live(
@@ -142,21 +156,49 @@ async def fetch_mtfmi_map_live(
         print(f"  {prefix}культура history_item: {exc}", flush=True)
     try:
         from season_mismatch_log import log_loaded_mtfmi
+        import svodki_sanity
 
+        svodki_sanity.on_mtfmi(result, unique)  # unique — запрошенные id, чтобы увидеть задания без строк
         log_loaded_mtfmi(result)
     except Exception as exc:
         print(f"  {prefix}сезоны культуры: {exc}", flush=True)
     return result
 
 
+def _history_settled(hid: int) -> bool:
+    """history_item уже известен (культура + год + поле) — повторно из API не качаем."""
+    have = hid in _HISTORY_CROP
+    try:
+        import svodki_sanity
+
+        return svodki_sanity.settled(hid, have)
+    except ImportError:
+        return have
+
+
+def _remember_meta(hi: dict) -> None:
+    try:
+        import svodki_sanity
+
+        svodki_sanity.remember_history(hi)
+    except ImportError:
+        pass
+
+
+def crop_of_history_id(history_item_id, fallback: str = "") -> str:
+    """Культура записи истории. Пустая ссылка или незагруженная запись — fallback."""
+    if history_item_id is None:
+        return str(fallback or "")
+    try:
+        name = _HISTORY_CROP.get(int(history_item_id), "")
+    except (TypeError, ValueError):
+        return str(fallback or "")
+    return name or str(fallback or "")
+
+
 def crop_of_item(item: dict, fallback: str = "") -> str:
     """Культура строки площади. Если history_item ещё не загружен — fallback."""
-    hid = item.get("history_item_id")
-    if hid is not None:
-        name = _HISTORY_CROP.get(int(hid), "")
-        if name:
-            return name
-    return str(fallback or "")
+    return crop_of_history_id(item.get("history_item_id"), fallback)
 
 
 def crop_of_field(field_id: int, fallback: str = "") -> str:
@@ -201,7 +243,7 @@ async def remember_history_crops(
             if hid is None:
                 continue
             hid_i = int(hid)
-            if hid_i in _HISTORY_CROP or hid_i in seen:
+            if hid_i in seen or _history_settled(hid_i):
                 continue
             seen.add(hid_i)
             missing.append(hid_i)
@@ -210,6 +252,7 @@ async def remember_history_crops(
     crops = await _crops_by_id(client, base_url, sem)
     history = await mass_request_async(client, base_url, "history_items", missing, sem)
     for hi in history:
+        _remember_meta(hi)
         if hi.get("id") is None or hi.get("crop_id") is None:
             continue
         name = crops.get(int(hi["crop_id"]), "")

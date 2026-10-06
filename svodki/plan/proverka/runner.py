@@ -1161,7 +1161,30 @@ def run_proverka_batch(
 
     apply_report1_donor_area_graft(all_results)
     all_results["cross_check"] = build_cross_check(all_results)
+    try:
+        from svodki_sanity import log_cross_op_data_check
+
+        log_cross_op_data_check(all_results)
+    except Exception:
+        pass
     attach_file_values(all_results, report_date)
+    try:
+        from svodki_sanity import check_file_total_after_save
+
+        for rid, result in (all_results.get("reports") or {}).items():
+            if not isinstance(result, dict):
+                continue
+            calc = (result.get("svodka") or {}).get("total_ha")
+            if calc is None:
+                cmp_ = result.get("comparison") or {}
+                calc = cmp_.get("svodka_total_ha")
+            check_file_total_after_save(
+                float(calc) if calc is not None else None,
+                report_date=report_date,
+                report_id=str(rid),
+            )
+    except Exception:
+        pass
     from proverka.file_consistency import build_sheet_checks
 
     all_results["sheet_checks"] = build_sheet_checks(report_date, report_ids)

@@ -66,11 +66,21 @@ api.interceptors.response.use(
   }
 );
 
-function formatError(err) {
+/** Всегда возвращает строку: detail FastAPI бывает строкой, массивом (422) или объектом. */
+export function formatError(err, fallback = "Ошибка запроса") {
   const d = err?.response?.data?.detail;
-  if (typeof d === "string") return d;
-  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join("; ");
-  return err?.message || "Ошибка запроса";
+  if (typeof d === "string" && d) return d;
+  if (Array.isArray(d)) {
+    const text = d
+      .map((x) => (typeof x === "string" ? x : x?.msg || JSON.stringify(x)))
+      .filter(Boolean)
+      .join("; ");
+    if (text) return text;
+  } else if (d && typeof d === "object") {
+    return String(d.message || d.msg || JSON.stringify(d));
+  }
+  if (err?.code === "ECONNABORTED") return "Превышено время ожидания ответа сервера";
+  return err?.message || fallback;
 }
 
 export function getStoredTokens() {
@@ -375,12 +385,12 @@ export async function convertXlsxToPdf(file, summaryDate = null) {
 }
 
 export async function heartbeatPlansPresence(token, signal) {
-  const { data } = await api.post("/plans-editor/presence", { token }, { signal });
+  const { data } = await api.post("/plans-editor/presence", { token }, { signal, timeout: 10_000 });
   return data;
 }
 
 export async function releasePlansPresence(token) {
-  const { data } = await api.post("/plans-editor/presence/release", { token });
+  const { data } = await api.post("/plans-editor/presence/release", { token }, { timeout: 10_000 });
   return data;
 }
 
@@ -398,9 +408,12 @@ export function releasePlansPresenceKeepalive(token) {
   }).catch(() => {});
 }
 
+const PLANS_TIMEOUT_MS = 30_000;
+
 export async function fetchPlansEditor(summaryDate = null) {
   const { data } = await api.get("/plans-editor", {
     params: summaryDate ? { summary_date: summaryDate } : undefined,
+    timeout: PLANS_TIMEOUT_MS,
   });
   return data;
 }
@@ -409,13 +422,13 @@ export async function updatePlansEditorValue({ section_key, keys, value, summary
   const { data } = await api.put(
     "/plans-editor/value",
     { section_key, keys, value },
-    { params: summaryDate ? { summary_date: summaryDate } : undefined }
+    { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: PLANS_TIMEOUT_MS }
   );
   return data;
 }
 
 export async function fetchPlansEditorWorkTypes() {
-  const { data } = await api.get("/plans-editor/work-types");
+  const { data } = await api.get("/plans-editor/work-types", { timeout: 70_000 });
   return data;
 }
 
@@ -428,7 +441,7 @@ export async function updatePlansEditorWorkGroups(groups, summaryDate = null) {
         ids: Array.isArray(g?.ids) ? g.ids.map((x) => Number(x)).filter((x) => Number.isFinite(x)) : [],
       })),
     },
-    { params: summaryDate ? { summary_date: summaryDate } : undefined }
+    { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: PLANS_TIMEOUT_MS }
   );
   return data;
 }
@@ -440,7 +453,7 @@ export async function updatePlansEditorSeasonRange(
   const { data } = await api.put(
     "/plans-editor/season-range",
     { group_name, period_start, period_end, season_year, season_years, clear },
-    { params: summaryDate ? { summary_date: summaryDate } : undefined }
+    { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: PLANS_TIMEOUT_MS }
   );
   return data;
 }
@@ -449,7 +462,7 @@ export async function updatePlansEditorCalendarSeasons({ calendar_seasons }, sum
   const { data } = await api.put(
     "/plans-editor/calendar-seasons",
     { calendar_seasons: calendar_seasons || {} },
-    { params: summaryDate ? { summary_date: summaryDate } : undefined }
+    { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: PLANS_TIMEOUT_MS }
   );
   return data;
 }
@@ -681,6 +694,30 @@ function taskFactsFilterBody({
     min_ha: minHa === "" || minHa === undefined || minHa === null ? null : Number(minHa),
     exact: Boolean(exact),
   };
+}
+
+export async function fetchDriverWorkPeople({ dateFrom, dateTo }) {
+  try {
+    const { data } = await api.get("/proverka/driver-work/people", {
+      params: { date_from: dateFrom, date_to: dateTo },
+      timeout: 120_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function fetchDriverWork({ dateFrom, dateTo, driverId }) {
+  try {
+    const { data } = await api.get("/proverka/driver-work", {
+      params: { date_from: dateFrom, date_to: dateTo, driver_id: driverId },
+      timeout: 120_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
 }
 
 /** Отфильтрованные строки + агрегаты. Модель не вызывается, 0 токенов. */

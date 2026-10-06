@@ -16,11 +16,9 @@ _HARVEST_GRAIN_WT: list[int] = sorted(
     set(next(ids for name, ids in WORK_GROUPS if name == "5.0 Уборка")) | {_CORN_SILAGE_CHOP_WT}
 )
 
-# Сводка 8 (8_main_fixed.WORK_TYPES) считает культивацию так.
-# plans.WORK_GROUPS здесь другой набор: 20 и 52 вместо 10 и 51.
-# Запрос work.json с плановым набором за сутки возвращает 0,
-# хотя факт в Cropwise есть.
-_CULTIVATION_WT: list[int] = [10, 20, 50, 51, 52, 63, 96]
+# Культивация: единый набор work_type_id для plans.WORK_GROUPS, сводки 8
+# (8_main_fixed.WORK_TYPES) и всех проверок — 10, 50, 63, 96.
+_CULTIVATION_WT: list[int] = [10, 50, 63, 96]
 
 WORK_GROUP_WT_OVERRIDES: dict[str, list[int]] = {
     "5.4 Уборка картофеля, лука": _VEG_54_WT,

@@ -22,7 +22,19 @@ def report_label() -> str:
     return (os.environ.get("SVODKI_REPORT_ID") or "").strip() or "?"
 
 
+def _sanity(name: str, *args) -> None:
+    """Встроенные проверки данных (svodki_sanity). Сбой проверок не должен ронять сводку."""
+    try:
+        import svodki_sanity
+
+        getattr(svodki_sanity, name)(*args)
+    except Exception as exc:  # noqa: BLE001
+        print(f"DATA_CHECK пропущен: {exc!r}", flush=True)
+
+
 def remember_tasks(tasks: list[dict] | None) -> None:
+    if tasks:
+        _sanity("on_tasks", tasks)
     for task in tasks or []:
         tid = task.get("id")
         if tid is None:
@@ -58,6 +70,8 @@ def log_row_season_mismatches(
     Культуру в расчёте не подменяет.
     """
     remember_tasks(tasks)
+    if mtfmi_map:
+        _sanity("on_mtfmi", mtfmi_map)
     label = (report or report_label()).strip() or "?"
     crops = history_crops or {}
     groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)

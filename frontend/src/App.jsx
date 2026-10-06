@@ -5,6 +5,7 @@ import AiMenuDialog from "./components/AiMenuDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import TaskFactsDialog from "./components/TaskFactsDialog";
+import DriverWorkDialog from "./components/DriverWorkDialog";
 import GenerationQueueDrawer from "./components/GenerationQueueDrawer";
 import InterfaceMenuDialog from "./components/InterfaceMenuDialog";
 import PageModalDialog from "./components/PageModalDialog";
@@ -84,6 +85,7 @@ export default function App() {
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
   const [taskFactsOpen, setTaskFactsOpen] = useState(false);
   const [taskFactsJobId, setTaskFactsJobId] = useState("");
+  const [driverWorkOpen, setDriverWorkOpen] = useState(false);
   const [interfaceOpen, setInterfaceOpen] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -645,6 +647,7 @@ export default function App() {
         onOpenReport={handleAiReportClick}
         onOpenPrompts={() => setAiPromptsOpen(true)}
         onOpenTaskFacts={() => openTaskFacts()}
+        onOpenDriverWork={() => setDriverWorkOpen(true)}
         isDeveloper={isDeveloper}
         summaryDate={summaryDate}
       />
@@ -712,6 +715,11 @@ export default function App() {
         onClose={() => setTaskFactsOpen(false)}
         summaryDate={summaryDate}
         initialJobId={taskFactsJobId}
+      />
+      <DriverWorkDialog
+        open={driverWorkOpen && isDeveloper}
+        onClose={() => setDriverWorkOpen(false)}
+        summaryDate={summaryDate}
       />
     </ThemeProvider>
   );

@@ -1280,8 +1280,19 @@ async def build_report_async() -> None:
         write_firm_sheet(wb, firm, day_stats, REPORT_DATE, day_start, cutoff)
 
     output_file = f"report_harrowing_{REPORT_DATE}.xlsx"
+    daily_total_ha = round(
+        sum(float((day_stats.get(f) or {}).get("area_today") or 0) for f in AGROFIRMS),
+        2,
+    )
     with stage("Excel: сохранение"):
         wb.save(output_file)
+    try:
+        from svodki_sanity import emit_calc_total_ha, publish_cross_op_snapshot
+
+        emit_calc_total_ha(daily_total_ha)
+        publish_cross_op_snapshot({"2.1 Боронование": daily_total_ha})
+    except Exception:
+        pass
     print(f"\nСохранено: {output_file}")
     timing_finish()
 
