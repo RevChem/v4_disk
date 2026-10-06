@@ -1,10 +1,9 @@
 """
 Регрессия на сезоны Cropwise.
 
-work.json отдаёт только сезон, выбранный в сессии Cropwise (переключить его
-запросом нельзя — проверено на ?seasonValue= и на параметрах тела). Поэтому
-при выборе «2026 и 2027» в редакторе планов второй сезон обязан приходить из
-API v3, иначе опрыскивание считалось 2713.89 га вместо 6215.87 га.
+work.json отдаёт только сезон сессии. Проверка забирает оба сезона
+отдельными запросами и складывает work.json. API v3 в колонку Cropwise
+не подставляется.
 
 Запуск:  python3 -m pytest proverka/tests -q
    или:  python3 proverka/tests/test_season_cropwise.py
@@ -81,23 +80,42 @@ def test_ui_session_season_is_accepted_when_selected() -> None:
     assert not sc.ui_session_ok_for_years(2025, SPRAY_YEARS)
     assert not sc.ui_session_ok_for_years(None, SPRAY_YEARS)
 
-    blocked, _need = sc.ui_session_blocks_both_years(2026, "year_plus_one", SPRAY_YEARS)
-    assert blocked is False
-
 
 def test_seasons_sum_ui_session_plus_api_for_other_years() -> None:
-    sc = _sc()
-    seasons = sc.build_seasons_for_years(
-        SPRAY_YEARS, 2027, UI_2027_HA, {"Агрофирма А": UI_2027_HA}, API_BY_SEASON,
-    )
-    assert seasons["2027"]["source"] == "work_json_session_season"
-    assert seasons["2027"]["total_ha"] == UI_2027_HA
-    assert seasons["2026"]["source"] == "api_v3_machine_task_season"
-    assert seasons["2026"]["total_ha"] == API_2026_HA
+    """Оба сезона берутся из work.json. API в сумму не входит."""
+    from proverka.cropwise_crops import combine_loaded_seasons
 
-    total, by_firm = sc.merge_seasons_for_task_years(seasons, SPRAY_YEARS)
-    assert total == BOTH_SEASONS_HA
-    assert by_firm["Агрофирма А"] == BOTH_SEASONS_HA
+    def slot(year: int, ha: float) -> dict:
+        return {
+            "ok": True,
+            "load_status": "loaded",
+            "ui_session_seasonValue": year,
+            "body": {
+                "regionColumns": [
+                    {"key": "name", "name": "Поле"},
+                    {"key": "f", "name": "Факт, га", "work_type_names": ["3.1 Опрыскивание"]},
+                ],
+                "regionRows": [
+                    {"name": "Всего", "f": str(ha).replace(".", ",")},
+                    {"name": "Агрофирма А", "f": str(ha).replace(".", ",")},
+                ],
+                "cropRows": [],
+                "cropColumns": [],
+            },
+        }
+
+    combined = combine_loaded_seasons(
+        {2026: slot(2026, API_2026_HA), 2027: slot(2027, UI_2027_HA)},
+        SPRAY_YEARS,
+        ["Агрофирма А"],
+        ["3.1 Опрыскивание"],
+        counted_years=None,
+    )
+    assert combined["seasons"]["2026"]["source"] == "work_json"
+    assert combined["seasons"]["2027"]["source"] == "work_json"
+    assert combined["compare_ha"] == BOTH_SEASONS_HA
+    assert combined["by_firm"]["Агрофирма А"] == BOTH_SEASONS_HA
+    assert combined["incomplete"] is False
 
 
 def test_editor_file_beats_report_level_single_task_year() -> None:
@@ -343,12 +361,33 @@ def test_editor_check_years_sums_many_and_keeps_one() -> None:
 
 
 def test_single_season_still_equals_ui_total() -> None:
-    sc = _sc()
-    seasons = sc.build_seasons_for_years(
-        [2027], 2027, UI_2027_HA, {"Агрофирма А": UI_2027_HA}, API_BY_SEASON,
+    from proverka.cropwise_crops import combine_loaded_seasons
+
+    slot = {
+        "ok": True,
+        "load_status": "loaded",
+        "ui_session_seasonValue": 2027,
+        "body": {
+            "regionColumns": [
+                {"key": "name", "name": "Поле"},
+                {"key": "f", "name": "Факт, га", "work_type_names": ["3.1 Опрыскивание"]},
+            ],
+            "regionRows": [
+                {"name": "Всего", "f": "2713,89"},
+                {"name": "Агрофирма А", "f": "2713,89"},
+            ],
+            "cropRows": [],
+            "cropColumns": [],
+        },
+    }
+    combined = combine_loaded_seasons(
+        {2027: slot},
+        [2027],
+        ["Агрофирма А"],
+        ["3.1 Опрыскивание"],
+        counted_years=[2027],
     )
-    total, _ = sc.merge_seasons_for_task_years(seasons, [2027])
-    assert total == UI_2027_HA
+    assert combined["compare_ha"] == UI_2027_HA
 
 
 def test_single_2026_calendar_ends_before_september_report() -> None:

@@ -223,42 +223,6 @@ def _noop_progress(_: str) -> None:
     pass
 
 
-def _preferred_ui_session(report_date: date, report_ids: list[str]) -> int | None:
-    """Осенью Cropwise UI фильтрует work.json по seasonValue=год+1."""
-    if not any(_needs_cropwise_ui(REPORTS[rid]) for rid in report_ids):
-        return None
-    y = report_date.year
-    for rid in report_ids:
-        spec = REPORTS[rid]
-        if not _needs_cropwise_ui(spec):
-            continue
-        if spec.season_rule in ("both_years", "year_plus_one", "plow_year_plus_one"):
-            return y + 1
-    return None
-
-
-def _fetch_work_one(
-    rid: str,
-    cookie: str,
-    report_date: date,
-    preferred: int | None,
-    *,
-    attempts: int = 2,
-    delay_sec: float = 1.5,
-) -> tuple[str, dict[str, Any]]:
-    from proverka.cropwise_ui import fetch_work_report_resilient
-    from proverka.reconcile import _shift_window_iso
-
-    spec = REPORTS[rid]
-    t0, t1, wt_ids = _shift_window_iso(spec, report_date)
-    work = fetch_work_report_resilient(
-        cookie, t0, t1, wt_ids, spec.fact_column_hints,
-        attempts=attempts, delay_sec=delay_sec,
-        preferred_ui_session=preferred,
-    )
-    return rid, work
-
-
 def _per_op_prefetch_groups(report_ids: list[str]) -> list[tuple[str, list[int]]]:
     from proverka.work_groups import work_group_wt_map
     from proverka.operation_registry import OPERATION_PEERS, peer_reports_for_group
@@ -290,151 +254,88 @@ def _per_op_prefetch_groups(report_ids: list[str]) -> list[tuple[str, list[int]]
     return out
 
 
-def _fetch_work_per_operation(
-    group_name: str,
-    wt_ids: list[int],
-    cookie: str,
-    report_date: date,
-    preferred: int | None,
-) -> tuple[str, dict[str, Any]]:
-    from proverka.report2_reconcile import fetch_work_for_operation
-
-    _ = wt_ids, preferred
-    work = fetch_work_for_operation(group_name, cookie, report_date, None)
-    return group_name, work
-
-
 def _prefetch_work_json(
     cookie: str,
     report_date: date,
     report_ids: list[str],
     prog: ProgressFn,
 ) -> tuple[dict[str, dict[str, Any]], int | None]:
-    """work.json до bootstrap/API v3 — параллельно по сводкам."""
-    from proverka.cropwise_ui import warm_web_session
+    """Один последовательный загрузчик work.json на оба сезона смены."""
+    from proverka.cropwise_ui import (
+        WorkLoadJob,
+        load_works_for_seasons,
+        pack_loaded_work,
+        ui_check_years,
+    )
+    from proverka.reconcile import _shift_window_iso
+    from proverka.report2_reconcile import _cropwise_spec_for_group, _fact_hints_for_group
+    from proverka.work_groups import work_type_ids_for_group
 
-    preferred = _preferred_ui_session(report_date, report_ids)
-    _, _, _, ui_session = warm_web_session(cookie)
+    years = ui_check_years(report_date.year)
     comparable = [rid for rid in report_ids if _needs_cropwise_ui(REPORTS[rid])]
-    if preferred and ui_session != preferred:
-        # Не ошибка: work.json отдаёт сезон сессии, остальные сезоны сводок
-        # берутся из API v3 по machine_task.season.
-        prog(
-            f"Cropwise UI: seasonValue={ui_session or '?'} (в UI виден этот сезон, "
-            f"остальные сезоны — из API v3) — загрузка work.json…"
-        )
-    else:
-        prog(f"Cropwise UI: seasonValue={ui_session or '?'} — загрузка work.json…")
-
     prefetched: dict[str, dict[str, Any]] = {}
     if not comparable:
-        return prefetched, ui_session
+        return prefetched, None
 
     per_op_rids = [rid for rid in comparable if REPORTS[rid].cropwise_per_operation]
-    per_op_fetch_groups = [gn for gn, _wt in _per_op_prefetch_groups(comparable)]
+    per_op_groups = [gn for gn, _wt in _per_op_prefetch_groups(comparable)]
     std_rids = [rid for rid in comparable if not REPORTS[rid].cropwise_per_operation]
-    editor_groups = list(per_op_fetch_groups)
+    group_names: list[str] = []
+    seen: set[str] = set()
+    for name in list(per_op_groups):
+        if name not in seen:
+            group_names.append(name)
+            seen.add(name)
+    report_jobs: list[str] = []
     for rid in std_rids:
         groups = tuple(REPORTS[rid].work_groups or ())
-        if len(groups) == 1 and groups[0] not in editor_groups:
-            editor_groups.append(groups[0])
-    packed_editor: dict[str, dict[str, Any]] = {}
-    if editor_groups:
-        from proverka.report2_reconcile import prefetch_editor_season_works
-
-        prog(
-            f"Cropwise UI: сезоны редактора планов, {len(editor_groups)} операций "
-            "(2026 и 2027 складываются, один сезон проверяется отдельно)…"
-        )
-        packed_editor = prefetch_editor_season_works(editor_groups, cookie, report_date)
-        if per_op_fetch_groups:
-            op_map = {
-                gn: packed_editor[gn]
-                for gn in per_op_fetch_groups
-                if gn in packed_editor
-            }
-            for rid in per_op_rids:
-                prefetched[rid] = op_map
-            for work in op_map.values():
-                ui_session = work.get("ui_session_seasonValue") or ui_session
-    remaining_std = []
-    for rid in std_rids:
-        groups = tuple(REPORTS[rid].work_groups or ())
-        if len(groups) == 1 and groups[0] in packed_editor:
-            prefetched[rid] = packed_editor[groups[0]]
-            ui_session = packed_editor[groups[0]].get("ui_session_seasonValue") or ui_session
+        if len(groups) == 1:
+            if groups[0] not in seen:
+                group_names.append(groups[0])
+                seen.add(groups[0])
         else:
-            remaining_std.append(rid)
-    std_rids = remaining_std
-    per_op_fetch_groups = [
-        gn for gn in per_op_fetch_groups if gn not in packed_editor
-    ]
-    task_count = len(std_rids) + len(per_op_fetch_groups)
-    workers = _max_workers(max(task_count, 1))
+            report_jobs.append(rid)
 
-    if task_count == 0:
-        pass
-    elif workers == 1:
-        for rid in std_rids:
-            _, work = _fetch_work_one(rid, cookie, report_date, preferred)
-            prefetched[rid] = work
-            ui_session = work.get("ui_session_seasonValue") or ui_session
-        if per_op_fetch_groups:
-            from proverka.work_groups import work_group_wt_map
+    jobs: list[WorkLoadJob] = []
+    for name in group_names:
+        wt_ids = work_type_ids_for_group(name)
+        if not wt_ids:
+            continue
+        spec = _cropwise_spec_for_group(name)
+        t0, t1, _ = _shift_window_iso(spec, report_date)
+        hints = list(_fact_hints_for_group(name)) or list(spec.fact_column_hints)
+        jobs.append(WorkLoadJob(name, t0, t1, list(wt_ids), tuple(hints)))
+    for rid in report_jobs:
+        spec = REPORTS[rid]
+        t0, t1, wt_ids = _shift_window_iso(spec, report_date)
+        jobs.append(WorkLoadJob(
+            f"report:{rid}", t0, t1, list(wt_ids), tuple(spec.fact_column_hints),
+        ))
+    if not jobs:
+        return prefetched, None
 
-            wt_by_group = work_group_wt_map()
-            op_map: dict[str, dict[str, Any]] = {}
-            for gn0 in per_op_fetch_groups:
-                _, work = _fetch_work_per_operation(
-                    gn0, list(wt_by_group.get(gn0) or []), cookie, report_date, preferred,
-                )
-                op_map[gn0] = work
-                ui_session = work.get("ui_session_seasonValue") or ui_session
-            for rid in per_op_rids:
-                prefetched[rid] = op_map
-    else:
-        label = f"{len(std_rids)} сводок"
-        if per_op_fetch_groups:
-            label += f" + {len(per_op_fetch_groups)} операций (св.1/2)"
-        prog(f"Cropwise UI: параллельная загрузка work.json ({label}, {workers} потоков)…")
-        from proverka.work_groups import work_group_wt_map
+    prog(
+        f"Cropwise UI: сезоны {years[0]} и {years[1]}, "
+        f"{len(jobs)} запросов work.json по очереди…"
+    )
+    loaded = load_works_for_seasons(cookie, jobs, years=years)
+    packed_groups = {
+        name: pack_loaded_work(loaded.get(name) or {}, years)
+        for name in group_names
+        if name in loaded or any(job.key == name for job in jobs)
+    }
+    if per_op_groups:
+        op_map = {gn: packed_groups[gn] for gn in per_op_groups if gn in packed_groups}
+        for rid in per_op_rids:
+            prefetched[rid] = op_map
+    for rid in std_rids:
+        groups = tuple(REPORTS[rid].work_groups or ())
+        if len(groups) == 1 and groups[0] in packed_groups:
+            prefetched[rid] = packed_groups[groups[0]]
+        elif f"report:{rid}" in loaded:
+            prefetched[rid] = pack_loaded_work(loaded[f"report:{rid}"], years)
+    return prefetched, None
 
-        wt_by_group = work_group_wt_map()
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {}
-            for rid in std_rids:
-                futures[pool.submit(_fetch_work_one, rid, cookie, report_date, preferred)] = ("rid", rid)
-            for gn0 in per_op_fetch_groups:
-                futures[pool.submit(
-                    _fetch_work_per_operation,
-                    gn0,
-                    list(wt_by_group.get(gn0) or []),
-                    cookie,
-                    report_date,
-                    preferred,
-                )] = ("per_op", gn0)
-            op_map: dict[str, dict[str, Any]] = {}
-            for fut in _iter_done(futures):
-                kind, key = futures[fut]
-                if kind == "rid":
-                    rid, work = fut.result()
-                    prefetched[rid] = work
-                else:
-                    gn0, work = fut.result()
-                    op_map[gn0] = work
-                ui_session = work.get("ui_session_seasonValue") or ui_session
-            if op_map:
-                for rid in per_op_rids:
-                    prefetched[rid] = op_map
-
-    if preferred and ui_session != preferred:
-        prog(
-            f"Cropwise UI: seasonValue={ui_session}; сезон {preferred} сверяется по API v3. "
-            f"Чтобы видеть {preferred} и в UI, задайте "
-            f"CROPWISE_SESSION_COOKIE_{preferred} в .env "
-            f"(cookie из браузера с выбранным сезоном {preferred})."
-        )
-    return prefetched, ui_session
 
 
 def _inject_canonical_svodka_for_cross_check(
@@ -486,126 +387,9 @@ def _refresh_work_json_after_svodka(
     svodka_cache: dict[str, dict[str, Any]],
     prog: ProgressFn,
 ) -> tuple[dict[str, dict[str, Any]], int | None]:
-    """
-    После расчёта сводок (массовые API v3) UI часто отдаёт урезанный work.json (~1941 vs ~2226).
-    Перезагружаем work.json с preferred seasonValue до reconcile.
-    """
-    from proverka.cropwise_ui import cropwise_total_ha
-    from proverka.reconcile import _cropwise_retry_warranted
-    from proverka.season_cropwise import ui_session_ok_for_years
-
-    preferred = _preferred_ui_session(report_date, report_ids)
-    ui_session: int | None = None
-    refreshed = 0
-
-    comparable = [rid for rid in report_ids if _needs_cropwise_ui(REPORTS[rid])]
-    std_rids = [rid for rid in comparable if not REPORTS[rid].cropwise_per_operation]
-
-    for rid in std_rids:
-        work = prefetched_work.get(rid)
-        if not isinstance(work, dict):
-            continue
-        if work.get("editor_years"):
-            ui_session = work.get("ui_session_seasonValue") or ui_session
-            continue
-        ui_session = work.get("ui_session_seasonValue") or ui_session
-        spec = REPORTS[rid]
-        svodka = svodka_cache.get(rid) or {}
-        sv_total = float(svodka.get("total_ha") or 0)
-        # Сезон сессии Cropwise запросом не сменить, поэтому перезагружаем
-        # work.json только если сессия не отдаёт ни один из сезонов сводки.
-        sv_years = list((svodka.get("season_policy") or {}).get("task_season_years") or [])
-        need_refresh = bool(
-            preferred
-            and work.get("ui_session_seasonValue") != preferred
-            and not ui_session_ok_for_years(work.get("ui_session_seasonValue"), sv_years)
-        )
-        cw_total = 0.0
-        if not need_refresh and work.get("ok") and isinstance(work.get("body"), dict) and sv_total > 1.0:
-            cw_total = cropwise_total_ha(work, spec.fact_column_hints)
-            need_refresh = _cropwise_retry_warranted(
-                sv_total,
-                cw_total,
-                ui_session=work.get("ui_session_seasonValue"),
-                preferred_ui=preferred,
-                acceptable_ui_seasons=sv_years,
-            )
-        if need_refresh:
-            prog(
-                f"Cropwise UI: повтор work.json сводки {rid} "
-                f"(svodka {sv_total:.0f} vs cropwise {cw_total:.0f}, session={work.get('ui_session_seasonValue')})…"
-            )
-            _, work_new = _fetch_work_one(
-                rid, cookie, report_date, preferred, attempts=4, delay_sec=3.0,
-            )
-            if work_new.get("ok"):
-                prefetched_work[rid] = work_new
-                ui_session = work_new.get("ui_session_seasonValue") or ui_session
-                refreshed += 1
-
-    per_op_rids = [rid for rid in comparable if REPORTS[rid].cropwise_per_operation]
-    if per_op_rids:
-        groups = _per_op_prefetch_groups(report_ids)
-        op_map = prefetched_work.get(per_op_rids[0])
-        if not isinstance(op_map, dict):
-            op_map = {}
-        for gn, wt_ids in groups:
-            work = op_map.get(gn)
-            if not isinstance(work, dict):
-                continue
-            if work.get("editor_years"):
-                ui_session = work.get("ui_session_seasonValue") or ui_session
-                continue
-            from proverka.operation_registry import canonical_cropwise_report
-
-            canon_rid = canonical_cropwise_report(gn)
-            canon = REPORTS.get(canon_rid) if canon_rid else None
-            if not canon:
-                continue
-            sv_total = 0.0
-            for rid in per_op_rids:
-                sv = svodka_cache.get(rid) or {}
-                for op in (sv.get("operations") or {}).values():
-                    if op.get("group_name") == gn:
-                        sv_total = max(sv_total, float(op.get("total_ha") or 0))
-            from proverka.season_policy import resolve_group_season_policy
-
-            gn_years = list(
-                resolve_group_season_policy(gn, report_date).get("task_season_years") or []
-            )
-            need_refresh = bool(
-                preferred
-                and work.get("ui_session_seasonValue") != preferred
-                and not ui_session_ok_for_years(work.get("ui_session_seasonValue"), gn_years)
-            )
-            cw_total = 0.0
-            if not need_refresh and work.get("ok") and isinstance(work.get("body"), dict) and sv_total > 1.0:
-                cw_total = cropwise_total_ha(work, canon.fact_column_hints)
-                need_refresh = _cropwise_retry_warranted(
-                    sv_total,
-                    cw_total,
-                    ui_session=work.get("ui_session_seasonValue"),
-                    preferred_ui=preferred,
-                    acceptable_ui_seasons=gn_years,
-                )
-            if need_refresh:
-                prog(
-                    f"Cropwise UI: повтор work.json операции «{gn}» "
-                    f"(svodka {sv_total:.0f} vs cropwise {cw_total:.0f})…"
-                )
-                _, work_new = _fetch_work_per_operation(
-                    gn, list(wt_ids), cookie, report_date, preferred,
-                )
-                if work_new.get("ok"):
-                    op_map[gn] = work_new
-                    ui_session = work_new.get("ui_session_seasonValue") or ui_session
-                    refreshed += 1
-        for rid in per_op_rids:
-            prefetched_work[rid] = op_map
-
-    if refreshed:
-        prog(f"Cropwise UI: обновлено work.json: {refreshed}")
-    return prefetched_work, ui_session
+    """Повтор после сводок подтягивал больший ответ к факту сводки. Больше не делается."""
+    del cookie, report_date, report_ids, svodka_cache, prog
+    return prefetched_work, None
 
 
 def _wait_for_cropwise_ui(
@@ -615,59 +399,28 @@ def _wait_for_cropwise_ui(
     prefetched_mu: dict[str, Any] | None,
     ui_session: int | None,
 ) -> None:
-    """Канарейка МУ: живой ли work.json (не урезан ли ответ Cropwise)."""
-    from proverka.cropwise_ui import cropwise_total_ha, fetch_work_report_resilient
-    from proverka.reconcile import _shift_window_iso
-    from proverka.season_cropwise import ui_session_ok_for_years
-    from proverka.season_runtime import resolve_report_season_config
+    """Канарейка смотрит уже загруженные сезоны и сама в Cropwise не ходит."""
+    del cookie, report_date, ui_session
+    from proverka.cropwise_ui import cropwise_total_ha
 
     spec = REPORTS.get(_CROPWISE_CANARY_REPORT)
     if not spec or not _needs_cropwise_ui(spec):
         return
     min_ha = _canary_min_ha()
-    if min_ha <= 0:
+    if min_ha <= 0 or not isinstance(prefetched_mu, dict):
         return
-
-    need_session = report_date.year + 1
-    # Сезон сессии, не входящий в сезоны сводки, — не повод пропускать канарейку:
-    # такой сезон сверяется по API v3, а канарейка проверяет работоспособность UI.
-    mu_years = list(
-        resolve_report_season_config(spec, report_date).get("task_season_years") or []
-    )
-    if ui_session is not None and mu_years and not ui_session_ok_for_years(ui_session, mu_years):
-        prog(
-            f"⚠ Cropwise UI: seasonValue={ui_session} вне сезонов МУ "
-            f"({'+'.join(map(str, mu_years))}) — сверка пойдёт по API v3."
-        )
-        return
-
-    t0, t1, wt_ids = _shift_window_iso(spec, report_date)
-    hints = spec.fact_column_hints
-    work = prefetched_mu
-    if not work or not work.get("ok"):
-        work = fetch_work_report_resilient(
-            cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=4.0,
-            preferred_ui_session=need_session,
-        )
-    total = cropwise_total_ha(work, hints)
-    body = work.get("body") or {}
-    if not body.get("reportBlank") and total >= min_ha:
+    total = 0.0
+    for slot in (prefetched_mu.get("by_year") or {}).values():
+        if isinstance(slot, dict) and slot.get("load_status") == "loaded":
+            total += cropwise_total_ha(slot, spec.fact_column_hints)
+    if total >= min_ha:
         prog(f"Cropwise UI: канарейка OK ({total:.0f} га)")
-        return
-
-    waits = (15, 30, 45)
-    for pause in waits:
-        prog(f"Cropwise UI: канарейка < {min_ha:.0f} га, пауза {pause}с…")
-        _sleep_cancellable(pause)
-        work = fetch_work_report_resilient(
-            cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=4.0,
-            preferred_ui_session=need_session,
+    else:
+        prog(
+            f"Cropwise UI: канарейка {total:.0f} га при пороге {min_ha:.0f}. "
+            "Повтор с выбором большего ответа не запускается."
         )
-        total = cropwise_total_ha(work, hints)
-        if not (work.get("body") or {}).get("reportBlank") and total >= min_ha:
-            prog(f"Cropwise UI: канарейка OK ({total:.0f} га)")
-            return
-    prog("Cropwise UI: канарейка низкая — возможен UI degraded или неверный сезон в UI")
+
 
 
 def _collect_prefetch_report_ids(report_ids: list[str]) -> list[str]:

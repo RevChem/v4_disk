@@ -103,6 +103,8 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
     report_blank = bool((work.get("body") or {}).get("reportBlank"))
     if spec and not spec.cropwise_comparable and not spec.cropwise_per_operation:
         status = "1↔2↔N"
+    elif cmp_.get("cropwise_incomplete"):
+        status = "неполный"
     elif not work.get("ok"):
         status = "UI error"
     elif ui_session_blocked and required_session and abs(diff) > 5.0:
@@ -172,7 +174,7 @@ def _row_from_result(rid: str, result: dict[str, Any]) -> dict[str, Any]:
 
 
 CROPWISE_VIOLATION_STATUSES = frozenset({
-    "DIFF", "UI error", "blank", "season?", "UI degraded", "UI≠API", "ERROR",
+    "DIFF", "UI error", "blank", "season?", "UI degraded", "UI≠API", "ERROR", "неполный",
 })
 
 

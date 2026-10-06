@@ -31,12 +31,10 @@ ensure_plan_sys_path()
 
 from proverka.cropwise_ui import (  # noqa: E402
     fetch_work_report,
-    fetch_work_report_resilient,
     make_web_session,
     parse_work_report_body,
 )
 from proverka.season_cropwise import (  # noqa: E402
-    compute_season_aware_cropwise,
     work_type_ids_for_report,
 )
 from proverka.reports_config import REPORTS, ReportSpec, list_report_ids  # noqa: E402
@@ -265,18 +263,24 @@ def reconcile_one(
     t0, t1, wt_ids = _shift_window_iso(spec, report_date)
     hints = list(spec.fact_column_hints)
 
-    # Cropwise UI — до сотен запросов API v3; несколько попыток с паузами.
-    preferred_ui = None
-    if spec.season_rule in ("both_years", "year_plus_one", "plow_year_plus_one"):
-        preferred_ui = report_date.year + 1
-
     if prefetched_work is not None:
         work = prefetched_work
     else:
-        work = fetch_work_report_resilient(
-            cookie, t0, t1, wt_ids, hints, attempts=2, delay_sec=2.0,
-            preferred_ui_session=preferred_ui,
+        from proverka.cropwise_ui import (
+            WorkLoadJob,
+            load_works_for_seasons,
+            pack_loaded_work,
+            ui_check_years,
         )
+
+        years = ui_check_years(report_date.year)
+        load_key = spec.work_groups[0] if len(spec.work_groups) == 1 else spec.report_id
+        loaded = load_works_for_seasons(
+            cookie,
+            [WorkLoadJob(str(load_key), t0, t1, list(wt_ids), tuple(hints))],
+            years=years,
+        )
+        work = pack_loaded_work(loaded.get(str(load_key)) or {}, years)
 
     if prefetched_svodka is not None:
         svodka = prefetched_svodka
@@ -288,133 +292,49 @@ def reconcile_one(
     task_years = season.get("task_season_years") or []
     ui_session = work.get("ui_session_seasonValue")
 
-    season_cropwise: dict[str, Any] | None = None
     shift_cache = None
     wt_from_groups = wt_ids
-    if work.get("ok") and isinstance(work.get("body"), dict):
-        try:
-            wt_from_groups = work_type_ids_for_report(spec.report_id)
-        except ValueError:
-            wt_from_groups = wt_ids
+    try:
+        wt_from_groups = work_type_ids_for_report(spec.report_id)
+    except ValueError:
+        wt_from_groups = wt_ids
+    if work.get("ok"):
         from proverka.season_cropwise import ShiftWindowCache
 
         shift_cache = ShiftWindowCache.build(
             t0, t1, wt_from_groups, log_prefix=f"[proverka r{spec.report_id}] ",
         )
-        season_cropwise = compute_season_aware_cropwise(
-            work["body"],
-            firm_names,
-            hints,
-            wt_from_groups,
-            t0,
-            t1,
-            ui_session,
-            task_season_years=task_years,
-            season_rule=spec.season_rule,
-            shift_cache=shift_cache,
-        )
-        blocked = bool(season_cropwise.get("ui_session_blocked"))
-        need_sess = season_cropwise.get("required_ui_sessionValue")
-        if blocked and need_sess and work.get("ui_session_seasonValue") != need_sess:
-            work_alt = fetch_work_report_resilient(
-                cookie, t0, t1, wt_ids, hints, attempts=3, delay_sec=2.0,
-                preferred_ui_session=int(need_sess),
-            )
-            if (
-                work_alt.get("ok")
-                and isinstance(work_alt.get("body"), dict)
-                and work_alt.get("ui_session_seasonValue") == need_sess
-            ):
-                work = work_alt
-                ui_session = work.get("ui_session_seasonValue")
-                season_cropwise = compute_season_aware_cropwise(
-                    work["body"],
-                    firm_names,
-                    hints,
-                    wt_from_groups,
-                    t0,
-                    t1,
-                    ui_session,
-                    task_season_years=task_years,
-                    season_rule=spec.season_rule,
-                    shift_cache=shift_cache,
-                )
 
-    cropwise_compare_total = (
-        float(season_cropwise["cropwise_total_ha"])
-        if season_cropwise
-        else _cropwise_total(work, spec.fact_column_hints)
+    from proverka.cropwise_crops import build_season_cropwise
+
+    group_name = spec.work_groups[0] if len(spec.work_groups) == 1 else None
+    combined = build_season_cropwise(
+        work,
+        report_year=report_date.year,
+        firm_names=firm_names,
+        fact_hints=hints,
+        season_rule=spec.season_rule,
+        task_years=list(task_years or []),
+        group_name=group_name,
+        shift_cache=shift_cache,
+        wt_ids=list(wt_from_groups),
     )
-
+    parsed = combined.get("parsed") or {}
+    seasons = combined["seasons"]
+    cropwise_by_firm = combined["by_firm"]
+    cropwise_total = float(combined["compare_ha"])
+    ui_note = combined["note"]
+    ui_session = None
+    ui_session_blocked = False
+    required_ui_session = None
     fetch_note = ""
-    api_fallback = bool(season_cropwise.get("cropwise_api_fallback")) if season_cropwise else False
-    has_editor_seasons = bool(work.get("by_year")) and bool(work.get("editor_years"))
-    if not has_editor_seasons and (
-        _cropwise_looks_degraded(
-        work, svodka_total, spec.fact_column_hints,
-        cropwise_total=cropwise_compare_total,
-        cropwise_api_fallback=api_fallback,
-    ) or _cropwise_retry_warranted(
-        svodka_total,
-        cropwise_compare_total,
-        cropwise_api_fallback=api_fallback,
-        ui_session=ui_session,
-        preferred_ui=preferred_ui,
-        acceptable_ui_seasons=list(task_years),
-    )):
-        retry = fetch_work_report_resilient(
-            cookie, t0, t1, wt_ids, hints, attempts=4, delay_sec=5.0,
-            preferred_ui_session=preferred_ui,
-        )
-        retry_total = _cropwise_total(retry, spec.fact_column_hints)
-        if retry.get("ok") and isinstance(retry.get("body"), dict):
-            try:
-                retry_sc = compute_season_aware_cropwise(
-                    retry["body"], firm_names, hints,
-                    work_type_ids_for_report(spec.report_id),
-                    t0, t1, retry.get("ui_session_seasonValue"),
-                    task_season_years=task_years,
-                    season_rule=spec.season_rule,
-                    shift_cache=shift_cache,
-                )
-                retry_total = float(retry_sc["cropwise_total_ha"])
-            except ValueError:
-                pass
-        if retry_total > cropwise_compare_total + 0.01:
-            work = retry
-            ui_session = work.get("ui_session_seasonValue")
-            try:
-                season_cropwise = compute_season_aware_cropwise(
-                    work["body"], firm_names, hints,
-                    work_type_ids_for_report(spec.report_id),
-                    t0, t1, ui_session, task_season_years=task_years,
-                    season_rule=spec.season_rule,
-                    shift_cache=shift_cache,
-                )
-                cropwise_compare_total = float(season_cropwise["cropwise_total_ha"])
-            except ValueError:
-                season_cropwise = None
-                cropwise_compare_total = _cropwise_total(work, spec.fact_column_hints)
-            fetch_note = "Cropwise UI: повтор после расчёта сводки (лучший из нескольких ответов)."
-        elif _cropwise_looks_degraded(
-            work, svodka_total, spec.fact_column_hints,
-            cropwise_total=cropwise_compare_total,
-            cropwise_api_fallback=api_fallback,
-        ):
-            body = work.get("body") or {}
-            blank = body.get("reportBlank")
-            season_years = (svodka.get("season_policy") or {}).get("task_season_years") or []
-            season_hint = ""
-            if blank and season_years:
-                season_hint = (
-                    f" Сезон сводки ({'+'.join(map(str, season_years))}): work.json отдаёт "
-                    f"только сезон сессии Cropwise ({ui_session}), остальные сезоны "
-                    "берутся из API v3."
-                )
-            fetch_note = (
-                "Cropwise UI отдал урезанный/пустой ответ (часто после массовых API-запросов)."
-                f"{season_hint} Проверьте work.json в браузере."
-            )
+    work["editor_crop_areas"] = combined["crops"]
+    season_cropwise = {
+        "cropwise_api_ha": combined.get("api_ha"),
+        "cropwise_ui_ha": combined["both_seasons_ha"],
+        "cropwise_ui_vs_api_ha": combined.get("ui_vs_api_ha"),
+        "cropwise_api_fallback": False,
+    }
 
     result: dict[str, Any] = {
         "report_id": spec.report_id,
@@ -424,93 +344,25 @@ def reconcile_one(
     }
 
     if not work.get("ok"):
-        from proverka.cropwise_crops import fill_crop_comparisons
-
-        fill_crop_comparisons(
-            result,
-            svodka.get("operations") or {},
-            work=work,
-            firm_names=firm_names,
-            hints=hints,
-            shift_cache=shift_cache,
-            task_years=list(task_years or []),
-            ui_session=ui_session if isinstance(ui_session, int) else None,
-            cutoff_iso=t1,
-            group_names=list(spec.work_groups or ()),
-        )
+        result["comparison"] = {
+            "svodka_total_ha": svodka.get("total_ha"),
+            "cropwise_fact_total_ha": 0.0,
+            "total_diff_ha": round(float(svodka.get("total_ha") or 0), 2),
+            "cropwise_incomplete": True,
+            "cropwise_api_fallback": False,
+            "ui_degraded": False,
+            "note": ui_note,
+            "season_policy": season,
+        }
         return result
-
-    if season_cropwise:
-        parsed = season_cropwise["parsed"]
-        seasons = season_cropwise["seasons"]
-        cropwise_by_firm = season_cropwise["cropwise_by_firm"]
-        cropwise_total = season_cropwise["cropwise_total_ha"]
-        ui_session = season_cropwise.get("ui_session_seasonValue")
-        ui_session_blocked = bool(season_cropwise.get("ui_session_blocked"))
-        required_ui_session = season_cropwise.get("required_ui_sessionValue")
-        if ui_session is not None:
-            work["ui_session_seasonValue"] = ui_session
-    else:
-        parsed = parse_work_report_body(
-            work["body"], firm_names, list(spec.fact_column_hints),
-        )
-        seasons = {}
-        cropwise_by_firm = parsed.get("fact_by_firm") or {}
-        cropwise_total = float(parsed.get("fact_total_ha") or 0)
-        ui_session_blocked = False
-        required_ui_session = None
-
-    if has_editor_seasons:
-        from proverka.cropwise_crops import combine_editor_seasons
-        from proverka.season_cropwise import _parse_dt
-
-        combined = combine_editor_seasons(
-            work.get("by_year") or {},
-            list(work.get("editor_years") or []),
-            firm_names,
-            hints,
-            shift_cache=shift_cache,
-            wt_ids=list(wt_from_groups),
-            cutoff=_parse_dt(t1),
-        )
-        cropwise_total = combined["total_ha"]
-        cropwise_by_firm = combined["by_firm"]
-        work["editor_crop_areas"] = combined["crops"]
-        editor_years = list(work.get("editor_years") or [])
-        parts = ", ".join(
-            f"{year}={float(combined['by_year'].get(year) or 0):.2f}" for year in editor_years
-        )
-        if len(editor_years) == 1:
-            ui_note = f"Cropwise: только сезон {editor_years[0]} из редактора планов ({parts})."
-        else:
-            ui_note = f"Cropwise: сумма сезонов редактора планов ({parts})."
-        task_years = editor_years
-    else:
-        ui_note = None
 
     result["cropwise_parsed"] = parsed
     if seasons:
         result["cropwise_seasons"] = seasons
 
     season_note = season.get("label") or ""
-    if ui_note is not None:
-        pass
-    elif len(task_years) == 1:
-        ui_note = f"Cropwise: UI season {ui_session} + API season для сводки {task_years[0]}."
-    elif len(task_years) > 1:
-        ui_note = (
-            f"Cropwise: UI verified (season {ui_session}) + API v3 для "
-            f"{'+'.join(map(str, task_years))}."
-        )
-    elif season_cropwise and season_cropwise.get("cropwise_api_fallback"):
-        ui_note = "Cropwise: API v3 (work.json blank), задания в окне 06:00–06:00."
-    else:
-        ui_note = "Cropwise UI: все задания в окне 06:00–06:00."
-
-    ui_season_years = work.get("ui_season_years") or []
-    season_mismatch = bool(
-        ui_session and task_years and ui_session not in task_years and len(task_years) > 1
-    )
+    ui_season_years = list(combined.get("years") or [])
+    season_mismatch = False
     result["comparison"] = {
         "svodka_total_ha": svodka["total_ha"],
         "cropwise_fact_total_ha": cropwise_total,
@@ -520,7 +372,9 @@ def reconcile_one(
         "ui_session_seasonValue": ui_session,
         "required_ui_sessionValue": required_ui_session,
         "ui_session_blocked": ui_session_blocked,
-        "cropwise_api_fallback": bool(season_cropwise.get("cropwise_api_fallback")) if season_cropwise else False,
+        "cropwise_api_fallback": False,
+        "cropwise_incomplete": bool(combined["incomplete"]),
+        "cropwise_warnings": list(combined["warnings"]),
         "cropwise_ui_season_years": ui_season_years,
         "season_mismatch": season_mismatch,
         "cropwise_by_firm": {
@@ -550,42 +404,21 @@ def reconcile_one(
         "cropwise_unmatched_firm_ha": parsed.get("unmatched_firm_ha"),
         "fact_column_confidence": parsed.get("fact_column_confidence"),
         "cropwise_fetch_meta": work.get("fetch_meta"),
-        "note": f"Cropwise = «Всего» из work.json. {season_note}. {ui_note}",
-        "ui_degraded": _cropwise_looks_degraded(
-            work, svodka_total, spec.fact_column_hints,
-            cropwise_total=cropwise_total,
-            cropwise_api_fallback=bool(
-                season_cropwise.get("cropwise_api_fallback") if season_cropwise else False
-            ),
-        ),
+        "note": f"Cropwise = сумма work.json по сезонам. {season_note}. {ui_note}",
+        "ui_degraded": False,
     }
-    if seasons:
-        for year in ("2026", "2027"):
-            block = seasons.get(year) or {}
-            result["comparison"][f"cropwise_season_{year}_ha"] = block.get("total_ha", 0)
-            result["comparison"][f"cropwise_season_{year}_source"] = block.get("source")
-        result["comparison"]["cropwise_both_seasons_ha"] = cropwise_total
-        if ui_session and seasons.get(str(ui_session), {}).get("source") == "work_json_verified":
-            result["comparison"]["note"] += (
-                f" UI season {ui_session}: verified #task_id."
-            )
-    if ui_session_blocked and required_ui_session:
-        result["comparison"]["note"] += (
-            f" ⚠ Cropwise UI: seasonValue={ui_session} не входит в сезоны сводки "
-            f"({'+'.join(map(str, task_years))}). work.json отдаёт только сезон сессии, "
-            f"поэтому факт взят из API v3. Чтобы сверять с UI, откройте Cropwise "
-            f"с сезоном {required_ui_session} и обновите cookie "
-            f"(или задайте CROPWISE_SESSION_COOKIE_{required_ui_session})."
-        )
+    for year, block in seasons.items():
+        result["comparison"][f"cropwise_season_{year}_ha"] = block.get("total_ha")
+        result["comparison"][f"cropwise_season_{year}_source"] = block.get("source")
+        result["comparison"][f"cropwise_season_{year}_status"] = block.get("status")
+    result["comparison"]["cropwise_both_seasons_ha"] = combined["both_seasons_ha"]
     if fetch_note:
         result["comparison"]["note"] += f" {fetch_note}"
 
     groups = tuple(spec.work_groups or ())
     svodka_ops = svodka.get("operations") or {}
-    if shift_cache is not None and groups:
+    if not combined["incomplete"] and len(groups) == 1:
         from proverka.crop_compare import compare_svodka_cropwise_crops
-        from proverka.cropwise_crops import cropwise_crops_all_seasons
-        from proverka.season_cropwise import _parse_dt
 
         crop_cmp_all: list[dict] = []
         for gn in groups:
@@ -593,19 +426,7 @@ def reconcile_one(
             svodka_crop = op.get("area_today_by_firm_crop") or {}
             if not svodka_crop:
                 continue
-            if len(groups) == 1 and work.get("editor_crop_areas") is not None:
-                cw_crop = work.get("editor_crop_areas")
-            else:
-                cw_crop = cropwise_crops_all_seasons(
-                    work.get("body"),
-                    firm_names,
-                    hints,
-                    shift_cache=shift_cache,
-                    task_years=list(task_years),
-                    ui_session=ui_session if isinstance(ui_session, int) else None,
-                    wt_ids=list(op.get("work_type_ids") or wt_from_groups),
-                    cutoff=_parse_dt(t1),
-                )
+            cw_crop = work.get("editor_crop_areas") or {}
             crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
             for row in crop_cmp:
                 row["group"] = gn

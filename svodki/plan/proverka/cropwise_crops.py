@@ -316,38 +316,199 @@ def cropwise_crops_all_seasons(
     firm_names: list[str],
     fact_hints: list[str],
     *,
-    shift_cache: Any | None,
-    task_years: list[int] | None,
-    ui_session: int | None,
-    wt_ids: list[int],
-    cutoff,
+    shift_cache: Any | None = None,
+    task_years: list[int] | None = None,
+    ui_session: int | None = None,
+    wt_ids: list[int] | None = None,
+    cutoff=None,
 ) -> dict[str, dict[str, float]]:
-    """cropRows сессии плюс культуры остальных сезонов плана из API v3."""
+    """Культуры только из cropRows work.json. API v3 в эту колонку не подставляется."""
+    del shift_cache, task_years, ui_session, wt_ids, cutoff
     ui = cropwise_area_by_firm_crop(body, firm_names, fact_hints)
-    ui_has = bool(ui) and not (isinstance(body, dict) and body.get("reportBlank"))
-    wt_set = {int(x) for x in wt_ids}
-    tasks = [
-        t for t in ((shift_cache.all_tasks if shift_cache is not None else None) or [])
-        if int(t.get("work_type_id") or 0) in wt_set
-    ]
-    in_shift = sorted({str(t.get("season")) for t in tasks if t.get("season") not in (None, "")})
-    missing = seasons_missing_from_ui(
-        task_years, ui_session, ui_has, seasons_in_shift=in_shift,
+    if not ui or (isinstance(body, dict) and body.get("reportBlank")):
+        return {}
+    return ui
+
+
+def svodka_counted_years(
+    ui_years: list[int],
+    *,
+    group_name: str | None,
+    season_rule: str,
+    task_years: list[int] | None,
+) -> list[int] | None:
+    """
+    None — сводка не режет machine_task.season, в diff входят все сезоны UI.
+
+    Иначе только годы, которые сводка сама учитывает.
+    """
+    from season_unified import applies_task_season_filter
+
+    if group_name:
+        filters = applies_task_season_filter(group_name)
+    else:
+        filters = season_rule not in ("none", "")
+    if not filters:
+        return None
+    wanted = {int(y) for y in (task_years or [])}
+    if not wanted:
+        return None
+    return [int(y) for y in ui_years if int(y) in wanted]
+
+
+def combine_loaded_seasons(
+    by_year: dict,
+    years: list[int],
+    firm_names: list[str],
+    fact_hints: list[str],
+    *,
+    counted_years: list[int] | None,
+) -> dict[str, Any]:
+    """
+    Сумма work.json по сезонам загрузчика.
+
+    Ответ записывается в год только если load_status это разрешает и
+    ui_session_seasonValue совпадает с ключом. Пустой UI не заменяется API.
+    """
+    from proverka.crop_compare import cropwise_area_by_firm_crop
+    from proverka.cropwise_ui import parse_work_report_body
+
+    counted = {int(y) for y in counted_years} if counted_years is not None else {int(y) for y in years}
+    seasons: dict[str, dict[str, Any]] = {}
+    by_firm: dict[str, float] = defaultdict(float)
+    crops: dict[str, dict[str, float]] = {}
+    compare_ha = 0.0
+    both_ha = 0.0
+    missing: list[int] = []
+    warnings: list[str] = []
+    parsed_keep: dict[str, Any] | None = None
+    for year in years:
+        year = int(year)
+        slot = by_year.get(year) or by_year.get(str(year)) or {}
+        status = str(slot.get("load_status") or "")
+        session = slot.get("ui_session_seasonValue")
+        body = slot.get("body") if isinstance(slot.get("body"), dict) else None
+        if status == "loaded" and session is not None and int(session) != year:
+            status = "not_loaded"
+        if status not in ("loaded", "empty"):
+            missing.append(year)
+            seasons[str(year)] = {
+                "total_ha": None,
+                "by_firm": {},
+                "source": None,
+                "status": status or "not_loaded",
+            }
+            continue
+        if status == "empty" or (isinstance(body, dict) and body.get("reportBlank")):
+            ha = 0.0
+            firms: dict[str, float] = {}
+            status = "empty"
+        else:
+            parsed = parse_work_report_body(body, firm_names, list(fact_hints))
+            if parsed_keep is None or float(parsed.get("fact_total_ha") or 0) > 0:
+                parsed_keep = parsed
+            ha = float(parsed.get("fact_total_ha") or 0)
+            firms = {
+                str(firm): round(float(value or 0), 2)
+                for firm, value in (parsed.get("fact_by_firm") or {}).items()
+                if float(value or 0) >= 0.01
+            }
+            if year in counted:
+                _add_crop_areas(crops, cropwise_area_by_firm_crop(body, firm_names, list(fact_hints)))
+        seasons[str(year)] = {
+            "total_ha": round(ha, 2),
+            "by_firm": firms,
+            "source": "work_json",
+            "status": status,
+        }
+        both_ha += ha
+        if year in counted:
+            compare_ha += ha
+            for firm, value in firms.items():
+                by_firm[firm] += value
+        elif ha > 0.01:
+            warnings.append(
+                f"есть задания сезона {year} — проверьте сезон заданий в Cropwise"
+            )
+    incomplete_years = [year for year in missing if year in counted]
+    return {
+        "compare_ha": round(compare_ha, 2),
+        "both_seasons_ha": round(both_ha, 2),
+        "by_firm": {k: round(v, 2) for k, v in by_firm.items() if v >= 0.01},
+        "crops": {c: dict(f) for c, f in crops.items() if f},
+        "seasons": seasons,
+        "incomplete": bool(incomplete_years),
+        "incomplete_years": incomplete_years,
+        "warnings": warnings,
+        "parsed": parsed_keep or {},
+    }
+
+
+def api_reference_ha(shift_cache: Any | None, wt_ids: list[int]) -> float | None:
+    """Справочная сумма API v3. В колонку Cropwise не входит."""
+    if shift_cache is None or not hasattr(shift_cache, "api_for_wt_ids"):
+        return None
+    try:
+        api, _ids = shift_cache.api_for_wt_ids(list(wt_ids))
+    except Exception:
+        return None
+    total = 0.0
+    for block in (api or {}).values():
+        total += float((block or {}).get("total_ha") or 0)
+    return round(total, 2)
+
+
+def build_season_cropwise(
+    work: dict[str, Any],
+    *,
+    report_year: int,
+    firm_names: list[str],
+    fact_hints: list[str],
+    season_rule: str,
+    task_years: list[int] | None,
+    group_name: str | None,
+    shift_cache: Any | None,
+    wt_ids: list[int],
+) -> dict[str, Any]:
+    """Cropwise для сверки: сумма сезонов загрузчика и отдельная цифра API."""
+    from proverka.cropwise_ui import ui_check_years
+
+    years = [int(y) for y in (work.get("years") or ui_check_years(report_year))]
+    counted = svodka_counted_years(
+        years, group_name=group_name, season_rule=season_rule, task_years=task_years,
     )
-    merged: dict[str, dict[str, float]] = {}
-    if ui_has:
-        _add_crop_areas(merged, ui)
-    if not missing or shift_cache is None:
-        return {c: dict(f) for c, f in merged.items()}
-    api = api_area_by_firm_crop(
-        tasks,
-        shift_cache.mtfmi_map,
-        shift_cache.field_to_firm,
-        set(missing),
-        cutoff,
+    combined = combine_loaded_seasons(
+        work.get("by_year") or {},
+        years,
+        firm_names,
+        fact_hints,
+        counted_years=counted,
     )
-    _add_crop_areas(merged, api)
-    return {c: dict(f) for c, f in merged.items() if f}
+    api_ha = api_reference_ha(shift_cache, wt_ids)
+    parts: list[str] = []
+    for year in years:
+        block = combined["seasons"].get(str(year)) or {}
+        status = block.get("status")
+        if status in ("loaded", "empty") and block.get("total_ha") is not None:
+            parts.append(f"{year}={float(block['total_ha']):.2f}")
+        elif status == "unstable":
+            parts.append(f"{year}=UI нестабилен")
+        else:
+            parts.append(f"{year}=не проверен")
+    note = "Cropwise: сумма work.json по сезонам (" + ", ".join(parts) + ")."
+    if combined["incomplete"]:
+        missed = ", ".join(str(y) for y in combined["incomplete_years"])
+        note += f" Итог неполный, сезон {missed} не проверен."
+    if combined["warnings"]:
+        note += " " + " ".join(combined["warnings"]) + "."
+    combined["api_ha"] = api_ha
+    combined["note"] = note
+    combined["years"] = years
+    if api_ha is not None:
+        combined["ui_vs_api_ha"] = round(combined["both_seasons_ha"] - api_ha, 2)
+    else:
+        combined["ui_vs_api_ha"] = None
+    return combined
 
 
 def combine_editor_seasons(
@@ -356,55 +517,24 @@ def combine_editor_seasons(
     firm_names: list[str],
     fact_hints: list[str],
     *,
-    shift_cache: Any | None,
-    wt_ids: list[int],
-    cutoff,
+    shift_cache: Any | None = None,
+    wt_ids: list[int] | None = None,
+    cutoff=None,
 ) -> dict[str, Any]:
-    """
-    Сумма Cropwise по сезонам редактора планов.
-
-    Несколько лет складываются. Один год берётся отдельно.
-    Пустая вкладка сезона добирается из API v3 только за этот год.
-    """
-    from proverka.crop_compare import cropwise_area_by_firm_crop
-    from proverka.cropwise_ui import parse_work_report_body
-
-    crops: dict[str, dict[str, float]] = {}
-    by_firm: dict[str, float] = defaultdict(float)
-    by_year_ha: dict[int, float] = {}
-    total = 0.0
-    api_by_season: dict | None = None
-    wt_set = {int(x) for x in wt_ids}
-    for year in years:
-        work = by_year.get(year) or by_year.get(str(year)) or {}
-        body = work.get("body") if work.get("ok") else None
-        usable = isinstance(body, dict) and not body.get("reportBlank")
-        year_total = 0.0
-        if usable:
-            parsed = parse_work_report_body(body, firm_names, list(fact_hints))
-            year_total = float(parsed.get("fact_total_ha") or 0)
-            for firm, ha in (parsed.get("fact_by_firm") or {}).items():
-                by_firm[str(firm)] += float(ha or 0)
-            _add_crop_areas(crops, cropwise_area_by_firm_crop(body, firm_names, list(fact_hints)))
-        elif shift_cache is not None:
-            if api_by_season is None:
-                api_by_season, _ids = shift_cache.api_for_wt_ids(list(wt_set))
-            block = (api_by_season or {}).get(str(year)) or {}
-            year_total = float(block.get("total_ha") or 0)
-            for firm, ha in (block.get("by_firm") or {}).items():
-                by_firm[str(firm)] += float(ha or 0)
-            tasks = [
-                t for t in (shift_cache.all_tasks or [])
-                if int(t.get("work_type_id") or 0) in wt_set
-            ]
-            _add_crop_areas(crops, api_area_by_firm_crop(
-                tasks, shift_cache.mtfmi_map, shift_cache.field_to_firm, {str(year)}, cutoff,
-            ))
-        by_year_ha[int(year)] = round(year_total, 2)
-        total += year_total
+    """Сумма уже загруженных сезонов. API на место пустого UI не ставится."""
+    del shift_cache, wt_ids, cutoff
+    combined = combine_loaded_seasons(
+        by_year, [int(y) for y in years], firm_names, fact_hints, counted_years=None,
+    )
     return {
-        "total_ha": round(total, 2),
-        "by_firm": {k: round(v, 2) for k, v in by_firm.items() if v >= 0.01},
-        "crops": {c: dict(f) for c, f in crops.items() if f},
-        "by_year": by_year_ha,
+        "total_ha": combined["compare_ha"],
+        "by_firm": combined["by_firm"],
+        "crops": combined["crops"],
+        "by_year": {
+            int(year): float(block.get("total_ha") or 0)
+            for year, block in combined["seasons"].items()
+            if block.get("status") in ("loaded", "empty")
+        },
+        "incomplete": combined["incomplete"],
+        "incomplete_years": combined["incomplete_years"],
     }

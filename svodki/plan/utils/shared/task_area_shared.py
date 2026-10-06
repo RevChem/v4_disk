@@ -343,6 +343,7 @@ def task_field_cov_for_firm(
     firm_for_field: Callable[[int], str],
     parse_dt: Callable[[object], datetime | None],
     item_allowed: Callable[[int], bool] | None = None,
+    row_allowed: Callable[[dict], bool] | None = None,
 ) -> dict[int, float]:
     """Распределение cov_for_firm по полям пропорционально MTFMI в окне."""
     raw_field: dict[int, float] = defaultdict(float)
@@ -356,7 +357,10 @@ def task_field_cov_for_firm(
             continue
         if not field_ok(fid_i):
             continue
-        if item_allowed is not None and not item_allowed(fid_i):
+        if row_allowed is not None:
+            if not row_allowed(item):
+                continue
+        elif item_allowed is not None and not item_allowed(fid_i):
             continue
         if firm_for_field(fid_i) != firm:
             continue

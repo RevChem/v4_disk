@@ -378,7 +378,7 @@ def load_snapshot(
     if hit and time.time() - hit[0] <= _CACHE_TTL_SEC:
         return hit[1]
 
-    from proverka.cropwise_ui import fetch_work_report_resilient
+    from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons
     from proverka.work_groups import work_type_ids_for_group
 
     wt: list[int] = []
@@ -388,16 +388,15 @@ def load_snapshot(
     if not wt:
         raise ValueError("Для выбранных операций не заданы work_type_id")
     hints = hints_for_groups(names)
-    work = fetch_work_report_resilient(
+    loaded = load_works_for_seasons(
         cookie,
-        t0,
-        t1,
-        wt,
-        hints,
-        attempts=1,
-        delay_sec=0.5,
-        preferred_ui_session=season,
+        [WorkLoadJob("ask", t0, t1, wt, tuple(hints))],
+        years=[int(season)] if season else None,
     )
+    slots = (loaded.get("ask") or {})
+    work = next(iter(slots.values()), {"ok": False, "load_status": "not_loaded"})
+    if work.get("load_status") == "unstable":
+        raise ValueError("Cropwise UI нестабилен: повтор work.json не совпал с первым ответом")
     if not work.get("ok"):
         status = work.get("status")
         raise ValueError(f"Cropwise не ответил (HTTP {status}). Проверьте cookie и сезон.")

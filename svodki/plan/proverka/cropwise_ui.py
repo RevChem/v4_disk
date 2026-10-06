@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from typing import Any
@@ -28,6 +29,7 @@ _SUBGROUP_TO_FIRM: dict[str, str] | None = None
 _WS_RE = re.compile("[\\s\u00a0\u202f\u2009\u2007\u2007\u2060]+")
 _TOTAL_LABELS = frozenset({"всего", "итого", "total", "итог"})
 _TASK_ID_RE = re.compile(r"#(\d+)")
+_CROPWISE_COOKIE_LOCK = threading.Lock()
 
 HOST = "https://operations.cropwise.com"
 WORK_JSON_URL = f"{HOST}/machines/reports/work.json"
@@ -258,19 +260,20 @@ def _fetch_work_report_get(
         return {"ok": False, "status": 0, "error": "cropwise_web_session unavailable"}
     prev = os.environ.get("CROPWISE_SESSION_COOKIE")
     normalized = normalize_cookie_string(cookie)
-    os.environ["CROPWISE_SESSION_COOKIE"] = normalized
-    try:
-        session, source = make_get_session()
-        if source == "none":
-            return {"ok": False, "status": 0, "error": "no cookie for GET work.json"}
-        raw = fetch_work_report_json(
-            session, time_from=time_from, time_to=time_to, work_type_ids=work_type_ids,
-        )
-    finally:
-        if prev is None:
-            os.environ.pop("CROPWISE_SESSION_COOKIE", None)
-        else:
-            os.environ["CROPWISE_SESSION_COOKIE"] = prev
+    with _CROPWISE_COOKIE_LOCK:
+        os.environ["CROPWISE_SESSION_COOKIE"] = normalized
+        try:
+            session, source = make_get_session()
+            if source == "none":
+                return {"ok": False, "status": 0, "error": "no cookie for GET work.json"}
+            raw = fetch_work_report_json(
+                session, time_from=time_from, time_to=time_to, work_type_ids=work_type_ids,
+            )
+        finally:
+            if prev is None:
+                os.environ.pop("CROPWISE_SESSION_COOKIE", None)
+            else:
+                os.environ["CROPWISE_SESSION_COOKIE"] = prev
     if raw.get("status") != 200:
         return {
             "ok": False,
@@ -306,6 +309,211 @@ def _work_response_score(work: dict[str, Any], fact_hints: tuple[str, ...] | lis
     return (task_rows, total)
 
 
+class WorkLoadJob:
+    """Один work.json: операция или сводка, окно смены и виды работ."""
+
+    def __init__(
+        self,
+        key: str,
+        time_from: str,
+        time_to: str,
+        work_type_ids: list[int],
+        fact_hints: tuple[str, ...],
+    ) -> None:
+        self.key = key
+        self.time_from = time_from
+        self.time_to = time_to
+        self.work_type_ids = list(work_type_ids)
+        self.fact_hints = tuple(fact_hints)
+
+
+def ui_check_years(report_year: int) -> list[int]:
+    """Сезоны проверки: год отчёта и следующий. Не из констант и не из редактора."""
+    year = int(report_year)
+    return [year, year + 1]
+
+
+def read_ui_session_season(web: requests.Session) -> int | None:
+    """Перечитать seasonValue со страницы work после переключения или пачки."""
+    page = web.get(WORK_PAGE_URL, timeout=60)
+    page.raise_for_status()
+    return detect_ui_session_season(page.text)
+
+
+def _not_loaded(year: int, reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "load_status": "not_loaded",
+        "year": int(year),
+        "error": reason,
+        "body": None,
+        "ui_session_seasonValue": None,
+    }
+
+
+def _unstable(year: int, reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "load_status": "unstable",
+        "year": int(year),
+        "error": reason,
+        "body": None,
+        "ui_session_seasonValue": int(year),
+    }
+
+
+def _response_kind(work: dict[str, Any]) -> str:
+    if not work.get("ok"):
+        return "error"
+    body = work.get("body")
+    if not isinstance(body, dict):
+        return "error"
+    if body.get("reportBlank"):
+        return "empty"
+    return "data"
+
+
+def _fetch_job_once_or_retry(
+    web: requests.Session,
+    csrf: str,
+    job: WorkLoadJob,
+    year: int,
+) -> dict[str, Any]:
+    """Один запрос. Пустой или ошибочный — один повтор. Расхождение — «UI нестабилен»."""
+    first = fetch_work_report(
+        web, job.time_from, job.time_to, job.work_type_ids,
+        csrf=csrf, ui_session_season=year,
+    )
+    if _response_kind(first) == "data":
+        first["load_status"] = "loaded"
+        first["ui_session_seasonValue"] = int(year)
+        return first
+    second = fetch_work_report(
+        web, job.time_from, job.time_to, job.work_type_ids,
+        csrf=csrf, ui_session_season=year,
+    )
+    k1, k2 = _response_kind(first), _response_kind(second)
+    if k1 == "data" and k2 == "data":
+        t1 = cropwise_total_ha(first, job.fact_hints)
+        t2 = cropwise_total_ha(second, job.fact_hints)
+        if abs(t1 - t2) <= 0.05:
+            first["load_status"] = "loaded"
+            first["ui_session_seasonValue"] = int(year)
+            return first
+        return _unstable(year, f"UI нестабилен: {t1:.2f} и {t2:.2f} га")
+    if k1 == k2 == "empty":
+        first["ok"] = True
+        first["load_status"] = "empty"
+        first["ui_session_seasonValue"] = int(year)
+        return first
+    if k1 != k2:
+        return _unstable(year, "UI нестабилен: повтор work.json не совпал с первым ответом")
+    reason = str(second.get("error") or first.get("error") or "work.json не загрузился")
+    return _not_loaded(year, reason)
+
+
+def load_works_for_seasons(
+    cookie: str,
+    jobs: list[WorkLoadJob],
+    *,
+    years: list[int] | None,
+) -> dict[str, dict[int, dict[str, Any]]]:
+    """
+    Единственная загрузка work.json на прогон.
+
+    Сезоны переключаются строго по очереди на одной сессии. Чужой ответ под
+    нужным годом не записывается. Исходный сезон возвращается в finally.
+    years=None — не переключать сезон, снять ответ текущей сессии.
+    """
+    stored: dict[str, dict[int, dict[str, Any]]] = {job.key: {} for job in jobs}
+    if not jobs:
+        return stored
+    web, csrf, _ui_years, original = warm_web_session(cookie)
+    switched_any = False
+    try:
+        if years is None:
+            if original is None:
+                for job in jobs:
+                    stored[job.key][0] = _not_loaded(0, "сезон сессии не прочитан")
+                return stored
+            for job in jobs:
+                stored[job.key][int(original)] = _fetch_job_once_or_retry(
+                    web, csrf, job, int(original),
+                )
+            return stored
+        current = original
+        for year in years:
+            year = int(year)
+            switched: int | None
+            if current == year:
+                switched = current
+            else:
+                switched_any = True
+                try:
+                    switched = set_ui_session_year(web, csrf, year)
+                except requests.RequestException as exc:
+                    switched = None
+                    reason = f"сезон {year} не переключился ({exc})"
+                    for job in jobs:
+                        stored[job.key][year] = _not_loaded(year, reason)
+                    continue
+            try:
+                confirmed = read_ui_session_season(web)
+            except requests.RequestException as exc:
+                confirmed = None
+                for job in jobs:
+                    stored[job.key][year] = _not_loaded(year, f"сезон {year} не прочитан ({exc})")
+                continue
+            if switched != year or confirmed != year:
+                for job in jobs:
+                    stored[job.key][year] = _not_loaded(
+                        year,
+                        f"сезон сессии {confirmed}, нужен {year}",
+                    )
+                current = confirmed if confirmed is not None else current
+                continue
+            current = year
+            batch = {
+                job.key: _fetch_job_once_or_retry(web, csrf, job, year)
+                for job in jobs
+            }
+            try:
+                after = read_ui_session_season(web)
+            except requests.RequestException:
+                after = None
+            if after != year:
+                for job in jobs:
+                    stored[job.key][year] = _not_loaded(
+                        year, "сезон сессии изменился во время загрузки",
+                    )
+                current = after
+                continue
+            for job in jobs:
+                stored[job.key][year] = batch[job.key]
+        return stored
+    finally:
+        if switched_any and original is not None:
+            try:
+                set_ui_session_year(web, csrf, int(original))
+            except requests.RequestException:
+                pass
+
+
+def pack_loaded_work(by_year: dict[int, dict[str, Any]], years: list[int]) -> dict[str, Any]:
+    """Словарь сезонов для сверки. Один сезон в body не подставляется."""
+    usable = [
+        year for year in years
+        if (by_year.get(year) or {}).get("load_status") in ("loaded", "empty")
+    ]
+    return {
+        "ok": bool(usable),
+        "by_year": by_year,
+        "years": list(years),
+        "body": None,
+        "ui_session_seasonValue": None,
+    }
+
+
 def fetch_work_report_resilient(
     cookie: str,
     time_from: str,
@@ -313,79 +521,26 @@ def fetch_work_report_resilient(
     work_type_ids: list[int],
     fact_hints: tuple[str, ...] | list[str],
     *,
-    attempts: int = 3,
-    delay_sec: float = 3.0,
+    attempts: int = 1,
+    delay_sec: float = 0.0,
     preferred_ui_session: int | None = None,
 ) -> dict[str, Any]:
     """
-    Несколько попыток work.json (POST и GET) с паузами.
-    Берём ответ с максимумом #task_id (verified), затем по «Всего».
-    Cropwise UI иногда отдаёт урезанные/пустые данные после серии API v3 запросов.
+    Совместимый вход: один сезон, без выбора наибольшего ответа.
+
+    Проверка сводок ходит через load_works_for_seasons. Здесь остаётся
+    одиночный запрос (вопрос к Cropwise), тоже с возвратом сессии.
     """
-    best: dict[str, Any] | None = None
-    best_score = (-1, -1.0)
-    last: dict[str, Any] = {"ok": False, "status": 0, "error": "no attempts"}
-    tries = max(1, int(attempts))
-    methods = ("POST", "GET")
-    observed: list[dict[str, Any]] = []
-    winner: dict[str, Any] | None = None
-    cookie_used = cookie
-    if preferred_ui_session is not None:
-        web, csrf, ui_years, ui_session, cookie_used = ensure_ui_session_season(
-            cookie, int(preferred_ui_session),
-        )
-    else:
-        web, csrf, ui_years, ui_session = warm_web_session(cookie)
-    for attempt in range(tries):
-        if attempt:
-            time.sleep(delay_sec * attempt)
-        for method in methods:
-            if method == "POST":
-                last = fetch_work_report(
-                    web, time_from, time_to, work_type_ids,
-                    csrf=csrf, ui_season_years=ui_years,
-                    ui_session_season=ui_session,
-                )
-            else:
-                last = _fetch_work_report_get(cookie_used, time_from, time_to, work_type_ids)
-                if ui_years:
-                    last["ui_season_years"] = ui_years
-                if ui_session is not None:
-                    last["ui_session_seasonValue"] = ui_session
-            score = _work_response_score(last, fact_hints)
-            observed.append({
-                "attempt": attempt + 1,
-                "method": method,
-                "ok": bool(last.get("ok")),
-                "task_rows": score[0],
-                "total_ha": round(score[1], 2),
-            })
-            if score > best_score:
-                best, best_score = last, score
-                winner = observed[-1]
-    out = best if best is not None else last
-    if ui_session is not None:
-        out["ui_session_seasonValue"] = ui_session
-    if preferred_ui_session is not None:
-        out["preferred_ui_sessionValue"] = int(preferred_ui_session)
-        out["ui_session_ensure_ok"] = ui_session == preferred_ui_session
-    meta = dict(out.get("fetch_meta") or {})
-    totals = [o["total_ha"] for o in observed if o["ok"] and o["total_ha"] > 0]
-    spread = round(max(totals) - min(totals), 2) if len(totals) > 1 else 0.0
-    meta.update({
-        "attempts": tries,
-        "methods": list(methods),
-        "best_task_rows": best_score[0],
-        "best_total_ha": round(max(best_score[1], 0.0), 2),
-        # Из нескольких ответов берётся максимум — фиксируем, какой именно
-        # победил и насколько ответы разошлись, иначе результат невоспроизводим.
-        "winner": winner,
-        "responses": observed,
-        "total_spread_ha": spread,
-        "unstable": bool(totals and spread > max(5.0, max(totals) * 0.02)),
-    })
-    out["fetch_meta"] = meta
-    return out
+    del attempts, delay_sec
+    job = WorkLoadJob(
+        "one", time_from, time_to, list(work_type_ids), tuple(fact_hints),
+    )
+    years = [int(preferred_ui_session)] if preferred_ui_session is not None else None
+    loaded = load_works_for_seasons(cookie, [job], years=years)
+    slots = loaded.get("one") or {}
+    if not slots:
+        return _not_loaded(int(preferred_ui_session or 0), "work.json не загружен")
+    return next(iter(slots.values()))
 
 
 def _parse_ha_number(value: Any) -> float:
