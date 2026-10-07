@@ -312,7 +312,10 @@ def load_season_store(report_date: date | None = None, *, reload: bool = False) 
 def combine_season_start_for_date(report_date: date) -> date:
     """Начало уборки. Выбранные годы сезона эту дату не сдвигают.
 
-    Явная дата — SVODKI_COMBINE_SEASON_START_DATE или настройки сводки 26.
+    В процессе API дата берётся из настроек. В скрипте сводки /app нет в
+    PYTHONPATH, поэтому дальше читаем то, что генерация уже положила в env:
+    SVODKI_COMBINE_SEASON_START_DATE, SVODKI_COMBINE_SEASON_START,
+    затем SVODKI_GRP_5_0_Уборка_PERIOD_START.
     Общий SVODKI_SEASON_START_DATE не читаем: его пишет календарь (01.07).
     """
     try:
@@ -323,10 +326,14 @@ def combine_season_start_for_date(report_date: date) -> date:
         return _from_settings(report_date)
     except Exception:
         pass
-    raw = (os.environ.get("SVODKI_COMBINE_SEASON_START_DATE") or "").strip()
-    parsed = _parse_iso_date(raw)
-    if parsed:
-        return parsed
+    for key in (
+        "SVODKI_COMBINE_SEASON_START_DATE",
+        "SVODKI_COMBINE_SEASON_START",
+        group_env_key("5.0 Уборка", "PERIOD_START"),
+    ):
+        parsed = _parse_iso_date((os.environ.get(key) or "").strip())
+        if parsed:
+            return parsed
     start = date(report_date.year, 6, 10)
     if report_date < start:
         return date(report_date.year - 1, 6, 10)
@@ -789,13 +796,6 @@ def season_env_for_group(group_name: str, cfg: dict[str, Any]) -> dict[str, str]
     if name.startswith("5.0 Уборка") and cfg.get("period_start"):
         iso = str(cfg["period_start"]).split("T")[0]
         env["SVODKI_COMBINE_SEASON_START"] = iso
-        env["SVODKI_SEASON_START_DATE"] = iso
-        env["SEASON_START_DATE"] = iso
-    if name.startswith("2.4 Вспашка") and cfg.get("period_start"):
-        iso = str(cfg["period_start"]).split("T")[0]
-        if "SVODKI_SEASON_START_DATE" not in env:
-            env["SVODKI_SEASON_START_DATE"] = iso
-            env["SEASON_START_DATE"] = iso
     if years:
         env[group_env_key(name, "HISTORY_YEARS")] = ",".join(str(y) for y in years)
     if task_years:
@@ -819,7 +819,6 @@ def inject_season_range_env(env: dict[str, str], report_date: date | None = None
     store = load_season_store(rd, reload=True)
     all_groups = set(GROUP_SEASON_RULE) | set((store.get("by_group") or {}).keys())
 
-    global_env: dict[str, str] = {}
     for gn in sorted(all_groups):
         cfg = resolve_group_season_config(gn, rd, store=store)
         for k, v in season_env_for_group(gn, cfg).items():
@@ -829,12 +828,20 @@ def inject_season_range_env(env: dict[str, str], report_date: date | None = None
                 continue
             env[k] = v
 
+    # Старт и год уборки не кладём в общие ключи: сводки 3–9 читают их при
+    # импорте и теряют свои даты (01.03, 15.03, 25.03, 14.03). Сводки 10, 11
+    # и 13 получают дату уборки отдельно, после этого вызова.
+    global_env: dict[str, str] = {}
     for gn in _GLOBAL_ENV_GROUP_PRIORITY:
-        if gn not in all_groups:
+        if gn not in all_groups or str(gn).startswith("5.0 Уборка"):
             continue
         cfg = resolve_group_season_config(gn, rd, store=store)
         genv = season_env_for_group(gn, cfg)
-        for k in ("SEASON_YEAR", "SVODKI_SEASON_YEARS", "SVODKI_SEASON_START_DATE", "SEASON_START_DATE"):
+        for k in ("SEASON_YEAR", "SVODKI_SEASON_YEARS"):
             if k in genv and k not in global_env:
                 global_env[k] = genv[k]
     env.update(global_env)
+    # Унаследованный из процесса web старт уборки тоже не оставляем:
+    # сводки 3–9 при импорте приняли бы его за свою дату сезона.
+    env.pop("SVODKI_SEASON_START_DATE", None)
+    env.pop("SEASON_START_DATE", None)

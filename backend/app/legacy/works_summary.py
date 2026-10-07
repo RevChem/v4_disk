@@ -573,7 +573,7 @@ def _in_period_tasks_for_year(
     d_to: date,
     all_wt_ids: set[int],
 ) -> list[dict]:
-    season_start = datetime(season_year, 1, 1, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK)
+    season_start = datetime(d_from.year, d_from.month, d_from.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK)
     cutoff_end = datetime(d_to.year, d_to.month, d_to.day, DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK) + timedelta(days=1)
     base_params = {
         "end_time_gt_eq": season_start.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -609,14 +609,19 @@ def _collect_contribs_for_tasks(
 
 
 def _works_bounds(season_year: int) -> tuple[date, date, date, date]:
-    """Как build_report() в works (2).py: WORKS_DATE_FROM/TO или 1 янв — сегодня; прошлый период — год − 1."""
+    """Как build_report() в works (2).py: WORKS_DATE_FROM/TO или 1 янв — сегодня; прошлый период — год − 1.
+
+    season_year с июля уже следующий календарный год. Окно дат остаётся
+    в календарном году отчёта, иначе с июля выборка начиналась бы 1 января будущего года.
+    """
     today = date.today()
+    window_year = today.year if season_year > today.year else season_year
     df_s = os.environ.get("WORKS_DATE_FROM", "").strip()
     dt_s = os.environ.get("WORKS_DATE_TO", "").strip()
     try:
-        d_from = date.fromisoformat(df_s) if df_s else date(season_year, 1, 1)
+        d_from = date.fromisoformat(df_s) if df_s else date(window_year, 1, 1)
     except ValueError:
-        d_from = date(season_year, 1, 1)
+        d_from = date(window_year, 1, 1)
     try:
         d_to = date.fromisoformat(dt_s) if dt_s else today
     except ValueError:

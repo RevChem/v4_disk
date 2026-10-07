@@ -132,11 +132,20 @@ def check_schedules() -> dict:
                 results["generation"].append({"id": entry_id, "skipped": "already_ran"})
                 continue
             report_ids = [str(x) for x in entry.get("report_ids") or []]
+            job_options = None
+            try:
+                from app.adapters.outbound.proverka.service import session_cookie_from_env
+
+                if session_cookie_from_env():
+                    job_options = {"compare_cropwise": True}
+            except Exception:
+                log.warning("schedule.cropwise_cookie_unavailable")
             job, _ = enqueue_or_run(
                 db,
                 user_id=None,
                 summary_date=today,
                 report_ids=report_ids,
+                job_options=job_options,
             )
             repo.mark_schedule_enqueued(db, state_key, today)
             log.info(

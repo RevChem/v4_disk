@@ -43,7 +43,12 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     cropwise_api_token: str = ""
     cropwise_base_url: str = "https://operations.cropwise.com/api/v3"
-    cropwise_season_year: int = Field(default_factory=lambda: date.today().year)
+    # Номер сезона Cropwise: с июля это следующий календарный год (07.10.2026 → 2027).
+    # Так же считает season_calendar.season_year_for_date. Окно сводки по работам
+    # остаётся с 1 января календарного года, иначе июль сдвинул бы его в будущее.
+    cropwise_season_year: int = Field(
+        default_factory=lambda: date.today().year + (1 if date.today().month >= 7 else 0)
+    )
     namolot_base_url: str = ""
     namolot_username: str = ""
     namolot_password: str = ""

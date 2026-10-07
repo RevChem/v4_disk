@@ -43,14 +43,30 @@ def work_json_total(packed: dict[str, Any], hints: tuple[str, ...] | list[str]) 
     return round(total, 2), note
 
 
+def groups_for_file_check(report_id: str, work_groups: tuple[str, ...]) -> set[str]:
+    """Операции этой сводки, а не общий набор сводок 1, 2, 6 и 9."""
+    if work_groups:
+        return set(work_groups)
+    if report_id in {"1", "2"}:
+        from proverka.operation_registry import OPERATION_PEERS
+
+        return {name for name, peers in OPERATION_PEERS.items() if report_id in peers}
+    return set()
+
+
 def _slots_for_report(report_id: str, packed: Any, work_groups: tuple[str, ...]) -> list[tuple[str, dict]]:
     if not isinstance(packed, dict):
         return []
+    allowed = groups_for_file_check(report_id, work_groups)
     if isinstance(packed.get("by_year"), dict):
         name = work_groups[0] if len(work_groups) == 1 else report_id
+        if allowed and name not in allowed:
+            return []
         return [(name, packed)]
     out: list[tuple[str, dict]] = []
     for name, slot in packed.items():
+        if allowed and str(name) not in allowed:
+            continue
         if isinstance(slot, dict) and isinstance(slot.get("by_year"), dict):
             out.append((str(name), slot))
     return out

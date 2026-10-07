@@ -48,6 +48,32 @@ def test_work_json_total_none_when_nothing_loaded():
     assert "таймаут" in note
 
 
+def test_report_slots_stay_inside_its_groups():
+    from app.application.cropwise_file_check import _slots_for_report
+
+    packed = {
+        "2.4 Вспашка": {"by_year": {2026: {}}},
+        "3.1 Опрыскивание": {"by_year": {2026: {}}},
+        "4.0 Посев": {"by_year": {2026: {}}},
+    }
+    spray = [name for name, _slot in _slots_for_report(
+        "6", packed, ("3.1 Опрыскивание", "3.2 Опрыскивание (овощи)"),
+    )]
+    assert spray == ["3.1 Опрыскивание"]
+    summary = {name for name, _slot in _slots_for_report("1", packed, ())}
+    assert summary == {"2.4 Вспашка", "3.1 Опрыскивание", "4.0 Посев"}
+
+
+def test_works_window_stays_in_calendar_year_after_july():
+    from datetime import date
+
+    from app.legacy.works_summary import _works_bounds
+
+    start, end, _prev_start, _prev_end = _works_bounds(date.today().year + 1)
+    assert start == date(date.today().year, 1, 1)
+    assert end == date.today()
+
+
 def test_generate_options_keep_cropwise_flag():
     body = GenerateReportsIn(summary_date=date(2026, 10, 7), compare_cropwise=True)
     assert body.generation_job_options() == {"compare_cropwise": True}

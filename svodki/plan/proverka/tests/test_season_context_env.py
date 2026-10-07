@@ -100,3 +100,37 @@ def test_saved_harvest_years_keep_combine_start() -> None:
     assert bare["period_start"] == "2026-06-10"
     assert saved_years["period_start"] == "2026-06-10"
     assert saved_years["history_years"] == [2026]
+
+
+def test_inject_drops_shared_harvest_start():
+    from season_unified import inject_season_range_env
+
+    env = {
+        "SVODKI_SEASON_START_DATE": "2026-06-10",
+        "SEASON_START_DATE": "2026-06-10",
+    }
+    inject_season_range_env(env, date(2026, 10, 7))
+    assert "SVODKI_SEASON_START_DATE" not in env
+    assert "SEASON_START_DATE" not in env
+    assert env.get(group_env_key("3.1 Опрыскивание", "HISTORY_YEARS"))
+
+
+def test_combine_start_reads_generation_env_when_settings_import_fails():
+    from season_unified import combine_season_start_for_date
+
+    keys = (
+        "SVODKI_COMBINE_SEASON_START_DATE",
+        "SVODKI_COMBINE_SEASON_START",
+        group_env_key("5.0 Уборка", "PERIOD_START"),
+    )
+    saved = {key: os.environ.get(key) for key in keys}
+    os.environ.pop("SVODKI_COMBINE_SEASON_START_DATE", None)
+    os.environ["SVODKI_COMBINE_SEASON_START"] = "2026-06-20"
+    os.environ.pop(group_env_key("5.0 Уборка", "PERIOD_START"), None)
+    try:
+        assert combine_season_start_for_date(date(2026, 10, 7)) == date(2026, 6, 20)
+        os.environ.pop("SVODKI_COMBINE_SEASON_START", None)
+        os.environ[group_env_key("5.0 Уборка", "PERIOD_START")] = "2026-06-18"
+        assert combine_season_start_for_date(date(2026, 10, 7)) == date(2026, 6, 18)
+    finally:
+        _restore(saved)

@@ -93,7 +93,23 @@ if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
 def _spray_history_year(report_date: date) -> int:
-    """Год history_items. Из окружения, иначе сезон даты отчёта (с июля — следующий)."""
+    """Год history_items опрыскивания.
+
+    Сначала годы группы «3.1 Опрыскивание» из редактора. Общий SEASON_YEAR
+    приходит из другой группы и обрезает урожай следующего года.
+    """
+    try:
+        from season_unified import group_env_key, resolve_group_season_config
+
+        raw = (os.environ.get(group_env_key("3.1 Опрыскивание", "HISTORY_YEARS")) or "").strip()
+        parsed = [int(part) for part in raw.split(",") if part.strip().isdigit()]
+        if parsed:
+            return parsed[-1]
+        years = resolve_group_season_config("3.1 Опрыскивание", report_date).get("history_years") or []
+        if years:
+            return int(years[-1])
+    except Exception:
+        pass
     for key in ("SEASON_YEAR", "CROPWISE_SEASON_YEAR"):
         raw = (os.environ.get(key) or "").strip()
         if raw.isdigit():

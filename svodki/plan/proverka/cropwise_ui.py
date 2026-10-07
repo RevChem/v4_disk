@@ -462,7 +462,7 @@ def _ui_lock_timeout() -> float:
         return 1200.0
 
 
-_UI_THREAD_LOCK = threading.Lock()
+_UI_THREAD_LOCK = threading.RLock()
 
 
 class UiSessionBusy(RuntimeError):
