@@ -1,0 +1,31 @@
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    uid: loki
+    isDefault: true
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - name: JobID
+          matcherRegex: '"job_id":"([^"]+)"'
+          url: '$${__value.raw}'
+          datasourceUid: loki
+          urlDisplayLabel: "Фильтр по job_id"
+
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    uid: postgres
+    user: svodki
+    secureJsonData:
+      password: svodki
+    jsonData:
+      database: svodki
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false

@@ -1,0 +1,159 @@
+{
+  "report_id": "3",
+  "title": "РАБОТА ТЕХНИКИ Внесение МУ",
+  "svodka": {
+    "report_id": "3",
+    "title": "РАБОТА ТЕХНИКИ Внесение МУ",
+    "module": "3_main_real",
+    "report_date": "2026-09-25",
+    "window": {
+      "from": "2026-09-24T06:00:00+03:00",
+      "to": "2026-09-25T06:00:00+03:00"
+    },
+    "work_type_ids": [
+      55
+    ],
+    "work_groups": [
+      "1.1 Внесение минеральных удобрений"
+    ],
+    "firm_order": [
+      "АФ Чистопольская",
+      "АгроРаздолье",
+      "Аксу-Агро",
+      "НурлатАгро",
+      "Дрожжаное Рассвет Агро",
+      "Актай",
+      "Лениногорская Птицефабрика"
+    ],
+    "area_today_by_firm": {
+      "АФ Чистопольская": 0.0,
+      "АгроРаздолье": 0.0,
+      "Аксу-Агро": 0.0,
+      "НурлатАгро": 0.0,
+      "Дрожжаное Рассвет Агро": 0.0,
+      "Актай": 0.0,
+      "Лениногорская Птицефабрика": 0.0
+    },
+    "total_ha": 0.0,
+    "tasks_today_count": 0,
+    "_legacy_season_filter": "2026+2027",
+    "detail_rows": [],
+    "operations": {
+      "1.1 Внесение минеральных удобрений": {
+        "area_today_by_firm": {
+          "АФ Чистопольская": 0.0,
+          "АгроРаздолье": 0.0,
+          "Аксу-Агро": 0.0,
+          "НурлатАгро": 0.0,
+          "Дрожжаное Рассвет Агро": 0.0,
+          "Актай": 0.0,
+          "Лениногорская Птицефабрика": 0.0
+        },
+        "total_ha": 0.0,
+        "work_type_ids": [
+          55
+        ],
+        "machines_today_by_firm": {
+          "АФ Чистопольская": 0,
+          "АгроРаздолье": 0,
+          "Аксу-Агро": 0,
+          "НурлатАгро": 0,
+          "Дрожжаное Рассвет Агро": 0,
+          "Актай": 0,
+          "Лениногорская Птицефабрика": 0
+        },
+        "total_machines": 0
+      }
+    },
+    "season_policy": {
+      "task_season_years": [
+        2026,
+        2027
+      ],
+      "task_season_plow_only": false,
+      "history_years": [
+        2026
+      ],
+      "period_start": "2025-07-01",
+      "period_end": "2026-07-01",
+      "task_season_label": "machine_task.season ∈ {2026, 2027}",
+      "history_label": "history_items.year: 2026",
+      "label": "Сводка 3 · период 2025-07-01–2026-07-01 · machine_task.season ∈ {2026, 2027} · history_items.year: 2026",
+      "cropwise_ui_filters_season": true
+    },
+    "season_task_filter": null,
+    "task_facts_meta": {
+      "file": null,
+      "rows": 0,
+      "groups": {
+        "1.1 Внесение минеральных удобрений": {
+          "facts_ha": 0,
+          "area_today_ha": 0.0,
+          "max_firm_diff_ha": 0.0,
+          "max_diff_firm": "",
+          "consistent": true
+        }
+      }
+    }
+  },
+  "cropwise_work_report": {
+    "ok": false,
+    "status": 401,
+    "error": "{\"error\":\"You need to sign in or sign up before continuing.\"}",
+    "payload": {
+      "from_time": "2026-09-24T06:00:00",
+      "to_time": "2026-09-25T06:00:00",
+      "work_type_ids": "55"
+    },
+    "preferred_ui_sessionValue": 2027,
+    "ui_session_ensure_ok": false,
+    "fetch_meta": {
+      "attempts": 2,
+      "methods": [
+        "POST",
+        "GET"
+      ],
+      "best_task_rows": 0,
+      "best_total_ha": 0.0,
+      "winner": {
+        "attempt": 1,
+        "method": "POST",
+        "ok": false,
+        "task_rows": 0,
+        "total_ha": 0.0
+      },
+      "responses": [
+        {
+          "attempt": 1,
+          "method": "POST",
+          "ok": false,
+          "task_rows": 0,
+          "total_ha": 0.0
+        },
+        {
+          "attempt": 1,
+          "method": "GET",
+          "ok": false,
+          "task_rows": 0,
+          "total_ha": 0.0
+        },
+        {
+          "attempt": 2,
+          "method": "POST",
+          "ok": false,
+          "task_rows": 0,
+          "total_ha": 0.0
+        },
+        {
+          "attempt": 2,
+          "method": "GET",
+          "ok": false,
+          "task_rows": 0,
+          "total_ha": 0.0
+        }
+      ],
+      "total_spread_ha": 0.0,
+      "unstable": false
+    }
+  }
+}
