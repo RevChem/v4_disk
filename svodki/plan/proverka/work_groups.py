@@ -13,7 +13,11 @@ _VEG_54_WT: list[int] = next(
 # скашивания (ботва, валок, сено) в уборку не входят.
 _CORN_SILAGE_CHOP_WT = 84
 _HARVEST_GRAIN_WT: list[int] = sorted(
-    set(next(ids for name, ids in WORK_GROUPS if name == "5.0 Уборка")) | {_CORN_SILAGE_CHOP_WT}
+    (
+        set(next(ids for name, ids in WORK_GROUPS if name == "5.0 Уборка"))
+        - set(_VEG_54_WT)
+    )
+    | {_CORN_SILAGE_CHOP_WT}
 )
 
 # Культивация: единый набор work_type_id для plans.WORK_GROUPS, сводки 8

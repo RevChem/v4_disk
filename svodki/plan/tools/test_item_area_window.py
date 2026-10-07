@@ -14,6 +14,25 @@ WS, WE = datetime(2026, 10, 5, 6, tzinfo=TZ), datetime(2026, 10, 6, 6, tzinfo=TZ
 P = datetime.fromisoformat
 
 
+def test_harvest_shift_keeps_only_hours_inside_the_shift():
+    item = {
+        "covered_area": 50.0,
+        "covered_area_hourly": [
+            ["2026-10-05T04:00:00+03:00", 20.0],
+            ["2026-10-05T10:00:00+03:00", 30.0],
+        ],
+    }
+    assert t.harvest_item_area_for_shift(item, WE, day_start=WS, work_type_id=126, parse_dt=P) == 30.0
+
+
+def test_cropwise_harvest_does_not_include_potato_task():
+    from proverka.task_names import tasks_for_group
+
+    names = tasks_for_group("5.0 Уборка")
+    assert "5.4 Уборка картофеля, лука" not in names
+    assert "5.4 Уборка картофеля, лука" in tasks_for_group("5.4 Уборка картофеля, лука")
+
+
 def test_hourly_outside_window_is_zero_not_full_covered_area():
     item = {"covered_area": 30.0, "covered_area_hourly": [["2026-10-04T10:00:00+03:00", 30.0]]}
     assert t.item_area_in_window(item, WE, WS, parse_dt=P) == 0.0

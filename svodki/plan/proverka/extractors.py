@@ -842,10 +842,6 @@ async def _extract_1(
             veg_crop_bd = _crop_breakdown_from_day_stats(all_stats[veg_gn], firm_order)
             if veg_crop_bd:
                 operations[veg_gn]["area_today_by_firm_crop"] = veg_crop_bd
-        _merge_harvest_veg_from_veg_op(
-            operations[harvest_gn],
-            operations.get(veg_gn),
-        )
     main_area = operations.get(m.WORK_TYPE_NAME, {}).get("area_today_by_firm") or {}
     by_firm = {f: float(main_area.get(f, 0) or 0) for f in firm_order}
     return _pack(
@@ -924,18 +920,6 @@ async def _extract_2(
             grain_op["machines_today_by_firm"].values()
         )
         operations[m.HARVEST_GROUP_NAME] = grain_op
-        _merge_harvest_veg_from_compact(
-            operations[m.HARVEST_GROUP_NAME],
-            work_data.get(m.HARVEST_GROUP_NAME),
-            shift_date,
-        )
-        veg_gn = getattr(
-            m, "HARVEST_VEG_PLAN_KEY", "5.4 Уборка картофеля, лука",
-        )
-        _merge_harvest_veg_from_veg_op(
-            operations[m.HARVEST_GROUP_NAME],
-            operations.get(veg_gn),
-        )
     total_by_firm = {
         f: round(sum(operations.get(gn, {}).get("area_today_by_firm", {}).get(f, 0) for gn in operations), 2)
         for f in firm_order
@@ -1738,24 +1722,6 @@ def _grain_harvest_op_main10(
 
     wt_ids = work_type_ids_for_group(HARVEST_GRAIN_GROUP)
     crop_breakdown = _harvest_crop_breakdown_from_main10(m, cache)
-    # Картофель в Cropwise в колонке 5.0; в сводке 10 он на листе овощей (5.4).
-    try:
-        veg_df = m.build_vegetables_report(report_date)
-        if veg_df is not None and not veg_df.empty and "Культура" in veg_df.columns:
-            for _, row in veg_df.iterrows():
-                if str(row.get("Культура") or "").strip() != "Картофель":
-                    continue
-                firm = str(row.get("Агрофирма") or "").strip()
-                if firm == "Итого" or not firm:
-                    continue
-                ha = round(float(row.get("Факт за сутки, га") or 0), 2)
-                if ha <= 0:
-                    continue
-                label = _crop_label("Картофель")
-                crop_breakdown.setdefault(label, {})
-                crop_breakdown[label][firm] = ha
-    except Exception:
-        pass
     op = _op_from_firm_dict(
         firm_order, by_firm, work_type_ids=wt_ids or None,
         area_today_by_firm_crop=crop_breakdown or None,

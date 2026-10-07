@@ -55,6 +55,7 @@ from task_area_shared import (
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
     collect_silage_corn_field_ids,
+    area_ha_by_shift_date,
     crop_key_for_harvest_area,
     harvest_item_area_for_shift,
     resolve_corn_subtype,
@@ -663,7 +664,7 @@ DAY_END_HOUR:   int = 6   # час конца суток (если == DAY_START_
 # из-за этого задания, закрывшиеся позже 08:00, вообще не попадали в выборку
 # tasks_today/tasks_season, и их covered_area_hourly (относящаяся к нужной
 # смене) нигде не суммировалась → «Убрано за сутки» получалось заниженным.
-# Переопределяется через SVODKI_REPORT10_CUTOFF_BUFFER_HOURS (по умолчанию +2 ч, как 11).
+# Переопределяется через SVODKI_REPORT10_CUTOFF_BUFFER_HOURS (по умолчанию +12 ч, как сводка 2).
 try:
     CUTOFF_BUFFER_HOURS: int = int(
         (os.environ.get("SVODKI_REPORT10_CUTOFF_BUFFER_HOURS") or str(CUTOFF_BUFFER_HOURS)).strip()
@@ -1918,11 +1919,14 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
             mid = task.get("machine_id")
             if mid is None:
                 continue
+            if day_start is not None and not _is_harvest_combine(mid, machines_map):
+                continue
             wt = task.get("work_type_id")
             if wt not in AREA_TASK_WT_IDS:
                 continue
             wt_i = int(wt)
             is_mowing = wt_i in SILAGE_CORN_MOWING_WT_IDS
+            task_end = parse_dt(task.get("end_time"))
             for item in cache.mtfmi_map.get(task["id"], []):
                 fid = item.get("field_id")
                 if fid is None:
@@ -1941,6 +1945,7 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                     day_start=day_start,
                     work_type_id=wt_i,
                     parse_dt=parse_dt,
+                    task_end=task_end,
                 )
                 if cov <= 0:
                     continue
@@ -1979,7 +1984,7 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
         season_fc, season_firm,
     )
     process(
-        cache.tasks_today, cache.day_start, cache.cutoff,
+        cache.tasks_season, cache.day_start, cache.cutoff,
         today_fc, today_firm,
         day_start=cache.day_start,
         count_machines=True,
@@ -3622,7 +3627,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         elif t.get("end_time") in (None, ""):
             no_shift_tasks.append(t)
 
-    all_tasks_for_mtfmi = tasks_in_period + no_shift_tasks
+    all_tasks_for_mtfmi = list(all_tasks)
     if not all_tasks_for_mtfmi:
         _VEG_MACHINES_TODAY_BY_FIRM = {_VEG_HARVEST_FIRM: 0}
         print("    [VEG] нет заданий в периоде", flush=True)
@@ -3678,12 +3683,9 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
     except Exception:
         _note = None
 
-    for task in tasks_in_period:
+    for task in all_tasks:
         tid = task["id"]
-        shift = _veg_shift_info(task.get("end_time"), report_date)
-        if not shift:
-            continue
-        t_date, _day_start, hourly_cutoff = shift
+        end_dt = parse_dt(task.get("end_time"))
         for item in mtfmi_map.get(tid, []):
             fid = item.get("field_id")
             if not fid:
@@ -3694,24 +3696,32 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             crop = _veg_item_crop(item)
             if not crop:
                 continue
-            cov = _veg_mtfmi_cov(item, hourly_cutoff)
-            if cov <= _VEG_MIN_AREA_HA:
-                continue
-            agg[crop][t_date] += cov
-            if t_date == report_shift_date and task.get("machine_id") is not None:
-                veg_machines_today.add(task["machine_id"])
-            if _note is not None and t_date == report_shift_date:
-                _mid = task.get("machine_id")
-                _note(
-                    group="5.4 Уборка картофеля, лука",
-                    firm=_VEG_HARVEST_FIRM,
-                    crop=crop,
-                    field_id=fid_i,
-                    task_id=int(tid),
-                    machine_id=int(_mid) if _mid is not None else None,
-                    ha=cov,
-                    season=str(task.get("season") or ""),
-                )
+            portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+            if not portions and end_dt is not None:
+                shift = _veg_shift_info(task.get("end_time"), report_date)
+                raw = float(item.get("covered_area") or 0)
+                if shift and raw > 0:
+                    portions = {shift[0]: raw}
+            for t_date, cov in portions.items():
+                if t_date < VEG_SEASON_START or t_date >= report_date:
+                    continue
+                if cov <= _VEG_MIN_AREA_HA:
+                    continue
+                agg[crop][t_date] += cov
+                if t_date == report_shift_date and task.get("machine_id") is not None:
+                    veg_machines_today.add(task["machine_id"])
+                if _note is not None and t_date == report_shift_date:
+                    _mid = task.get("machine_id")
+                    _note(
+                        group="5.4 Уборка картофеля, лука",
+                        firm=_VEG_HARVEST_FIRM,
+                        crop=crop,
+                        field_id=fid_i,
+                        task_id=int(tid),
+                        machine_id=int(_mid) if _mid is not None else None,
+                        ha=cov,
+                        season=str(task.get("season") or ""),
+                    )
 
     for task in no_shift_tasks:
         tid = task["id"]
@@ -3740,7 +3750,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         by_date = agg.get(crop_name, {})
         crop_area[crop_name] = {
             "total": round(sum(v for d, v in by_date.items() if d < report_date), 1),
-            "today": round(by_date.get(report_shift_date, 0.0), 1),
+            "today": round(by_date.get(report_shift_date, 0.0), 2),
         }
 
     rows = []

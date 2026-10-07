@@ -29,8 +29,9 @@ SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
 # Комбайны + кормоуборочные (скашивание кукурузы на силос) — как 11/14.
 HARVESTER_GROUP_IDS: frozenset[int] = frozenset({5, 9, 16})
 
-# Буфер end_time при отборе заданий смены (как 11_main_harvest: +2 ч).
-CUTOFF_BUFFER_HOURS: int = 2
+# Буфер end_time при отборе заданий смены. Сводка 2 берёт закрытие до 18:00
+# (cutoff + 12 ч) и оставляет только часы самой смены.
+CUTOFF_BUFFER_HOURS: int = 12
 
 
 def _shift_date_from_dt(dt: datetime, day_start_hour: int = 6) -> date:
@@ -73,33 +74,34 @@ def harvest_item_area_for_shift(
     day_start: datetime | None = None,
     work_type_id: int | None = None,
     parse_dt: Callable[[object], datetime | None],
+    task_end: datetime | None = None,
 ) -> float:
     """
-    Площадь MTFMI за смену уборки (10/11/13/14 → эталон 772.44 га).
+    Площадь MTFMI уборки.
 
-    Зерновые wt: сумма hourly с h < cutoff, без нижней границы (как сводка 2).
-    Скашивание (SILAGE_CORN_MOWING_WT_IDS) при переданном day_start: окно
-    [day_start, cutoff) — без spillover за 06:00 и без «хвостов» соседней смены.
+    day_start задан — только часы окна [day_start, cutoff), как сводка 2:
+    смена 06:00–06:00, без часов предыдущих и следующих суток.
+    day_start нет — сумма hourly с меткой < cutoff (сезон до конца окна).
+    Без почасовых данных covered_area относится к смене закрытия задания.
     """
-    is_mowing = (
-        work_type_id is not None
-        and int(work_type_id) in SILAGE_CORN_MOWING_WT_IDS
-        and day_start is not None
-    )
+    del work_type_id
     hourly = item.get("covered_area_hourly") or []
     if not hourly:
+        if (
+            task_end is not None
+            and day_start is not None
+            and not (day_start <= task_end < cutoff)
+        ):
+            return 0.0
         return float(item.get("covered_area") or 0.0)
     cov = 0.0
-    if is_mowing:
-        for entry in hourly:
-            h = parse_dt(entry[0])
-            if h and day_start <= h < cutoff:
-                cov += float(entry[1] or 0.0)
-    else:
-        for entry in hourly:
-            h = parse_dt(entry[0])
-            if h and h < cutoff:
-                cov += float(entry[1] or 0.0)
+    for entry in hourly:
+        h = parse_dt(entry[0])
+        if h is None or h >= cutoff:
+            continue
+        if day_start is not None and h < day_start:
+            continue
+        cov += float(entry[1] or 0.0)
     return cov
 
 

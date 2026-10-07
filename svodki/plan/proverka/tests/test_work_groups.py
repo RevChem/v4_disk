@@ -6,7 +6,10 @@ from proverka.work_groups import work_type_ids_for_group
 
 def test_harvest_wt_includes_plans_list_and_corn_chop() -> None:
     wt = set(work_type_ids_for_group("5.0 Уборка"))
-    assert wt == {6, 7, 75, 76, 77, 84, 111, 118, 125, 126, 145}
+    assert wt == {6, 7, 84, 111, 118, 125, 126, 145}
+    assert 75 not in wt
+    assert 76 not in wt
+    assert 77 not in wt
     assert 74 not in wt
     assert 147 not in wt
     assert 149 not in wt

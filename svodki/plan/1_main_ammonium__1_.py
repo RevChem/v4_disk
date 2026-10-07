@@ -78,6 +78,7 @@ from task_area_shared import (
     CORN_SILAGE_CROP,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
+    harvest_item_area_for_shift,
 )
 from plans import (
     API_TOKEN,
@@ -399,6 +400,7 @@ def _harvest_perf_10_style(
     cutoff: datetime,
     machines_map: dict[int, dict],
     *,
+    day_start: datetime,
     field_to_crop_map: dict[int, str] | None = None,
     field_to_firm_map: dict[int, str] | None = None,
 ) -> tuple[
@@ -418,15 +420,17 @@ def _harvest_perf_10_style(
     per_firm_machines: dict[str, set[int]] = defaultdict(set)
     per_firm_mid_area: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
 
+    del today_task_ids
     for t in tasks_with_area:
-        if t["id"] not in today_task_ids:
-            continue
         mid = t.get("machine_id")
+        if mid is None or not _is_harvest_combine(mid, machines_map):
+            continue
         wt = t.get("work_type_id")
         if wt not in AREA_TASK_WT_IDS:
             continue
         wt_i = int(wt)
         is_mowing = wt_i in SILAGE_CORN_MOWING_WT_IDS
+        task_end = parse_dt(t.get("end_time"))
         for item in mtfmi_map.get(t["id"], []):
             fid = item.get("field_id")
             if fid is None:
@@ -438,7 +442,13 @@ def _harvest_perf_10_style(
             crop = ftc.get(fid_i)
             if is_mowing and crop != CORN_SILAGE_CROP:
                 continue
-            cov = _item_area_upto_cutoff(item, cutoff)
+            cov = harvest_item_area_for_shift(
+                item, cutoff,
+                day_start=day_start,
+                work_type_id=wt_i,
+                parse_dt=parse_dt,
+                task_end=task_end,
+            )
             if cov <= 0:
                 continue
             per_firm_area[firm] += cov
@@ -2739,6 +2749,7 @@ async def _fetch_day_stats_for_work_types_impl(
             today_task_ids,
             cutoff,
             machines_map,
+            day_start=day_start,
             field_to_crop_map=harvest_ftc,
             field_to_firm_map=harvest_f2f,
         )

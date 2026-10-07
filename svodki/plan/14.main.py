@@ -137,18 +137,21 @@ def _normalize_fmi_for_shift(
     fmi_list: list[dict],
     report_date: date,
     task_wt: dict[int, int] | None = None,
+    task_end: dict[int, datetime] | None = None,
 ) -> list[dict]:
-    """Оставляет FMI с площадью за смену; covered_area — как 10/11."""
+    """Оставляет FMI с площадью за смену; covered_area — часы этой смены."""
     day_start_dt, cutoff_dt = _shift_datetimes(report_date)
     out: list[dict] = []
     for row in fmi_list:
         tid = row.get("machine_task_id")
         wt = task_wt.get(int(tid)) if task_wt and tid is not None else None
+        end = task_end.get(int(tid)) if task_end and tid is not None else None
         area = harvest_item_area_for_shift(
             row, cutoff_dt,
             day_start=day_start_dt,
             work_type_id=wt,
             parse_dt=_parse_dt,
+            task_end=end,
         )
         if area <= 0:
             continue
@@ -192,10 +195,8 @@ VEG_HARVEST_WORK_TYPE_IDS: tuple[int, ...] = tuple(
 )
 
 # work_type_id уборки для листа «Сводка» (зерновые/масличные/кукуруза/бобовые/свекла/рапс).
-# Состав — из plans.WORK_GROUPS["5.0 Уборка"] (как GRAIN_WT_IDS в 11_main_harvest.py):
-# все виды уборки группы 5.0, кроме овощей (5.4) и обобщённых wt=6/7.
-# «Количество собственных комбайнов на полях» на слайде 1 должно совпадать
-# с числом строк СОБСТВЕННЫЕ на листе фирмы (комбайны групп 5/9, covered_area > 0).
+# Состав — из plans.WORK_GROUPS["5.0 Уборка"], кроме овощей (5.4).
+# wt=6/7 остаются: сводка 2 считает их в сутках уборки.
 _ALL_HARVEST_5_0_WT_IDS: set[int] = {
     wt for gname, wt_ids in WORK_GROUPS if gname == WORK_TYPE_DISPLAY for wt in wt_ids
 }
@@ -204,7 +205,7 @@ if not _ALL_HARVEST_5_0_WT_IDS:
         f"Группа {WORK_TYPE_DISPLAY!r} отсутствует (или пуста) в plans.WORK_GROUPS."
     )
 HARVEST_WORK_TYPE_IDS: tuple[int, ...] = tuple(sorted(
-    _ALL_HARVEST_5_0_WT_IDS - set(VEG_HARVEST_WORK_TYPE_IDS) - {6, 7}
+    _ALL_HARVEST_5_0_WT_IDS - set(VEG_HARVEST_WORK_TYPE_IDS)
     | set(SILAGE_CORN_MOWING_WT_IDS)
 ))
 
@@ -1502,17 +1503,20 @@ def fetch_machine_tasks(
     harvester_ids: set[int] | None,
     report_date: date,
     work_type_ids: tuple[int, ...] = HARVEST_WORK_TYPE_IDS,
+    *,
+    end_extra: timedelta | None = None,
 ) -> list[dict]:
     """
-    Задания уборки за СМЕНУ report_date: [report_date-1 06:00 .. report_date 06:00)
-    (по умолчанию work_type 124,125,126,127,145). Не календарные сутки!
+    Задания, у которых часы могут попасть в смену [report_date-1 06:00, report_date 06:00).
 
-    Отбор — как 10_main_harvest / 11_main_harvest: по end_time задания в окне смены
-    (end_time >= day_start и end_time < cutoff + buffer), а не по пересечению start/end.
+    Нижняя граница — 1 января: задание, закрытое раньше смены, всё ещё
+    отдаёт свои часы внутри смены. Верхняя — cutoff + 12 ч для зерна
+    и +1 сутки для овощей.
     """
-    day_start_dt, cutoff_dt = _shift_datetimes(report_date)
-    cutoff_ext_dt = cutoff_dt + timedelta(hours=CUTOFF_BUFFER_HOURS)
-    day_start_str = day_start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_dt = _shift_datetimes(report_date)[1]
+    fetch_from = datetime(report_date.year, 1, 1, tzinfo=TZ_MSK)
+    cutoff_ext_dt = cutoff_dt + (end_extra if end_extra is not None else timedelta(hours=CUTOFF_BUFFER_HOURS))
+    day_start_str = fetch_from.strftime("%Y-%m-%dT%H:%M:%S")
     cutoff_ext_str = cutoff_ext_dt.strftime("%Y-%m-%dT%H:%M:%S")
     from svodki_prefetch_io import sync_machine_tasks_prefetch_or_batch
 
@@ -1531,7 +1535,7 @@ def fetch_machine_tasks(
         if tid in seen:
             continue
         end_dt = _parse_dt(t.get("end_time"))
-        if not end_dt or end_dt < day_start_dt or end_dt >= cutoff_ext_dt:
+        if not end_dt or end_dt < fetch_from or end_dt >= cutoff_ext_dt:
             continue
         if harvester_ids is not None and mid not in harvester_ids:
             continue
@@ -2634,7 +2638,12 @@ def main():
     with stage("зерновые: fmi"):
         fmi_list = fetch_fmi(task_ids, report_date)
     task_to_wt = {int(t["id"]): int(t["work_type_id"]) for t in tasks if t.get("work_type_id") is not None}
-    fmi_list = _normalize_fmi_for_shift(fmi_list, report_date, task_to_wt)
+    task_end = {
+        int(t["id"]): end
+        for t in tasks
+        if t.get("id") is not None and (end := _parse_dt(t.get("end_time"))) is not None
+    }
+    fmi_list = _normalize_fmi_for_shift(fmi_list, report_date, task_to_wt, task_end)
     print(
         f"  Зерновые — заданий: {len(tasks)}, FMI: {len(fmi_list)}",
         flush=True,
@@ -2651,6 +2660,7 @@ def main():
         with stage("овощи: machine_tasks"):
             veg_tasks = fetch_machine_tasks(
                 None, report_date, work_type_ids=VEG_HARVEST_WORK_TYPE_IDS,
+                end_extra=timedelta(days=1),
             )
         veg_task_ids = {t["id"] for t in veg_tasks}
         veg_task_to_machine = {t["id"]: t["machine_id"] for t in veg_tasks}
@@ -2661,7 +2671,14 @@ def main():
             int(t["id"]): int(t["work_type_id"])
             for t in veg_tasks if t.get("work_type_id") is not None
         }
-        veg_fmi_list = _normalize_fmi_for_shift(veg_fmi_list, report_date, veg_task_to_wt)
+        veg_task_end = {
+            int(t["id"]): end
+            for t in veg_tasks
+            if t.get("id") is not None and (end := _parse_dt(t.get("end_time"))) is not None
+        }
+        veg_fmi_list = _normalize_fmi_for_shift(
+            veg_fmi_list, report_date, veg_task_to_wt, veg_task_end,
+        )
         print(f"  Овощи — заданий: {len(veg_tasks)}, FMI: {len(veg_fmi_list)}", flush=True)
 
     _step("→ культура FMI (history_item + AgroOperation, зерно и овощи) ...")

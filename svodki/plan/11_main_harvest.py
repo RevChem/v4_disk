@@ -191,9 +191,9 @@ VEG_PLAN_RATE_HA: float = float(PLAN_RATE_PER_GROUP.get(VEG_HARVEST_GROUP_KEY, 5
 SVODKA11_VEG_FIX = "2026-07-15f"
 VEG_WT_IDS: set[int] = _wt_ids_from_plans1(VEG_HARVEST_GROUP_KEY)
 
-# Зерновые — для детализации: все виды уборки из "5.0 Уборка", кроме овощей (5.4)
-# и обобщённых wt=6/7 ("Уборка" без уточнения культуры — не относится к зерну).
-GRAIN_WT_IDS: set[int] = ALL_WT_IDS - VEG_WT_IDS - {6, 7}
+# Зерновые — все виды уборки из "5.0 Уборка", кроме овощей (5.4).
+# wt=6/7 входят: сводка 2 считает их в сутках 5.0.
+GRAIN_WT_IDS: set[int] = ALL_WT_IDS - VEG_WT_IDS
 
 AGROFIRMS: dict[str, tuple[int, float, int]] = {
     firm: (
@@ -831,6 +831,29 @@ async def fetch_all_tasks_and_mtfmi(
             flush=True,
         )
 
+    # Овощи закрываются до следующих 06:00. Зерно — только до cutoff+12 ч, как сводка 2.
+    veg_until = (cutoff + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    if veg_until > cutoff_ext_str and VEG_WT_IDS:
+        from machine_tasks_batch_fetch import fetch_machine_tasks_by_wt_async
+
+        url = f"{BASE_URL}/machine_tasks"
+        veg_extra = await fetch_machine_tasks_by_wt_async(
+            client, semaphore, sorted(VEG_WT_IDS),
+            {"end_time_gt_eq": season_start_str, "end_time_lt": veg_until},
+            fetch_all_pages, url=url, log_prefix="[r11] veg+ ",
+        )
+        seen_season_ids = {int(t["id"]) for t in tasks_season if t.get("id") is not None}
+        added = 0
+        for t in veg_extra:
+            tid = t.get("id")
+            if tid is None or int(tid) in seen_season_ids:
+                continue
+            seen_season_ids.add(int(tid))
+            tasks_season.append(t)
+            added += 1
+        if added:
+            print(f"  овощи с закрытием до {veg_until}: +{added} заданий", flush=True)
+
     try:
         _sdir = Path(__file__).resolve().parent / "utils" / "season"
         if not _sdir.is_dir():
@@ -967,13 +990,14 @@ def aggregate_harvest_by_firm(
 
     per_firm_machine: dict[str, dict[int, dict]] = {firm: {} for firm in AGROFIRMS}
 
-    for t in tasks_today:
+    for t in tasks_season:
         mid = t.get("machine_id")
         wt = t.get("work_type_id")
         if mid is None:
             continue
         if wt in GRAIN_WT_IDS and not _is_harvest_combine(mid):
             continue
+        task_end = parse_dt(t.get("end_time"))
         items = mtfmi_map.get(t["id"], [])
 
         firm_items: dict[str, list[tuple[dict, float]]] = defaultdict(list)
@@ -996,14 +1020,13 @@ def aggregate_harvest_by_firm(
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
                     continue
-                cov = float(veg_ctx["mtfmi_cov"](item, cutoff))
-            else:
-                cov = harvest_item_area_for_shift(
-                    item, cutoff,
-                    day_start=day_start,
-                    work_type_id=wt,
-                    parse_dt=parse_dt,
-                )
+            cov = harvest_item_area_for_shift(
+                item, cutoff,
+                day_start=day_start,
+                work_type_id=wt,
+                parse_dt=parse_dt,
+                task_end=task_end,
+            )
             if cov <= 0:
                 continue
             firm_items[firm].append((item, cov))
