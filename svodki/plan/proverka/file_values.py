@@ -1137,6 +1137,50 @@ def _report2_firm_areas(path: Path) -> dict[str, dict[str, float]]:
     return out
 
 
+def _harvest_book_xlsx_areas(path: Path) -> dict[str, float]:
+    """Сводки 1 и 10: «Общий намолот» / «Выраб. — 5.0» и лист «Овощи»."""
+    if load_workbook is None:
+        raise RuntimeError(f"{path.name}: ImportError: нет openpyxl")
+    from proverka.file_consistency import (
+        GENERAL_SHEET,
+        HARVEST_GROUP,
+        _perf_group,
+        _read_general_sheet,
+        _read_perf_sheet,
+    )
+
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    try:
+        out: dict[str, float] = {}
+        if GENERAL_SHEET in wb.sheetnames:
+            data = _read_general_sheet(wb[GENERAL_SHEET])
+            if data and data.get("total") is not None:
+                out[HARVEST_GROUP] = float(data["total"])
+        if HARVEST_GROUP not in out:
+            for ws in wb.worksheets:
+                if _perf_group(ws.title) != HARVEST_GROUP:
+                    continue
+                data = _read_perf_sheet(ws)
+                if data and data.get("total") is not None:
+                    out[HARVEST_GROUP] = float(data["total"])
+                    break
+        for title in ("Овощи", "Сводка овощи"):
+            if title not in wb.sheetnames:
+                continue
+            data = _read_general_sheet(wb[title])
+            if data and data.get("total") is not None:
+                out["5.4 Уборка картофеля, лука"] = float(data["total"])
+                break
+        return out
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    finally:
+        wb.close()
+
+
 def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     """Гектары за сутки по операциям из одного файла сводки."""
     rid = str(report_id)
@@ -1146,6 +1190,8 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
             from proverka.file_consistency import report2_xlsx_areas
 
             return report2_xlsx_areas(path)
+        if rid in {"1", "10"}:
+            return _harvest_book_xlsx_areas(path)
         blocks = _read_xlsx_blocks(path)
         if blocks:
             return areas_from_blocks(rid, blocks)

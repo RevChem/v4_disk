@@ -47,6 +47,7 @@ from task_area_shared import (
     CUTOFF_BUFFER_HOURS,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
+    harvest_area_booked_on_close,
     harvest_item_area_for_shift,
 )
 
@@ -146,12 +147,9 @@ def _normalize_fmi_for_shift(
         tid = row.get("machine_task_id")
         wt = task_wt.get(int(tid)) if task_wt and tid is not None else None
         end = task_end.get(int(tid)) if task_end and tid is not None else None
-        area = harvest_item_area_for_shift(
-            row, cutoff_dt,
-            day_start=day_start_dt,
-            work_type_id=wt,
-            parse_dt=_parse_dt,
-            task_end=end,
+        area = harvest_area_booked_on_close(
+            row, day_start=day_start_dt, cutoff=cutoff_dt,
+            task_end=end, parse_dt=_parse_dt,
         )
         if area <= 0:
             continue

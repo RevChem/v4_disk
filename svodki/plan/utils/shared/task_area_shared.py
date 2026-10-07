@@ -105,6 +105,26 @@ def harvest_item_area_for_shift(
     return cov
 
 
+def harvest_area_booked_on_close(
+    item: dict,
+    *,
+    day_start: datetime,
+    cutoff: datetime,
+    task_end: datetime | None,
+    parse_dt: Callable[[object], datetime | None],
+) -> float:
+    """Факт смены, как лист 5.0 сводки 2.
+
+    Задание относится к смене своего end_time. В эту смену входят все часы
+    до её конца, в том числе работа до 06:00. Часы после cutoff не входят.
+    """
+    if task_end is None or not (day_start <= task_end < cutoff):
+        return 0.0
+    return harvest_item_area_for_shift(
+        item, cutoff, day_start=None, parse_dt=parse_dt, task_end=None,
+    )
+
+
 def collect_silage_corn_field_ids(
     season: int,
     get_ops: Callable[[int, int], list[dict]],

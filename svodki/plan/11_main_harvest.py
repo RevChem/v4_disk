@@ -62,6 +62,7 @@ from task_area_shared import (
     CUTOFF_BUFFER_HOURS,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
+    harvest_area_booked_on_close,
     harvest_item_area_for_shift,
 )
 from plans import (
@@ -1020,12 +1021,9 @@ def aggregate_harvest_by_firm(
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
                     continue
-            cov = harvest_item_area_for_shift(
-                item, cutoff,
-                day_start=day_start,
-                work_type_id=wt,
-                parse_dt=parse_dt,
-                task_end=task_end,
+            cov = harvest_area_booked_on_close(
+                item, day_start=day_start, cutoff=cutoff,
+                task_end=task_end, parse_dt=parse_dt,
             )
             if cov <= 0:
                 continue

@@ -78,6 +78,7 @@ from task_area_shared import (
     CORN_SILAGE_CROP,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
+    harvest_area_booked_on_close,
     harvest_item_area_for_shift,
 )
 from plans import (
@@ -439,15 +440,14 @@ def _harvest_perf_10_style(
             firm = _firm_for_field(fid_i)
             if not firm:
                 continue
-            crop = ftc.get(fid_i)
+            from task_area_shared import history_crop_name
+
+            crop = history_crop_name(item, ftc.get(fid_i) or "", mowing=is_mowing)
             if is_mowing and crop != CORN_SILAGE_CROP:
                 continue
-            cov = harvest_item_area_for_shift(
-                item, cutoff,
-                day_start=day_start,
-                work_type_id=wt_i,
-                parse_dt=parse_dt,
-                task_end=task_end,
+            cov = harvest_area_booked_on_close(
+                item, day_start=day_start, cutoff=cutoff,
+                task_end=task_end, parse_dt=parse_dt,
             )
             if cov <= 0:
                 continue

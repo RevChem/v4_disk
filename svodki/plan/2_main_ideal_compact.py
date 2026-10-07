@@ -3322,7 +3322,27 @@ def collect_work_data(
                         crop if _harvest_grain_field_allowed(group_name, crop) else None
                     )
 
-                    if is_harvest_grain or is_harvest_veg:
+                    if is_harvest_veg:
+                        from task_area_shared import harvest_area_booked_on_close
+
+                        booked = harvest_area_booked_on_close(
+                            item,
+                            day_start=day_start,
+                            cutoff=cutoff,
+                            task_end=parse_dt(task.get("end_time")),
+                            parse_dt=parse_dt,
+                        )
+                        if (
+                            booked > 0
+                            and harvest_period_start <= t_date < TODAY
+                        ):
+                            _note_harvest_portion(
+                                firm, mid, tid, fid_i, crop, crop_for_agg,
+                                float(booked), task, t_date,
+                            )
+                        continue
+
+                    if is_harvest_grain:
                         from task_area_shared import area_ha_by_shift_date
 
                         portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
@@ -3577,10 +3597,11 @@ def collect_work_data(
                     )
                 else:
                     total_ha = sum(v for d, v in by_date.items() if d < TODAY)
+                crop_digits = 2 if _is_harvest_veg_group(group_name) else 1
                 data[group_name]["crops"][firm][crop] = {
                     "area_ha":  round(area_ha, 1),
-                    "total_ha": round(total_ha, 1),
-                    "by_date":  {d: round(v, 1) for d, v in by_date.items()},
+                    "total_ha": round(total_ha, crop_digits),
+                    "by_date":  {d: round(v, crop_digits) for d, v in by_date.items()},
                 }
 
     return data
@@ -4194,7 +4215,7 @@ def write_report_sheet(
             )
             return float(total) if total else None
 
-        area_digits = 2 if group_name == PLOW_GROUP_NAME else 1
+        area_digits = 2 if group_name == PLOW_GROUP_NAME or _is_harvest_veg_group(group_name) else 1
         for firm in FIRM_ORDER:
             if group_name in GROUP_FIRM_ONLY and firm not in GROUP_FIRM_ONLY[group_name]:
                 continue

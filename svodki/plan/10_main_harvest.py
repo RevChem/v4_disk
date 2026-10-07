@@ -57,6 +57,7 @@ from task_area_shared import (
     collect_silage_corn_field_ids,
     area_ha_by_shift_date,
     crop_key_for_harvest_area,
+    harvest_area_booked_on_close,
     harvest_item_area_for_shift,
     resolve_corn_subtype,
 )
@@ -1927,6 +1928,10 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
             wt_i = int(wt)
             is_mowing = wt_i in SILAGE_CORN_MOWING_WT_IDS
             task_end = parse_dt(task.get("end_time"))
+            if day_start is not None and (
+                task_end is None or not (day_start <= task_end < t_to)
+            ):
+                continue
             for item in cache.mtfmi_map.get(task["id"], []):
                 fid = item.get("field_id")
                 if fid is None:
@@ -1940,13 +1945,19 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 crop = history_crop_name(item, "", mowing=is_mowing)
                 if is_mowing and crop != CORN_SILAGE_CROP:
                     continue
-                cov = harvest_item_area_for_shift(
-                    item, t_to,
-                    day_start=day_start,
-                    work_type_id=wt_i,
-                    parse_dt=parse_dt,
-                    task_end=task_end,
-                )
+                if day_start is not None:
+                    cov = harvest_area_booked_on_close(
+                        item, day_start=day_start, cutoff=t_to,
+                        task_end=task_end, parse_dt=parse_dt,
+                    )
+                else:
+                    cov = harvest_item_area_for_shift(
+                        item, t_to,
+                        day_start=None,
+                        work_type_id=wt_i,
+                        parse_dt=parse_dt,
+                        task_end=task_end,
+                    )
                 if cov <= 0:
                     continue
                 firm_tot[firm] += cov
@@ -3696,23 +3707,22 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             crop = _veg_item_crop(item)
             if not crop:
                 continue
-            portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-            if not portions and end_dt is not None:
-                shift = _veg_shift_info(task.get("end_time"), report_date)
-                raw = float(item.get("covered_area") or 0)
-                if shift and raw > 0:
-                    portions = {shift[0]: raw}
-            for t_date, cov in portions.items():
-                if t_date < VEG_SEASON_START or t_date >= report_date:
-                    continue
-                if cov <= _VEG_MIN_AREA_HA:
-                    continue
-                agg[crop][t_date] += cov
-                if t_date == report_shift_date and task.get("machine_id") is not None:
-                    veg_machines_today.add(task["machine_id"])
-                if _note is not None and t_date == report_shift_date:
-                    _mid = task.get("machine_id")
-                    _note(
+            shift = _veg_shift_info(task.get("end_time"), report_date)
+            if shift is None:
+                continue
+            t_date, shift_start, shift_cutoff = shift
+            cov = harvest_area_booked_on_close(
+                item, day_start=shift_start, cutoff=shift_cutoff,
+                task_end=end_dt, parse_dt=parse_dt,
+            )
+            if cov <= _VEG_MIN_AREA_HA:
+                continue
+            agg[crop][t_date] += cov
+            if t_date == report_shift_date and task.get("machine_id") is not None:
+                veg_machines_today.add(task["machine_id"])
+            if _note is not None and t_date == report_shift_date:
+                _mid = task.get("machine_id")
+                _note(
                         group="5.4 Уборка картофеля, лука",
                         firm=_VEG_HARVEST_FIRM,
                         crop=crop,

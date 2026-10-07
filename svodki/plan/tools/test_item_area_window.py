@@ -14,6 +14,24 @@ WS, WE = datetime(2026, 10, 5, 6, tzinfo=TZ), datetime(2026, 10, 6, 6, tzinfo=TZ
 P = datetime.fromisoformat
 
 
+def test_close_shift_keeps_hours_before_six_when_task_ends_in_the_shift():
+    item = {
+        "covered_area": 50.0,
+        "covered_area_hourly": [
+            ["2026-10-05T04:00:00+03:00", 20.0],
+            ["2026-10-05T10:00:00+03:00", 30.0],
+        ],
+    }
+    closed = datetime(2026, 10, 5, 18, tzinfo=TZ)
+    assert t.harvest_area_booked_on_close(
+        item, day_start=WS, cutoff=WE, task_end=closed, parse_dt=P,
+    ) == 50.0
+    after = datetime(2026, 10, 6, 8, tzinfo=TZ)
+    assert t.harvest_area_booked_on_close(
+        item, day_start=WS, cutoff=WE, task_end=after, parse_dt=P,
+    ) == 0.0
+
+
 def test_harvest_shift_keeps_only_hours_inside_the_shift():
     item = {
         "covered_area": 50.0,
