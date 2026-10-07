@@ -224,10 +224,13 @@ def set_season_range_override(
     name = str(group_name or "").strip()
     if not name:
         raise ValueError("Укажите группу работ.")
-    # period_start / period_end оставлены в сигнатуре ради совместимости API,
-    # но не используются: границы задаются календарём сезонов (calendar-seasons),
-    # а для группы хранятся только выбранные годы.
-    del period_start, period_end
+    # Границы группы задаёт календарь сезонов. Молчаливый 200 оставлял бы
+    # клиента с датами, которые не сохранились.
+    if str(period_start or "").strip() or str(period_end or "").strip():
+        raise ValueError(
+            "period_start и period_end для группы не сохраняются. "
+            "Даты сезона задаются в календаре сезонов."
+        )
     store = load_season_range_overrides()
     if clear:
         store.pop(name, None)
@@ -271,23 +274,7 @@ def _fert_period_start(report_date: date) -> date:
 
 
 def _harvest_period_start(report_date: date) -> date:
-    raw_ui = ""
-    try:
-        from .manual_overrides import merged_manual_store_for_date
-
-        raw_ui = str(
-            (merged_manual_store_for_date(report_date).get("26") or {}).get("combine_season_start_date")
-            or ""
-        ).strip()
-    except Exception:
-        raw_ui = ""
-    raw_env = (settings.svodki_combine_season_start_date or "").strip()
-    if raw_ui or raw_env:
-        return combine_season_start_for_date(report_date)
-    start = date(report_date.year, 6, 1)
-    if report_date < start:
-        return date(report_date.year - 1, 6, 1)
-    return start
+    return combine_season_start_for_date(report_date)
 
 
 def _matches_prefix(group_name: str, prefix: str) -> bool:

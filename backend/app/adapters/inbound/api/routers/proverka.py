@@ -315,22 +315,15 @@ def get_proverka_dashboard(
     report_date: date = Query(..., alias="report_date"),
     user: User = Depends(require_developer_access),
 ):
+    dash = dashboard_for_date(report_date)
     st = monitoring_status(user.id, report_date)
-    if st.get("monitoring_enabled"):
-        return {
-            "report_date": report_date.isoformat(),
-            "status": "completed" if st.get("violations") or st.get("violation_count") else "none",
-            "job_id": None,
-            "violation_count": st.get("violation_count", 0),
-            "cropwise_diff_count": st.get("cropwise_diff_count", 0),
-            "cropwise_violation_count": st.get("violation_count", 0),
-            "cross_check_violation_count": 0,
-            "violations": st.get("violations") or [],
-            "error_logs": st.get("error_logs") or [],
-            "checked_at": st.get("cookie_expires_at"),
-            "progress": None,
-        }
-    return dashboard_for_date(report_date)
+    dash["monitoring_enabled"] = bool(st.get("monitoring_enabled"))
+    dash["monitoring_violation_count"] = int(st.get("violation_count") or 0)
+    dash["monitoring_cropwise_diff_count"] = int(st.get("cropwise_diff_count") or 0)
+    dash["monitoring_violations"] = st.get("violations") or []
+    dash["monitoring_error_logs"] = st.get("error_logs") or []
+    dash["monitoring_cookie_expires_at"] = st.get("cookie_expires_at")
+    return dash
 
 
 @router.post("/refresh", response_model=ProverkaRefreshOut)

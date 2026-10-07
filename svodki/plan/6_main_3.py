@@ -92,8 +92,21 @@ REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
-SEASON_YEAR = 2026
-SEASONS     = ["2026"]   # опрыскивание только сезон 2025
+def _spray_history_year(report_date: date) -> int:
+    """Год history_items. Из окружения, иначе сезон даты отчёта (с июля — следующий)."""
+    for key in ("SEASON_YEAR", "CROPWISE_SEASON_YEAR"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw.isdigit():
+            return int(raw)
+    years = (os.environ.get("SVODKI_SPRAY_SEASON_YEARS") or os.environ.get("SVODKI_SEASON_YEARS") or "").strip()
+    parsed = [int(part) for part in years.split(",") if part.strip().isdigit()]
+    if parsed:
+        return parsed[-1]
+    return report_date.year + (1 if report_date.month >= 7 else 0)
+
+
+SEASON_YEAR = _spray_history_year(REPORT_DATE)
+SEASONS = [str(SEASON_YEAR)]
 
 SEASON_START = date(REPORT_DATE.year, 1, 1)  # средняя выработка по сезону считается с этой даты
 _season_start_raw = (

@@ -13,6 +13,7 @@ from app.application.activity_log import _log_lines_for_report
 from app.application.audit_activity import record_activity, report_title
 from app.application.generation_cancel import (
     cancel_all_requested,
+    cancelled_report_ids,
     make_cancel_checker,
     request_generation_cancel,
 )
@@ -44,14 +45,18 @@ def cancel_generation_job(
     report_ids: list[str] | None = None,
 ) -> GenerationJob:
     job = request_generation_cancel(db, job, report_ids=report_ids)
-    kill_generation_job_subprocesses(job.id)
-    if settings.celery_enabled and job.celery_task_id:
-        try:
-            from app.infrastructure.celery_app import celery_app
+    if cancel_all_requested(job):
+        kill_generation_job_subprocesses(job.id)
+        if settings.celery_enabled and job.celery_task_id:
+            try:
+                from app.infrastructure.celery_app import celery_app
 
-            celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
-        except Exception as exc:
-            log.warning("reports.generation.revoke_failed", job_id=job.id, error=str(exc))
+                celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
+            except Exception as exc:
+                log.warning("reports.generation.revoke_failed", job_id=job.id, error=str(exc))
+    else:
+        ids = cancelled_report_ids(job) or set()
+        kill_generation_job_subprocesses(job.id, report_ids=ids)
     return job
 
 
@@ -94,13 +99,24 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             cancelled=cancelled,
         )
         apply_post_generation_hooks(db, summary_date=job.summary_date, created=created, logs=logs)
-        total_duration_seconds = round(time.monotonic() - started_monotonic, 1)
         db.refresh(job)
         final_status = "completed"
         if job.cancel_requested and cancel_all_requested(job):
             final_status = "cancelled"
         elif job.cancel_requested and cancelled and not created and not failed:
             final_status = "cancelled"
+        from app.legacy.report_runner import load_job_options
+
+        compare_cropwise = bool(load_job_options(job.id).get("compare_cropwise"))
+        if final_status == "completed" and created and compare_cropwise:
+            try:
+                from app.application.cropwise_file_check import compare_generated_files_to_work_json
+
+                logs.extend(compare_generated_files_to_work_json(job.summary_date, created))
+            except Exception as exc:
+                log.exception("reports.cropwise_check_failed", job_id=job.id, error=str(exc))
+                logs.append(f"Cropwise: проверка не выполнена ({exc})")
+        total_duration_seconds = round(time.monotonic() - started_monotonic, 1)
         result = {
             "created": [
                 {
@@ -145,7 +161,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             failed_count=len(failed),
             result_json=json.dumps(result, ensure_ascii=False),
         )
-        if job.user_id and created:
+        if job.user_id and created and not compare_cropwise:
             try:
                 from app.adapters.outbound.proverka.monitoring import enqueue_report_checks
 

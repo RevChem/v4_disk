@@ -32,6 +32,29 @@ from season_unified import (
     season_env_for_group,
 )
 
+# Общий старт и год сезона inject берёт из «5.0 Уборка». Для сводок 1/2
+# это обрезает history до одного года и не даёт записать ручной period_start.
+_SHARED_SEASON_ENV_KEYS = (
+    "SEASON_YEAR",
+    "SVODKI_SEASON_YEARS",
+    "SVODKI_SEASON_START_DATE",
+    "SEASON_START_DATE",
+    "SEASON_TASK_YEAR_STR",
+)
+
+# bootstrap_platform выставляет их через setdefault и при выходе не снимает.
+_PLATFORM_ENV_KEYS = (
+    "SVODKI_PIPELINE",
+    "SVODKI_REPORT2_PIPELINE",
+    "UPLOAD_DIR",
+    "SVODKI_PLANS_EDITS_PATH",
+)
+
+
+def _drop_shared_season_keys(env: dict[str, str]) -> None:
+    for key in _SHARED_SEASON_ENV_KEYS:
+        env.pop(key, None)
+
 
 def _upload_dir() -> Path:
     raw = (os.environ.get("UPLOAD_DIR") or os.environ.get("SVODKI_UPLOAD_DIR") or "uploads").strip()
@@ -94,41 +117,52 @@ def _apply_env_from_config(spec: ReportSpec, report_date: date, cfg: dict[str, A
     except Exception:
         os.environ["REPORT_DATE"] = report_date.isoformat()
 
+    # Сначала снять общие ключи: иначе inject запечёт старт «5.0 Уборка»
+    # в SVODKI_GRP_*, а запись period_start ниже его уже не перебьёт.
+    for key in _SHARED_SEASON_ENV_KEYS:
+        os.environ.pop(key, None)
+
     env: dict[str, str] = {"REPORT_DATE": report_date.isoformat()}
     _inject_season_env(env, report_date)
+    _drop_shared_season_keys(env)
+    for key, value in env.items():
+        if key.startswith("SVODKI_GRP_") or key in (
+            "SVODKI_SEASON_RANGES_PATH",
+            "SVODKI_UPLOAD_DIR",
+        ):
+            os.environ[key] = value
 
     per_group = cfg.get("by_group") or {}
     groups = list(spec.work_groups) or list(per_group.keys())
     own_season = spec.module in MODULES_OWN_SEASON_START
+    per_operation = bool(spec.cropwise_per_operation and not spec.work_groups)
     for gn in groups:
         gcfg = per_group.get(gn) or resolve_group_season_config(gn, report_date)
         genv = dict(season_env_for_group(gn, gcfg))
-        if own_season:
-            genv.pop("SVODKI_SEASON_START_DATE", None)
-            genv.pop("SEASON_START_DATE", None)
-            if spec.module == "11_main_harvest":
-                genv.pop("SVODKI_COMBINE_SEASON_START", None)
+        _drop_shared_season_keys(genv)
+        if own_season and spec.module == "11_main_harvest":
+            genv.pop("SVODKI_COMBINE_SEASON_START", None)
         for k, v in genv.items():
             os.environ[k] = v
 
     if cfg.get("period_start") and not own_season:
         iso = str(cfg["period_start"]).split("T")[0]
-        os.environ.setdefault("SVODKI_SEASON_START_DATE", iso)
-        os.environ.setdefault("SEASON_START_DATE", iso)
+        os.environ["SVODKI_SEASON_START_DATE"] = iso
+        os.environ["SEASON_START_DATE"] = iso
 
     # Сводки 1/2 (cropwise_per_operation без work_groups): history_items и
     # task season резолвятся внутри модуля по каждой операции через
     # resolve_group_season_config. Глобальный SEASON_YEAR=год отчёта обрезает
     # history до одного года и обнуляет опрыскивание/посев в proverka.
     years = cfg.get("history_years") or []
-    if years and not (spec.cropwise_per_operation and not spec.work_groups):
+    if years and not per_operation:
         ys = ",".join(str(y) for y in years)
-        os.environ.setdefault("SVODKI_SEASON_YEARS", ys)
-        os.environ.setdefault("SEASON_YEAR", str(years[-1]))
+        os.environ["SVODKI_SEASON_YEARS"] = ys
+        os.environ["SEASON_YEAR"] = str(years[-1])
 
     task_years = cfg.get("task_season_years") or []
-    if len(task_years) == 1:
-        os.environ.setdefault("SEASON_TASK_YEAR_STR", str(task_years[0]))
+    if len(task_years) == 1 and not per_operation:
+        os.environ["SEASON_TASK_YEAR_STR"] = str(task_years[0])
 
     if cfg.get("shift_start_hour") is not None:
         os.environ["PROVERKA_DAY_START_HOUR"] = str(int(cfg["shift_start_hour"]))
@@ -312,6 +346,15 @@ _SEASON_ENV_KEYS = (
 )
 
 
+def _tracked_season_env_keys() -> set[str]:
+    keys = set(_SEASON_ENV_KEYS)
+    keys.update(_PLATFORM_ENV_KEYS)
+    keys.update(
+        k for k in os.environ if k.startswith("PROVERKA_") or k.startswith("SVODKI_GRP_")
+    )
+    return keys
+
+
 @contextmanager
 def season_context(
     spec: ReportSpec,
@@ -320,14 +363,12 @@ def season_context(
 ) -> Iterator[dict[str, Any]]:
     """Применить сезон к env; после выхода восстановить прежние значения."""
     cfg = resolve_report_season_config(spec, report_date, run_override)
-    saved = {k: os.environ.get(k) for k in _SEASON_ENV_KEYS}
-    saved.update({k: os.environ.get(k) for k in os.environ if k.startswith("PROVERKA_")})
+    saved = {k: os.environ.get(k) for k in _tracked_season_env_keys()}
     _apply_env_from_config(spec, report_date, cfg)
     try:
         yield cfg
     finally:
-        touched = set(_SEASON_ENV_KEYS) | {k for k in os.environ if k.startswith("PROVERKA_")}
-        for k in touched:
+        for k in _tracked_season_env_keys():
             os.environ.pop(k, None)
         for k, v in saved.items():
             if v is None:

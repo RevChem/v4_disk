@@ -275,8 +275,13 @@ def _file_checks_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", "нет"}
 
 
-def _log_immediate(severity: str, code: str, message: str) -> str:
-    label = (os.environ.get("SVODKI_REPORT_ID") or "").strip() or "?"
+def _log_immediate(
+    severity: str,
+    code: str,
+    message: str,
+    report_id: str | None = None,
+) -> str:
+    label = (report_id or os.environ.get("SVODKI_REPORT_ID") or "").strip() or "?"
     line = f"{MARK} [{severity}] сводка={label} {code}: {message}"
     print(line, flush=True)
     return line
@@ -406,7 +411,10 @@ def publish_cross_op_snapshot(operations: dict[str, float]) -> None:
         pass
 
 
-def finalize_cross_op_checks(report_date: date | None = None) -> list[str]:
+def finalize_cross_op_checks(
+    report_date: date | None = None,
+    report_id: str | None = None,
+) -> list[str]:
     """Сверка факта за смену между сводками по JSON-снимкам (без proverka batch)."""
     if not ENABLED:
         return []
@@ -420,7 +428,11 @@ def finalize_cross_op_checks(report_date: date | None = None) -> list[str]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            lines.append(_log_immediate("WARN", "CROSS_OP", f"не прочитан снимок {path.name}"))
+            lines.append(
+                _log_immediate(
+                    "WARN", "CROSS_OP", f"не прочитан снимок {path.name}", report_id=report_id,
+                )
+            )
             continue
         rid = str(data.get("report_id") or path.stem)
         ops = data.get("operations") or {}
@@ -432,7 +444,11 @@ def finalize_cross_op_checks(report_date: date | None = None) -> list[str]:
         from proverka.ha_thresholds import diff_is_significant
         from proverka.operation_registry import OPERATION_PEERS, peer_reports_for_group
     except Exception as exc:
-        lines.append(_log_immediate("WARN", "CROSS_OP", f"модуль сверки недоступен: {exc!r}"))
+        lines.append(
+            _log_immediate(
+                "WARN", "CROSS_OP", f"модуль сверки недоступен: {exc!r}", report_id=report_id,
+            )
+        )
         return lines
     present = set(by_report)
     for group_name in OPERATION_PEERS:
@@ -452,6 +468,7 @@ def finalize_cross_op_checks(report_date: date | None = None) -> list[str]:
                 "CRIT",
                 "CROSS_OP",
                 f"операция={group_name} расхождение={max_diff:.2f} га ({parts})",
+                report_id=report_id,
             )
         )
     return lines
@@ -496,14 +513,16 @@ def check_file_total_after_save(
     try:
         from proverka.file_values import read_file_total_ha, read_file_total_ha_from_path
     except Exception as exc:
-        return _log_immediate("WARN", "FILE_TOTAL", f"модуль чтения xlsx недоступен: {exc!r}")
+        return _log_immediate(
+            "WARN", "FILE_TOTAL", f"модуль чтения xlsx недоступен: {exc!r}", report_id=rid,
+        )
     fv: dict
     if xlsx_path is not None:
         fv = read_file_total_ha_from_path(Path(xlsx_path))
     else:
         fv = read_file_total_ha(rd, rid)
     if fv.get("error"):
-        return _log_immediate("WARN", "FILE_TOTAL", str(fv.get("error")))
+        return _log_immediate("WARN", "FILE_TOTAL", str(fv.get("error")), report_id=rid)
     if not fv.get("found"):
         return None
     file_ha = float(fv.get("file_ha") or 0)
@@ -518,6 +537,7 @@ def check_file_total_after_save(
         "CRIT",
         "FILE_TOTAL",
         f"расчёт={calc:.2f} га файл={file_ha:.2f} га Δ={diff:.2f} га",
+        report_id=rid,
     )
 
 

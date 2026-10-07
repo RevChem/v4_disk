@@ -45,6 +45,21 @@ def seasons_missing_from_ui(
     return [y for y in years if y != session]
 
 
+def _run_coro(coro):
+    """asyncio.run из синхронного кода. Из уже запущенного цикла — в отдельном потоке.
+
+    Иначе RuntimeError проглатывается выше, и все строки остаются без культуры.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def api_area_by_firm_crop(
     tasks: list[dict],
     mtfmi_map: dict[int, list[dict]],
@@ -100,7 +115,7 @@ def api_area_by_firm_crop(
             )
         return mtaomi, agro_ops, history
 
-    mtaomi, agro_ops, history = asyncio.run(_load())
+    mtaomi, agro_ops, history = _run_coro(_load())
     crops = {
         int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
         for c in _get_all("crops")
@@ -171,7 +186,7 @@ def api_area_by_firm_crop(
                 ]
                 return list(await asyncio.gather(*jobs))
 
-        for fid, year, items in asyncio.run(_history_by_field()):
+        for fid, year, items in _run_coro(_history_by_field()):
             name = ""
             for hi in items:
                 if hi.get("crop_id") is None:

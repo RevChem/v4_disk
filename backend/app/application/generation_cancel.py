@@ -71,7 +71,7 @@ def make_cancel_checker(job_id: str, *, refresh_sec: float = 0.4) -> Callable[[s
         if not cache["all"] and not cache["ids"]:
             return False
         if report_id is None:
-            return bool(cache["all"]) or bool(cache["ids"])
+            return bool(cache["all"])
         if cache["all"]:
             return True
         return str(report_id) in cache["ids"]
@@ -101,31 +101,60 @@ def request_generation_cancel(
     return job
 
 
+def stale_running_job_outcome(
+    *,
+    cancel_all: bool,
+    celery_task_id: str,
+    active_task_ids: set[str] | None,
+) -> str | None:
+    """cancelled, worker_lost или None — задачу не трогать.
+
+    Пустой или неудавшийся ответ Celery не доказывает, что воркер умер.
+    Частичная отмена (список сводок) тоже не закрывает всю задачу.
+    """
+    if cancel_all:
+        return "cancelled"
+    if not active_task_ids:
+        return None
+    celery_id = (celery_task_id or "").strip()
+    if celery_id and celery_id not in active_task_ids:
+        return "worker_lost"
+    return None
+
+
 def reconcile_stale_generation_jobs(db: Session) -> int:
-    """Помечает зависшие задачи после рестарта worker (cancel_requested или без живого Celery)."""
+    """Помечает зависшие задачи после рестарта worker (полная отмена или точно мёртвый Celery)."""
     from app.config import settings
     from app.infrastructure.celery_app import celery_app
 
-    active_task_ids: set[str] = set()
+    active_task_ids: set[str] | None = None
     if settings.celery_enabled:
         try:
             inspect = celery_app.control.inspect(timeout=1.0)
-            for worker_tasks in (inspect.active() or {}).values():
-                for task in worker_tasks:
-                    tid = task.get("id")
-                    if tid:
-                        active_task_ids.add(str(tid))
+            active = inspect.active()
+            found: set[str] = set()
+            if active:
+                for worker_tasks in active.values():
+                    for task in worker_tasks or []:
+                        tid = task.get("id")
+                        if tid:
+                            found.add(str(tid))
+            if found:
+                active_task_ids = found
         except Exception:
-            pass
+            active_task_ids = None
 
     updated = 0
     for job in db.query(GenerationJob).filter(GenerationJob.status == "running").all():
-        if job.cancel_requested:
+        outcome = stale_running_job_outcome(
+            cancel_all=cancel_all_requested(job),
+            celery_task_id=job.celery_task_id or "",
+            active_task_ids=active_task_ids,
+        )
+        if outcome == "cancelled":
             repo.update_generation_job(db, job, status="cancelled")
             updated += 1
-            continue
-        celery_id = (job.celery_task_id or "").strip()
-        if celery_id and celery_id not in active_task_ids:
+        elif outcome == "worker_lost":
             repo.update_generation_job(
                 db,
                 job,

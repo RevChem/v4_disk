@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     cropwise_api_token: str = ""
     cropwise_base_url: str = "https://operations.cropwise.com/api/v3"
-    cropwise_season_year: int = 2026
+    cropwise_season_year: int = Field(default_factory=lambda: date.today().year)
     namolot_base_url: str = ""
     namolot_username: str = ""
     namolot_password: str = ""

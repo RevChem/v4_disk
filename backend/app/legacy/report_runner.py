@@ -31,6 +31,8 @@ from app.legacy.report_generation import (
     _is_report27_family,
     _max_concurrent_report_workers,
     _maybe_add_report2_for_r23,
+    _r23_bundle_matches_platform_date,
+    r23_work_data_from_report2_bundle_path,
     _maybe_add_report27_1,
     _prepare_ordered_report_ids,
     _presync_task_store,
@@ -316,6 +318,7 @@ def _execute_single_report_to_disk(
     api_snapshot_read_only: bool,
     generation_job_id: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    r23_auto_report2: bool = False,
 ) -> tuple[GeneratedFile | None, dict[str, str] | None, list[str]]:
     """Потокобезопасный запуск одной сводки (локальные логи, без общего списка)."""
     local_logs: list[str] = []
@@ -344,6 +347,7 @@ def _execute_single_report_to_disk(
             api_snapshot_read_only=api_snapshot_read_only,
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
+            r23_auto_report2=r23_auto_report2 and cfg_id == "2",
             report27_cutoff=r27_cutoff if excel_only else None,
             report27_time_from=r27_time_from if excel_only else None,
             report27_date_from=r27_date_from if excel_only else None,
@@ -353,6 +357,21 @@ def _execute_single_report_to_disk(
         local_logs.append(
             f"[{cfg.title}] Время скрипта XLSX: {time.monotonic() - script_started:.1f} с"
         )
+        if cfg_id == "2" and r23_auto_report2:
+            donor = r23_work_data_from_report2_bundle_path(request_report_date)
+            if not _r23_bundle_matches_platform_date(donor, request_report_date):
+                raise ReportGenerationError(
+                    f"Сводка 2 не записала снимок для сводки 23 ({donor.name})."
+                )
+            save_generation_data_checks(
+                summary_date,
+                cfg_id,
+                _append_script_stdout_logs(local_logs, stdout, cfg.title, tail=5),
+            )
+            local_logs.append(
+                f"[{cfg.title}] Автозапуск для сводки 23: PDF сводки 2 не публикуем."
+            )
+            return None, None, local_logs
         if cfg_id in _REPORT1_FAMILY_IDS:
             _reorder_report1_workbook_file(xlsx_path, local_logs, report_label=cfg_id)
 
@@ -472,6 +491,7 @@ def _run_disk_cfgs_sequential(
     generation_job_id: str | None = None,
     is_cancelled: Callable[[str], bool] | None = None,
     cancelled: list[dict[str, str]] | None = None,
+    r23_auto_report2: bool = False,
 ) -> tuple[list[GeneratedFile], list[dict[str, str]], list[str]]:
     created: list[GeneratedFile] = []
     failed: list[dict[str, str]] = []
@@ -498,6 +518,7 @@ def _run_disk_cfgs_sequential(
             api_snapshot_read_only=api_snapshot_read_only,
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
+            r23_auto_report2=r23_auto_report2,
         )
         logs.extend(plogs)
         if item is not None:
@@ -529,6 +550,7 @@ def _execute_disk_reports_parallel(
     generation_job_id: str | None = None,
     is_cancelled: Callable[[str], bool] | None = None,
     cancelled: list[dict[str, str]] | None = None,
+    r23_auto_report2: bool = False,
 ) -> tuple[list[GeneratedFile], list[dict[str, str]], list[str]]:
     created: list[GeneratedFile] = []
     failed: list[dict[str, str]] = []
@@ -564,6 +586,7 @@ def _execute_disk_reports_parallel(
             api_snapshot_read_only=api_snapshot_read_only,
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
+            r23_auto_report2=r23_auto_report2,
         )
 
     def _run_parallel_waves(
@@ -666,6 +689,7 @@ def _execute_disk_reports_parallel(
                         generation_job_id=generation_job_id,
                         is_cancelled=is_cancelled,
                         cancelled=cancelled,
+                        r23_auto_report2=r23_auto_report2,
                     )
                     out_logs.extend(rl)
                     out_created.extend(rc)
@@ -798,6 +822,7 @@ def _execute_disk_reports_parallel(
             generation_job_id=generation_job_id,
             is_cancelled=is_cancelled,
             cancelled=cancelled,
+            r23_auto_report2=r23_auto_report2,
         )
         logs.extend(rl)
         created.extend(rc)
@@ -835,6 +860,7 @@ def _execute_disk_reports_parallel(
                 generation_job_id=generation_job_id,
                 is_cancelled=is_cancelled,
                 cancelled=cancelled,
+                r23_auto_report2=r23_auto_report2,
             )
             logs.extend(rl)
             created.extend(rc)
@@ -869,6 +895,7 @@ def _execute_disk_reports_parallel(
                         generation_job_id=generation_job_id,
                         is_cancelled=is_cancelled,
                         cancelled=cancelled,
+                        r23_auto_report2=r23_auto_report2,
                     )
                     logs.extend(rl)
                     created.extend(rc)
@@ -915,7 +942,7 @@ def _generate_reports_to_disk_impl(
     logo_root = svodki_root
     request_report_date = summary_date
     user_ordered_ids = _maybe_add_report27_1(_prepare_ordered_report_ids(report_ids))
-    ordered_ids, _r23_auto_report2 = _maybe_add_report2_for_r23(user_ordered_ids, request_report_date)
+    ordered_ids, r23_auto_report2 = _maybe_add_report2_for_r23(user_ordered_ids, request_report_date)
     ordered_ids = _maybe_add_report27_1(ordered_ids)
     selected = _configs_for_ordered_ids(ordered_ids)
     report1_fast_slave_ids = _report1_required_donor_ids(ordered_ids)
@@ -938,6 +965,11 @@ def _generate_reports_to_disk_impl(
         f"Скрипты: {primary_script_dir}",
         f"Отчёты: {', '.join(ordered_ids)}",
     ]
+    if r23_auto_report2:
+        logs.append(
+            "Сводка 23: файл снимка сводки 2 не найден. "
+            "Снимок будет записан из сводки 2, PDF сводки 2 не публикуем."
+        )
     if use_api_cache:
         logs.append(f"JSON-кэш GET (sitecustomize): {api_snapshot_path}")
     else:
@@ -979,6 +1011,10 @@ def _generate_reports_to_disk_impl(
                     report_date=request_report_date,
                     report_ids=ordered_ids,
                     report1_fast_slave_ids=report1_fast_slave_ids,
+                    generation_job_id=generation_job_id,
+                    should_cancel=(
+                        (lambda: bool(is_cancelled(None))) if is_cancelled is not None else None
+                    ),
                 )
             )
             prefetch_ready = True
@@ -1014,6 +1050,7 @@ def _generate_reports_to_disk_impl(
             generation_job_id=generation_job_id,
             is_cancelled=is_cancelled,
             cancelled=cancelled,
+            r23_auto_report2=r23_auto_report2,
         )
         created.extend(batch_created)
         failed.extend(batch_failed)

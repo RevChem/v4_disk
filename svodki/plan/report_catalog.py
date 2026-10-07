@@ -61,7 +61,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "5",
         "5_main_fixed.py",
-        "5.Посев 2026",
+        "5.Посев",
         module="5_main_fixed",
         work_groups=("4.0 Посев",),
         season_rule="year_plus_one",

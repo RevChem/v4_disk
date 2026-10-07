@@ -47,6 +47,7 @@ import {
   buildHarvestGrossPayload,
   emptyHarvestGrossForm,
   fetchAvailableDates,
+  fetchCropwiseCookie,
   fetchReportCatalog,
   generateReports,
   getStoredTokens,
@@ -109,6 +110,10 @@ export default function DashboardPage({
   const [report27CustomTimeTo, setReport27CustomTimeTo] = useState("06:00");
   const [report27CustomGenerating, setReport27CustomGenerating] = useState(false);
   const [report27CustomError, setReport27CustomError] = useState("");
+  const [cropwiseOn, setCropwiseOn] = useState(
+    () => window.localStorage.getItem("svodki.cropwiseCheck") === "1",
+  );
+  const [cropwiseCookie, setCropwiseCookie] = useState(false);
 
   const canPlans = user?.role === "developer" || user?.role === "admin" || user?.role === "user";
   const canProverka = user?.role === "developer";
@@ -163,6 +168,20 @@ export default function DashboardPage({
   useEffect(() => {
     loadCatalog();
   }, [loadCatalog]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCropwiseCookie()
+      .then((available) => {
+        if (!cancelled) setCropwiseCookie(available);
+      })
+      .catch(() => {
+        if (!cancelled) setCropwiseCookie(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     loadFiles();
@@ -289,6 +308,28 @@ export default function DashboardPage({
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  const cropwiseActive = cropwiseOn && cropwiseCookie;
+  const cropwiseCaption = !cropwiseCookie
+    ? "На сервере нет cookie Cropwise — сводки создаются без проверки"
+    : cropwiseActive
+      ? "После создания сводок сверим их с work.json"
+      : "Сводки создаются без проверки Cropwise";
+
+  function toggleCropwise() {
+    if (!cropwiseCookie) {
+      setCropwiseOn(false);
+      window.localStorage.setItem("svodki.cropwiseCheck", "0");
+      setError("На сервере нет CROPWISE_SESSION_COOKIE. Проверка Cropwise недоступна.");
+      return;
+    }
+    setCropwiseOn((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("svodki.cropwiseCheck", next ? "1" : "0");
+      return next;
+    });
+    setError("");
+  }
+
   function setAllReportsSelected(checked) {
     setSelectedIds(checked ? visibleCatalog.map((i) => i.id) : []);
   }
@@ -301,7 +342,10 @@ export default function DashboardPage({
     setGenerationLogs([]);
     setFailedJobId(null);
     try {
-      const res = await generateReports(summaryDate, ids, options);
+      const res = await generateReports(summaryDate, ids, {
+        ...options,
+        compareCropwise: cropwiseOn && cropwiseCookie,
+      });
       setInfo(`Задача поставлена в очередь (${res.job_id?.slice(0, 8) || "—"}…)`);
       onGenerationQueued?.();
     } catch (e) {
@@ -510,6 +554,22 @@ export default function DashboardPage({
                     </FormGroup>
                   </Collapse>
                 </Box>
+
+                <Button
+                  fullWidth
+                  variant="contained"
+                  onClick={toggleCropwise}
+                  sx={{
+                    textTransform: "none",
+                    bgcolor: cropwiseActive ? "success.main" : "error.main",
+                    "&:hover": { bgcolor: cropwiseActive ? "success.dark" : "error.dark" },
+                  }}
+                >
+                  Cropwise
+                </Button>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: -0.5 }}>
+                  {cropwiseCaption}
+                </Typography>
 
                 <Button
                   variant="contained"

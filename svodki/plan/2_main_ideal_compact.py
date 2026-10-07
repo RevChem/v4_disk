@@ -173,6 +173,22 @@ def _merged_period_for_group(group_name: str, default_start: date) -> tuple[date
         return default_start, TODAY
 
 
+def _editor_period_for_group(group_name: str, default_start: date) -> tuple[date, date]:
+    """Период группы из редактора, без общего SVODKI_SEASON_START_DATE.
+
+    При генерации общий старт пишется из «5.0 Уборка». Для вспашки он
+    подменяет дату группы; культивация без своего ключа читает его же.
+    """
+    keys = ("SVODKI_SEASON_START_DATE", "SEASON_START_DATE")
+    saved = {key: os.environ.pop(key, None) for key in keys}
+    try:
+        return _merged_period_for_group(group_name, default_start)
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
+
+
 def _override_period_start(group_name: str, default: date) -> date:
     return _merged_period_for_group(group_name, default)[0]
 
@@ -636,6 +652,15 @@ def _widest_machine_tasks_window() -> tuple[str, str]:
     for cand in (FERT_PERIOD_START, START_DATE, HARVEST_SEASON_START):
         if isinstance(cand, date) and cand < start_d:
             start_d = cand
+    for group_name in (
+        PLOW_GROUP_NAME,
+        DEEP_GROUP_NAME,
+        DISK_GROUP_NAME,
+        CULTIVATION_GROUP_NAME,
+    ):
+        group_start = _editor_period_for_group(group_name, START_DATE)[0]
+        if group_start < start_d:
+            start_d = group_start
     for ov in SEASON_RANGE_OVERRIDES.values():
         raw = str((ov or {}).get("period_start") or "").strip()
         if not raw:
@@ -2377,22 +2402,25 @@ def _prepare_group_selection(
             active_crop_map = "field_to_crop_plow"
             active_firm_map = "field_to_firm_all"
             active_available_ids = "period_available_ids"
-            group_period_start = START_DATE
-            group_period_end = TODAY
+            group_period_start, group_period_end = _editor_period_for_group(
+                group_name, START_DATE
+            )
         elif group_name == DEEP_GROUP_NAME:
-            # Как 9_main_fixed: без обрезки period_end из season_ranges (иначе факт = 0).
+            # Как 9_main_fixed. Конец окна ниже поднимает fact_window_end до даты отчёта.
             active_crop_map = "field_to_crop_general"
             active_firm_map = "field_to_firm_all"
             active_available_ids = "period_available_ids_general"
-            group_period_start = START_DATE
-            group_period_end = TODAY
+            group_period_start, group_period_end = _editor_period_for_group(
+                group_name, START_DATE
+            )
         elif group_name == DISK_GROUP_NAME:
             # Дискование: оба сезона history (год отчёта + year+1), не sowing-мапа посева.
             active_crop_map = "field_to_crop_general"
             active_firm_map = "field_to_firm_all"
             active_available_ids = "period_available_ids_general"
-            group_period_start = START_DATE
-            group_period_end = TODAY
+            group_period_start, group_period_end = _editor_period_for_group(
+                group_name, START_DATE
+            )
         elif use_general_crop_map:
             active_crop_map = "field_to_crop_general"
             active_firm_map = "field_to_firm_general"
@@ -2405,8 +2433,9 @@ def _prepare_group_selection(
             active_crop_map = "field_to_crop_report3"
             active_firm_map = "field_to_firm_all"
             active_available_ids = "period_available_ids"
-            group_period_start = START_DATE
-            group_period_end = TODAY
+            group_period_start, group_period_end = _editor_period_for_group(
+                group_name, START_DATE
+            )
         else:
             active_crop_map = "field_to_crop"
             active_firm_map = "field_to_firm"

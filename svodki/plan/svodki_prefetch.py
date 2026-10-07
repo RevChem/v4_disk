@@ -56,7 +56,7 @@ _REPORT_WORK_GROUPS: dict[str, tuple[str, ...]] = {
     "9": ("2.4 Вспашка", "2.8 Глубокорыхление"),
     "11": ("5.0 Уборка",),
     "12": ("5.0 Уборка",),
-    "10": ("5.0 Уборка",),
+    "10": ("5.0 Уборка", "5.4 Уборка картофеля, лука"),
     "13": ("5.0 Уборка",),
     # 14: зерновая уборка + овощи (иначе «только 14» → полный season_superset).
     "14": ("5.0 Уборка", "5.4 Уборка картофеля, лука"),
@@ -144,11 +144,44 @@ def _report_date() -> date:
     return date.fromisoformat(raw) if raw else date.today()
 
 
+_REPORT2_PERIOD_GROUPS = (
+    "2.4 Вспашка",
+    "2.8 Глубокорыхление",
+    "2.9 Дискование",
+    "2.11 Культивация",
+)
+
+
+def _report2_group_period_start(report_date: date) -> date | None:
+    """Самый ранний старт почвообработки. Общий старт уборки не учитывается."""
+    try:
+        from season_unified import period_range_for_group
+    except ImportError:
+        return None
+    keys = ("SVODKI_SEASON_START_DATE", "SEASON_START_DATE")
+    saved = {key: os.environ.pop(key, None) for key in keys}
+    earliest: date | None = None
+    try:
+        for name in _REPORT2_PERIOD_GROUPS:
+            try:
+                start, _end = period_range_for_group(name, report_date)
+            except Exception:
+                continue
+            if earliest is None or start < earliest:
+                earliest = start
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
+    return earliest
+
+
 def _season_start(report_date: date, selected_reports: set[str] | None = None) -> date:
     # Some report add-ons calculate season facts from Jan 1, while others use
     # SVODKI_SEASON_START_DATE/March. Prefetch must be a superset for all of them.
     selected = selected_reports or set()
-    if selected & {"11", "12", "26"}:
+    harvest_only = {"11", "12", "26"}
+    if selected & harvest_only and not (selected - harvest_only):
         raw = (os.environ.get("SVODKI_COMBINE_SEASON_START") or "").strip()
         if raw:
             try:
@@ -159,7 +192,12 @@ def _season_start(report_date: date, selected_reports: set[str] | None = None) -
         if report_date < harvest:
             return date(report_date.year - 1, 6, 10)
         return harvest
-    return date(report_date.year, 1, 1)
+    start = date(report_date.year, 1, 1)
+    if not selected or "2" in selected:
+        group_start = _report2_group_period_start(report_date)
+        if group_start is not None and group_start < start:
+            start = group_start
+    return start
 
 
 def _token() -> str:

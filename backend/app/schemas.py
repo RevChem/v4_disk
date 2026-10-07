@@ -29,6 +29,7 @@ class GenerateReportsIn(BaseModel):
         default=None,
         description="Ручной валовый сбор для сводок 1 / 10 / 13 (crops / vegetables).",
     )
+    compare_cropwise: bool = False
 
     def report27_options(self) -> dict[str, str] | None:
         if not any(
@@ -68,6 +69,8 @@ class GenerateReportsIn(BaseModel):
             opts.update(r27)
         if self.report_harvest_gross:
             opts["report_harvest_gross"] = self.report_harvest_gross
+        if self.compare_cropwise:
+            opts["compare_cropwise"] = True
         return opts or None
 
 
@@ -291,6 +294,12 @@ class ProverkaDashboardOut(BaseModel):
     progress: str | None = None
     ai_status: str | None = None
     ai_violation_count: int = 0
+    monitoring_enabled: bool = False
+    monitoring_violation_count: int = 0
+    monitoring_cropwise_diff_count: int = 0
+    monitoring_violations: list[dict[str, Any]] = Field(default_factory=list)
+    monitoring_error_logs: list[dict[str, str]] = Field(default_factory=list)
+    monitoring_cookie_expires_at: str | None = None
 
 
 class ProverkaRefreshOut(BaseModel):

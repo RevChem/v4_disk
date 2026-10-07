@@ -85,6 +85,18 @@ def get_report_catalog(_: User = Depends(require_generate_access)):
     return {"items": list_report_catalog_for_ui()}
 
 
+@router.get("/cropwise-cookie")
+def cropwise_cookie_available(_: User = Depends(require_generate_access)):
+    """Есть ли служебная cookie веб-сессии. Саму cookie наружу не отдаём."""
+    from app.adapters.outbound.proverka.service import session_cookie_from_env
+
+    try:
+        available = bool(session_cookie_from_env())
+    except Exception:
+        available = False
+    return {"available": available}
+
+
 @router.get("/dates")
 def get_available_dates(_: User = Depends(require_generate_access)):
     return {"items": list_available_dates()}

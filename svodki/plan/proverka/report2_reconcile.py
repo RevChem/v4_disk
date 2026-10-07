@@ -107,7 +107,8 @@ async def _load_canonical_svodka_ops(
         sv = await compute_svodka_facts(spec, report_date, run_override=run_override)
         return rid, sv
 
-    loaded = await asyncio.gather(*[_one(rid) for rid in sorted(rid_to_groups)])
+    # По очереди: season_context пишет общий os.environ, параллельный gather его перетирает.
+    loaded = [await _one(rid) for rid in sorted(rid_to_groups)]
     for rid, sv in loaded:
         sv_ops = operations_from_svodka(sv)
         for gn in rid_to_groups[rid]:

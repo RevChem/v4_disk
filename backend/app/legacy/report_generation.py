@@ -458,10 +458,13 @@ def save_generation_data_checks(report_date: date, report_id: str, lines: list[s
     if not alerts:
         path.unlink(missing_ok=True)
         return
-    path.write_text(
-        json.dumps({"report_id": str(report_id), "lines": alerts}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    payload = json.dumps({"report_id": str(report_id), "lines": alerts}, ensure_ascii=False)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def load_generation_data_checks(report_date: date) -> list[str]:
@@ -743,21 +746,31 @@ def _report22_storage_title(
 
 
 _job_subproc_registry_lock = threading.Lock()
-_job_active_subprocesses: dict[str, list[subprocess.Popen]] = {}
+_job_active_subprocesses: dict[str, list[tuple[str | None, subprocess.Popen]]] = {}
 
 
-def kill_generation_job_subprocesses(job_id: str) -> None:
-    """Сразу гасим все процессы, связанные с задачей (вызывается из POST /generation-queue/{id}/cancel)."""
+def kill_generation_job_subprocesses(
+    job_id: str,
+    report_ids: set[str] | None = None,
+) -> None:
+    """Гасит процессы задачи. report_ids=None — все, иначе только эти сводки."""
+    wanted = None if report_ids is None else {str(x) for x in report_ids}
     with _job_subproc_registry_lock:
-        procs = list(_job_active_subprocesses.get(job_id, ()))
-    for p in procs:
-        _terminate_report_subprocess_tree(p)
+        entries = list(_job_active_subprocesses.get(job_id, ()))
+    for report_id, proc in entries:
+        if wanted is not None and report_id not in wanted:
+            continue
+        _terminate_report_subprocess_tree(proc)
 
 
-def _register_job_subprocess(job_id: str | None, proc: subprocess.Popen) -> None:
+def _register_job_subprocess(
+    job_id: str | None,
+    proc: subprocess.Popen,
+    report_id: str | None = None,
+) -> None:
     if job_id:
         with _job_subproc_registry_lock:
-            _job_active_subprocesses.setdefault(job_id, []).append(proc)
+            _job_active_subprocesses.setdefault(job_id, []).append((report_id, proc))
 
 
 def _unregister_job_subprocess(job_id: str | None, proc: subprocess.Popen) -> None:
@@ -767,10 +780,10 @@ def _unregister_job_subprocess(job_id: str | None, proc: subprocess.Popen) -> No
         bucket = _job_active_subprocesses.get(job_id)
         if not bucket:
             return
-        try:
-            bucket.remove(proc)
-        except ValueError:
-            pass
+        for index, (_report_id, registered) in enumerate(bucket):
+            if registered is proc:
+                del bucket[index]
+                break
         if not bucket:
             del _job_active_subprocesses[job_id]
 
@@ -809,6 +822,7 @@ def _run_logged_subprocess_interruptible(
     generation_job_id: str | None,
     should_cancel: Callable[[], bool] | None,
     timeout_sec: float | None,
+    report_id: str | None = None,
 ) -> tuple[int, str, str]:
     """Запуск с stdout/stderr в файлы (нет риска переполнения PIPE) и поддержкой немедленной отмены."""
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -829,7 +843,7 @@ def _run_logged_subprocess_interruptible(
             )
         deadline = None if timeout_sec is None else time.monotonic() + float(timeout_sec)
         poll = 0.2
-        _register_job_subprocess(generation_job_id, proc)
+        _register_job_subprocess(generation_job_id, proc, report_id)
         assert proc is not None
         while proc.poll() is None:
             if deadline is not None and time.monotonic() > deadline:
@@ -1063,7 +1077,8 @@ def _ensure_namolot_available(env: dict[str, str]) -> None:
         raise ReportGenerationError(
             "Namolot: не задан NAMOLOT_BASE_URL. Проверьте .env на сервере."
         )
-    url = base + "?" + urlencode({"date_begin": "2026-01-01", "date_end": "2026-01-01"})
+    probe_day = date.today().replace(month=1, day=1).isoformat()
+    url = base + "?" + urlencode({"date_begin": probe_day, "date_end": probe_day})
     headers = {}
     if user and pwd:
         headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{pwd}".encode()).decode()
@@ -2975,6 +2990,7 @@ def _run_api_data_prefetch(
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
             timeout_sec=timeout_sec,
+            report_id=None,
         )
         if last_rc == 0:
             break
@@ -3297,6 +3313,7 @@ def _run_report_script(
                 generation_job_id=generation_job_id,
                 should_cancel=should_cancel,
                 timeout_sec=timeout_sec,
+                report_id=str(cfg.id),
             )
         except ReportGenerationCancelled:
             raise
@@ -3372,36 +3389,20 @@ def _data_check_file_total_after_script(
     _data_check_plan_sys_path()
     from svodki_sanity import check_file_total_after_save
 
-    prev = os.environ.get("SVODKI_REPORT_ID")
-    os.environ["SVODKI_REPORT_ID"] = str(report_id)
-    try:
-        calc = _parse_calc_total_ha_from_stdout(stdout)
-        return check_file_total_after_save(
-            calc,
-            xlsx_path=saved_path,
-            report_date=report_date,
-            report_id=str(report_id),
-        )
-    finally:
-        if prev is None:
-            os.environ.pop("SVODKI_REPORT_ID", None)
-        else:
-            os.environ["SVODKI_REPORT_ID"] = prev
+    calc = _parse_calc_total_ha_from_stdout(stdout)
+    return check_file_total_after_save(
+        calc,
+        xlsx_path=saved_path,
+        report_date=report_date,
+        report_id=str(report_id),
+    )
 
 
 def _finalize_data_check_cross_op(summary_date: date) -> list[str]:
     _data_check_plan_sys_path()
     from svodki_sanity import finalize_cross_op_checks
 
-    prev = os.environ.get("SVODKI_REPORT_ID")
-    os.environ["SVODKI_REPORT_ID"] = "сверка"
-    try:
-        return list(finalize_cross_op_checks(summary_date) or [])
-    finally:
-        if prev is None:
-            os.environ.pop("SVODKI_REPORT_ID", None)
-        else:
-            os.environ["SVODKI_REPORT_ID"] = prev
+    return list(finalize_cross_op_checks(summary_date, report_id="сверка") or [])
 
 
 def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_date: date) -> Path:

@@ -36,7 +36,7 @@ _SUBGROUP_TO_FIRM: dict[str, str] | None = None
 _WS_RE = re.compile("[\\s\u00a0\u202f\u2009\u2007\u2007\u2060]+")
 _TOTAL_LABELS = frozenset({"всего", "итого", "total", "итог"})
 _TASK_ID_RE = re.compile(r"#(\d+)")
-_CROPWISE_COOKIE_LOCK = threading.Lock()
+_CROPWISE_COOKIE_LOCK = threading.RLock()
 
 HOST = "https://operations.cropwise.com"
 WORK_JSON_URL = f"{HOST}/machines/reports/work.json"

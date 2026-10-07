@@ -594,23 +594,22 @@ def get_namolot_harvest_holding(
     return round(season), round(day)
 
 def resolve_combine_season_start(report_date: date) -> date:
-    """Начало комбайнового сезона для report_date (10 июня ± env override)."""
-    season_start = date(report_date.year, 6, 10)
-    if report_date < season_start:
-        season_start = date(report_date.year - 1, 6, 10)
-    # SVODKI_COMBINE_SEASON_START — начало уборки (10.06); SVODKI_SEASON_START_DATE
-    # из season_ranges часто календарный год (01.07) и тянет прошлый сезон в факт.
-    _season_start_raw = (
-        os.environ.get("SVODKI_COMBINE_SEASON_START")
-        or os.environ.get("SVODKI_SEASON_START_DATE")
-        or os.environ.get("SEASON_START_DATE")
-        or ""
-    ).strip()
-    if _season_start_raw:
+    """Начало уборки: та же дата, что combine_season_start_for_date (10 июня)."""
+    try:
+        from season_unified import combine_season_start_for_date
+
+        return combine_season_start_for_date(report_date)
+    except Exception:
+        pass
+    raw = (os.environ.get("SVODKI_COMBINE_SEASON_START_DATE") or os.environ.get("SVODKI_COMBINE_SEASON_START") or "").strip()
+    if raw:
         try:
-            season_start = date.fromisoformat(_season_start_raw.split("T")[0])
+            return date.fromisoformat(raw.split("T")[0])
         except ValueError:
             pass
+    season_start = date(report_date.year, 6, 10)
+    if report_date < season_start:
+        return date(report_date.year - 1, 6, 10)
     return season_start
 
 

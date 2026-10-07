@@ -309,23 +309,34 @@ def load_season_store(report_date: date | None = None, *, reload: bool = False) 
     return store
 
 
+def combine_season_start_for_date(report_date: date) -> date:
+    """Начало уборки. Выбранные годы сезона эту дату не сдвигают.
+
+    Явная дата — SVODKI_COMBINE_SEASON_START_DATE или настройки сводки 26.
+    Общий SVODKI_SEASON_START_DATE не читаем: его пишет календарь (01.07).
+    """
+    try:
+        from app.legacy.manual_overrides import (
+            combine_season_start_for_date as _from_settings,
+        )
+
+        return _from_settings(report_date)
+    except Exception:
+        pass
+    raw = (os.environ.get("SVODKI_COMBINE_SEASON_START_DATE") or "").strip()
+    parsed = _parse_iso_date(raw)
+    if parsed:
+        return parsed
+    start = date(report_date.year, 6, 10)
+    if report_date < start:
+        return date(report_date.year - 1, 6, 10)
+    return start
+
+
 def default_period_start_for_group(group_name: str, report_date: date) -> date:
     name = str(group_name or "").strip()
     if name.startswith("5.0 Уборка"):
-        raw = (
-            os.environ.get("SVODKI_COMBINE_SEASON_START")
-            or os.environ.get("SVODKI_SEASON_START_DATE")
-            or os.environ.get("SEASON_START_DATE")
-            or ""
-        ).strip()
-        if raw:
-            parsed = _parse_iso_date(raw)
-            if parsed:
-                return parsed
-        start = date(report_date.year, 6, 1)
-        if report_date < start:
-            return date(report_date.year - 1, 6, 1)
-        return start
+        return combine_season_start_for_date(report_date)
     if name.startswith("2.1 "):
         return date(report_date.year, 1, 1)
     if name.startswith("1.1 ") or name.startswith("3.1 ") or name.startswith("3.2 "):
@@ -379,16 +390,6 @@ def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any
             seed_years = _years_from_env_var("SVODKI_SEEDING_SEASON_YEARS")
             if seed_years:
                 ov["history_years"] = seed_years
-
-    if name.startswith("5.0 Уборка"):
-        ps = (
-            os.environ.get("SVODKI_COMBINE_SEASON_START")
-            or os.environ.get("SVODKI_SEASON_START_DATE")
-            or os.environ.get("SEASON_START_DATE")
-            or ""
-        ).strip()
-        if ps:
-            ov["period_start"] = ps.split("T")[0]
 
     if name.startswith("2.4 Вспашка"):
         ps = (os.environ.get("SVODKI_SEASON_START_DATE") or os.environ.get("SEASON_START_DATE") or "").strip()
@@ -494,10 +495,17 @@ def resolve_group_season_config(
             )
 
     default_start = default_period_start_for_group(name, report_date)
-    period_start = group_ov.get("period_start", run_ov.get("period_start"))
-    period_end = group_ov.get("period_end", run_ov.get("period_end"))
+    is_harvest = name.startswith("5.0 Уборка")
+    period_start = None if is_harvest else group_ov.get("period_start", run_ov.get("period_start"))
+    period_end = None if is_harvest else group_ov.get("period_end", run_ov.get("period_end"))
 
-    if period_start is None and period_end is None and has_file_override and history_years:
+    if (
+        not is_harvest
+        and period_start is None
+        and period_end is None
+        and has_file_override
+        and history_years
+    ):
         try:
             from season_calendar import merged_period_for_years
 
@@ -507,9 +515,9 @@ def resolve_group_season_config(
         except ImportError:
             period_start = period_end = None
 
-    if period_start is None:
+    if not is_harvest and period_start is None:
         period_start = ov.get("period_start")
-    if period_end is None:
+    if not is_harvest and period_end is None:
         period_end = ov.get("period_end")
 
     if not period_start or not period_end:
@@ -517,7 +525,9 @@ def resolve_group_season_config(
             from season_calendar import merged_period_for_years
 
             # none: окно дат до report_date (не календарь Cropwise — иначе обрезка на 01.07).
-            if rule == "none" and not has_file_override:
+            if is_harvest:
+                ps, pe = combine_season_start_for_date(report_date), report_date
+            elif rule == "none" and not has_file_override:
                 ps, pe = default_start, report_date
             elif has_file_override and history_years:
                 ps, pe = merged_period_for_years(history_years, report_date, calendar)

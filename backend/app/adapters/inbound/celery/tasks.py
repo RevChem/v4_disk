@@ -47,7 +47,10 @@ def run_proverka_task(job_id: str) -> dict:
 
     try:
         run_job(job_id)
-        return {"job_id": job_id, "status": "completed"}
+        from app.adapters.outbound.proverka.service import read_job_status
+
+        status = str((read_job_status(job_id) or {}).get("status") or "completed")
+        return {"job_id": job_id, "status": status}
     except Exception as exc:
         log.exception("proverka.failed", job_id=job_id, error=str(exc))
         return {"job_id": job_id, "status": "failed", "error": str(exc)}

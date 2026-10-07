@@ -1,9 +1,0 @@
-.git
-backend/.venv
-**/node_modules
-**/__pycache__
-*.pyc
-backend/.env
-backend/uploads
-*.sqlite
-*.pdf

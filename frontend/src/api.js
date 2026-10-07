@@ -271,6 +271,11 @@ export function buildHarvestGrossPayload(form) {
   return out;
 }
 
+export async function fetchCropwiseCookie() {
+  const { data } = await api.get("/reports/cropwise-cookie", { timeout: 15_000 });
+  return Boolean(data?.available);
+}
+
 export async function generateReports(summaryDate, reportIds, options = {}) {
   try {
     const payload = {
@@ -296,6 +301,9 @@ export async function generateReports(summaryDate, reportIds, options = {}) {
     const r27DateTo = options?.report27DateTo ?? options?.report27_date_to;
     if (typeof r27DateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r27DateTo.trim())) {
       payload.report27_date_to = r27DateTo.trim();
+    }
+    if (options?.compareCropwise || options?.compare_cropwise) {
+      payload.compare_cropwise = true;
     }
     const headers = {};
     if (

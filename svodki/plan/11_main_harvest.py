@@ -99,20 +99,30 @@ REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
-SEASON_START = date(REPORT_DATE.year, 6, 10)
-if REPORT_DATE < SEASON_START:
-    SEASON_START = date(REPORT_DATE.year - 1, 6, 10)
-_season_start_raw = (
-    os.environ.get("SVODKI_SEASON_START_DATE")
-    or os.environ.get("SEASON_START_DATE")
-    or os.environ.get("SVODKI_COMBINE_SEASON_START")
-    or ""
-).strip()
-if _season_start_raw:
+def _combine_season_start(report_date: date) -> date:
     try:
-        SEASON_START = date.fromisoformat(_season_start_raw.split("T")[0])
-    except ValueError:
+        from season_unified import combine_season_start_for_date
+
+        return combine_season_start_for_date(report_date)
+    except Exception:
         pass
+    raw = (
+        os.environ.get("SVODKI_COMBINE_SEASON_START_DATE")
+        or os.environ.get("SVODKI_COMBINE_SEASON_START")
+        or ""
+    ).strip()
+    if raw:
+        try:
+            return date.fromisoformat(raw.split("T")[0])
+        except ValueError:
+            pass
+    start = date(report_date.year, 6, 10)
+    if report_date < start:
+        return date(report_date.year - 1, 6, 10)
+    return start
+
+
+SEASON_START = _combine_season_start(REPORT_DATE)
 
 # Настройка временного диапазона суток
 # DAY_START_HOUR — час начала суток (по умолчанию 6 = 06:00)
