@@ -15,8 +15,16 @@ def ha_matches(file_ha: float, cropwise_ha: float) -> bool:
     return diff <= tol
 
 
-def work_json_total(packed: dict[str, Any], hints: tuple[str, ...] | list[str]) -> tuple[float | None, str]:
-    """Сумма «Всего» по загруженным сезонам. None — ни один сезон не прочитан."""
+def work_json_total(
+    packed: dict[str, Any],
+    hints: tuple[str, ...] | list[str],
+    seasons: set[str] | None = None,
+) -> tuple[float | None, str]:
+    """Сумма «Всего» по сезонам группы. None — ни один нужный сезон не прочитан.
+
+    seasons — task_season_years_set_for_group. Чужой сезон в сумму не входит:
+    иначе посев или вспашка за два года разойдутся со сводкой, которая считает один.
+    """
     by_year = packed.get("by_year") if isinstance(packed, dict) else None
     if not isinstance(by_year, dict) or not by_year:
         return None, "work.json не загружен"
@@ -24,6 +32,8 @@ def work_json_total(packed: dict[str, Any], hints: tuple[str, ...] | list[str]) 
     seen = False
     problems: list[str] = []
     for year, slot in by_year.items():
+        if seasons is not None and str(year) not in seasons:
+            continue
         if not isinstance(slot, dict):
             continue
         status = str(slot.get("load_status") or "")
@@ -125,7 +135,10 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
             continue
         for group, slot in slots:
             hints = _fact_hints_for_group(group) or tuple(spec.fact_column_hints)
-            cropwise_ha, note = work_json_total(slot, hints)
+            from season_unified import task_season_years_set_for_group
+
+            seasons = task_season_years_set_for_group(group, report_date)
+            cropwise_ha, note = work_json_total(slot, hints, seasons)
             file_ha = file_areas.get(group)
             if cropwise_ha is None:
                 lines.append(f"[{rid}] {group}: {note}.")

@@ -102,14 +102,21 @@ def find_report_xlsx(report_date: date, report_id: str) -> Path | None:
     return find_report_file(report_date, report_id, ".xlsx")
 
 
+def _flat_header(cell: Any) -> str:
+    """Шапка сводки 5 хранит перевод строки внутри ячейки."""
+    return " ".join(str(cell or "").replace("\n", " ").split())
+
+
 def _header_indexes(values: list[Any]) -> tuple[int, int] | None:
     firm_idx: int | None = None
     value_idx: int | None = None
+    firm_names = {_flat_header(name) for name in _FIRM_HEADERS}
+    value_names = {_flat_header(name) for name in _VALUE_HEADERS}
     for i, cell in enumerate(values):
-        text = str(cell or "").strip()
-        if text in _FIRM_HEADERS:
+        text = _flat_header(cell)
+        if text in firm_names:
             firm_idx = i
-        if text in _VALUE_HEADERS:
+        if text in value_names:
             value_idx = i
     if firm_idx is None or value_idx is None:
         return None
@@ -188,10 +195,8 @@ def file_ha_for_operation(
     blocks = list(file_values.get("blocks") or [])
     if not blocks:
         return None
-    aliases = {
-        name.casefold()
-        for name in _GROUP_BLOCK_TITLES.get(group_name, (group_name,))
-    }
+    titles = _GROUP_BLOCK_TITLES.get(group_name, ())
+    aliases = {group_name.casefold(), *(name.casefold() for name in titles)}
     for block in blocks:
         title = str(block.get("title") or "").strip()
         if title and title.casefold() in aliases:
@@ -1137,13 +1142,13 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     rid = str(report_id)
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
-        blocks = _read_xlsx_blocks(path)
-        if blocks:
-            return areas_from_blocks(rid, blocks)
         if rid == "2":
             from proverka.file_consistency import report2_xlsx_areas
 
             return report2_xlsx_areas(path)
+        blocks = _read_xlsx_blocks(path)
+        if blocks:
+            return areas_from_blocks(rid, blocks)
         return {}
     if suffix != ".pdf":
         return {}

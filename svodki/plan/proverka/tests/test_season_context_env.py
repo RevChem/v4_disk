@@ -102,6 +102,22 @@ def test_saved_harvest_years_keep_combine_start() -> None:
     assert saved_years["history_years"] == [2026]
 
 
+def test_report5_summary_reads_daily_total_including_zero():
+    from proverka.file_values import file_ha_for_operation, read_summary_blocks
+
+    class _Sheet:
+        def iter_rows(self, values_only=True):
+            assert values_only
+            yield ("КУЛЬТУРЫ",)
+            yield ("Агрофирма", "Общий объем выполненной\nработы за сутки, га")
+            yield ("Итого", 0)
+
+    blocks = read_summary_blocks(_Sheet())
+    assert blocks == [{"title": "КУЛЬТУРЫ", "file_ha": 0.0}]
+    ha = file_ha_for_operation({"found": True, "blocks": blocks}, "4.0 Посев", "5")
+    assert ha == 0.0
+
+
 def test_inject_drops_shared_harvest_start():
     from season_unified import inject_season_range_env
 
@@ -109,9 +125,13 @@ def test_inject_drops_shared_harvest_start():
         "SVODKI_SEASON_START_DATE": "2026-06-10",
         "SEASON_START_DATE": "2026-06-10",
     }
+    env["SEASON_YEAR"] = "2027"
+    env["SVODKI_SEASON_YEARS"] = "2026,2027"
     inject_season_range_env(env, date(2026, 10, 7))
     assert "SVODKI_SEASON_START_DATE" not in env
     assert "SEASON_START_DATE" not in env
+    assert "SEASON_YEAR" not in env
+    assert "SVODKI_SEASON_YEARS" not in env
     assert env.get(group_env_key("3.1 Опрыскивание", "HISTORY_YEARS"))
 
 

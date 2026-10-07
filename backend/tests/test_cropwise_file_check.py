@@ -39,6 +39,24 @@ def test_work_json_total_sums_loaded_seasons(monkeypatch):
     assert note == ""
 
 
+def test_work_json_total_skips_seasons_outside_the_group(monkeypatch):
+    import proverka.cropwise_ui as ui
+
+    monkeypatch.setattr(ui, "cropwise_total_ha", lambda slot, _hints: float(slot["ha"]))
+    total, note = work_json_total(
+        {
+            "by_year": {
+                2026: {"load_status": "loaded", "ha": 100},
+                2027: {"load_status": "loaded", "ha": 40},
+            }
+        },
+        (),
+        seasons={"2027"},
+    )
+    assert total == 40
+    assert note == ""
+
+
 def test_work_json_total_none_when_nothing_loaded():
     total, note = work_json_total(
         {"by_year": {2026: {"load_status": "not_loaded", "error": "таймаут"}}},

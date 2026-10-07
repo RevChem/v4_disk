@@ -65,15 +65,6 @@ REPORT_SEASON_RULE: dict[str, str] = {
     "11": "none",
 }
 
-# Приоритет глобальных env (SEASON_YEAR / SEASON_START_DATE) при генерации PDF
-_GLOBAL_ENV_GROUP_PRIORITY = (
-    "5.0 Уборка",
-    "2.4 Вспашка",
-    "4.0 Посев",
-    "3.1 Опрыскивание",
-    "1.1 Внесение минеральных удобрений",
-)
-
 _STORE_CACHE: dict[str, Any] | None = None
 _STORE_CACHE_DATE: date | None = None
 _STORE_CACHE_SIG: tuple | None = None
@@ -828,20 +819,14 @@ def inject_season_range_env(env: dict[str, str], report_date: date | None = None
                 continue
             env[k] = v
 
-    # Старт и год уборки не кладём в общие ключи: сводки 3–9 читают их при
-    # импорте и теряют свои даты (01.03, 15.03, 25.03, 14.03). Сводки 10, 11
-    # и 13 получают дату уборки отдельно, после этого вызова.
-    global_env: dict[str, str] = {}
-    for gn in _GLOBAL_ENV_GROUP_PRIORITY:
-        if gn not in all_groups or str(gn).startswith("5.0 Уборка"):
-            continue
-        cfg = resolve_group_season_config(gn, rd, store=store)
-        genv = season_env_for_group(gn, cfg)
-        for k in ("SEASON_YEAR", "SVODKI_SEASON_YEARS"):
-            if k in genv and k not in global_env:
-                global_env[k] = genv[k]
-    env.update(global_env)
-    # Унаследованный из процесса web старт уборки тоже не оставляем:
-    # сводки 3–9 при импорте приняли бы его за свою дату сезона.
-    env.pop("SVODKI_SEASON_START_DATE", None)
-    env.pop("SEASON_START_DATE", None)
+    # Общие SEASON_YEAR / SEASON_START_DATE не публикуем. Год вспашки (2027)
+    # попадал в 1_main_dop и сдвигал окно доп. таблиц сводки 5 на 01.01.2027.
+    # У каждой группы свой SVODKI_GRP_*. Сводки 10, 11 и 13 получают дату
+    # уборки отдельно, после этого вызова.
+    for key in (
+        "SEASON_YEAR",
+        "SVODKI_SEASON_YEARS",
+        "SVODKI_SEASON_START_DATE",
+        "SEASON_START_DATE",
+    ):
+        env.pop(key, None)

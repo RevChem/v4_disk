@@ -64,16 +64,6 @@ from plans import (
 )
 
 
-def _cropwise_season_year(fallback: int) -> int:
-    for key in ("CROPWISE_SEASON_YEAR", "SEASON_YEAR"):
-        raw = os.environ.get(key, "").strip()
-        if not raw:
-            continue
-        try:
-            return int(raw)
-        except ValueError:
-            continue
-    return int(fallback)
 try:
     from excel_number_fmt import NF_DEC2, NF_INT
 except ImportError:
@@ -87,7 +77,10 @@ except ImportError:
 REPORT_DATE = date.today()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
-SEASON_YEAR = _cropwise_season_year(REPORT_DATE.year)
+# Окно сезона доп. таблиц — с 1 января года отчёта, как SEASON_YEAR в 5_main_fixed.
+# Общий SEASON_YEAR из окружения — год другой группы (сейчас вспашка, 2027)
+# и сдвигал бы «Рапс озимый» / «Пшеница озимая» / «Иные культуры» в будущее.
+SEASON_YEAR = REPORT_DATE.year
 # Сезон культуры: текущий сезон Cropwise (07.10.2026 и 15.03.2027 -> 2027), а не SEASON_YEAR + 1.
 # Явный CROPWISE_SEASON_YEAR сохраняет прежнюю семантику (год + 1).
 if os.environ.get("CROPWISE_SEASON_YEAR", "").strip().isdigit():
