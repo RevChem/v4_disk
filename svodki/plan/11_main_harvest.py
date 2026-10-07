@@ -88,7 +88,14 @@ API_TOKEN = (
     or (os.environ.get("API_TOKEN") or "").strip()
     or API_TOKEN
 )
-REPORT_DATE = date(2025, 9, 25)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
@@ -971,7 +978,7 @@ def aggregate_harvest_by_firm(
             from task_area_shared import history_crop_name
 
             crop = history_crop_name(
-                item, field_to_crop.get(fid_i) or "",
+                item, "",
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
@@ -1005,7 +1012,7 @@ def aggregate_harvest_by_firm(
             from task_area_shared import history_crop_name
 
             crop_i = history_crop_name(
-                item, field_to_crop.get(fid_i) or "",
+                item, "",
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop_i != CORN_SILAGE_CROP:
@@ -1116,7 +1123,7 @@ def aggregate_harvest_by_firm(
             from task_area_shared import history_crop_name
 
             crop = history_crop_name(
-                item, field_to_crop.get(fid_i) or "",
+                item, "",
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:

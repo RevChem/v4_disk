@@ -88,11 +88,18 @@ from plans import (
 # =============================================================================
 # КОНФИГУРАЦИЯ
 # =============================================================================
-REPORT_DATE = date(2026, 9, 4)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
-SEASON_START = date(2026, 3, 25)
+SEASON_START = date(REPORT_DATE.year, 3, 25)
 _season_start_raw = (
     os.environ.get("SVODKI_SEASON_START_DATE")
     or os.environ.get("SEASON_START_DATE")
@@ -774,11 +781,9 @@ def _aggregate_tasks_for_firms(
                 cov += cov_item_in
                 if _cap is not None and cov_item_in > 0:
                     fid_note = int(item.get("field_id") or 0)
-                    crop_note = ""
-                    if field_to_crop is not None and fid_note:
-                        from mtfmi_batch_fetch import crop_of_item
+                    from mtfmi_batch_fetch import crop_label
 
-                        crop_note = crop_of_item(item, str(field_to_crop.get(fid_note) or ""))
+                    crop_note = crop_label(item)
                     _cap[1](
                         ("2.11 Культивация", firm, mid),
                         group="2.11 Культивация",

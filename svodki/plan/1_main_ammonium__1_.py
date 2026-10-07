@@ -22,6 +22,11 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover - season_calendar не в sys.path
+    def season_year_for_date(d):
+        return d.year + (1 if d.month >= 7 else 0)
 
 try:
     from svodki_timing import stage, stage_add, timing_finish, timing_start
@@ -105,7 +110,14 @@ for _firm_crops in HARDCODED_PLAN.get(_VEG_KEY, {}).values():
         _key = _VEG_CROP_NAME_MAP.get(_crop, _crop)
         _VEG_CROP_PLAN_HA[_key] = _VEG_CROP_PLAN_HA.get(_key, 0.0) + float(_val or 0.0)
 
-REPORT_DATE  = date(2026, 9, 6)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE  = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
@@ -240,7 +252,8 @@ def _plow_task_seasons(report_date: date) -> set[str]:
             found.add(part)
     if found:
         return found
-    return {str(report_date.year), str(report_date.year + 1)}
+    cur = season_year_for_date(report_date)
+    return {str(cur - 1), str(cur)}
 
 
 PLOW_TASK_SEASONS = _plow_task_seasons(REPORT_DATE)
@@ -1155,20 +1168,9 @@ def _history_crop_for_field_items(items: list[dict], fid: int) -> str:
         name = _history_crop(item)
         if name:
             return name
-    return "Не определена"
+    from mtfmi_batch_fetch import UNDEFINED_CROP
 
-
-def fert_crop_name(fid: int) -> str:
-    """Устаревшая культура поля. Факт сводки берёт _history_crop строки."""
-    from mtfmi_batch_fetch import crop_of_field
-
-    name = fert_field_to_crop.get(int(fid))
-    if name:
-        return name
-    name = str(field_to_crop.get(int(fid)) or "")
-    if name:
-        return name
-    return crop_of_field(int(fid), "")
+    return UNDEFINED_CROP
 
 
 def load_reference_data() -> None:
@@ -1260,7 +1262,7 @@ def load_reference_data() -> None:
 
     missing = available_field_ids - set(field_to_crop)
     if missing:
-        season_year = int(REPORT_DATE.year) + 1
+        season_year = season_year_for_date(REPORT_DATE)
         print(
             f"    Активных полей без культуры из agro_operations: {len(missing)} — "
             f"добираем history_items (fallback, сезон {season_year})..."
@@ -1305,7 +1307,7 @@ def load_reference_data() -> None:
         int(y)
         for y in (
             resolve_group_season_config(WORK_TYPE_NAME, REPORT_DATE).get("history_years")
-            or [REPORT_DATE.year, REPORT_DATE.year + 1]
+            or [season_year_for_date(REPORT_DATE) - 1, season_year_for_date(REPORT_DATE)]
         )
     ]
     crop_field_ids = set()
@@ -1675,7 +1677,9 @@ async def fetch_fertilizer_11_mtfmi(
             # Факт по культурам — дни строго до даты отчёта (листы сводки).
             if shift_date < REPORT_DATE:
                 season_field_cov[firm][fid_i] += cov
-                season_crop_cov[firm][_history_crop(item) or "Не определена"] += cov
+                from mtfmi_batch_fetch import UNDEFINED_CROP
+
+                season_crop_cov[firm][_history_crop(item) or UNDEFINED_CROP] += cov
                 if collect_debug_sheets:
                     cmp_mtfmi[fid_i] += cov
 
@@ -4087,7 +4091,9 @@ def write_comparison_sheet(
         diff       = round(agro_area - mtfmi_area, 2)
 
         firm  = agro_entry["firm"] if agro_entry else get_firm_for_field(fid)
-        crop  = agro_entry["crop"] if agro_entry else "Не определена"
+        from mtfmi_batch_fetch import UNDEFINED_CROP
+
+        crop  = agro_entry["crop"] if agro_entry else UNDEFINED_CROP
         fname = field_name_map.get(fid, f"field_{fid}")
         farea = round(field_area_map.get(fid, 0.0), 2)
         ops_list = agro_entry.get("ops", []) if agro_entry else []

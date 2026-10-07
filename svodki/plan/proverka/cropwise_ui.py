@@ -7,7 +7,14 @@ import re
 import threading
 import time
 from collections import defaultdict
+from datetime import date
 from typing import Any
+
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover
+    def season_year_for_date(d: date) -> int:
+        return d.year + (1 if d.month >= 7 else 0)
 
 import requests
 
@@ -327,10 +334,18 @@ class WorkLoadJob:
         self.fact_hints = tuple(fact_hints)
 
 
-def ui_check_years(report_year: int) -> list[int]:
-    """Сезоны проверки: год отчёта и следующий. Не из констант и не из редактора."""
-    year = int(report_year)
-    return [year, year + 1]
+def ui_check_years(report_date: date | int) -> list[int]:
+    """Сезоны проверки: текущий сезон и предыдущий. Не из констант и не из редактора.
+
+    Сезон Y идёт с 01.07.(Y-1) по 01.07.Y: 07.10.2026 -> [2026, 2027],
+    15.03.2027 -> [2026, 2027]. Число (старый вызов с календарным годом)
+    трактуется как осень этого года.
+    """
+    if isinstance(report_date, date):
+        current = season_year_for_date(report_date)
+    else:
+        current = int(report_date) + 1
+    return [current - 1, current]
 
 
 def read_ui_session_season(web: requests.Session) -> int | None:

@@ -271,7 +271,7 @@ def _prefetch_work_json(
     from proverka.report2_reconcile import _cropwise_spec_for_group, _fact_hints_for_group
     from proverka.work_groups import work_type_ids_for_group
 
-    years = ui_check_years(report_date.year)
+    years = ui_check_years(report_date)
     comparable = [rid for rid in report_ids if _needs_cropwise_ui(REPORTS[rid])]
     prefetched: dict[str, dict[str, Any]] = {}
     if not comparable:

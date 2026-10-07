@@ -60,7 +60,14 @@ API_TOKEN = (
     or (os.environ.get("API_TOKEN") or "").strip()
 )
 BASE_URL = (os.environ.get("CROPWISE_BASE_URL") or "").strip() or BASE_URL
-REPORT_DATE = date(2026, 9, 14)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 

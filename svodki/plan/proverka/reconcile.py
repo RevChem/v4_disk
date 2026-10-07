@@ -273,7 +273,7 @@ def reconcile_one(
             ui_check_years,
         )
 
-        years = ui_check_years(report_date.year)
+        years = ui_check_years(report_date)
         load_key = spec.work_groups[0] if len(spec.work_groups) == 1 else spec.report_id
         loaded = load_works_for_seasons(
             cookie,
@@ -310,7 +310,7 @@ def reconcile_one(
     group_name = spec.work_groups[0] if len(spec.work_groups) == 1 else None
     combined = build_season_cropwise(
         work,
-        report_year=report_date.year,
+        report_date=report_date,
         firm_names=firm_names,
         fact_hints=hints,
         season_rule=spec.season_rule,

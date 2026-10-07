@@ -543,6 +543,12 @@ def _cropwise_crop_summary_rows(
     return out
 
 
+def _append_data_checks(row: dict[str, Any], result: dict[str, Any]) -> None:
+    checks = list((result.get("svodka") or {}).get("data_checks") or [])
+    if checks:
+        row["warnings"] = list(row.get("warnings") or []) + checks
+
+
 def build_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
     reports = batch.get("reports") or {}
     rows: list[dict[str, Any]] = []
@@ -553,12 +559,19 @@ def build_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
         spec = REPORTS.get(rid)
         if spec and spec.cropwise_per_operation:
             op_cmp = result.get("operation_comparisons") or {}
+            first = True
             for group_name in sorted(op_cmp.keys()):
                 oc = op_cmp[group_name]
-                rows.append(_row_from_per_operation(rid, group_name, oc))
+                row = _row_from_per_operation(rid, group_name, oc)
+                if first:
+                    _append_data_checks(row, result)
+                    first = False
+                rows.append(row)
                 rows.extend(_cropwise_crop_summary_rows(rid, group_name, oc))
             continue
-        rows.append(_row_from_result(rid, result))
+        row = _row_from_result(rid, result)
+        _append_data_checks(row, result)
+        rows.append(row)
         groups = tuple(spec.work_groups or ()) if spec else ()
         if len(groups) == 1 and result.get("crop_comparisons"):
             rows.extend(_cropwise_crop_summary_rows(rid, groups[0], {

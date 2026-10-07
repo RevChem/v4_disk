@@ -81,14 +81,21 @@ _VEG_SPRAY_KEY  = "3.2 Опрыскивание (овощи)"
 # =============================================================================
 # КОНФИГУРАЦИЯ
 # =============================================================================
-REPORT_DATE = date(2026, 9, 4)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
 SEASON_YEAR = 2026
 SEASONS     = ["2026"]   # опрыскивание только сезон 2025
 
-SEASON_START = date(2026, 1, 1)  # средняя выработка по сезону считается с этой даты
+SEASON_START = date(REPORT_DATE.year, 1, 1)  # средняя выработка по сезону считается с этой даты
 _season_start_raw = (
     os.environ.get("SVODKI_SEASON_START_DATE")
     or os.environ.get("SEASON_START_DATE")
@@ -585,11 +592,9 @@ def _veggie_crop_from_items(
             continue
         if get_firm_for_field(fid_i) != VEGGIE_FIRM:
             continue
-        from mtfmi_batch_fetch import crop_of_item
+        from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
 
-        crop = _map_veggie_crop(crop_of_item(item, field_to_crop.get(fid_i, "")))
-        if not crop:
-            continue
+        crop = _map_veggie_crop(crop_of_item(item, "")) or UNDEFINED_CROP
         area = _item_area_in_window(item, window_end)
         if area > 0:
             result[crop] += area
@@ -618,8 +623,7 @@ def _field_veggie_crop_label(
 ) -> str | None:
     from mtfmi_batch_fetch import crop_of_item
 
-    fallback = field_to_crop.get(int(field_id), "") if field_id is not None else ""
-    raw = crop_of_item(item, fallback) if item is not None else fallback
+    raw = crop_of_item(item, "") if item is not None else ""
     label = _normalize_veggie_crop_label(raw)
     if label:
         return label
@@ -839,7 +843,7 @@ async def fetch_all_data(
                             continue
                         from mtfmi_batch_fetch import crop_of_item
 
-                        _crop = crop_of_item(_item, str(field_to_crop.get(_fid_i) or ""))
+                        _crop = crop_of_item(_item, "")
                         if _crop and _crop not in crops:
                             crops.append(_crop)
                     _mrec = machines_map.get(mid) or {}
@@ -881,14 +885,16 @@ async def fetch_all_data(
                             from mtfmi_batch_fetch import crop_of_item
 
                             veg_unmatched_today[firm].append(
-                                (fid_i, crop_of_item(item, str(field_to_crop.get(fid_i, ""))), round(item_cov, 2))
+                                (fid_i, crop_of_item(item, ""), round(item_cov, 2))
                             )
                 else:
                     from mtfmi_batch_fetch import crop_of_item
 
                     item_cov = _item_area_in_window(item, cutoff, day_start)
-                    crop = crop_of_item(item, str(field_to_crop.get(fid_i) or ""))
-                    if crop and item_cov > 0:
+                    from mtfmi_batch_fetch import crop_label
+
+                    crop = crop_label(item)
+                    if item_cov > 0:
                         raw_crop_cov[crop] += item_cov
 
             if track_veg_crops:
@@ -989,7 +995,7 @@ async def fetch_all_data(
                     from mtfmi_batch_fetch import crop_of_item
 
                     veg_unmatched_season[firm].append(
-                        (fid_i, crop_of_item(item, str(field_to_crop.get(fid_i, ""))), round(item_cov, 2))
+                        (fid_i, crop_of_item(item, ""), round(item_cov, 2))
                     )
 
             # Группируем сырые суммы по фирме (включая неопознанную площадь

@@ -172,9 +172,13 @@ def build_shift_task_facts(
             if min_item_ha is not None and cov <= float(min_item_ha):
                 continue
 
-            crop = str(field_to_crop.get(fid_i) or "").strip()
+            from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
+
+            crop = crop_of_item(item, "")
             if crop and crop_label:
                 crop = crop_label(crop) or crop
+            if not crop:
+                crop = UNDEFINED_CROP
             machine_rec = machines_map.get(mid) if mid is not None else None
             if machine_rec is None and mid is not None:
                 try:
@@ -685,19 +689,17 @@ def commit_group(group: str, ok_pairs: set[tuple] | None) -> None:
 
 
 def fill_missing_crop(field_to_crop: dict[int, str] | None) -> None:
+    """Пустая культура строки остаётся «Культура не определена», без карты поля."""
+    del field_to_crop
     sink = _SINK.get()
-    if not sink or not field_to_crop:
+    if not sink:
         return
+    from mtfmi_batch_fetch import UNDEFINED_CROP
+
     for row in sink:
         if str(row.get("crop") or "").strip():
             continue
-        fid = row.get("field_id")
-        if fid is None:
-            continue
-        try:
-            row["crop"] = str(field_to_crop.get(int(fid)) or "")
-        except (TypeError, ValueError):
-            continue
+        row["crop"] = UNDEFINED_CROP
 
 
 def bind_capture():

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Сгенерировано tools/gen_store_fields.py — не править руками.
-# Файлов просмотрено: 138, имён: 1302.
+# Файлов просмотрено: 138, имён: 1301.
 FIELDS = frozenset({
     '_',
     '__',
@@ -1303,5 +1303,4 @@ FIELDS = frozenset({
     'yes',
     'z',
     'zz',
-    'zzz_unused_blob',
 })

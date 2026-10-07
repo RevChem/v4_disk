@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -13,7 +13,11 @@ PLAN = BACKEND.parent / "svodki" / "plan"
 sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(PLAN))
 
-REPORT_DATE = date.fromisoformat(os.environ.get("REPORT_DATE", "2026-09-28").split("T")[0])
+REPORT_DATE = (
+    date.fromisoformat(os.environ["REPORT_DATE"].split("T")[0])
+    if os.environ.get("REPORT_DATE")
+    else datetime.now(timezone(timedelta(hours=3))).date()
+)
 
 
 def main() -> int:

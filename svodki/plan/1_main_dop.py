@@ -26,6 +26,11 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover - season_calendar не в sys.path
+    def season_year_for_date(d):
+        return d.year + (1 if d.month >= 7 else 0)
 from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
 from report_fetch_orchestration import (
     fetch_all_pages,
@@ -83,6 +88,12 @@ REPORT_DATE = date.today()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 SEASON_YEAR = _cropwise_season_year(REPORT_DATE.year)
+# Сезон культуры: текущий сезон Cropwise (07.10.2026 и 15.03.2027 -> 2027), а не SEASON_YEAR + 1.
+# Явный CROPWISE_SEASON_YEAR сохраняет прежнюю семантику (год + 1).
+if os.environ.get("CROPWISE_SEASON_YEAR", "").strip().isdigit():
+    CROP_SEASON_YEAR = int(os.environ["CROPWISE_SEASON_YEAR"].strip()) + 1
+else:
+    CROP_SEASON_YEAR = season_year_for_date(REPORT_DATE)
 
 
 def _editor_season_strings(group_name: str) -> set[str]:
@@ -100,7 +111,8 @@ def _editor_season_strings(group_name: str) -> set[str]:
             return set(years)
     except Exception:
         pass
-    return {str(REPORT_DATE.year), str(REPORT_DATE.year + 1)}
+    cur = season_year_for_date(REPORT_DATE)
+    return {str(cur - 1), str(cur)}
 
 
 def _task_in_editor_seasons(task: dict, allowed: set[str]) -> bool:
@@ -504,7 +516,7 @@ def load_field_references(
       available_field_ids: field_id — поля с available=True хотя бы в один день периода
     """
     years_to_load: list[int] = []
-    for yr in (SEASON_YEAR + 1, SEASON_YEAR):
+    for yr in (CROP_SEASON_YEAR, CROP_SEASON_YEAR - 1):
         if yr not in years_to_load:
             years_to_load.append(yr)
 
@@ -547,7 +559,7 @@ def load_field_references(
         report_date=report_date,
         period_start=date(SEASON_YEAR, 1, 1),
         skip_crops=_SKIP_CROPS,
-        season_year=SEASON_YEAR + 1,
+        season_year=CROP_SEASON_YEAR,
     )
     print(f"    {len(field_to_crop)} полей с культурой (sowing_date + оверлей рапса)")
 

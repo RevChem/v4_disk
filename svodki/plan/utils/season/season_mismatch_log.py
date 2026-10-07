@@ -16,6 +16,12 @@ _HISTORY_YEAR: dict[int, int] = {}
 # history_item_id → название культуры
 _HISTORY_CROP: dict[int, str] = {}
 _SEEN: set[tuple] = set()
+_LAST_LINES: list[str] = []
+
+
+def mismatch_lines() -> list[str]:
+    """Группы, где год культуры не совпал с сезоном задания. Культуру расчёт не подменяет."""
+    return list(_LAST_LINES)
 
 
 def report_label() -> str:
@@ -112,6 +118,12 @@ def log_row_season_mismatches(
             break
         shown += 1
         sample = ",".join(str(x) for x in task_ids[:5])
+        line = (
+            f"сезон задания {task_season}, год культуры {hist_year}, "
+            f"{crop}, заданий {len(task_ids)} ({sample})"
+        )
+        if line not in _LAST_LINES and len(_LAST_LINES) < _MAX_GROUPS:
+            _LAST_LINES.append(line)
         print(
             f"{MARK} сводка={label} сезон_задания={task_season} "
             f"год_культуры={hist_year} культура={crop} "

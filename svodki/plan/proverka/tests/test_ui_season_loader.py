@@ -10,10 +10,13 @@ for extra in (PLAN, PLAN / "utils" / "season", PLAN / "utils" / "api"):
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
 
-httpx = types.ModuleType("httpx")
-httpx.AsyncClient = object
-httpx.HTTPError = Exception
-sys.modules.setdefault("httpx", httpx)
+try:
+    import httpx  # noqa: F401
+except ImportError:  # заглушка только если библиотеки нет
+    httpx = types.ModuleType("httpx")
+    httpx.AsyncClient = object
+    httpx.HTTPError = Exception
+    sys.modules["httpx"] = httpx
 
 from proverka.cropwise_crops import combine_loaded_seasons, svodka_counted_years  # noqa: E402
 from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons  # noqa: E402

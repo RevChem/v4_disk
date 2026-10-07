@@ -53,12 +53,9 @@ svodki/plan/tools/test_item_area_window.py.
     В исходном архиве импорт report_generation падал из-за этого.
 
 ## Найдено, но НЕ менялось (нужно ваше решение)
-- season_unified: year_plus_one/plow_year_plus_one = report_date.year+1 без учёта месяца. Без сохранённого
-  диапазона в редакторе планов с 01.01.2027 по 30.06.2027 «Посев/Опрыскивание/Вспашка» уйдут на сезон 2028
-  (с июля снова верно). Тот же допущение зашито в 5_main_fixed (SEASON_TASK_YEAR_STR),
-  2_main_ideal_compact (~стр. 1560) и 9_main_fixed (~стр. 162). Формула: год+1 при месяце >= 7, иначе год.
+- (исправлено в раунде 5) season_unified: year_plus_one — см. раздел «Раунд 5».
 - Повтор упавших сводок (report_runner) перезапускает и детерминированные ошибки.
-- «2026» в названии сводки 5 (report_catalog) и жёсткий REPORT_DATE по умолчанию в 5_main_fixed; N+1.
+- «2026» в названии сводки 5 (report_catalog) и N+1 (жёсткий REPORT_DATE исправлен в раунде 5).
 
 ## Раунд 4 (редактор планов, проверка сводок, фронтенд)
 - proverka/service.py: status.json пишется атомарно; read-modify-write (отмена, прогресс, AI) под общей блокировкой,
@@ -75,3 +72,50 @@ svodki/plan/tools/test_item_area_window.py.
   ProverkaDialog: сброс старого jobId перед запуском, onComplete через ref, устойчивость к единичным сбоям опроса.
 - Удалено: папка cropwise/ (код чужого приложения, импортировал несуществующие app.cropwise/app.users),
   __pycache__, *.pyc, violations_sync.py.save.
+
+## Раунд 5 (культура строки — history_item_id)
+- Факт больше не подставляет культуру с карты поля, если у строки нет history_item_id
+  или запись истории принадлежит другому полю. Такие гектары остаются в итоге
+  строкой «Культура не определена» (сводки 1, 2, 4, 6, 8, 9, 10, 11 и проверка).
+- Записи истории заданий текущего прогона перечитываются каждый запуск, вместе со справочником
+  культур. Старое имя в кэше не перекрывает смену crop_id агрономом.
+- Сбой загрузки истории не останавливает сводку и не откатывается на карту поля:
+  он пишется в лог и попадает в предупреждения проверки.
+- Проверка показывает агроному CROP_NO_HISTORY, CROP_UNRESOLVED, CROP_FIELD, CROP_SPLIT
+  и список заданий, где сезон задания не совпал с годом культуры. Культуру при этом не подменяет.
+- Учётная площадь сводки 2 считается по записям истории сезонов этой операции.
+  Поле входит один раз: два года на одном поле не удваивают гектары.
+  У внесения удобрений остаётся более новый год, у остальных — год отчёта,
+  а следующий сезон только у полей без записи в году отчёта.
+
+## Раунд 5 (сезоны, bootstrap, тесты)
+- Сезон Y = 01.07.(Y-1)…01.07.Y. Новый единый хелпер season_calendar.season_year_for_date(d)
+  (07.10.2026 -> 2027, 15.03.2027 -> 2027). Им заменено «год отчёта + 1» в season_unified
+  (task/history_years_from_rule, winter_spray_task_seasons, fact_season_years_for_group, crop_priority_year),
+  2_main_ideal_compact, 5_main_fixed (SEASON_TASK_YEAR_STR, годы history_items), 9_main_fixed,
+  1_main_dop, 1_main_ammonium, 4_main_fixed, svodki_prefetch, proverka (extractors, cropwise_ui.ui_check_years
+  теперь принимает дату, cropwise_crops, reconcile*, runner), backend season_meta (дефолты и варианты сезонов).
+  Результат: весной 2027 история [2026, 2027], озимые в опрыскивании — сезон 2027; осенью 2026 всё как было.
+- merged_period_for_years: сезон целиком в будущем (например 2028 на 07.10.2026) больше не даёт начало позже конца,
+  берётся окно [дата отчёта, дата отчёта] и пишется предупреждение.
+- Выбранное поведение по умолчанию (без правки в редакторе): факт группы считается по history_years
+  (оба сезона), task_season_years — один текущий сезон для определения культуры. Комментарии в
+  2_main_ideal_compact («Посев: только year+1») и docstring season_unified приведены к этому.
+- season_calendar.load_season_ranges_store: битый JSON уходит в season_ranges.json.corrupt-<ts> и пишется в лог,
+  а не молча заменяется дефолтами; временная ошибка чтения файл не трогает.
+- REPORT_DATE/TODAY по умолчанию = сегодня (МСК) во всех сводках вместо зашитой даты; явная дата — переменной REPORT_DATE.
+- bootstrap.init_db: убрано повышение до developer и сброс пароля для admin / admin@local(.dev) при каждом старте.
+  Единственный legacy-admin переносится в developer только если в базе нет developer и других пользователей,
+  пароль не меняется. Раньше при существующем developer API мог не стартовать (unique по username).
+- Тесты: test_accounted_area / test_history_crop / test_ui_season_loader больше не подменяют openpyxl, httpx,
+  requests в sys.modules навсегда (заглушки только если библиотеки нет; monkeypatch). Скрипты tools/test_*.py
+  запускаются из pytest через tools/test_script_runner.py. test_task_store_sqlite: из белого списка полей убран
+  zzz_unused_blob (генератор теперь пропускает этот тест). Добавлены test_season_rollover.py и
+  backend/tests/test_bootstrap_legacy_admin.py.
+- .env: две строки в YAML-стиле и пробел перед "=" у CROPWISE_SESSION_COOKIE приведены к KEY=value.
+- Не менялось по вашей просьбе: пункты про безопасность, кроме «Регистрация и перезапуск»
+  (JWT_SECRET, пароль по умолчанию, CORS, ключи в .env, .git и xlsx в архиве).
+- Доп. проход раунда 5: «год+1» убран из 1_main_dop (CROP_SEASON_YEAR), 1_main_ammonium, extractors
+  (`_current_season`, история по умолчанию), report1_fast/reference. Зашитые даты 2026 (SEASON_START в 3/4/6/7/8_main,
+  START_DATE в 2_main, REPORT_DATE в 1_main_ammonium и backend/scripts/run_generate_then_proverka, дефолты 7/8_main
+  в season_runtime) заменены на год отчёта.

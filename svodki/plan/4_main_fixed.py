@@ -40,6 +40,11 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover - season_calendar не в sys.path
+    def season_year_for_date(d):
+        return d.year + (1 if d.month >= 7 else 0)
 from cropwise_paging import CROPWISE_PAGE_LIMIT, from_id_should_continue
 from report_fetch_orchestration import (
     fetch_all_pages as fetch_pages,
@@ -79,11 +84,18 @@ from plans import (
 # =============================================================================
 # КОНФИГУРАЦИЯ
 # =============================================================================
-REPORT_DATE = date(2026, 9, 4)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
-SEASON_START = date(2026, 3, 1)  # средняя выработка по сезону считается с этой даты
+SEASON_START = date(REPORT_DATE.year, 3, 1)  # средняя выработка по сезону считается с этой даты
 _season_start_raw = (
     os.environ.get("SVODKI_SEASON_START_DATE")
     or os.environ.get("SEASON_START_DATE")
@@ -413,7 +425,8 @@ def load_reference_data() -> None:
 
     from svodki_pipeline import run_reference_jobs
 
-    crop_years = sorted({SEASON_START.year, SEASON_START.year + 1}, reverse=True)
+    _cur_season = season_year_for_date(REPORT_DATE)
+    crop_years = sorted({_cur_season - 1, _cur_season}, reverse=True)
     jobs: dict[str, object] = {"crops": lambda: get_all_page("crops")}
     for crop_year in crop_years:
         jobs[f"history:{crop_year}"] = (
@@ -660,11 +673,10 @@ async def fetch_all_data(
             if cov_item <= 0.5:
                 continue
             firm_items_map[firm].append((item, cov_item))
-            from mtfmi_batch_fetch import crop_of_item
+            from mtfmi_batch_fetch import crop_label
 
-            crop_name = crop_of_item(item, str(field_to_crop.get(int(fid)) or ""))
-            if crop_name:
-                today_crop_by_firm[firm][crop_name] += cov_item
+            crop_name = crop_label(item)
+            today_crop_by_firm[firm][crop_name] += cov_item
             if _cap is not None:
                 from mtfmi_batch_fetch import crop_of_item
 
@@ -674,7 +686,7 @@ async def fetch_all_data(
                     ("2.1 Боронование", firm, mid),
                     group="2.1 Боронование",
                     firm=firm,
-                    crop=crop_of_item(item, field_to_crop.get(fid_i, "")),
+                    crop=crop_of_item(item, ""),
                     field_id=fid_i,
                     task_id=int(tid),
                     machine_id=int(mid) if mid is not None else None,

@@ -114,7 +114,9 @@ def _load_from_endpoints(legacy: Any, endpoints: dict) -> None:
     print(f"    {len(fields)} полей, {len(fgs)} групп")
 
     report_date = getattr(legacy, "REPORT_DATE", date.today())
-    season_year = int(report_date.year) + 1
+    from season_calendar import season_year_for_date
+
+    season_year = season_year_for_date(report_date)
     lookup_wt = getattr(legacy, "_CROP_LOOKUP_WT_IDS", None)
     agro_ops = endpoints.get("agro_operations") or []
     legacy.field_to_crop = _field_to_crop_from_agro_ops(legacy, agro_ops, lookup_wt_ids=lookup_wt)

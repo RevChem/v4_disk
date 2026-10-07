@@ -925,8 +925,10 @@ class TaskStore(LinksMixin, CalcCacheMixin):
                 if crops is not None and (len(crops) != n0 or _meta_dirty()):
                     async with self._xlock():
                         self._save_crops(crops)
-            except Exception as exc:  # некритично, как в live-пути
-                print(f"  {log_prefix}культура history_item: {exc}", flush=True)
+            except Exception as exc:
+                from mtfmi_batch_fetch import note_history_load_error
+
+                note_history_load_error(exc, prefix=log_prefix)
         return result
 
     def _save_crops(self, crops: dict) -> None:
@@ -982,8 +984,10 @@ class TaskStore(LinksMixin, CalcCacheMixin):
                 if remember is not None:
                     try:
                         await remember(client, self.base_url, {t: v for t, v in live.items() if v}, sem)
-                    except Exception as exc:  # некритично
-                        print(f"  {log}[store] культура history_item: {exc}", flush=True)
+                    except Exception as exc:
+                        from mtfmi_batch_fetch import note_history_load_error
+
+                        note_history_load_error(exc, prefix=f"{log}[store] ")
                 if crops is not None:
                     self._save_crops(crops)
                 done += len(part)

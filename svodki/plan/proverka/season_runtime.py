@@ -197,8 +197,8 @@ def sync_module_season_start(
     defaults: dict[str, Callable[[date], date]] = {
         "3_main_real": lambda rd: date(rd.year, 3, 1),
         "6_main_3": lambda rd: date(rd.year, 1, 1),
-        "7_main__4_": lambda _rd: date(2026, 3, 15),
-        "8_main_fixed": lambda _rd: date(2026, 3, 25),
+        "7_main__4_": lambda rd: date(rd.year, 3, 15),
+        "8_main_fixed": lambda rd: date(rd.year, 3, 25),
         "9_main_fixed": lambda rd: date(rd.year, 3, 14),
     }
     factory = defaults.get(name)

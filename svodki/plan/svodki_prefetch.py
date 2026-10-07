@@ -361,7 +361,10 @@ async def _fetch_reference(
         p = dict(params)
         if endpoint == "history_items" and "year" not in p:
             # Всегда оба сезона: год отчёта и следующий (посев 2027 при дате 2026).
-            years = {str(report_date.year), str(report_date.year + 1)}
+            from season_calendar import season_year_for_date
+
+            _cur = season_year_for_date(report_date)
+            years = {str(_cur - 1), str(_cur)}
             for key in ("SEASON_YEAR", "CROPWISE_SEASON_YEAR"):
                 season = os.environ.get(key, "").strip()
                 if season.isdigit():

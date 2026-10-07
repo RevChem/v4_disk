@@ -17,11 +17,15 @@ from async_http import (
 
 MTFMI_BATCH_SIZE = max(1, int(os.environ.get("SVODKI_MTFMI_BATCH_SIZE", "300") or 300))
 
+# Строка без history_item_id или с чужим полем. Гектары остаются в итоге.
+UNDEFINED_CROP = "Культура не определена"
+
 # history_item_id → культура строки площади. Заполняется при загрузке mtfmi.
 _HISTORY_CROP: dict[int, str] = {}
+# history_item_id → field_id записи. Чужое поле не подписываем его культурой.
+_HISTORY_FIELD: dict[int, int] = {}
 _CROPS_BY_ID: dict[int, str] | None = None
-# field_id → культура → сколько строк площади её подтвердили.
-_FIELD_CROP_VOTES: dict[int, dict[str, int]] = {}
+_HISTORY_ERRORS: list[str] = []
 
 
 def _chunked(items: list[int], size: int) -> list[list[int]]:
@@ -152,8 +156,8 @@ async def fetch_mtfmi_map_live(
     try:
         await remember_history_crops(client, base_url, result, sem)
     except Exception as exc:
-        # Некритично: культуру строк потом дозагрузит _load_mtfmi_row_crops (там строгий режим).
-        print(f"  {prefix}культура history_item: {exc}", flush=True)
+        # Сводка считается дальше: строки без культуры уйдут в «Культура не определена».
+        note_history_load_error(exc, prefix=prefix)
     try:
         from season_mismatch_log import log_loaded_mtfmi
         import svodki_sanity
@@ -166,7 +170,7 @@ async def fetch_mtfmi_map_live(
 
 
 def _history_settled(hid: int) -> bool:
-    """history_item уже известен (культура + год + поле) — повторно из API не качаем."""
+    """Запись уже есть в кэше. Загрузка факта её не пропускает: crop_id мог смениться."""
     have = hid in _HISTORY_CROP
     try:
         import svodki_sanity
@@ -185,6 +189,19 @@ def _remember_meta(hi: dict) -> None:
         pass
 
 
+def history_load_errors() -> list[str]:
+    """Ошибки загрузки HistoryItem в этом процессе. Пустой список — загрузка прошла."""
+    return list(_HISTORY_ERRORS)
+
+
+def note_history_load_error(exc: BaseException, *, prefix: str = "") -> None:
+    """Ошибка видна в логе и в проверке. Расчёт сводки из-за неё не останавливается."""
+    msg = f"{prefix}культура history_item не загружена: {exc}"
+    if msg not in _HISTORY_ERRORS and len(_HISTORY_ERRORS) < 20:
+        _HISTORY_ERRORS.append(msg)
+    print(f"  {msg}", flush=True)
+
+
 def crop_of_history_id(history_item_id, fallback: str = "") -> str:
     """Культура записи истории. Пустая ссылка или незагруженная запись — fallback."""
     if history_item_id is None:
@@ -196,26 +213,40 @@ def crop_of_history_id(history_item_id, fallback: str = "") -> str:
     return name or str(fallback or "")
 
 
+def _history_field_conflicts(item: dict) -> bool:
+    """Запись истории принадлежит другому полю — её культурой строку не подписываем."""
+    hid = item.get("history_item_id")
+    fid = item.get("field_id")
+    if hid is None or fid is None:
+        return False
+    try:
+        owned = _HISTORY_FIELD.get(int(hid))
+        return bool(owned) and int(fid) != int(owned)
+    except (TypeError, ValueError):
+        return False
+
+
 def crop_of_item(item: dict, fallback: str = "") -> str:
-    """Культура строки площади. Если history_item ещё не загружен — fallback."""
+    """Культура строки площади. Чужое поле и пустая ссылка не берут культуру с карты поля."""
+    if _history_field_conflicts(item):
+        return ""
     return crop_of_history_id(item.get("history_item_id"), fallback)
 
 
-def crop_of_field(field_id: int, fallback: str = "") -> str:
-    """Самая частая культура строк площади этого поля. Иначе fallback."""
-    votes = _FIELD_CROP_VOTES.get(int(field_id)) or {}
-    if not votes:
-        return str(fallback or "")
-    return max(votes.items(), key=lambda kv: kv[1])[0]
+def crop_label(item: dict) -> str:
+    """Культура для таблицы. Пустая ссылка остаётся отдельной строкой, гектары не вычитаются."""
+    return crop_of_item(item, "") or UNDEFINED_CROP
 
 
 async def _crops_by_id(
     client: httpx.AsyncClient,
     base_url: str,
     sem: asyncio.Semaphore,
+    *,
+    refresh: bool = False,
 ) -> dict[int, str]:
     global _CROPS_BY_ID
-    if _CROPS_BY_ID is not None:
+    if _CROPS_BY_ID is not None and not refresh:
         return _CROPS_BY_ID
     rows = await _fetch_pages(client, f"{base_url.rstrip('/')}/crops", {}, sem)
     _CROPS_BY_ID = {
@@ -232,7 +263,11 @@ async def remember_history_crops(
     mtfmi_map: dict,
     sem: asyncio.Semaphore,
 ) -> None:
-    """Догружает HistoryItem.crop_id для строк площади, которых ещё нет в кэше."""
+    """Перечитывает HistoryItem строк этого прогона.
+
+    Кэш прошлого запуска не оставляем: агроном мог сменить crop_id.
+    Записей на задания смены немного, отдельный срок годности не нужен.
+    """
     from mtaomi_batch_fetch import mass_request_async
 
     missing: list[int] = []
@@ -243,21 +278,27 @@ async def remember_history_crops(
             if hid is None:
                 continue
             hid_i = int(hid)
-            if hid_i in seen or _history_settled(hid_i):
+            if hid_i in seen:
                 continue
             seen.add(hid_i)
             missing.append(hid_i)
     if not missing:
         return
-    crops = await _crops_by_id(client, base_url, sem)
+    crops = await _crops_by_id(client, base_url, sem, refresh=True)
     history = await mass_request_async(client, base_url, "history_items", missing, sem)
     for hi in history:
         _remember_meta(hi)
-        if hi.get("id") is None or hi.get("crop_id") is None:
+        if hi.get("id") is None:
             continue
-        name = crops.get(int(hi["crop_id"]), "")
-        if name:
-            _HISTORY_CROP[int(hi["id"])] = name
+        hid_i = int(hi["id"])
+        if hi.get("field_id") is not None:
+            try:
+                _HISTORY_FIELD[hid_i] = int(hi["field_id"])
+            except (TypeError, ValueError):
+                pass
+        crop_id = hi.get("crop_id")
+        name = crops.get(int(crop_id), "") if crop_id is not None else ""
+        _HISTORY_CROP[hid_i] = name
         try:
             year = int(hi.get("year") or 0)
         except (TypeError, ValueError):
@@ -265,17 +306,6 @@ async def remember_history_crops(
         try:
             from season_mismatch_log import remember_history_item
 
-            remember_history_item(int(hi["id"]), year or None, name)
+            remember_history_item(hid_i, year or None, name)
         except Exception:
             pass
-    for items in mtfmi_map.values():
-        for item in items:
-            fid = item.get("field_id")
-            hid = item.get("history_item_id")
-            if fid is None or hid is None:
-                continue
-            name = _HISTORY_CROP.get(int(hid), "")
-            if not name:
-                continue
-            votes = _FIELD_CROP_VOTES.setdefault(int(fid), {})
-            votes[name] = votes.get(name, 0) + 1

@@ -45,11 +45,12 @@ from task_area_shared import HARVESTER_GROUP_IDS
 # КОНФИГУРАЦИЯ
 # =============================================================================
 
-START_DATE   = date(2026, 3, 14)
-TODAY        = date(2026, 10, 1)
+# Без REPORT_DATE — сегодня по Москве (раньше была зашита дата).
+TODAY        = datetime.now(timezone(timedelta(hours=3))).date()
 
 if os.environ.get("REPORT_DATE"):
     TODAY = date.fromisoformat(os.environ["REPORT_DATE"].strip())
+START_DATE   = date(TODAY.year, 3, 14)
 _season_start_raw = (
     os.environ.get("SVODKI_SEASON_START_DATE")
     or os.environ.get("SEASON_START_DATE")
@@ -85,7 +86,8 @@ _TILLAGE_SHIFT_GROUPS = frozenset({
     BORON_GROUP_NAME,
     CULTIVATION_GROUP_NAME,
 })
-# Вспашка: сезоны из редактора планов. Посев: только year+1.
+# Группы с «основным» сезоном season_year_for_date(TODAY) (культура поля берётся по нему).
+# Факт по умолчанию считается по обоим сезонам history_years / сезонам редактора планов.
 SEASON_YEAR_PLUS_ONE_GROUPS = frozenset({
     PLOW_GROUP_NAME,
     SEEDING_GROUP_NAME,
@@ -115,16 +117,17 @@ def _fact_seasons_for_group(group_name: str) -> set[str] | None:
         "4.1 Посев (овощи)",
     }
     if group_name in both:
-        return {str(TODAY.year), str(TODAY.year + 1)}
+        _cur = season_year_for_date(TODAY)
+        return {str(_cur - 1), str(_cur)}
     return {str(TODAY.year)}
 SPRAY_GROUP_NAME = "3.1 Опрыскивание"
 VEG_SPRAY_GROUP_NAME = "3.2 Опрыскивание (овощи)"
 # Для группы "Опрыскивание": через связку AgroOperation засчитываем эти
-# культуры только если HistoryItem.year == сезону (TODAY.year + 1) — так же,
+# культуры только если HistoryItem.year == текущему сезону (season_year_for_date(TODAY)) — так же,
 # как field_to_crop_general уже исключает их запись за прошший календарный год.
 SPRAY_WINTER_CROPS_SEASON_ONLY = frozenset({"Рапс озимый", "Пшеница озимая"})
 # Вспашка: план/отображение по культурам; факт «Выполнено» — все поля,
-# если machine_task.season == year+1 (эталон: Чистопольская ≈1810, Раздолье ≈2828.7).
+# если machine_task.season входит в сезоны группы (эталон: Чистопольская ≈1810, Раздолье ≈2828.7).
 PLOW_SEASON_CROPS: frozenset[str] = frozenset({
     "Рапс озимый",
     "Рапс яровой",
@@ -139,7 +142,8 @@ PLOW_SEASON_CROPS: frozenset[str] = frozenset({
 SVODKA2_PLOW_SEASON_FIX = "2026-09-07a"
 # Дискование: культуры/учёт — history 2026+2027 (field_to_crop_general), не sowing-only.
 SVODKA2_DISK_SEASON_FIX = "2026-08-07a"
-# Факт: культура строки только из mtfmi.history_item_id. Карты поля остаются для учётной площади.
+# Факт: культура строки только из mtfmi.history_item_id.
+# Учётная площадь — history_items сезонов этой операции, одно поле один раз.
 SVODKA2_HISTORY_FIELD_FIX = "2026-10-06"
 _HISTORY_FIELD_ONLY = True
 FERT_GROUP_NAME = "1.1 Внесение минеральных удобрений"
@@ -158,7 +162,7 @@ from season_unified import (
     task_season_years_set_for_group,
     winter_spray_task_seasons,
 )
-from season_calendar import fact_window_end
+from season_calendar import fact_window_end, season_year_for_date
 
 
 def _merged_period_for_group(group_name: str, default_start: date) -> tuple[date, date]:
@@ -956,8 +960,8 @@ def _build_field_to_crop_plow(
     season_year: int,
 ) -> dict[int, str]:
     """
-    Культура поля для 2.4 Вспашка — только сезон year+1 (как посев с
-    build_field_to_crop(..., season_year=year_next)): history_items year=season_year,
+    Культура поля для 2.4 Вспашка — только текущий сезон (season_year_for_date; как посев с
+    build_field_to_crop(..., season_year=season_year)): history_items year=season_year,
     без добора из года отчёта. Дальше — только PLOW_SEASON_CROPS.
     """
     result: dict[int, str] = {}
@@ -1134,6 +1138,114 @@ def _build_field_to_crop_veg_harvest(
                 continue
             field_to_crop[fid_i] = mapped
     return field_to_crop
+
+
+def field_crops_for_operation_years(
+    history_by_year: dict[int, list[dict]],
+    years: list[int],
+    crop_map: dict,
+    *,
+    newest_year_wins: bool = False,
+) -> dict[int, str]:
+    """Одна культура на поле среди сезонов операции.
+
+    Площадь по годам не складывается: у поля остаётся одна запись.
+    Без newest_year_wins сначала год отчёта, затем следующий — как общая карта,
+    чтобы план следующего года не затёр уже идущий сезон.
+    Озимый рапс и озимая пшеница берутся только из более нового года.
+    """
+    from plans import _is_winter_rape_or_wheat
+
+    selected = []
+    for year in years or []:
+        try:
+            selected.append(int(year))
+        except (TypeError, ValueError):
+            continue
+    if not selected:
+        return {}
+    priority = max(selected)
+    if newest_year_wins:
+        order = sorted(set(selected))
+    elif priority in selected and (priority - 1) in selected:
+        order = [priority - 1, priority, *[y for y in sorted(set(selected)) if y not in (priority - 1, priority)]]
+    else:
+        order = sorted(set(selected))
+    chosen: dict[int, str] = {}
+    for crop_year in order:
+        for hi in history_by_year.get(crop_year, []) or []:
+            if not hi.get("active"):
+                continue
+            fid = hi.get("field_id")
+            crop_id = hi.get("crop_id")
+            if not fid or not crop_id:
+                continue
+            try:
+                fid_i = int(fid)
+                name = str(crop_map.get(int(crop_id)) or crop_map.get(crop_id) or "").strip()
+            except (TypeError, ValueError):
+                continue
+            if not name or is_skip_crop(name):
+                continue
+            if not newest_year_wins and _is_winter_rape_or_wheat(name) and crop_year != priority:
+                continue
+            if fid_i in chosen and not newest_year_wins:
+                continue
+            chosen[fid_i] = name
+    return chosen
+
+
+def _accounted_crop_label(group_name: str, raw: str) -> str | None:
+    if group_name == PLOW_GROUP_NAME:
+        return _map_plow_crop_name(raw)
+    if _is_harvest_veg_group(group_name):
+        return _map_harvest_veg_crop(raw)
+    if is_skip_crop(raw):
+        return None
+    return raw
+
+
+def build_accounted_area_by_group(
+    history_by_year: dict[int, list[dict]],
+    crop_map: dict,
+    field_area: dict[int, float],
+    field_to_firm: dict[int, str],
+    available_ids: set[int],
+    report_date: date,
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Учётная площадь: фирма → культура → га, отдельно для каждой операции.
+
+    Годы — сезоны операции в редакторе. Поле входит один раз, даже если
+    запись истории есть в обоих сезонах.
+    """
+    from season_unified import fact_season_years_for_group
+
+    newest_groups = {FERT_GROUP_NAME, CULTIVATION_GROUP_NAME}
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for group_name, _wt in WORK_GROUPS:
+        try:
+            years = list(fact_season_years_for_group(group_name, report_date) or [])
+        except Exception:
+            years = [report_date.year]
+        crops = field_crops_for_operation_years(
+            history_by_year,
+            years,
+            crop_map,
+            newest_year_wins=group_name in newest_groups,
+        )
+        by_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for fid, raw in crops.items():
+            if fid not in available_ids:
+                continue
+            firm = field_to_firm.get(fid)
+            if not firm:
+                continue
+            label = _accounted_crop_label(group_name, raw)
+            if not label:
+                continue
+            by_firm[firm][label] += float(field_area.get(fid, 0.0) or 0.0)
+        out[group_name] = {firm: dict(crops_ha) for firm, crops_ha in by_firm.items()}
+    return out
 
 
 def _is_harvest_veg_group(group_name: str) -> bool:
@@ -1560,8 +1672,8 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
         refresh_season_config()
     _CROPS_RAW = _MACHINES_ALL = _SILAGE_IDS_CACHE = None
 
-    season_year = TODAY.year + 1
-    years_to_load = [season_year, TODAY.year]
+    season_year = season_year_for_date(TODAY)
+    years_to_load = [season_year, season_year - 1]
     # Сезоны из редактора (напр. 1.1 → 2025+2026) — догружаем history_items.
     for y in FERT_SEASON_YEARS:
         if y not in years_to_load:
@@ -1591,7 +1703,7 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
         all_history_items.extend(chunk)
         print(f"    history_items year={crop_year}: {len(chunk)} записей")
 
-    # 4.0 Посев — только сезон year+1 (как 5_main_fixed: season_year=SEASON_YEAR+1).
+    # 4.0 Посев — культура по текущему сезону (как 5_main_fixed: CROP_SEASON_YEAR).
     field_to_crop = build_field_to_crop(
         crop_map=crops_map,
         history_items=all_history_items,
@@ -1784,6 +1896,15 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
             continue
         firm_crop_area_ha[firm][crop] += field_area.get(fid, 0.0)
 
+    accounted_by_group = build_accounted_area_by_group(
+        history_by_year,
+        crops_map,
+        field_area,
+        field_to_firm_all,
+        plan_available_ids,
+        TODAY,
+    )
+
     machines_all = raw_ref["machines"]
     machine_group: dict[int, int] = {
         m["id"]: (m.get("machine_group_id") or 0)
@@ -1811,6 +1932,7 @@ def load_reference_data(*, refresh: bool = True) -> tuple[  # noqa: C901
         {f: dict(crops) for f, crops in firm_crop_area_ha_general.items()},
         history_item_to_crop,
         history_item_to_year,
+        accounted_by_group,
     )
 
 # MTFMI / mtaomi / mass_request — utils/api/mtfmi_batch_fetch.py, mtaomi_batch_fetch.py
@@ -2965,7 +3087,8 @@ def collect_work_data(
                     continue
                 if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
                     continue
-                # Вспашка: сезоны редактора. Посев: только year+1.
+                # Сезоны группы: редактор планов, иначе history_years по умолчанию (оба сезона).
+                # Только текущий сезон (season_year_for_date) используется для культуры поля, не для факта.
                 if _season_task_seasons is not None and task_season.get(tid) not in _season_task_seasons:
                     continue
                 shift_info = task_shift.get(tid)
@@ -3095,12 +3218,12 @@ def collect_work_data(
                     if not firm:
                         continue
                     crop_raw = _crop_for_task_field(tid, fid_i, item=item)
+                    from mtfmi_batch_fetch import UNDEFINED_CROP
+
                     if is_harvest_veg:
-                        crop = crop_raw or None
-                        if not crop:
-                            continue
+                        crop = crop_raw or UNDEFINED_CROP
                     else:
-                        crop = crop_raw or "Не определена"
+                        crop = crop_raw or UNDEFINED_CROP
                         if is_harvest_grain:
                             crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
                         if group_name == DISK_GROUP_NAME and not crop_raw:
@@ -3201,12 +3324,12 @@ def collect_work_data(
                     if not firm:
                         continue
                     crop_raw = _crop_for_task_field(tid, fid_i, item=item)
+                    from mtfmi_batch_fetch import UNDEFINED_CROP
+
                     if is_harvest_veg:
-                        crop = crop_raw or None
-                        if not crop:
-                            continue
+                        crop = crop_raw or UNDEFINED_CROP
                     else:
-                        crop = crop_raw or "Не определена"
+                        crop = crop_raw or UNDEFINED_CROP
                         if is_harvest_grain:
                             crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
                         if group_name == DISK_GROUP_NAME and not crop_raw:
@@ -3720,6 +3843,7 @@ def write_report_sheet(
     firm_plan_ha,
     firm_crop_area_ha,
     firm_crop_area_ha_general: dict | None = None,
+    accounted_by_group: dict | None = None,
 ):
     excel_period = _excel_period_export()
     s = make_styles(for_excel_period=excel_period)
@@ -3826,8 +3950,9 @@ def write_report_sheet(
             if group_name in GROUP_FIRM_ONLY and firm not in GROUP_FIRM_ONLY[group_name]:
                 continue
             crop_data = gd.get("crops", {}).get(firm, {})
-            # Дискование: учётная площадь по general-мапе (2026+2027).
-            if group_name == DISK_GROUP_NAME and firm_crop_area_ha_general is not None:
+            if accounted_by_group is not None:
+                crop_area_ref = (accounted_by_group.get(group_name) or {}).get(firm, {})
+            elif group_name == DISK_GROUP_NAME and firm_crop_area_ha_general is not None:
                 crop_area_ref = firm_crop_area_ha_general.get(firm, {})
             else:
                 crop_area_ref = firm_crop_area_ha.get(firm, {})
@@ -4264,7 +4389,8 @@ def build_report() -> None:
      period_available_ids, period_available_ids_general,
      field_area, machine_group,
      firm_plan_ha, firm_crop_area_ha, firm_crop_area_ha_general,
-     history_item_to_crop, history_item_to_year) = load_reference_data(refresh=not PIPELINE)
+     history_item_to_crop, history_item_to_year, accounted_by_group,
+     ) = load_reference_data(refresh=not PIPELINE)
     stage_add("справочники (wall)", time.monotonic() - t_ref)
 
     print(f"\nПлан по агрофирмам (tillable_area активных полей):")
@@ -4336,6 +4462,7 @@ def build_report() -> None:
         write_report_sheet(
             wb, work_data, display_dates, firm_plan_ha, firm_crop_area_ha,
             firm_crop_area_ha_general=firm_crop_area_ha_general,
+            accounted_by_group=accounted_by_group,
         )
         _audit_veg54_sheet(wb)
 
@@ -4408,7 +4535,7 @@ def compare_history_field(days: list[date]) -> None:
         period_available_ids, period_available_ids_general,
         field_area, machine_group,
         _firm_plan_ha, _firm_crop_area_ha, _firm_crop_area_ha_general,
-        history_item_to_crop, history_item_to_year,
+        history_item_to_crop, history_item_to_year, _accounted_by_group,
     ) = load_reference_data(refresh=True)
     print("Готовим задания...")
     prepared = _prepare_group_selection(

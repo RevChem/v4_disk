@@ -96,7 +96,14 @@ from plans import (
 # =============================================================================
 # КОНФИГУРАЦИЯ
 # =============================================================================
-REPORT_DATE = date(2026, 9, 4)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 
@@ -104,6 +111,13 @@ if os.environ.get("REPORT_DATE"):
 # НЕ совпадает с календарным годом отчёта: посев озимых осенью 2026 относится
 # к сезону/году урожая 2027, поэтому историю культур запрашиваем именно за
 # этот год, а не за REPORT_DATE.year.
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover - season_calendar не в sys.path
+    def season_year_for_date(d: date) -> int:
+        return d.year + (1 if d.month >= 7 else 0)
+
+
 def _parse_year_list(raw: str) -> list[int]:
     years: list[int] = []
     for part in (raw or "").split(","):
@@ -139,7 +153,8 @@ def _group_fact_season_years(group_name: str, report_date: date) -> list[int]:
         years = _parse_year_list(os.environ.get(f"SVODKI_GRP_{slug}_{suffix}", ""))
         if years:
             return years
-    return [report_date.year, report_date.year + 1]
+    cur = season_year_for_date(report_date)
+    return [cur - 1, cur]
 
 
 def _task_season_allowed(task: dict, allowed: set[int]) -> bool:
@@ -159,7 +174,7 @@ def _task_season_allowed(task: dict, allowed: set[int]) -> bool:
 PLOW_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.4 Вспашка", REPORT_DATE))
 DEEP_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.8 Глубокорыхление", REPORT_DATE))
 # Культура поля — год урожая (последний из выбранных), чтобы 2026 не затирал 2027.
-SEASON_YEAR: int = max(PLOW_FACT_SEASONS) if PLOW_FACT_SEASONS else REPORT_DATE.year + 1
+SEASON_YEAR: int = max(PLOW_FACT_SEASONS) if PLOW_FACT_SEASONS else season_year_for_date(REPORT_DATE)
 SVODKA9_PLOW_SEASON_FIX = "2026-08-07c"
 
 SEASON_START = date(REPORT_DATE.year, 3, 14)
@@ -321,7 +336,11 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
     """Культуры фирмы: из плана или с ненулевым фактом."""
     crops: set[str] = set()
     firm_stats = by_firm_crop.get(firm, {})
-    for crop in PLOW_SEASON_CROPS:
+    names = list(PLOW_SEASON_CROPS)
+    for extra in firm_stats:
+        if extra not in PLOW_SEASON_CROPS:
+            names.append(extra)
+    for crop in names:
         if is_crop_omitted("2.4 Вспашка", firm, crop):
             continue
         plan = _plow_plan_ha(firm, crop)
@@ -965,9 +984,11 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            crop = _map_plow_crop_name(crop_of_item(item, ""))
-            if not crop:
-                continue
+            from mtfmi_batch_fetch import UNDEFINED_CROP
+
+            crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
+            if crop not in by_firm_crop[firm]:
+                by_firm_crop[firm][crop] = _empty_crop_plow_stats()
 
             cov_h = _item_cov_before(cutoff, item)
             if cov_h <= 0:
@@ -975,7 +996,7 @@ def build_plow_stats_by_crop(
 
             by_firm_crop[firm][crop]["plow_today"] += cov_h
             if mid is not None:
-                today_machines[firm][crop].add(int(mid))
+                today_machines[firm].setdefault(crop, set()).add(int(mid))
 
             work_dur = t.get("work_duration") or 0
             road_move = t.get("movements_on_road_duration") or 0
@@ -1019,9 +1040,11 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            crop = _map_plow_crop_name(crop_of_item(item, ""))
-            if not crop:
-                continue
+            from mtfmi_batch_fetch import UNDEFINED_CROP
+
+            crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
+            if crop not in by_firm_crop[firm]:
+                by_firm_crop[firm][crop] = _empty_crop_plow_stats()
 
             cov = 0.0
             for entry in (item.get("covered_area_hourly") or []):
@@ -1034,17 +1057,18 @@ def build_plow_stats_by_crop(
             by_firm_crop[firm][crop]["season_plow"] += cov
 
     for firm in FIRM_ORDER:
-        for crop in PLOW_SEASON_CROPS:
+        for crop in list(by_firm_crop[firm]):
             st = by_firm_crop[firm][crop]
             st["season_plow"] = round(st["season_plow"], 2)
             st["plow_today"] = round(st["plow_today"], 2)
             st["engine_plow"] = round(today_engine_sec[firm][crop] / 3600, 1)
-            st["plow_machines_today"] = len(today_machines[firm][crop])
+            st["plow_machines_today"] = len(today_machines[firm].get(crop) or ())
 
     season_total = round(
         sum(
-            by_firm_crop[f][c]["season_plow"]
-            for f in FIRM_ORDER for c in PLOW_SEASON_CROPS
+            st["season_plow"]
+            for firm_stats in by_firm_crop.values()
+            for st in firm_stats.values()
         ),
         2,
     )

@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "utils" / "shared" / "svodki_task_store_fields.py"
 SKIP_DIRS = {"__pycache__", "tests", ".venv", "node_modules"}
-SKIP_FILES = {"svodki_task_store.py", "svodki_task_store_fields.py", "test_task_store.py", "gen_store_fields.py"}
+SKIP_FILES = {"svodki_task_store.py", "svodki_task_store_fields.py", "test_task_store.py", "test_task_store_sqlite.py", "gen_store_fields.py"}
 IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
 
 

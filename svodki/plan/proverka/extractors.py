@@ -127,6 +127,20 @@ def _seeding_season_cfg(
     return resolve_group_season(SEEDING_WORK_GROUP, report_date, run_override)
 
 
+def _current_season(report_date: date) -> int:
+    from season_calendar import season_year_for_date
+
+    return season_year_for_date(report_date)
+
+
+def _default_history_years(report_date: date) -> list[int]:
+    """Сезоны по умолчанию: предыдущий и текущий (07.10.2026 и 15.03.2027 -> 2026, 2027)."""
+    from season_calendar import season_year_for_date
+
+    current = season_year_for_date(report_date)
+    return [current - 1, current]
+
+
 def _seeding_field_crop_by_id(
     m: Any,
     report_date: date,
@@ -136,10 +150,10 @@ def _seeding_field_crop_by_id(
     """Карта поля → культура посева (как 5_main_fixed / 2_main для 4.0 Посев)."""
     m5 = importlib.import_module("5_main_fixed")
     crop_cfg = _seeding_season_cfg(report_date, cfg, run_override)
-    history_years = crop_cfg.get("history_years") or [report_date.year, report_date.year + 1]
+    history_years = crop_cfg.get("history_years") or _default_history_years(report_date)
     report_season_year = int(min(int(y) for y in history_years))
     task_years = crop_cfg.get("task_season_years") or []
-    crop_season_year = int(task_years[0]) if task_years else report_season_year + 1
+    crop_season_year = int(task_years[0]) if task_years else _current_season(report_date)
     crops = m.get_all_from_id("crops")
     crop_names_by_id = {
         int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
@@ -178,7 +192,7 @@ async def _seeding_area_today_by_firm_crop_dop(
     day_start, cutoff = m5.resolve_time_range(
         report_date, m5.DAY_START_HOUR, m5.DAY_END_HOUR,
     )
-    history_years = crop_cfg.get("history_years") or [report_date.year, report_date.year + 1]
+    history_years = crop_cfg.get("history_years") or _default_history_years(report_date)
     task_years = crop_cfg.get("task_season_years") or []
     report_season_year = int(min(int(y) for y in history_years))
     season_start = datetime(report_season_year, 1, 1, tzinfo=m5.TZ_MSK)
@@ -254,10 +268,14 @@ def _seeding_perf_day_stats_from_tasks(
     *,
     min_ha: float = 0.5,
 ) -> dict[str, dict]:
-    """Статистика «Выраб. — 4.0 Посев»: area_by_crop по карте культуры поля."""
+    """Статистика «Выраб. — 4.0 Посев»: area_by_crop по history_item строки."""
     from collections import defaultdict
 
-    today_by_field: dict[int, float] = defaultdict(float)
+    from mtfmi_batch_fetch import crop_label
+
+    by_firm_crop: dict[str, dict[str, float]] = {
+        firm: defaultdict(float) for firm in firm_order
+    }
     for t in tasks_today:
         for item in mtfmi_map.get(int(t["id"]), []):
             fid = item.get("field_id")
@@ -270,22 +288,16 @@ def _seeding_perf_day_stats_from_tasks(
                     cov += float(entry[1] or 0)
             if cov <= 0 and not (item.get("covered_area_hourly") or []):
                 cov = float(item.get("covered_area") or 0)
-            if cov > min_ha:
-                today_by_field[int(fid)] += cov
-
-    out: dict[str, dict] = {}
-    for firm in firm_order:
-        by_crop: dict[str, float] = defaultdict(float)
-        for fid, fid_cov in today_by_field.items():
-            if field_to_firm.get(fid) != firm:
+            if cov <= min_ha:
                 continue
-            crop = str(field_to_crop.get(fid) or "")
-            if crop:
-                by_crop[crop] += fid_cov
-        out[firm] = {
-            "area_by_crop": {k: round(v, 2) for k, v in by_crop.items()},
-        }
-    return out
+            firm = field_to_firm.get(int(fid))
+            if firm not in by_firm_crop:
+                continue
+            by_firm_crop[firm][crop_label(item)] += cov
+    return {
+        firm: {"area_by_crop": {k: round(v, 2) for k, v in crops.items()}}
+        for firm, crops in by_firm_crop.items()
+    }
 
 
 def _crop_breakdown_seeding_from_today_by_field(
@@ -378,7 +390,7 @@ def _per_firm_area_by_crop_from_mtfmi(
     crop_of: Any | None = None,
     row_crop: dict[int, str] | None = None,
 ) -> dict[str, dict[str, float]]:
-    """Площадь за смену по культуре поля (firm → crop → ha), как area_by_crop в сводке 1."""
+    """Площадь за смену по культуре строки (firm → crop → ha). Пустая ссылка не выпадает из суммы."""
     per_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for t in tasks_today:
         tid = t.get("id")
@@ -402,21 +414,14 @@ def _per_firm_area_by_crop_from_mtfmi(
                     cov += float(entry[1] or 0.0)
             if cov <= min_item_ha:
                 continue
+            from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
+
             if row_crop is not None:
                 raw_id = item.get("id")
                 crop = row_crop.get(int(raw_id)) if raw_id is not None else None
-                if not crop:
-                    continue
             else:
-                from mtfmi_batch_fetch import crop_of_item
-
-                if crop_of is not None:
-                    fallback = crop_of(t, fid_int)
-                else:
-                    fallback = field_to_crop.get(fid_int)
-                crop = crop_of_item(item, str(fallback or ""))
-            if crop:
-                per_firm[firm][str(crop)] += cov
+                crop = crop_of_item(item, "")
+            per_firm[firm][str(crop or UNDEFINED_CROP)] += cov
     return {
         f: {c: round(v, 2) for c, v in crops.items() if round(v, 2) > 0}
         for f, crops in per_firm.items()
@@ -1078,7 +1083,7 @@ async def _extract_5(
 
     cfg = cfg or {}
     m = importlib.import_module("5_main_fixed")
-    history_years = cfg.get("history_years") or [m.SEASON_YEAR, m.SEASON_YEAR + 1]
+    history_years = cfg.get("history_years") or _default_history_years(report_date)
     task_years = cfg.get("task_season_years") or []
     report_season_year = int(min(int(y) for y in history_years))
     m.SEASON_YEAR = report_season_year
@@ -1100,7 +1105,7 @@ async def _extract_5(
         report_date=report_date,
         period_start=period_start,
         skip_crops=m.SKIP_CROPS,
-        season_year=int(task_years[0] if task_years else report_season_year + 1),
+        season_year=int(task_years[0] if task_years else _current_season(report_date)),
     )
     available_field_ids: set[int] = set()
     for r in m.get_all_from_id("inventory_history_items", {"historyable_type": "Field"}):
@@ -1397,26 +1402,8 @@ async def _extract_7_8(
         field_to_crop_map = _field_to_crop
     else:
         field_to_crop_map = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
-    crop_of = None
-    if module_name == "7_main__4_":
-        from plans import crop_for_disk_field
-
-        crops_by_year = getattr(m, "_proverka_field_crops_by_year", {})
-
-        def crop_of(task: dict, fid: int, _map=crops_by_year, _flat=field_to_crop_map) -> str:
-            try:
-                season = int(task.get("season") or 0) or None
-            except (TypeError, ValueError):
-                season = None
-            named = crop_for_disk_field(_map.get(int(fid), {}), season)
-            if named:
-                return named
-            fallback = str(_flat.get(int(fid)) or "")
-            return "" if fallback == "Зябь" else fallback
-
     per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
         tasks_today, mtfmi, field_to_firm, field_to_crop_map, cutoff,
-        crop_of=crop_of,
     )
     crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
     operations = _operations_with_crop_breakdown(
@@ -2004,4 +1991,10 @@ async def compute_report_facts(
     rows = take_task_facts(tokens)
     if isinstance(result, dict):
         _store_task_facts(result, spec.report_id, report_date, rows)
+        try:
+            from proverka.data_checks import collect_data_checks
+
+            result["data_checks"] = collect_data_checks()
+        except Exception:
+            pass
     return result

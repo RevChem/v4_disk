@@ -185,8 +185,10 @@ async def fetch_mtfmi_map_hybrid_async(
 
         try:
             await remember_history_crops(client, base_url, result, semaphore)
-        except Exception as exc:  # некритично: crop_of_item вернёт fallback
-            print(f"  {log_prefix}культура history_item: {exc}", flush=True)
+        except Exception as exc:
+            from mtfmi_batch_fetch import note_history_load_error
+
+            note_history_load_error(exc, prefix=log_prefix)
     try:
         from mtfmi_batch_fetch import _check_loaded
 

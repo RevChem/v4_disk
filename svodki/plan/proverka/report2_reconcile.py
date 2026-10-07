@@ -189,7 +189,7 @@ def fetch_work_for_operation(
         int(x) for x in (_WORK_GROUP_WT.get(group_name) or [])
     ]
     hints = list(_fact_hints_for_group(group_name)) or list(cw_spec.fact_column_hints)
-    years = ui_check_years(report_date.year)
+    years = ui_check_years(report_date)
     loaded = load_works_for_seasons(
         cookie,
         [WorkLoadJob(group_name, t0, t1, wt_ids, tuple(hints))],
@@ -216,7 +216,7 @@ def prefetch_editor_season_works(
     )
     from proverka.reconcile import _shift_window_iso
 
-    years = ui_check_years(report_date.year)
+    years = ui_check_years(report_date)
     jobs: list[WorkLoadJob] = []
     for name in group_names:
         wt_ids = work_type_ids_for_group(name)
@@ -294,7 +294,7 @@ def _reconcile_one_operation(
 
     combined = build_season_cropwise(
         work,
-        report_year=report_date.year,
+        report_date=report_date,
         firm_names=firm_names,
         fact_hints=hints,
         season_rule=season_rule,

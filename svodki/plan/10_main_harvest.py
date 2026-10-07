@@ -86,7 +86,14 @@ BASE_URL = (
 # КОНФИГУРАЦИЯ
 # =============================================================================
 
-REPORT_DATE = date(2026, 9, 5)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 SEASON_YEAR = REPORT_DATE.year
@@ -1929,9 +1936,7 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                     continue
                 from task_area_shared import history_crop_name
 
-                crop = history_crop_name(
-                    item, field_to_crop.get(fid_i) or "", mowing=is_mowing,
-                )
+                crop = history_crop_name(item, "", mowing=is_mowing)
                 if is_mowing and crop != CORN_SILAGE_CROP:
                     continue
                 cov = harvest_item_area_for_shift(

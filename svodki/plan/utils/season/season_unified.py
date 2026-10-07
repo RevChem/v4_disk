@@ -5,6 +5,19 @@
 Правила (код): GROUP_SEASON_RULE ниже.
 
 Все потребители (PDF, сводки 1/2, proverka) вызывают resolve_group_season_config().
+
+Модель сезонов: сезон Y = 01.07.(Y-1) … 01.07.Y. Номер текущего сезона даёт
+season_year_for_date(report_date) (07.10.2026 -> 2027, 15.03.2027 -> 2027);
+``report_date.year + 1`` без учёта месяца использовать нельзя.
+
+Что значат правила (по умолчанию, без правок в редакторе планов):
+- history_years — сезоны, по которым берётся факт и история культур. Для
+  year_plus_one / plow_year_plus_one / both_years это [текущий-1, текущий],
+  как чипы «Сезоны» в редакторе и пример в merged_period_for_years.
+- task_season_years — единственный «основной» сезон (текущий) для определения
+  культуры (посев, вспашка, озимые в опрыскивании). Фильтром machine_task.season
+  для факта он по умолчанию не служит: факт группы режет fact_season_years_for_group,
+  то есть history_years, а при сохранённом выборе в редакторе — он.
 """
 from __future__ import annotations
 
@@ -14,6 +27,12 @@ import re
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # season_calendar не в sys.path (отдельная загрузка модуля)
+    def season_year_for_date(d: date) -> int:
+        return d.year + (1 if d.month >= 7 else 0)
 
 # Группа работ → season_rule
 GROUP_SEASON_RULE: dict[str, str] = {
@@ -136,23 +155,23 @@ def season_rule_for_report(report_id: str) -> str:
 
 
 def task_years_from_rule(season_rule: str, report_date: date) -> list[int]:
-    y = report_date.year
+    cur = season_year_for_date(report_date)
     if season_rule in ("year_plus_one", "plow_year_plus_one"):
-        return [y + 1]
+        return [cur]
     if season_rule == "report_year":
-        return [y]
+        return [report_date.year]
     if season_rule == "both_years":
-        return [y, y + 1]
+        return [cur - 1, cur]
     return []
 
 
 def history_years_from_rule(season_rule: str, report_date: date) -> list[int]:
-    y = report_date.year
+    cur = season_year_for_date(report_date)
     if season_rule in ("year_plus_one", "plow_year_plus_one", "both_years"):
-        return [y, y + 1]
+        return [cur - 1, cur]
     if season_rule == "report_year":
-        return [y]
-    return [y]
+        return [report_date.year]
+    return [report_date.year]
 
 
 def default_task_years_for_group(group_name: str, report_date: date) -> list[int]:
@@ -525,7 +544,7 @@ def resolve_group_season_config(
         "period_end": pe_iso,
         "task_season_plow_only": plow_only_for_rule(rule) and name == "2.4 Вспашка",
         "has_file_override": has_file_override,
-        "crop_priority_year": history_years[-1] if history_years else report_date.year,
+        "crop_priority_year": history_years[-1] if history_years else season_year_for_date(report_date),
     }
 
 
@@ -593,7 +612,7 @@ def resolve_report_season_config(
         "season_rule": season_rule,
         "task_season_years": task_years,
         "history_years": history_years,
-        "crop_priority_year": history_years[-1] if history_years else report_date.year,
+        "crop_priority_year": history_years[-1] if history_years else season_year_for_date(report_date),
         "period_start": str(period_start).split("T")[0],
         "period_end": str(period_end).split("T")[0],
         "shift_start_hour": ov.get("shift_start_hour"),
@@ -620,7 +639,7 @@ def fact_season_years_for_group(group_name: str, report_date: date) -> list[int]
     if history:
         return history
     defaults = default_history_years_for_group(group_name, report_date)
-    return defaults or [report_date.year + 1]
+    return defaults or [season_year_for_date(report_date)]
 
 
 def season_label_for_group(group_name: str, report_date: date) -> str:
@@ -634,7 +653,7 @@ def season_label_for_group(group_name: str, report_date: date) -> str:
         return "+".join(str(y) for y in hy)
     if hy:
         return str(hy[0])
-    return str(report_date.year)
+    return str(season_year_for_date(report_date))
 
 
 def task_season_str_for_group(group_name: str, report_date: date) -> str | None:
@@ -678,10 +697,11 @@ def winter_spray_task_seasons(
 ) -> set[str]:
     """Сезоны MachineTask, при которых озимые рапс/пшеница остаются в опрыскивании.
 
-    Обычно это год отчёта + 1 (посев озимых). Если редактор задаёт несколько сезонов,
-    берётся следующий календарный год, когда он есть в наборе, иначе — максимальный год.
+    Обычно это текущий сезон (посев озимых; с июля это год отчёта + 1, до июля —
+    год отчёта). Если редактор задаёт несколько сезонов, берётся текущий сезон,
+    когда он есть в наборе, иначе — максимальный год.
     """
-    next_year = str(report_date.year + 1)
+    next_year = str(season_year_for_date(report_date))
     if not season_task_seasons:
         return {next_year}
     if next_year in season_task_seasons:

@@ -147,6 +147,10 @@ def crop_key_for_harvest_area(
     поле уже классифицировано как кукуруза на силос. Иначе скашивание
     на травах/зерновых не попадает в строку кукурузы.
     """
+    if not str(crop or "").strip():
+        from mtfmi_batch_fetch import UNDEFINED_CROP
+
+        return UNDEFINED_CROP
     if wt in SILAGE_CORN_MOWING_WT_IDS:
         if crop and "кукуруза" in crop.casefold():
             return CORN_SILAGE_CROP

@@ -90,6 +90,14 @@ def _season_calendar_module():
     return mod
 
 
+def current_season_year(report_date: date) -> int:
+    """Номер сезона даты (07.10.2026 и 15.03.2027 -> 2027); единый хелпер season_calendar."""
+    cal_mod = _season_calendar_module()
+    if cal_mod and hasattr(cal_mod, "season_year_for_date"):
+        return cal_mod.season_year_for_date(report_date)
+    return report_date.year + (1 if report_date.month >= 7 else 0)
+
+
 def load_full_season_store(report_date: date | None = None) -> dict[str, Any]:
     path = season_ranges_path()
     # Битый файл уходит в *.corrupt-<ts> с записью в лог; сбой чтения — исключение (не {}).
@@ -318,11 +326,11 @@ def season_years_for_group(group_name: str, report_date: date) -> list[int]:
         hist = su.default_history_years_for_group(name, report_date)
         if hist:
             return hist
-    y = report_date.year
     for prefix in _SEASON_YEAR_PLUS_ONE_PREFIXES:
         if _matches_prefix(name, prefix):
-            return [y, y + 1]
-    return [y]
+            cur = current_season_year(report_date)
+            return [cur - 1, cur]
+    return [report_date.year]
 
 
 def period_start_for_group(group_name: str, report_date: date) -> date:
@@ -392,10 +400,10 @@ def _build_group_meta(
             "default_season_years": default_years,
             "season_year_options": sorted(
                 {
-                    report_date.year - 1,
-                    report_date.year,
-                    report_date.year + 1,
-                    report_date.year + 2,
+                    current_season_year(report_date) - 2,
+                    current_season_year(report_date) - 1,
+                    current_season_year(report_date),
+                    current_season_year(report_date) + 1,
                     *default_years,
                     *years,
                 }
@@ -426,10 +434,10 @@ def _build_group_meta(
         "default_season_years": default_years,
         "season_year_options": sorted(
             {
-                report_date.year - 1,
-                report_date.year,
-                report_date.year + 1,
-                report_date.year + 2,
+                current_season_year(report_date) - 2,
+                current_season_year(report_date) - 1,
+                current_season_year(report_date),
+                current_season_year(report_date) + 1,
                 *default_years,
                 *years,
             }

@@ -83,12 +83,26 @@ _VEG_KEY  = "4.1 Посев (овощи)"
 # =============================================================================
 # КОНФИГУРАЦИЯ
 # =============================================================================
-REPORT_DATE = date(2026, 9, 5)
+def _default_report_date() -> date:
+    """Сегодня по Москве (без зашитой даты; явная дата — переменная REPORT_DATE)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    return _dt.now(_tz(_td(hours=3))).date()
+
+
+REPORT_DATE = _default_report_date()
 if os.environ.get("REPORT_DATE"):
     REPORT_DATE = date.fromisoformat(os.environ["REPORT_DATE"])
 SEASON_YEAR = REPORT_DATE.year
-# Cropwise: посев озимых — machine_task.season == год отчёта + 1 (как 2_main_ideal_compact).
-SEASON_TASK_YEAR_STR = str(SEASON_YEAR + 1)
+try:
+    from season_calendar import season_year_for_date
+except ImportError:  # pragma: no cover - season_calendar не в sys.path
+    def season_year_for_date(d: date) -> int:
+        return d.year + (1 if d.month >= 7 else 0)
+# Сезон Cropwise: 01.07.(Y-1)…01.07.Y. Текущий сезон — 2027 и с июля 2026, и весной 2027.
+CROP_SEASON_YEAR = season_year_for_date(REPORT_DATE)
+# Cropwise: посев — machine_task.season == текущий сезон (как 2_main_ideal_compact).
+SEASON_TASK_YEAR_STR = str(CROP_SEASON_YEAR)
 
 DAY_START_HOUR: int = 6   # час начала суток
 DAY_END_HOUR:   int = 6   # час конца суток (если == DAY_START_HOUR → следующий день)
@@ -613,7 +627,7 @@ def _editor_season_strings(group_name: str) -> set[str]:
             return set(years)
     except Exception:
         pass
-    return {str(REPORT_DATE.year), str(REPORT_DATE.year + 1)}
+    return {str(CROP_SEASON_YEAR - 1), str(CROP_SEASON_YEAR)}
 
 
 def _filter_tasks_by_cropwise_season(
@@ -2016,6 +2030,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     firm_names     = list(AGROFIRMS.keys())
     veg_firm_names = [name for name in VEG_REPORT_FIRMS if name in VEG_AGROFIRMS]
     period_start = date(SEASON_YEAR, 1, 1)
+    crop_season_year = season_year_for_date(report_date)
 
     def _sync_refs_r5() -> tuple[dict[int, str], dict[int, str], set[int]]:
         crops = get_all_from_id("crops")
@@ -2023,9 +2038,9 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
             for c in crops if c.get("id") is not None
         }
-        print(f"  Строим field_crop_by_id из history_items (годы {SEASON_YEAR}, {SEASON_YEAR + 1})...")
+        print(f"  Строим field_crop_by_id из history_items (годы {crop_season_year - 1}, {crop_season_year})...")
         all_history_items: list[dict] = []
-        for crop_year in (SEASON_YEAR, SEASON_YEAR + 1):
+        for crop_year in (crop_season_year - 1, crop_season_year):
             chunk = get_all_from_id("history_items", {"year": str(crop_year)})
             all_history_items.extend(chunk)
             print(f"    history_items year={crop_year}: {len(chunk)} записей")
@@ -2035,7 +2050,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
             report_date=report_date,
             period_start=period_start,
             skip_crops=SKIP_CROPS,
-            season_year=SEASON_YEAR + 1,
+            season_year=crop_season_year,
         )
         print(f"  Полей с культурой посева (без SKIP_CROPS): {len(field_crop_by_id)}")
         available_field_ids: set[int] = set()

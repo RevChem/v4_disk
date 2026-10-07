@@ -461,7 +461,7 @@ def api_reference_ha(shift_cache: Any | None, wt_ids: list[int]) -> float | None
 def build_season_cropwise(
     work: dict[str, Any],
     *,
-    report_year: int,
+    report_date: Any,
     firm_names: list[str],
     fact_hints: list[str],
     season_rule: str,
@@ -473,7 +473,7 @@ def build_season_cropwise(
     """Cropwise для сверки: сумма сезонов загрузчика и отдельная цифра API."""
     from proverka.cropwise_ui import ui_check_years
 
-    years = [int(y) for y in (work.get("years") or ui_check_years(report_year))]
+    years = [int(y) for y in (work.get("years") or ui_check_years(report_date))]
     counted = svodka_counted_years(
         years, group_name=group_name, season_rule=season_rule, task_years=task_years,
     )
