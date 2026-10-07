@@ -12,6 +12,7 @@ import PageModalDialog from "./components/PageModalDialog";
 import {
   cancelGenerationJob,
   clearStoredTokens,
+  fetchCropwiseCookie,
   fetchGenerationJobs,
   fetchInterfaceBackground,
   fetchInterfaceSettings,
@@ -122,6 +123,44 @@ export default function App() {
   }, []);
   const canGenerate =
     user?.role === "developer" || user?.role === "admin" || user?.role === "user";
+  const [cropwiseOn, setCropwiseOn] = useState(
+    () => window.localStorage.getItem("svodki.cropwiseCheck") === "1",
+  );
+  const [cropwiseCookie, setCropwiseCookie] = useState(false);
+  const cropwiseActive = cropwiseOn && cropwiseCookie;
+  const cropwiseCaption = !cropwiseCookie
+    ? "На сервере нет cookie Cropwise — сводки создаются без проверки"
+    : cropwiseActive
+      ? "После создания сводок сверим их с work.json"
+      : "Сводки создаются без проверки Cropwise";
+
+  useEffect(() => {
+    if (!canGenerate) return undefined;
+    let cancelled = false;
+    fetchCropwiseCookie()
+      .then((available) => {
+        if (!cancelled) setCropwiseCookie(available);
+      })
+      .catch(() => {
+        if (!cancelled) setCropwiseCookie(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canGenerate]);
+
+  function toggleCropwise() {
+    if (!cropwiseCookie) {
+      setCropwiseOn(false);
+      window.localStorage.setItem("svodki.cropwiseCheck", "0");
+      return;
+    }
+    setCropwiseOn((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("svodki.cropwiseCheck", next ? "1" : "0");
+      return next;
+    });
+  }
 
   // Сброс интерфейса к умолчанию (выход, смена пользователя, ошибка загрузки).
   // Увеличение счётчика делает недействительными все уже запущенные загрузки.
@@ -595,6 +634,11 @@ export default function App() {
         queueLabel={queueLabel}
         onQueueOpen={() => setQueueDrawerOpen(true)}
         showQueueButton={canGenerate}
+        cropwise={
+          canGenerate
+            ? { active: cropwiseActive, caption: cropwiseCaption, onToggle: toggleCropwise }
+            : null
+        }
         showAiButton={isDeveloper}
         onInterfaceOpen={() => setInterfaceOpen(true)}
         onAiOpen={() => setAiMenuOpen(true)}
@@ -625,6 +669,7 @@ export default function App() {
             setLogsModalOpen(true);
           }}
           onOpenTaskFacts={isDeveloper ? openTaskFacts : undefined}
+          compareCropwise={cropwiseActive}
         />
       </AppShell>
       <GenerationQueueDrawer

@@ -14,10 +14,45 @@ from app.config import settings
 from app.database import SessionLocal
 from app.infrastructure.celery_app import celery_app
 from app.infrastructure.logging import get_logger, setup_logging
-from celery.signals import worker_ready
+from celery.signals import worker_process_init, worker_ready
 
 setup_logging(settings.log_level)
 log = get_logger(__name__)
+
+
+@worker_process_init.connect
+def _dispose_inherited_db_connections(**kwargs) -> None:
+    """После fork у дочернего процесса нельзя оставлять соединение родителя."""
+    from app.database import engine
+
+    engine.dispose()
+
+
+def _mark_generation_job_crashed(job_id: str, exc: BaseException) -> str:
+    """Задача Celery умерла до записи статуса. Иначе в интерфейсе она вечно «в очереди»."""
+    from app.application.generation_cancel import cancel_all_requested
+    from app.database import SessionLocal, engine
+
+    engine.dispose()
+    status = "cancelled" if isinstance(exc, SystemExit) else "failed"
+    db = SessionLocal()
+    try:
+        job = repo.get_generation_job(db, job_id)
+        if job is None:
+            return status
+        if job.status in ("completed", "cancelled", "failed"):
+            return str(job.status)
+        if isinstance(exc, SystemExit) or cancel_all_requested(job):
+            status = "cancelled"
+        repo.update_generation_job(
+            db,
+            job,
+            status=status,
+            error_message=f"{status}: {exc.__class__.__name__}",
+        )
+        return status
+    finally:
+        db.close()
 
 
 @worker_ready.connect
@@ -83,15 +118,37 @@ def run_proverka_ai_task(job_id: str) -> dict:
 
 @celery_app.task(name="app.adapters.inbound.celery.tasks.run_generation_job_task", bind=True)
 def run_generation_job_task(self, job_id: str) -> dict:
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
         job = repo.get_generation_job(db, job_id)
         if job is None:
             return {"error": "job_not_found"}
         job = run_generation_job(db, job)
         return {"job_id": job.id, "status": job.status}
+    except Exception as exc:
+        log.exception("reports.generation.task_crashed", job_id=job_id, error=str(exc))
+        status = _status_after_crash(job_id, exc, default="failed")
+        return {"job_id": job_id, "status": status, "error": exc.__class__.__name__}
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        status = _status_after_crash(job_id, exc, default="cancelled")
+        return {"job_id": job_id, "status": status, "error": exc.__class__.__name__}
     finally:
-        db.close()
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _status_after_crash(job_id: str, exc: BaseException, *, default: str) -> str:
+    try:
+        return _mark_generation_job_crashed(job_id, exc)
+    except Exception:
+        log.exception("reports.generation.crash_status_failed", job_id=job_id)
+        return default
 
 
 def _today_msk() -> date:

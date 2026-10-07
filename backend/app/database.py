@@ -9,7 +9,12 @@ _engine_kwargs = {}
 if settings.database_url.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
 
-engine = create_engine(settings.database_url, future=True, **_engine_kwargs)
+engine = create_engine(
+    settings.database_url,
+    future=True,
+    pool_pre_ping=True,
+    **_engine_kwargs,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 

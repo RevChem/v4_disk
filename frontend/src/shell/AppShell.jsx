@@ -8,6 +8,7 @@ import {
   Container,
   IconButton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import AccountCircleOutlinedIcon from "@mui/icons-material/AccountCircleOutlined";
@@ -48,6 +49,7 @@ export default function AppShell({
   aiViolationCount = 0,
   secondaryToolbar = null,
   onPasswordChanged,
+  cropwise = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -106,6 +108,29 @@ export default function AppShell({
                   </Box>
                 </Stack>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  {cropwise ? (
+                    <Tooltip title={cropwise.caption}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        onClick={cropwise.onToggle}
+                        sx={{
+                          minWidth: 0,
+                          px: 1,
+                          py: 0.2,
+                          fontSize: "0.75rem",
+                          lineHeight: 1.5,
+                          textTransform: "none",
+                          bgcolor: cropwise.active ? "success.main" : "error.main",
+                          "&:hover": {
+                            bgcolor: cropwise.active ? "success.dark" : "error.dark",
+                          },
+                        }}
+                      >
+                        Cropwise
+                      </Button>
+                    </Tooltip>
+                  ) : null}
                   {nav?.map((item) => {
                     const btn = (
                       <Button

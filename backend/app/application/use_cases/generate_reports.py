@@ -51,7 +51,10 @@ def cancel_generation_job(
             try:
                 from app.infrastructure.celery_app import celery_app
 
-                celery_app.control.revoke(job.celery_task_id, terminate=True, signal="SIGTERM")
+                # Без terminate: SIGTERM роняет процесс Celery с SystemExit,
+                # который нельзя записать в результат, и следующая задача
+                # остаётся pending на оборванном соединении с Postgres.
+                celery_app.control.revoke(job.celery_task_id, terminate=False)
             except Exception as exc:
                 log.warning("reports.generation.revoke_failed", job_id=job.id, error=str(exc))
     else:
@@ -108,11 +111,15 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
         from app.legacy.report_runner import load_job_options
 
         compare_cropwise = bool(load_job_options(job.id).get("compare_cropwise"))
+        cropwise_diffs: list[dict] = []
         if final_status == "completed" and created and compare_cropwise:
             try:
                 from app.application.cropwise_file_check import compare_generated_files_to_work_json
 
-                logs.extend(compare_generated_files_to_work_json(job.summary_date, created))
+                check_logs, cropwise_diffs = compare_generated_files_to_work_json(
+                    job.summary_date, created,
+                )
+                logs.extend(check_logs)
             except Exception as exc:
                 log.exception("reports.cropwise_check_failed", job_id=job.id, error=str(exc))
                 logs.append(f"Cropwise: проверка не выполнена ({exc})")
@@ -131,6 +138,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             "failed": failed,
             "cancelled": cancelled,
             "logs": logs,
+            "cropwise_diffs": cropwise_diffs,
             # Полное время формирования всех сводок задания (для «Логов» и профиля).
             "total_duration_seconds": total_duration_seconds,
         }

@@ -6,7 +6,16 @@ import {
   CardContent,
   CircularProgress,
   Collapse,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  IconButton,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   Typography,
 } from "@mui/material";
 import ChatBubbleOutlineRoundedIcon from "@mui/icons-material/ChatBubbleOutlineRounded";
@@ -47,11 +56,13 @@ export default function PdfSummaryPanel({
   onComment,
   canDelete = false,
   onDeleted,
+  cropwiseByReport = {},
 }) {
   const [previewFilename, setPreviewFilename] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [diffReportId, setDiffReportId] = useState("");
 
   const sortedFiles = useMemo(() => {
     const key = (f) => {
@@ -137,6 +148,9 @@ export default function PdfSummaryPanel({
             {sortedFiles.map((f) => {
               const open = previewFilename === f.filename;
               const isExcel = summaryIsExcel(f);
+              const reportKey =
+                f.report_id || String(f.title || f.filename).match(/^(\d+(?:\.\d+)?)/)?.[1] || "";
+              const diffs = cropwiseByReport[String(reportKey)] || [];
               return (
                 <Box key={f.filename}>
                   <Box
@@ -159,12 +173,31 @@ export default function PdfSummaryPanel({
                           : "0 8px 28px rgba(0,0,0,0.32)",
                     })}
                   >
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Box sx={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 1 }}>
+                      {diffs.length > 0 ? (
+                        <IconButton
+                          aria-label="Различия с Cropwise"
+                          title="Различия с Cropwise"
+                          onClick={() => setDiffReportId(String(reportKey))}
+                          sx={{ p: 0.5, flexShrink: 0 }}
+                        >
+                          <Box
+                            sx={{
+                              width: 10,
+                              height: 10,
+                              borderRadius: "50%",
+                              bgcolor: "error.main",
+                            }}
+                          />
+                        </IconButton>
+                      ) : null}
+                      <Box sx={{ minWidth: 0 }}>
                       <Typography fontWeight={600}>{f.title || f.filename}</Typography>
                       <Typography variant="body2" color="text.secondary">
                         Добавлено: {formatAdded(f.modified_at, f.generation_seconds)}
                         {isExcel ? " · Excel" : ""}
                       </Typography>
+                      </Box>
                     </Box>
                     <Stack direction="row" spacing={1} sx={{ flexShrink: 0, flexWrap: "wrap" }}>
                       {!isExcel && (
@@ -266,6 +299,61 @@ export default function PdfSummaryPanel({
           </Stack>
         )}
       </CardContent>
+      <CropwiseDiffDialog
+        rows={cropwiseByReport[diffReportId] || []}
+        onClose={() => setDiffReportId("")}
+      />
     </Card>
+  );
+}
+
+function formatHa(value) {
+  if (value == null || value === "") return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return number.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fileCell(row) {
+  if (row.status === "missing") return "нет в файле";
+  if (row.status === "unread") return "файл не прочитан";
+  return formatHa(row.file_ha);
+}
+
+function CropwiseDiffDialog({ rows, onClose }) {
+  const title = rows[0]?.title || (rows[0]?.report_id ? `Сводка ${rows[0].report_id}` : "Cropwise");
+  return (
+    <Dialog open={rows.length > 0} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Cropwise · {title}</DialogTitle>
+      <DialogContent>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Операция</TableCell>
+              <TableCell align="right">Файл, га</TableCell>
+              <TableCell align="right">Cropwise, га</TableCell>
+              <TableCell align="right">Разница, га</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow key={`${row.group}-${index}`}>
+                <TableCell>
+                  {row.group || "Сводка"}
+                  {row.note ? (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {row.note}
+                    </Typography>
+                  ) : null}
+                </TableCell>
+                <TableCell align="right">{fileCell(row)}</TableCell>
+                <TableCell align="right">{formatHa(row.cropwise_ha)}</TableCell>
+                <TableCell align="right">{formatHa(row.delta)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </DialogContent>
+    </Dialog>
   );
 }

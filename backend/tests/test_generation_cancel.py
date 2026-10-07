@@ -96,3 +96,45 @@ def test_data_checks_written_atomically(monkeypatch, tmp_path):
     payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["report_id"] == "10"
     assert payload["lines"] == ["DATA_CHECK [WARN] сводка=10 X"]
+
+
+class _PendingJob:
+    def __init__(self) -> None:
+        self.status = "pending"
+        self.cancel_requested = False
+        self.cancel_report_ids = "[]"
+
+
+def test_dead_db_connection_marks_job_failed_instead_of_pending(monkeypatch):
+    from app.adapters.inbound.celery import tasks as tasks_mod
+
+    job = _PendingJob()
+    saved: dict = {}
+
+    def update(db, obj, **fields):
+        saved.update(fields)
+        for key, value in fields.items():
+            setattr(obj, key, value)
+        return obj
+
+    monkeypatch.setattr("app.database.engine", type("E", (), {"dispose": staticmethod(lambda: None)})())
+    monkeypatch.setattr("app.database.SessionLocal", lambda: _DB())
+    monkeypatch.setattr(tasks_mod.repo, "get_generation_job", lambda db, job_id: job)
+    monkeypatch.setattr(tasks_mod.repo, "update_generation_job", update)
+
+    status = tasks_mod._mark_generation_job_crashed("job", RuntimeError("closed"))
+    assert status == "failed"
+    assert saved["status"] == "failed"
+    assert "RuntimeError" in saved["error_message"]
+
+
+def test_generation_task_survives_system_exit(monkeypatch):
+    from app.adapters.inbound.celery import tasks as tasks_mod
+
+    def boom():
+        raise SystemExit(1)
+
+    monkeypatch.setattr(tasks_mod, "SessionLocal", boom)
+    monkeypatch.setattr(tasks_mod, "_mark_generation_job_crashed", lambda job_id, exc: "cancelled")
+    result = tasks_mod.run_generation_job_task("job-1")
+    assert result == {"job_id": "job-1", "status": "cancelled", "error": "SystemExit"}

@@ -82,19 +82,22 @@ def _slots_for_report(report_id: str, packed: Any, work_groups: tuple[str, ...])
     return out
 
 
-def compare_generated_files_to_work_json(report_date: date, created: list) -> list[str]:
-    """Один проход work.json по созданным сводкам, которые сверяются с Cropwise."""
+def compare_generated_files_to_work_json(
+    report_date: date, created: list,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Один проход work.json. Второй список — только строки с расхождением."""
     from app.adapters.outbound.proverka.service import _ensure_plan_path, session_cookie_from_env
 
     _ensure_plan_path()
     cookie = session_cookie_from_env()
     if not cookie:
-        return ["Cropwise: нет CROPWISE_SESSION_COOKIE, проверка пропущена."]
+        return ["Cropwise: нет CROPWISE_SESSION_COOKIE, проверка пропущена."], []
 
     from proverka.file_values import operation_areas_from_path
     from proverka.report2_reconcile import _fact_hints_for_group
     from proverka.reports_config import REPORTS
     from proverka.runner import _prefetch_work_json
+    from season_unified import task_season_years_set_for_group
 
     files: dict[str, Any] = {}
     ids: list[str] = []
@@ -106,7 +109,7 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
         ids.append(rid)
         files[rid] = item
     if not ids:
-        return ["Cropwise: среди созданных сводок нет сверки с work.json."]
+        return ["Cropwise: среди созданных сводок нет сверки с work.json."], []
 
     started = time.monotonic()
     progress: list[str] = []
@@ -115,19 +118,47 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
     )
 
     lines: list[str] = list(progress)
+    rows: list[dict[str, Any]] = []
     checked = 0
     diffs = 0
+
+    def add_row(
+        rid: str,
+        title: str,
+        group: str,
+        status: str,
+        file_ha: float | None,
+        cropwise_ha: float | None,
+        note: str,
+    ) -> None:
+        delta = None
+        if file_ha is not None and cropwise_ha is not None:
+            delta = round(abs(float(file_ha) - float(cropwise_ha)), 2)
+        rows.append({
+            "report_id": rid,
+            "title": title,
+            "group": group,
+            "status": status,
+            "file_ha": None if file_ha is None else round(float(file_ha), 2),
+            "cropwise_ha": None if cropwise_ha is None else round(float(cropwise_ha), 2),
+            "delta": delta,
+            "note": note,
+        })
+
     for rid in ids:
         spec = REPORTS[rid]
         item = files[rid]
+        title = str(getattr(item, "title", "") or "")
         path = getattr(item, "xlsx_path", None) or getattr(item, "pdf_path", None)
         if path is None or not path.is_file():
             lines.append(f"[{rid}] Cropwise: файл сводки не найден.")
+            add_row(rid, title, "", "unread", None, None, "файл сводки не найден")
             continue
         try:
             file_areas = operation_areas_from_path(path, rid)
         except Exception as exc:
             lines.append(f"[{rid}] Cropwise: файл не прочитан ({exc}).")
+            add_row(rid, title, "", "unread", None, None, f"файл не прочитан ({exc})")
             continue
         slots = _slots_for_report(rid, prefetched.get(rid), tuple(spec.work_groups or ()))
         if not slots:
@@ -135,13 +166,12 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
             continue
         for group, slot in slots:
             hints = _fact_hints_for_group(group) or tuple(spec.fact_column_hints)
-            from season_unified import task_season_years_set_for_group
-
             seasons = task_season_years_set_for_group(group, report_date)
             cropwise_ha, note = work_json_total(slot, hints, seasons)
             file_ha = file_areas.get(group)
             if cropwise_ha is None:
                 lines.append(f"[{rid}] {group}: {note}.")
+                add_row(rid, title, group, "unread", None, None, note)
                 continue
             if file_ha is None:
                 if cropwise_ha > _MATCH_ABS_HA:
@@ -149,6 +179,7 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
                         f"[{rid}] {group}: в файле нет этой операции, "
                         f"Cropwise {cropwise_ha:.2f} га{note}."
                     )
+                    add_row(rid, title, group, "missing", None, cropwise_ha, note)
                 continue
             checked += 1
             if ha_matches(float(file_ha), cropwise_ha):
@@ -159,8 +190,9 @@ def compare_generated_files_to_work_json(report_date: date, created: list) -> li
                 f"[{rid}] {group}: файл {float(file_ha):.2f} га, "
                 f"Cropwise {cropwise_ha:.2f} га, Δ {delta:.2f}{note}."
             )
+            add_row(rid, title, group, "diff", float(file_ha), cropwise_ha, note)
     elapsed = time.monotonic() - started
     lines.append(
         f"Cropwise work.json: операций {checked}, расхождений {diffs}, {elapsed:.0f} с."
     )
-    return lines
+    return lines, rows
