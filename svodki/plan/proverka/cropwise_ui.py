@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import html
+import logging
 import os
 import re
 import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 
@@ -17,6 +19,8 @@ except ImportError:  # pragma: no cover
         return d.year + (1 if d.month >= 7 else 0)
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 try:
     from firm_sheet_names import FIRM_DISPLAY_NAMES
@@ -394,7 +398,10 @@ def _fetch_job_once_or_retry(
     job: WorkLoadJob,
     year: int,
 ) -> dict[str, Any]:
-    """Один запрос. Пустой или ошибочный — один повтор. Расхождение — «UI нестабилен»."""
+    """Один запрос. Пустой или ошибочный — один повтор. Расхождение — «UI нестабилен».
+
+    Ошибка на первом запросе и данные на повторе — принимаются (разовый сбой).
+    """
     first = fetch_work_report(
         web, job.time_from, job.time_to, job.work_type_ids,
         csrf=csrf, ui_session_season=year,
@@ -408,6 +415,16 @@ def _fetch_job_once_or_retry(
         csrf=csrf, ui_session_season=year,
     )
     k1, k2 = _response_kind(first), _response_kind(second)
+    if k1 == "error" and k2 == "data":
+        # Разовая ошибка (500, обрыв) на первом запросе: повтор вернул нормальные данные.
+        # Это не «нестабильный UI» — сезон принимаем, иначе одна ошибка стоит сезона.
+        logger.warning(
+            "work.json сезон %s: первый запрос не удался (%s), повтор вернул данные — принят",
+            year, first.get("error") or "ошибка",
+        )
+        second["load_status"] = "loaded"
+        second["ui_session_seasonValue"] = int(year)
+        return second
     if k1 == "data" and k2 == "data":
         t1 = cropwise_total_ha(first, job.fact_hints)
         t2 = cropwise_total_ha(second, job.fact_hints)
@@ -427,7 +444,129 @@ def _fetch_job_once_or_retry(
     return _not_loaded(year, reason)
 
 
+def _ui_lock_path() -> str:
+    import tempfile
+
+    configured = (os.environ.get("PROVERKA_UI_LOCK_PATH") or "").strip()
+    if configured:
+        return configured
+    raw = (os.environ.get("SVODKI_UPLOAD_DIR") or os.environ.get("UPLOAD_DIR") or "").strip()
+    base = raw if raw and os.path.isdir(raw) else tempfile.gettempdir()
+    return os.path.join(base, "proverka_cropwise_ui.lock")
+
+
+def _ui_lock_timeout() -> float:
+    try:
+        return max(0.0, float(os.environ.get("PROVERKA_UI_LOCK_TIMEOUT", "1200")))
+    except ValueError:
+        return 1200.0
+
+
+_UI_THREAD_LOCK = threading.Lock()
+
+
+class UiSessionBusy(RuntimeError):
+    """Другой поток или процесс сейчас переключает сезоны Cropwise UI."""
+
+
+@contextmanager
+def ui_session_lock(timeout: float | None = None):
+    """Межпроцессная (flock) и межпоточная блокировка загрузки work.json.
+
+    Сезон в Cropwise хранится в сессии аккаунта: два загрузчика, переключающие его
+    параллельно, получают ответы чужого сезона. Блокировка одна на все cookie —
+    переключение сезона глобально для аккаунта. Ждём не дольше timeout секунд,
+    затем UiSessionBusy (вызывающий помечает сезон «не загружен»).
+    """
+    wait = _ui_lock_timeout() if timeout is None else float(timeout)
+    deadline = time.monotonic() + wait
+    if not _UI_THREAD_LOCK.acquire(timeout=wait):
+        raise UiSessionBusy("загрузка Cropwise UI занята другим потоком")
+    fh = None
+    try:
+        path = _ui_lock_path()
+        try:
+            fh = open(path, "a+b")
+        except OSError as exc:
+            # Не смогли создать lock-файл — работаем под одной потоковой блокировкой.
+            logger.warning("lock-файл Cropwise UI недоступен (%s): %s", path, exc)
+            fh = None
+        if fh is not None:
+            while True:
+                try:
+                    _flock_try(fh)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise UiSessionBusy(
+                            "загрузка Cropwise UI занята другим процессом",
+                        ) from None
+                    time.sleep(0.5)
+        yield
+    finally:
+        if fh is not None:
+            try:
+                _flock_release(fh)
+            finally:
+                fh.close()
+        _UI_THREAD_LOCK.release()
+
+
+def _flock_try(fh) -> None:
+    try:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except ImportError:  # Windows
+        import msvcrt
+
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _flock_release(fh) -> None:
+    try:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except ImportError:
+        import msvcrt
+
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+
 def load_works_for_seasons(
+    cookie: str,
+    jobs: list[WorkLoadJob],
+    *,
+    years: list[int] | None,
+) -> dict[str, dict[int, dict[str, Any]]]:
+    """Загрузка work.json под межпроцессной блокировкой.
+
+    Параллельные обработчики (пул потоков report2_reconcile, reconcile_one в подпроцессах),
+    которым не хватило заранее загруженного ответа, раньше вызывали загрузчик одновременно
+    на одной cookie и ловили гонку сезонов. Теперь они выстраиваются в очередь; если
+    дождаться не удалось — все сезоны получают статус «не загружен».
+    """
+    if not jobs:
+        return {}
+    try:
+        with ui_session_lock():
+            return _load_works_for_seasons_locked(cookie, jobs, years=years)
+    except UiSessionBusy as exc:
+        logger.error("work.json не загружен: %s", exc)
+        ys = [0] if years is None else [int(y) for y in years]
+        return {
+            job.key: {y: _not_loaded(y, f"{exc}; сезон не проверен") for y in ys}
+            for job in jobs
+        }
+
+
+def _load_works_for_seasons_locked(
     cookie: str,
     jobs: list[WorkLoadJob],
     *,
@@ -510,8 +649,14 @@ def load_works_for_seasons(
         if switched_any and original is not None:
             try:
                 set_ui_session_year(web, csrf, int(original))
-            except requests.RequestException:
-                pass
+            except requests.RequestException as exc:
+                # Раньше ошибка глотала молча: сессия Cropwise оставалась на чужом сезоне,
+                # а следующий прогон об этом не знал.
+                logger.error(
+                    "Не удалось вернуть сезон Cropwise UI %s после проверки: %s. "
+                    "Сезон сессии остался переключённым — проверьте его в Cropwise вручную.",
+                    original, exc,
+                )
 
 
 def pack_loaded_work(by_year: dict[int, dict[str, Any]], years: list[int]) -> dict[str, Any]:

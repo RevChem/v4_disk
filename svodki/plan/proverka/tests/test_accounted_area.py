@@ -84,6 +84,32 @@ def test_two_years_do_not_double_the_field() -> None:
     assert sum(100.0 for _fid in newer) == 200.0
 
 
+def test_each_season_has_its_own_accounted_crop() -> None:
+    """Соя 2026 и озимый рапс 2027 на одном поле: учётная площадь стоит под обеими культурами."""
+    from importlib import import_module
+
+    m = import_module("2_main_ideal_compact")
+    history = {
+        2026: [{"field_id": 1, "year": 2026, "crop_id": 10, "active": True}],
+        2027: [{"field_id": 1, "year": 2027, "crop_id": 30, "active": True}],
+    }
+    crops = {10: "Соя", 30: "Рапс озимый"}
+    per_season = m.field_crops_per_season(history, [2026, 2027], crops)
+    assert per_season == {1: ["Соя", "Рапс озимый"]}
+
+
+def test_same_crop_in_two_seasons_is_not_doubled() -> None:
+    from importlib import import_module
+
+    m = import_module("2_main_ideal_compact")
+    history = {
+        2026: [{"field_id": 1, "year": 2026, "crop_id": 10, "active": True}],
+        2027: [{"field_id": 1, "year": 2027, "crop_id": 10, "active": True}],
+    }
+    per_season = m.field_crops_per_season(history, [2026, 2027], {10: "Соя"})
+    assert per_season == {1: ["Соя"]}
+
+
 def test_other_year_is_not_this_operation() -> None:
     from importlib import import_module
 
@@ -111,6 +137,8 @@ def test_winter_crop_comes_from_the_later_season() -> None:
 
 if __name__ == "__main__":
     test_two_years_do_not_double_the_field()
+    test_each_season_has_its_own_accounted_crop()
+    test_same_crop_in_two_seasons_is_not_doubled()
     test_other_year_is_not_this_operation()
     test_winter_crop_comes_from_the_later_season()
     print("ok")

@@ -500,7 +500,7 @@ def _print_result(spec: ReportSpec, result: dict[str, Any]) -> None:
         print(f"  {'ИТОГО':32s} {parsed.get('fact_total_ha', 0):10.2f}")
     seasons = result.get("cropwise_seasons") or {}
     if seasons:
-        for year in ("2027", "2026"):
+        for year in sorted(seasons, key=lambda y: str(y)):
             block = seasons.get(year) or {}
             if block.get("total_ha"):
                 print(f"    season {year} ({block.get('source', '?')}): {block['total_ha']} га")

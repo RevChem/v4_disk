@@ -263,31 +263,54 @@ def _build_field_to_firm() -> dict[int, str]:
     return field_to_firm
 
 
-def _area_in_shift(items: list[dict], day_start: datetime, cutoff: datetime) -> float:
-    """Как в модулях сводок (3_main_real и др.): h < cutoff, без нижней границы day_start."""
-    _ = day_start
+def _lower_bound(day_start: datetime | None, cutoff: datetime) -> datetime | None:
+    """Нижняя граница окна смены — только при расширенной выборке заданий.
+
+    Сводки берут задание целиком по end_time смены и считают его часы как ``h < cutoff``
+    без нижней границы; при PROVERKA_TASK_WINDOW_PAD_HOURS = 0 (по умолчанию) проверка
+    считает так же, и цифры совпадают со сводками.
+
+    При PAD > 0 в выборку попадают задания соседних смен (по end_time вне окна). Их часы
+    до начала смены уже учтены в своей смене, и без нижней границы они считались бы второй
+    раз. Поэтому при PAD > 0 считаем строго часы окна [day_start, cutoff) — как Cropwise UI.
+    Вызовы с day_start >= cutoff (старый признак «границы нет») границы не получают.
+    """
+    if task_window_pad_hours() <= 0:
+        return None
+    if not isinstance(day_start, datetime) or day_start >= cutoff:
+        return None
+    return day_start
+
+
+def _hourly_in_shift(
+    item: dict, day_start: datetime | None, cutoff: datetime,
+) -> float:
+    lo = _lower_bound(day_start, cutoff)
     total = 0.0
-    for item in items:
-        for entry in item.get("covered_area_hourly") or []:
-            h = _parse_dt(entry[0])
-            if h and h < cutoff:
-                total += float(entry[1] or 0)
+    for entry in item.get("covered_area_hourly") or []:
+        h = _parse_dt(entry[0])
+        if h is None or h >= cutoff:
+            continue
+        if lo is not None and h < lo:
+            continue
+        total += float(entry[1] or 0)
     return total
+
+
+def _area_in_shift(items: list[dict], day_start: datetime, cutoff: datetime) -> float:
+    """Площадь в окне смены [day_start, cutoff)."""
+    return sum(_hourly_in_shift(item, day_start, cutoff) for item in items)
 
 
 def _area_by_field_in_shift(
     items: list[dict], day_start: datetime, cutoff: datetime,
 ) -> dict[int, float]:
-    _ = day_start
     by_field: dict[int, float] = defaultdict(float)
     for item in items:
         fid = item.get("field_id")
         if fid is None:
             continue
-        for entry in item.get("covered_area_hourly") or []:
-            h = _parse_dt(entry[0])
-            if h and h < cutoff:
-                by_field[int(fid)] += float(entry[1] or 0)
+        by_field[int(fid)] += _hourly_in_shift(item, day_start, cutoff)
     return dict(by_field)
 
 

@@ -542,9 +542,10 @@ def _report9_crop_bd_cropwise_api(
     season_years: set[int],
     *,
     plow_crop_names: bool = False,
+    day_start: datetime | None = None,
 ) -> dict[str, dict[str, float]]:
     """
-    Разбивка за смену по культурам — как Cropwise UI (AgroOperation → HistoryItem)
+    Разбивка за смену по культурам — по history_item_id строки площади (как сводки)
     в proverka.cropwise_crops.api_area_by_firm_crop.
     """
     from proverka.cropwise_crops import api_area_by_firm_crop
@@ -558,7 +559,7 @@ def _report9_crop_bd_cropwise_api(
     if not tasks or not seasons_str:
         return {}
     raw = api_area_by_firm_crop(
-        tasks, mtfmi, field_to_firm, seasons_str, cutoff,
+        tasks, mtfmi, field_to_firm, seasons_str, cutoff, day_start=day_start,
     )
     if not plow_crop_names:
         return {c: dict(by_f) for c, by_f in raw.items() if by_f}
@@ -1523,13 +1524,13 @@ async def _extract_9(
     plow_crop_bd = await asyncio.to_thread(
         lambda: _report9_crop_bd_cropwise_api(
             m, today_task_ids, tasks_season, mtfmi, cutoff, field_to_firm,
-            plow_wt, plow_seasons, plow_crop_names=True,
+            plow_wt, plow_seasons, plow_crop_names=True, day_start=day_start,
         ),
     )
     deep_crop_bd = await asyncio.to_thread(
         lambda: _report9_crop_bd_cropwise_api(
             m, today_task_ids, tasks_season, mtfmi, cutoff, field_to_firm,
-            deep_wt, deep_seasons, plow_crop_names=False,
+            deep_wt, deep_seasons, plow_crop_names=False, day_start=day_start,
         ),
     )
     op_plow = _op_from_firm_dict(

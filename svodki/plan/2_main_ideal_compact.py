@@ -1220,6 +1220,54 @@ def field_crops_for_operation_years(
     return chosen
 
 
+def field_crops_per_season(
+    history_by_year: dict[int, list[dict]],
+    years: list[int],
+    crop_map: dict,
+) -> dict[int, list[str]]:
+    """Культуры поля по каждому сезону операции (без выбора одной).
+
+    Учётная площадь должна стоять под той культурой, по которой идёт работа. Факт строки
+    привязан к записи истории своего сезона, поэтому поле с соей 2026 и озимым рапсом 2027
+    входит и в «Соя», и в «Рапс озимый». Одна и та же культура в двух годах поле не удваивает.
+    Озимый рапс и озимая пшеница берутся только из более нового года (как в
+    field_crops_for_operation_years).
+    """
+    from plans import _is_winter_rape_or_wheat
+
+    selected: list[int] = []
+    for year in years or []:
+        try:
+            selected.append(int(year))
+        except (TypeError, ValueError):
+            continue
+    if not selected:
+        return {}
+    priority = max(selected)
+    out: dict[int, list[str]] = {}
+    for crop_year in sorted(set(selected)):
+        for hi in history_by_year.get(crop_year, []) or []:
+            if not hi.get("active"):
+                continue
+            fid = hi.get("field_id")
+            crop_id = hi.get("crop_id")
+            if not fid or not crop_id:
+                continue
+            try:
+                fid_i = int(fid)
+                name = str(crop_map.get(int(crop_id)) or crop_map.get(crop_id) or "").strip()
+            except (TypeError, ValueError):
+                continue
+            if not name or is_skip_crop(name):
+                continue
+            if _is_winter_rape_or_wheat(name) and crop_year != priority:
+                continue
+            names = out.setdefault(fid_i, [])
+            if name not in names:
+                names.append(name)
+    return out
+
+
 def _accounted_crop_label(group_name: str, raw: str) -> str | None:
     if group_name == PLOW_GROUP_NAME:
         return _map_plow_crop_name(raw)
@@ -1240,8 +1288,9 @@ def build_accounted_area_by_group(
 ) -> dict[str, dict[str, dict[str, float]]]:
     """Учётная площадь: фирма → культура → га, отдельно для каждой операции.
 
-    Годы — сезоны операции в редакторе. Поле входит один раз, даже если
-    запись истории есть в обоих сезонах.
+    Годы — сезоны операции в редакторе. Площадь считается отдельно по каждому сезону:
+    поле входит в культуру каждого сезона один раз (одна культура в двух годах не
+    удваивается). Исключение — внесение удобрений и культивация: одна, более новая культура.
     """
     from season_unified import fact_season_years_for_group
 
@@ -1252,23 +1301,30 @@ def build_accounted_area_by_group(
             years = list(fact_season_years_for_group(group_name, report_date) or [])
         except Exception:
             years = [report_date.year]
-        crops = field_crops_for_operation_years(
-            history_by_year,
-            years,
-            crop_map,
-            newest_year_wins=group_name in newest_groups,
-        )
+        if group_name in newest_groups:
+            # Внесение и культивация идут под культуру следующего сезона — одна, более новая.
+            per_field = {
+                fid: [raw]
+                for fid, raw in field_crops_for_operation_years(
+                    history_by_year, years, crop_map, newest_year_wins=True,
+                ).items()
+            }
+        else:
+            per_field = field_crops_per_season(history_by_year, years, crop_map)
         by_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        for fid, raw in crops.items():
+        for fid, raws in per_field.items():
             if fid not in available_ids:
                 continue
             firm = field_to_firm.get(fid)
             if not firm:
                 continue
-            label = _accounted_crop_label(group_name, raw)
-            if not label:
-                continue
-            by_firm[firm][label] += float(field_area.get(fid, 0.0) or 0.0)
+            labels: list[str] = []
+            for raw in raws:
+                label = _accounted_crop_label(group_name, raw)
+                if label and label not in labels:
+                    labels.append(label)
+            for label in labels:
+                by_firm[firm][label] += float(field_area.get(fid, 0.0) or 0.0)
         out[group_name] = {firm: dict(crops_ha) for firm, crops_ha in by_firm.items()}
     return out
 

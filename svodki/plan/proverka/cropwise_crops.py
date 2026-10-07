@@ -60,21 +60,68 @@ def _run_coro(coro):
         return pool.submit(asyncio.run, coro).result()
 
 
+def _ensure_history_crops(items_by_task: dict[int, list[dict]]) -> None:
+    """Дозагрузить культуры записей истории, которых ещё нет в кэше mtfmi_batch_fetch.
+
+    Обычно кэш уже заполнен загрузкой mtfmi (remember_history_crops). Если mtfmi пришли
+    из хранилища заданий, а записи истории не перечитывались, догружаем только недостающие.
+    Сбой загрузки не останавливает проверку: он пишется в лог и в предупреждения,
+    а строки без культуры остаются «Культура не определена».
+    """
+    import httpx
+    from plans import API_TOKEN, BASE_URL
+    import mtfmi_batch_fetch as mb
+
+    missing: dict[int, list[dict]] = {}
+    for tid, items in items_by_task.items():
+        for item in items:
+            hid = item.get("history_item_id")
+            if hid is None:
+                continue
+            try:
+                known = int(hid) in mb._HISTORY_CROP
+            except (TypeError, ValueError):
+                continue
+            if not known:
+                missing.setdefault(tid, []).append(item)
+    if not missing:
+        return
+
+    async def _load() -> None:
+        sem = asyncio.Semaphore(20)
+        headers = {"X-User-Api-Token": API_TOKEN}
+        async with httpx.AsyncClient(headers=headers, timeout=120) as client:
+            await mb.remember_history_crops(client, BASE_URL, missing, sem)
+
+    try:
+        _run_coro(_load())
+    except Exception as exc:  # noqa: BLE001 — сводка/проверка не должна падать из-за справочника
+        mb.note_history_load_error(exc, prefix="proverka: ")
+
+
 def api_area_by_firm_crop(
     tasks: list[dict],
     mtfmi_map: dict[int, list[dict]],
     field_to_firm: dict[int, str],
     seasons: set[str],
     cutoff,
+    day_start=None,
 ) -> dict[str, dict[str, float]]:
     """
-    Культура задания — HistoryItem агрооперации Cropwise (как вкладка «Культура» в UI).
-    Площадь — covered_area_hourly до конца смены.
+    Культура строки площади — HistoryItem из ``mtfmi.history_item_id``, тот же источник,
+    что у сводок (``mtfmi_batch_fetch.crop_of_item``). Раньше проверка шла через
+    mtaomi → agro_operation.history_item_id, а без агрооперации брала культуру поля
+    в сезоне: на заданиях, где эти источники расходились, появлялись ложные расхождения.
+
+    Строка без history_item_id (или с записью чужого поля) остаётся в итоге строкой
+    «Культура не определена» — как в сводках, гектары не теряются.
+    Площадь — covered_area_hourly в окне [day_start, cutoff); без day_start нижней границы нет.
     """
     from datetime import datetime
 
-    from plans import API_TOKEN, BASE_URL
-    from proverka.season_cropwise import _area_by_field_in_shift, _get_all
+    from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
+    from proverka.crop_compare import _crop_label
+    from proverka.season_cropwise import _hourly_in_shift
 
     if not isinstance(cutoff, datetime) or not seasons:
         return {}
@@ -85,151 +132,43 @@ def api_area_by_firm_crop(
     if not selected:
         return {}
 
-    task_ids = [int(t["id"]) for t in selected]
-    import httpx
-    from mtaomi_batch_fetch import fetch_mtaomi_by_machine_task_ids, mass_request_async
-
-    async def _load() -> tuple[dict[int, list[dict]], list[dict], list[dict]]:
-        sem = asyncio.Semaphore(20)
-        headers = {"X-User-Api-Token": API_TOKEN}
-        async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-            mtaomi = await fetch_mtaomi_by_machine_task_ids(
-                client, BASE_URL, task_ids, sem,
-            )
-            agro_ids: set[int] = set()
-            for items in mtaomi.values():
-                for item in items:
-                    aoid = item.get("agro_operation_id")
-                    if aoid is not None:
-                        agro_ids.add(int(aoid))
-            agro_ops = await mass_request_async(
-                client, BASE_URL, "agro_operations", sorted(agro_ids), sem,
-            )
-            hist_ids = {
-                int(ao["history_item_id"])
-                for ao in agro_ops
-                if ao.get("history_item_id") is not None
-            }
-            history = await mass_request_async(
-                client, BASE_URL, "history_items", sorted(hist_ids), sem,
-            )
-        return mtaomi, agro_ops, history
-
-    mtaomi, agro_ops, history = _run_coro(_load())
-    crops = {
-        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
-        for c in _get_all("crops")
-        if c.get("id") is not None
-    }
-    hist_crop: dict[int, str] = {}
-    for hi in history:
-        if hi.get("id") is None or hi.get("crop_id") is None:
-            continue
-        name = crops.get(int(hi["crop_id"]), "").strip()
-        if name:
-            hist_crop[int(hi["id"])] = name
-
-    task_field_crop: dict[tuple[int, int], str] = {}
-    task_to_ops: dict[int, set[int]] = defaultdict(set)
-    for tid, items in mtaomi.items():
-        for item in items:
-            aoid = item.get("agro_operation_id")
-            if aoid is not None:
-                task_to_ops[int(tid)].add(int(aoid))
-    op_hist: dict[int, int] = {}
-    op_field: dict[int, int] = {}
-    for ao in agro_ops:
-        if ao.get("id") is None:
-            continue
-        aoid = int(ao["id"])
-        if ao.get("history_item_id") is not None:
-            op_hist[aoid] = int(ao["history_item_id"])
-        if ao.get("field_id") is not None:
-            op_field[aoid] = int(ao["field_id"])
-    for tid, aoids in task_to_ops.items():
-        for aoid in aoids:
-            crop = hist_crop.get(op_hist.get(aoid, -1), "")
-            fid = op_field.get(aoid)
-            if crop and fid is not None:
-                task_field_crop[(tid, fid)] = crop
-
-    # Задание без агрооперации: культура поля в том же сезоне (history_items).
-    missing_fields: dict[int, set[str]] = defaultdict(set)
+    items_by_task: dict[int, list[dict]] = {}
     for t in selected:
         tid = int(t["id"])
-        season = str(t.get("season") or "")
-        if not season:
-            continue
-        items = mtfmi_map.get(tid) or mtfmi_map.get(t["id"]) or []
-        for fid, ha in _area_by_field_in_shift(items, cutoff, cutoff).items():
-            if ha > 0 and not task_field_crop.get((tid, int(fid))):
-                missing_fields[int(fid)].add(season)
-    if missing_fields:
-        async def _history_by_field() -> list[tuple[int, str, list[dict]]]:
-            sem = asyncio.Semaphore(20)
-            headers = {"X-User-Api-Token": API_TOKEN}
-            async with httpx.AsyncClient(headers=headers, timeout=120) as client:
-                async def one(fid: int, year: str) -> tuple[int, str, list[dict]]:
-                    async with sem:
-                        response = await client.get(
-                            f"{BASE_URL}/history_items",
-                            params={"field_id": fid, "year": year, "limit": 20},
-                        )
-                        response.raise_for_status()
-                        data = response.json().get("data") or []
-                        return fid, year, data
+        items_by_task[tid] = list(mtfmi_map.get(tid) or mtfmi_map.get(t["id"]) or [])
+    _ensure_history_crops(items_by_task)
 
-                jobs = [
-                    one(fid, year)
-                    for fid, years in missing_fields.items()
-                    for year in years
-                ]
-                return list(await asyncio.gather(*jobs))
-
-        for fid, year, items in _run_coro(_history_by_field()):
-            name = ""
-            for hi in items:
-                if hi.get("crop_id") is None:
-                    continue
-                name = crops.get(int(hi["crop_id"]), "").strip()
-                if name:
-                    break
-            if not name:
-                continue
-            for t in selected:
-                if str(t.get("season") or "") != year:
-                    continue
-                tid = int(t["id"])
-                items_mt = mtfmi_map.get(tid) or []
-                if fid in _area_by_field_in_shift(items_mt, cutoff, cutoff):
-                    task_field_crop.setdefault((tid, fid), name)
-
-    from proverka.crop_compare import _crop_label
+    try:
+        from utils.shared.task_area_shared import (
+            CORN_SILAGE_CROP,
+            SILAGE_CORN_MOWING_WT_IDS,
+        )
+    except ImportError:
+        CORN_SILAGE_CROP, SILAGE_CORN_MOWING_WT_IDS = None, frozenset()
 
     out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for t in selected:
         tid = int(t["id"])
-        items = mtfmi_map.get(tid) or mtfmi_map.get(t["id"]) or []
-        by_field = _area_by_field_in_shift(items, cutoff, cutoff)
-        for fid, ha in by_field.items():
+        wt = t.get("work_type_id")
+        silage = False
+        if wt is not None and CORN_SILAGE_CROP:
+            try:
+                silage = int(wt) in SILAGE_CORN_MOWING_WT_IDS
+            except (TypeError, ValueError):
+                silage = False
+        for item in items_by_task[tid]:
+            fid = item.get("field_id")
+            if fid is None:
+                continue
+            ha = _hourly_in_shift(item, day_start, cutoff)
             if ha <= 0:
                 continue
-            crop = task_field_crop.get((tid, int(fid)), "")
-            wt = t.get("work_type_id")
-            if wt is not None:
-                try:
-                    from utils.shared.task_area_shared import (
-                        CORN_SILAGE_CROP,
-                        SILAGE_CORN_MOWING_WT_IDS,
-                    )
-
-                    if int(wt) in SILAGE_CORN_MOWING_WT_IDS and crop and "кукуруза" in crop.casefold():
-                        crop = CORN_SILAGE_CROP
-                except ImportError:
-                    pass
             firm = field_to_firm.get(int(fid), "")
-            if not crop or not firm:
+            if not firm:
                 continue
+            crop = crop_of_item(item, "") or UNDEFINED_CROP
+            if silage and "кукуруза" in crop.casefold():
+                crop = CORN_SILAGE_CROP
             out[_crop_label(crop)][firm] += ha
     return {
         crop: {firm: round(ha, 2) for firm, ha in by_firm.items() if ha >= 0.01}
@@ -292,6 +231,7 @@ def cropwise_crops_api_by_operation(
     task_years: list[int] | None,
     *,
     plow_season_only: bool = False,
+    day_start=None,
 ) -> dict[str, dict[str, float]]:
     """
     Культуры Cropwise только по wt операции (API v3), без cropRows work.json.
@@ -323,6 +263,7 @@ def cropwise_crops_api_by_operation(
         shift_cache.field_to_firm,
         seasons,
         cutoff,
+        day_start=day_start,
     )
 
 

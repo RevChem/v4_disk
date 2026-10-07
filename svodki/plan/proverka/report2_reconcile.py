@@ -205,7 +205,7 @@ def prefetch_editor_season_works(
     report_date: date,
 ) -> dict[str, dict[str, Any]]:
     """
-    work.json по сезонам года отчёта и следующего.
+    work.json по двум сезонам проверки (прошлый и текущий, см. ui_check_years).
 
     Один последовательный проход по сессиям Cropwise на все операции.
     """
