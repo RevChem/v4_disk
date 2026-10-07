@@ -101,14 +101,30 @@ def _issue(kind: str, expected: float, actual: float, **extra: Any) -> dict[str,
     }
 
 
+# Заголовок листа сводки 2 короче имени операции в Cropwise.
+SHEET_GROUP_ALIASES = {
+    "5.4 уборка овощей": "5.4 Уборка картофеля, лука",
+}
+
+
 def group_for_sheet(sheet_name: str) -> str | None:
     """Имя листа → группа работ. Excel режет имена листов до 31 символа."""
     from proverka.operation_registry import OPERATION_PEERS
 
     name = _text(sheet_name)
-    for group in OPERATION_PEERS:
-        if group == name or (len(name) >= 28 and group.startswith(name)):
-            return group
+    folded = name.casefold()
+    for alias, canonical in SHEET_GROUP_ALIASES.items():
+        if folded == alias or folded.startswith(alias + " "):
+            return canonical
+    exact = [group for group in OPERATION_PEERS if group == name]
+    if len(exact) == 1:
+        return exact[0]
+    # Обрезанное имя вкладки — префикс ровно одной операции.
+    if len(name) < 12:
+        return None
+    hits = [group for group in OPERATION_PEERS if group.startswith(name)]
+    if len(hits) == 1:
+        return hits[0]
     return None
 
 
@@ -334,6 +350,43 @@ def _read_perf_sheet(ws: Any) -> dict[str, Any] | None:
     return {"total": total, "by_firm": by_firm}
 
 
+def _read_grouped_perf_blocks(ws: Any) -> dict[str, dict[str, Any]]:
+    """Один лист с несколькими блоками: строка группы, шапка, «Итого»."""
+    rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
+    out: dict[str, dict[str, Any]] = {}
+    current: str | None = None
+    firm_col: int | None = None
+    val_col: int | None = None
+    by_firm: dict[str, float] = {}
+    for raw in rows:
+        texts = [_text(c) for c in raw]
+        label = texts[0] if texts else ""
+        if _PERF_FIRM_HEADER in texts and _PERF_VALUE_HEADER in texts:
+            firm_col = texts.index(_PERF_FIRM_HEADER)
+            val_col = texts.index(_PERF_VALUE_HEADER)
+            by_firm = {}
+            continue
+        named = group_for_sheet(label) if label and label != _TOTAL_LABEL else None
+        if named and _PERF_FIRM_HEADER not in texts:
+            current = named
+            firm_col = None
+            val_col = None
+            continue
+        if current is None or firm_col is None or val_col is None:
+            continue
+        if not label:
+            continue
+        value = _num(raw[val_col]) if val_col < len(raw) else None
+        if value is None:
+            continue
+        if label == _TOTAL_LABEL:
+            out[current] = {"total": round(value, 2), "by_firm": by_firm}
+            current = None
+            continue
+        by_firm[label] = round(value, 2)
+    return out
+
+
 def _read_general_sheet(ws: Any) -> dict[str, Any] | None:
     rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
     hdr_idx = crop_col = val_col = None
@@ -464,17 +517,28 @@ def read_report1_workbook_checked(path: Path) -> tuple[dict[str, Any], list[dict
     problems: list[dict[str, str]] = []
     try:
         for ws in wb.worksheets:
-            is_general = _text(ws.title) == GENERAL_SHEET
-            group = None if is_general else _perf_group(ws.title)
-            if not is_general and not group:
+            title = _text(ws.title)
+            is_general = title == GENERAL_SHEET
+            is_veg = title in {"Овощи", "Сводка овощи"}
+            is_tillage = "Вспашка" in title and "Глубокорыхление" in title
+            group = None if is_general or is_veg or is_tillage else _perf_group(title)
+            if not is_general and not is_veg and not is_tillage and not group:
                 continue
             scope = f"лист «{ws.title}»"
             try:
-                data = _read_general_sheet(ws) if is_general else _read_perf_sheet(ws)
+                if is_tillage:
+                    blocks = _read_grouped_perf_blocks(ws)
+                    data = blocks or None
+                elif is_general or is_veg:
+                    data = _read_general_sheet(ws)
+                else:
+                    data = _read_perf_sheet(ws)
             except Exception as exc:
                 problems.append(_problem(scope, f"ошибка разбора: {type(exc).__name__}: {exc}"))
                 continue
             if data is None:
+                if is_veg or is_tillage:
+                    continue
                 hdr = (
                     f"«{_GENERAL_CROP_HEADER}» / «{_GENERAL_VALUE_HEADER}»"
                     if is_general
@@ -486,6 +550,10 @@ def read_report1_workbook_checked(path: Path) -> tuple[dict[str, Any], list[dict
                 continue
             if is_general:
                 out["general"] = data
+            elif is_veg:
+                out["perf"]["5.4 Уборка картофеля, лука"] = data
+            elif is_tillage:
+                out["perf"].update(data)
             else:
                 out["perf"][group] = data
     finally:

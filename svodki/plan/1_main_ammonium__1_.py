@@ -2808,7 +2808,11 @@ async def _fetch_day_stats_for_work_types_impl(
 
         if is_harvest and harvest_perf_10 is not None:
             h_area, _, _ = harvest_perf_10
-            area_today = round(h_area.get(firm, 0.0), 2)
+            raw_area = float(h_area.get(firm, 0.0))
+            area_today = round(raw_area, 2)
+            # Итого «Обработано за сутки» суммирует today_by_field, не area_today.
+            # Поля вне инвентаря 1.1 (кукуруза) туда не попадали — итог был ~1103.
+            today_by_field = {0: area_today} if area_today else {}
         elif is_harvest:
             area_today = round(
                 sum(float(d.get("grain_area") or 0) for d in pm.values() if float(d.get("grain_area") or 0) > 0),

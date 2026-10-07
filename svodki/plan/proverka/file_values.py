@@ -490,22 +490,18 @@ def _dedupe_words(text: str) -> str:
     return " ".join(out)
 
 
-# Заголовок листа сводки 2 отличается от имени операции в сверке.
-_FILE_GROUP_ALIASES = {
-    "5.4 уборка овощей": "5.4 Уборка картофеля, лука",
-}
-
-
 def _match_group(line: str) -> str | None:
     """Имя операции из заголовка листа. Строка с двумя операциями не выбирается."""
+    from proverka.file_consistency import SHEET_GROUP_ALIASES
     from proverka.operation_registry import OPERATION_PEERS
 
     text = _dedupe_words(line)
     if not text or "Итого" in text or len(text) > 120:
         return None
-    aliased = _FILE_GROUP_ALIASES.get(text.casefold())
-    if aliased:
-        return aliased
+    folded = text.casefold()
+    for alias, canonical in SHEET_GROUP_ALIASES.items():
+        if folded == alias or folded.startswith(alias + " "):
+            return canonical
     hits: list[str] = []
     for group in OPERATION_PEERS:
         exact = text == group or text.startswith(group + " ") or text.startswith(group + ",")
@@ -1181,6 +1177,28 @@ def _harvest_book_xlsx_areas(path: Path) -> dict[str, float]:
         wb.close()
 
 
+def _report1_xlsx_areas(path: Path) -> dict[str, float]:
+    """Сводка 1: каждый лист «Выраб. — …», плюс намолот и овощи."""
+    from proverka.file_consistency import (
+        HARVEST_GROUP,
+        _raise_if_problems,
+        read_report1_workbook_checked,
+    )
+
+    data, problems = read_report1_workbook_checked(path)
+    file_problems = [item for item in problems if item.get("scope") == "файл"]
+    if file_problems and not data.get("perf") and data.get("general") is None:
+        _raise_if_problems(path, file_problems)
+    out: dict[str, float] = {}
+    for group, block in (data.get("perf") or {}).items():
+        if block and block.get("total") is not None:
+            out[str(group)] = float(block["total"])
+    general = data.get("general")
+    if general and general.get("total") is not None:
+        out[HARVEST_GROUP] = float(general["total"])
+    return out
+
+
 def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     """Гектары за сутки по операциям из одного файла сводки."""
     rid = str(report_id)
@@ -1190,7 +1208,9 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
             from proverka.file_consistency import report2_xlsx_areas
 
             return report2_xlsx_areas(path)
-        if rid in {"1", "10"}:
+        if rid == "1":
+            return _report1_xlsx_areas(path)
+        if rid == "10":
             return _harvest_book_xlsx_areas(path)
         blocks = _read_xlsx_blocks(path)
         if blocks:

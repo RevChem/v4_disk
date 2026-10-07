@@ -603,3 +603,48 @@ def test_load_saved_areas_surfaces_report1_crop_read_error(tmp_path, monkeypatch
     _ops, crops, _firms, errors = fv.load_saved_areas(date(2026, 9, 25))
     assert crops == {}
     assert any(e.startswith("культуры:") and "не открылся" in e for e in errors.get("1", []))
+
+
+def test_report2_sheet_titled_vegetable_harvest_maps_to_cropwise_name(tmp_path):
+    path = _book(tmp_path, CROPS, [("АФ А", 34.75)], 34.75)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    wb.active.title = "5.4 Уборка овощей"
+    wb.save(path)
+    assert report2_xlsx_areas(path) == {"5.4 Уборка картофеля, лука": 34.75}
+
+
+def test_report1_reads_perf_sheets_not_only_harvest(tmp_path):
+    from proverka.file_values import operation_areas_from_path
+
+    wb = Workbook()
+    perf = wb.active
+    perf.title = "Выраб. — 2.9 Дискование"
+    perf.append(PERF_HDR)
+    perf.append(["АФ А", 10, 2, 250.45])
+    perf.append(["Итого", 10, 2, 250.45])
+    spray = wb.create_sheet("Выраб. — 3.1 Опрыскивание")
+    spray.append(PERF_HDR)
+    spray.append(["АФ А", 10, 2, 100.0])
+    spray.append(["Итого", 10, 2, 100.0])
+    till = wb.create_sheet("Вспашка + Глубокорыхление")
+    for title, total in (("2.4 Вспашка", 686.21), ("2.8 Глубокорыхление", 8.25)):
+        till.append([title])
+        till.append(PERF_HDR)
+        till.append(["АФ А", 10, 2, total])
+        till.append(["Итого", 10, 2, total])
+        till.append([])
+    long_name = "Выраб. — 1.1 Внесение минеральных удобрений"[:31]
+    fert = wb.create_sheet(long_name)
+    fert.append(PERF_HDR)
+    fert.append(["АФ А", 10, 2, 12.0])
+    fert.append(["Итого", 10, 2, 12.0])
+    path = tmp_path / "1.xlsx"
+    wb.save(path)
+    areas = operation_areas_from_path(path, "1")
+    assert areas["2.9 Дискование"] == 250.45
+    assert areas["3.1 Опрыскивание"] == 100.0
+    assert areas["2.4 Вспашка"] == 686.21
+    assert areas["2.8 Глубокорыхление"] == 8.25
+    assert areas["1.1 Внесение минеральных удобрений"] == 12.0
