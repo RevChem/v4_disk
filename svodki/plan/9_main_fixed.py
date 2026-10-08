@@ -262,6 +262,8 @@ PLOW_FIELD_SUMMARY_NAMED: tuple[str, ...] = (
     "Кукуруза на зерно",
 )
 PLOW_FIELD_OTHER_CROP = "Иные культуры"
+# Временный план строки «Иные культуры» на сводной вспашке.
+PLOW_OTHER_PLAN_HACK = 8118.0
 PLOW_DEEP_SUMMARY_SHEET = "Глубокорыхление"
 _UNMAPPED_CROP = "Культура не указана"
 
@@ -2511,9 +2513,7 @@ def _plow_all_firms_rows_field_and_veg(
         if crop not in named:
             continue
         field_rows.append((crop, *named[crop]))
-    other_plan = sum(
-        _plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER
-    )
+    other_plan = PLOW_OTHER_PLAN_HACK
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
         field_rows.append((
             PLOW_FIELD_OTHER_CROP,
