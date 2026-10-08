@@ -3315,6 +3315,11 @@ def collect_work_data(
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
 
+                    # Редактор планов: культура скрыта / «не считать» — гектары не входят в итоги
+                    # (раньше при вспашке/дисковании они уходили в «Иные культуры»).
+                    if crop and is_crop_user_excluded(group_name, firm, crop):
+                        continue
+
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         # Cropwise считает все гектары операции, в том числе культуры
                         # вне плана. Их строка — «Иные культуры», из итога они не выпадают.
@@ -3454,6 +3459,8 @@ def collect_work_data(
                             continue
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
+                    if crop and is_crop_user_excluded(group_name, firm, crop):
+                        continue
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         if crop:
                             coded = crop_code_for_report(group_name, crop)
@@ -3518,6 +3525,7 @@ def collect_work_data(
                 sorted(_season_task_seasons or []),
                 sorted(_winter_keep),
                 sorted(_winter_season_only),
+                crop_filter_fingerprint(),  # правки «Редактора планов» (скрытие, «не считать», ранг)
                 bool(use_crop_via_agro_op and history_item_to_crop
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
                 bool(_HISTORY_FIELD_ONLY),
@@ -4250,6 +4258,8 @@ def write_report_sheet(
             seen: set[str] = set()
             total = 0.0
             for crop in _planned_crops_for_group_firm(gn, firm):
+                if is_crop_user_excluded(gn, firm, crop):
+                    continue
                 code = crop_code_for_report(gn, crop)
                 if code is None or code in seen:
                     continue

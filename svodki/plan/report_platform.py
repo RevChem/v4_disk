@@ -65,6 +65,21 @@ def reload_plans_module() -> Any:
     return importlib.reload(plans)
 
 
+def reload_editor_modules() -> None:
+    """Подхватить правки редактора в уже запущенном процессе.
+
+    Celery-worker импортирует plans и proverka.work_groups один раз.
+    Без перезагрузки смена групп работ в проверку не попадает.
+    """
+    edits = plans_edits_path()
+    if edits.is_file():
+        os.environ["SVODKI_PLANS_EDITS_PATH"] = str(edits.resolve())
+    reload_plans_module()
+    import proverka.work_groups as work_groups
+
+    importlib.reload(work_groups)
+
+
 def bootstrap_platform(
     report_date: date,
     *,

@@ -83,6 +83,8 @@ from plans import (
     AVAILABLE_OWN,
     PLAN_RATE_PER_GROUP,
     SKIP_CROPS,
+    is_crop_user_excluded as _plan_crop_excluded,
+    work_group_ids,
 )
 
 # =============================================================================
@@ -116,19 +118,17 @@ DAY_END_HOUR:   int = 6
 
 # Основные типы работ (культивация) — входят в общую сводку
 WORK_TYPES: dict[int, str] = {
-    10:  "Культивация",
-    50:  "Культивация междурядная",
-    63:  "Культивация 11 км/ч 8-10 см",
-    96:  "2.11 Культивация",
+    wt_id: "2.11 Культивация" for wt_id in work_group_ids("2.11 Культивация")
 }
-# ID типа "Фрезерование" — только отдельные листы (не в сводке культивации)
-FREZER_WT_ID = 73
-
-ALL_WT_IDS = set(WORK_TYPES.keys()) | {FREZER_WT_ID}
+# Фрезерование — отдельная группа: её ID добавляются к запросу, список культивации не подменяют
 FREZER_WT_TITLE = "2.6 Фрезерование"
+FREZER_WT_IDS: set[int] = set(work_group_ids(FREZER_WT_TITLE))
+FREZER_WT_ID = min(FREZER_WT_IDS) if FREZER_WT_IDS else 0
+
+ALL_WT_IDS = set(WORK_TYPES) | set(FREZER_WT_IDS)
 
 # Основные культивационные IDs (без фрезерования)
-CULT_WT_IDS = {wt_id for wt_id in ALL_WT_IDS if wt_id != FREZER_WT_ID}
+CULT_WT_IDS = set(WORK_TYPES)
 
 # Агрофирмы, для которых строятся листы фрезерования
 FREZER_FIRMS: list[str] = ["АФ Чистопольская"]
@@ -696,7 +696,7 @@ def _aggregate_tasks_for_firms(
             wt = int(task.get("work_type_id"))
         except (TypeError, ValueError):
             return False
-        group = FREZER_WT_TITLE if wt == FREZER_WT_ID else "2.11 Культивация"
+        group = FREZER_WT_TITLE if wt in FREZER_WT_IDS else "2.11 Культивация"
         allowed = _allowed_for(group)
         if not allowed:
             return True
@@ -726,6 +726,10 @@ def _aggregate_tasks_for_firms(
                     continue
                 if field_to_crop is not None and fid_i not in field_to_crop:
                     continue
+                if field_to_crop is not None and _plan_crop_excluded(
+                    "2.11 Культивация", field_to_firm.get(fid_i) or "", field_to_crop.get(fid_i) or ""
+                ):
+                    continue  # культура убрана в «Редакторе планов»
                 if not field_to_firm.get(fid_i):
                     continue
                 cov = _cov_in_window(item, cutoff, use_fallback=use_fallback_cov)
@@ -752,6 +756,10 @@ def _aggregate_tasks_for_firms(
                 continue
             if field_to_crop is not None and fid_i not in field_to_crop:
                 continue
+            if field_to_crop is not None and _plan_crop_excluded(
+                "2.11 Культивация", field_to_firm.get(fid_i) or "", field_to_crop.get(fid_i) or ""
+            ):
+                continue  # культура убрана в «Редакторе планов»
             firm = field_to_firm.get(fid_i)
             if firm:
                 firm_items[firm].append(item)
@@ -871,6 +879,10 @@ def _aggregate_tasks_for_firms(
                 continue
             if field_to_crop is not None and fid_i not in field_to_crop:
                 continue
+            if field_to_crop is not None and _plan_crop_excluded(
+                "2.11 Культивация", field_to_firm.get(fid_i) or "", field_to_crop.get(fid_i) or ""
+            ):
+                continue  # культура убрана в «Редакторе планов»
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
@@ -1052,7 +1064,7 @@ def build_all_firm_stats(
     frezer_details = _aggregate_tasks_for_firms(
         tasks_today, tasks_season, mtfmi_map,
         season_start, day_start, cutoff, field_to_firm, implements_dict,
-        filter_wt_ids={FREZER_WT_ID},
+        filter_wt_ids=set(FREZER_WT_IDS),
         exempt_min_count=True,
         field_to_crop=field_to_crop,
         available_field_ids=available_field_ids,

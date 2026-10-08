@@ -215,11 +215,13 @@ def store_rmw_lock(name: str = _DEFAULT_LOCK_NAME) -> Iterator[None]:
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
                 fh = open(lock_path, "a+")
                 _acquire_file_lock(fh)
-            except OSError:
+            except OSError as exc:
                 if fh is not None:
                     with contextlib.suppress(OSError):
                         fh.close()
                 fh = None
+                # Работаем только с потоковой блокировкой — об этом нужно знать в логах.
+                log.warning("json_store.file_lock_unavailable", name=name, error=str(exc))
         depths[name] = depth + 1
         try:
             yield

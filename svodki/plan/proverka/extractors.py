@@ -1370,9 +1370,13 @@ async def _extract_7_8(
         )
         details = cult_details
     else:
+        from report_resources_fetch import collect_report_resource_ids
+
+        field_ids, _, _ = collect_report_resource_ids(all_tasks, mtfmi)
+        disk_crops = m.load_disk_crops(report_date, field_ids)
         details = m.build_all_firm_stats(
             tasks_today, tasks_season, mtfmi, season_start, day_start, cutoff,
-            field_to_firm, implements_dict,
+            field_to_firm, implements_dict, disk_crops,
         )
     by_firm = {firm: float(details[firm]["area_today"]) for firm in m.AGROFIRMS}
     # details[firm]["machines_today"] — общий ключ и для 7_main__4_.py
@@ -1385,12 +1389,14 @@ async def _extract_7_8(
     field_to_crop_map: dict[int, str] = {}
     if module_name == "8_main_fixed":
         field_to_crop_map = _field_to_crop
+        per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
+            tasks_today, mtfmi, field_to_firm, field_to_crop_map, cutoff,
+        )
+        crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
     else:
-        field_to_crop_map = _load_field_to_crop_for_proverka(m, cfg or {}, report_date)
-    per_firm_crop = _per_firm_area_by_crop_from_mtfmi(
-        tasks_today, mtfmi, field_to_firm, field_to_crop_map, cutoff,
-    )
-    crop_breakdown = _crop_breakdown_from_firm_area_by_crop(per_firm_crop, firm_order)
+        # Та же культура, по которой build_all_firm_stats уже вычел исключённые гектары.
+        field_to_crop_map = disk_crops.field_to_crop
+        crop_breakdown = _crop_breakdown_from_day_stats(details, firm_order)
     operations = _operations_with_crop_breakdown(
         spec, firm_order, by_firm, crop_breakdown,
         work_type_ids=m.ALL_WT_IDS,

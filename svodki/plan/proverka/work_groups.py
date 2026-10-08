@@ -3,41 +3,30 @@ from __future__ import annotations
 
 from plans import WORK_GROUPS
 
-_VEG_54_WT: list[int] = next(
-    (list(ids) for name, ids in WORK_GROUPS if name == "5.4 Уборка картофеля, лука"),
-    [75, 76, 77],
-)
-
-# 5.0 — список из plans.WORK_GROUPS плюс 6.3 «Скашивание с измельчением кукурузы».
-# В work.json это колонка «Кормозаготовка», work_type_id 84. Остальные виды
-# скашивания (ботва, валок, сено) в уборку не входят.
+# 6.3 «Скашивание с измельчением кукурузы» / кормозаготовка.
+# В plans.WORK_GROUPS этого ID нет: он добавляется к «5.0 Уборка», а не заменяет список.
 _CORN_SILAGE_CHOP_WT = 84
-_HARVEST_GRAIN_WT: list[int] = sorted(
-    (
-        set(next(ids for name, ids in WORK_GROUPS if name == "5.0 Уборка"))
-        - set(_VEG_54_WT)
-    )
-    | {_CORN_SILAGE_CHOP_WT}
-)
+_HARVEST_GROUP = "5.0 Уборка"
+_VEG_HARVEST_GROUP = "5.4 Уборка картофеля, лука"
 
-# Культивация: единый набор work_type_id для plans.WORK_GROUPS, сводки 8
-# (8_main_fixed.WORK_TYPES) и всех проверок — 10, 50, 63, 96.
-_CULTIVATION_WT: list[int] = [10, 50, 63, 96]
-
-WORK_GROUP_WT_OVERRIDES: dict[str, list[int]] = {
-    "5.4 Уборка картофеля, лука": _VEG_54_WT,
-    "5.0 Уборка": _HARVEST_GRAIN_WT,
-    "2.11 Культивация": _CULTIVATION_WT,
+WORK_GROUP_WT_EXTRAS: dict[str, tuple[int, ...]] = {
+    _HARVEST_GROUP: (_CORN_SILAGE_CHOP_WT,),
 }
 
 
 def work_group_wt_map() -> dict[str, list[int]]:
-    m = {name: list(ids) for name, ids in WORK_GROUPS}
-    m.update(WORK_GROUP_WT_OVERRIDES)
-    return m
+    """Группы из WORK_GROUPS. К «5.0» добавляется 84, овощные ID остаются в «5.4»."""
+    groups = {name: [int(x) for x in ids] for name, ids in WORK_GROUPS}
+    harvest = groups.get(_HARVEST_GROUP)
+    if harvest is not None:
+        veg = set(groups.get(_VEG_HARVEST_GROUP) or [])
+        ids = [wt for wt in harvest if wt not in veg]
+        for extra in WORK_GROUP_WT_EXTRAS.get(_HARVEST_GROUP, ()):
+            if extra not in ids:
+                ids.append(extra)
+        groups[_HARVEST_GROUP] = ids
+    return groups
 
 
 def work_type_ids_for_group(group_name: str) -> list[int]:
-    if group_name in WORK_GROUP_WT_OVERRIDES:
-        return list(WORK_GROUP_WT_OVERRIDES[group_name])
-    return list(dict(WORK_GROUPS).get(group_name) or [])
+    return list(work_group_wt_map().get(group_name) or [])

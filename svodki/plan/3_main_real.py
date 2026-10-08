@@ -59,6 +59,7 @@ from plans import (
     SKIP_CROPS,
     crop_code_for_report,
     is_crop_omitted,
+    work_group_ids,
 )
 
 # =============================================================================
@@ -91,7 +92,7 @@ if _season_start_raw:
 DAY_START_HOUR: int = 6
 DAY_END_HOUR:   int = 6
 
-WORK_TYPE_IDS   = {55}
+WORK_TYPE_IDS   = set(work_group_ids("1.1 Внесение минеральных удобрений"))
 WORK_TYPE_TITLE = "1.1 Внесение минеральных удобрений"
 
 # название → (region_id, план га/сутки)

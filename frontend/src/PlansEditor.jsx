@@ -35,6 +35,7 @@ import {
   heartbeatPlansPresence,
   releasePlansPresence,
   releasePlansPresenceKeepalive,
+  syncPlansPy,
   updatePlansEditorSeasonRange,
   updatePlansEditorValue
 } from "./api";
@@ -571,7 +572,12 @@ export default function PlansEditor({ summaryDate = null }) {
         summaryDate
       });
       applyWriteState(data);
-      setSuccess("Сохранено");
+      const note = data?.plans_py_note;
+      if (note && String(note).startsWith("Не удалось")) {
+        setError(note);
+      } else {
+        setSuccess(note || "Сохранено");
+      }
       return true;
     } catch (e) {
       setError(formatError(e, "Не удалось сохранить"));
@@ -976,7 +982,8 @@ export default function PlansEditor({ summaryDate = null }) {
           </Stack>
 
           <Alert severity="info" sx={{ py: 0.5 }}>
-            База — <strong>plans.py</strong>, сохраняются только отличия. Жёлтая подсветка — изменено.
+            Площади плана записываются в <strong>plans.py</strong>. Остальные правки хранятся отдельно.
+            Жёлтая подсветка — ещё не совпадает с файлом.
           </Alert>
           {state?.has_edits && (
             <Alert severity="warning" sx={{ py: 0.5 }}>
@@ -995,6 +1002,29 @@ export default function PlansEditor({ summaryDate = null }) {
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button variant="text" size="small" disabled={loading || saving} onClick={reload}>
               Обновить
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={loading || saving}
+              onClick={async () => {
+                setSavingTracked(true);
+                setError("");
+                setSuccess("");
+                try {
+                  const data = await syncPlansPy(summaryDate);
+                  applyWriteState(data);
+                  const note = data?.plans_py_note || "plans.py синхронизирован";
+                  if (String(note).startsWith("Не удалось")) setError(note);
+                  else setSuccess(note);
+                } catch (e) {
+                  setError(formatError(e, "Не удалось синхронизировать plans.py"));
+                } finally {
+                  setSavingTracked(false);
+                }
+              }}
+            >
+              Синхронизация plans.py
             </Button>
           </Stack>
         </Stack>
@@ -1016,6 +1046,7 @@ export default function PlansEditor({ summaryDate = null }) {
           ) : section?.kind === "work_groups" ? (
             <PlansWorkGroupsEditor
               groups={state?.effective?.WORK_GROUPS ?? state?.base?.WORK_GROUPS ?? EMPTY_WORK_GROUPS}
+              lockedNames={(state?.base?.WORK_GROUPS || []).map((g) => g?.name).filter(Boolean)}
               summaryDate={summaryDate}
               onSaved={applyWriteState}
               saving={saving}

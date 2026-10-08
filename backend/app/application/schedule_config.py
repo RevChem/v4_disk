@@ -57,8 +57,11 @@ def _new_entry_id(prefix: str) -> str:
 
 
 def _normalize_time(entry: dict[str, Any]) -> tuple[int, int]:
-    hour = int(entry.get("hour", 0))
-    minute = int(entry.get("minute", 0))
+    try:
+        hour = int(entry.get("hour", 0))
+        minute = int(entry.get("minute", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Некорректное время: часы и минуты должны быть числами") from exc
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         raise ValueError(f"Некорректное время: {hour:02d}:{minute:02d}")
     return hour, minute

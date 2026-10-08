@@ -190,7 +190,7 @@ def _wt_ignored() -> frozenset[int]:
 def _known_wts() -> frozenset[int]:
     """work_type_id из «Редактора планов» плюс осознанные добавки proverka.
 
-    Id 84 (силос) есть только в WORK_GROUP_WT_OVERRIDES, не в plans.WORK_GROUPS.
+    Id 84 (силос) добавляется к «5.0 Уборка» (WORK_GROUP_WT_EXTRAS), в plans.WORK_GROUPS его нет.
     Пустой реестр (импорт не удался) отключает проверку, чтобы не засорять лог.
     """
     global _KNOWN_WT
@@ -203,9 +203,9 @@ def _known_wts() -> frozenset[int]:
         except Exception:
             pass
         try:
-            from proverka.work_groups import WORK_GROUP_WT_OVERRIDES
+            from proverka.work_groups import WORK_GROUP_WT_EXTRAS
 
-            ids.update(int(w) for group in WORK_GROUP_WT_OVERRIDES.values() for w in group)
+            ids.update(int(w) for group in WORK_GROUP_WT_EXTRAS.values() for w in group)
         except Exception:
             pass
         _KNOWN_WT = frozenset(ids)

@@ -356,6 +356,7 @@ class PlansEditorOut(BaseModel):
     path: str
     has_edits: bool = False
     season_meta: dict[str, Any] | None = None
+    plans_py_note: str | None = None
 
 
 class PlansEditorWorkGroupItemIn(BaseModel):

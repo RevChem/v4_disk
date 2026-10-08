@@ -192,15 +192,23 @@ FIRM_ONLY_NO_CROP_GROUPS = frozenset({
 SPRAY_GROUP_NAME = "3.1 Опрыскивание"
 VEG_SPRAY_GROUP_NAME = "3.2 Опрыскивание (овощи)"
 HARVEST_GRAIN_GROUP_NAME = "5.0 Уборка"
-VEG_HARVEST_WT_IDS = frozenset({75, 76, 77})
+VEG_HARVEST_GROUP_NAME = "5.4 Уборка картофеля, лука"
+VEG_HARVEST_WT_IDS = frozenset(
+    wt_id
+    for gn, wt_ids in WORK_GROUPS
+    if gn == VEG_HARVEST_GROUP_NAME
+    for wt_id in wt_ids
+)
 _HARVEST_ALL_WT_IDS: frozenset[int] = frozenset(
     wt_id
     for gn, wt_ids in WORK_GROUPS
     if gn == HARVEST_GRAIN_GROUP_NAME
     for wt_id in wt_ids
 )
-# Площадь уборки 5.0 — как 10_main: зерновые wt включая обобщённые 6/7.
-GRAIN_AREA_WT_IDS: frozenset[int] = frozenset({6, 7, 111, 118, 125, 126, 145})
+# Площадь уборки 5.0 — как 10_main: группа «5.0» без ID из «5.4».
+GRAIN_AREA_WT_IDS: frozenset[int] = frozenset(
+    wt for wt in _HARVEST_ALL_WT_IDS if wt not in VEG_HARVEST_WT_IDS
+)
 # Площадь + скашивание на полях «Кукуруза на силос» — как AREA_TASK_WT_IDS в 10_main.
 AREA_TASK_WT_IDS: frozenset[int] = GRAIN_AREA_WT_IDS | SILAGE_CORN_MOWING_WT_IDS
 # Счётчик комбайнов / grain_area — как 11_main: без овощных и без wt=6/7.

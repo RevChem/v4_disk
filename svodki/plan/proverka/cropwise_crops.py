@@ -211,7 +211,7 @@ def fill_crop_comparisons(
             wt_ids=list(op.get("work_type_ids") or []),
             cutoff=_parse_dt(cutoff_iso),
         )
-        compared = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+        compared = compare_svodka_cropwise_crops(svodka_crop, cw_crop, group_name=gn)
         for row in compared:
             row["group"] = gn
         rows.extend(compared)

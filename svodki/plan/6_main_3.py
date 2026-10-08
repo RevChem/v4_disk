@@ -69,7 +69,9 @@ from plans import (
     AVAILABLE_OWN,
     PLAN_RATE_PER_GROUP,
     SKIP_CROPS,
+    is_crop_user_excluded as _plan_crop_excluded,
     WORK_GROUPS,
+    work_group_ids,
     VEG_CROP_ROWS,
     VEG_CROP_PLAN_HA,
     HARDCODED_PLAN,
@@ -147,11 +149,7 @@ DAY_START_HOUR: int = 6   # час начала суток
 DAY_END_HOUR:   int = 6   # час конца суток (если == DAY_START_HOUR → следующий день)
 
 WORK_TYPES: dict[int, str] = {
-    1:   "Опрыскивание",
-    64:  "3.1 Опрыскивание",
-    65:  "Опрыскивание с нормой 101-200 л/га",
-    66:  "Опрыскивание с нормой 201-300 л/га",
-    153: "Опрыскивание с нормой 301-400 л/га",
+    wt_id: _SPRAY_KEY for wt_id in work_group_ids(_SPRAY_KEY)
 }
 # ID задач для обычного опрыскивания (3.1)
 SPRAY_WT_IDS: set[int] = set(WORK_TYPES.keys())
@@ -233,10 +231,27 @@ def _merge_manual_report6(
 AGROFIRMS = _merge_manual_report6(_BASE_AGROFIRMS_6)
 
 
+def _veg_crop_names(crop: str) -> tuple[str, ...]:
+    names = [crop]
+    if crop == "Свекла":
+        names.append("Свекла столовая")
+    elif crop == "Свекла столовая":
+        names.append("Свекла")
+    return tuple(names)
+
+
+def _veg_crop_excluded(firm: str, crop: str) -> bool:
+    """Культура овощного опрыскивания убрана в редакторе — ни план, ни факт."""
+    return any(_plan_crop_excluded(_VEG_SPRAY_KEY, firm, name) for name in _veg_crop_names(crop))
+
+
 def _veg_spray_plan_ha() -> dict[str, float]:
     raw = (HARDCODED_PLAN.get(_VEG_SPRAY_KEY) or {}).get("АФ Чистопольская") or {}
     out: dict[str, float] = {}
     for crop in VEG_CROP_ROWS:
+        if _veg_crop_excluded(VEGGIE_FIRM, crop):
+            out[crop] = 0.0
+            continue
         if crop == "Свекла":
             val = raw.get("Свекла столовая", raw.get("Свекла", VEG_CROP_PLAN_HA.get(crop, 0.0)))
         else:
@@ -511,6 +526,31 @@ def _firms_for_task_items(items: list[dict]) -> set[str]:
     return firms
 
 
+_WT_TO_SPRAY_GROUP: dict[int, str] = {}
+
+
+def _spray_item_excluded(task: dict, item: dict) -> bool:
+    """Культура убрана в «Редакторе планов» (скрыта / «не считать») — гектары в итоги не идут."""
+    if not _WT_TO_SPRAY_GROUP:
+        for _gn, _ids in WORK_GROUPS:
+            if str(_gn).startswith(("3.1 ", "3.2 ")):
+                for _w in _ids:
+                    _WT_TO_SPRAY_GROUP[int(_w)] = str(_gn)
+    try:
+        group = _WT_TO_SPRAY_GROUP.get(int(task.get("work_type_id")))
+        fid = item.get("field_id")
+        if not group or not fid:
+            return False
+        from mtfmi_batch_fetch import crop_of_item
+
+        crop = str(crop_of_item(item, "") or "").strip()
+        if not crop:
+            return False
+        return _plan_crop_excluded(group, get_firm_for_field(int(fid)) or "", crop)
+    except (TypeError, ValueError):
+        return False
+
+
 def _task_cov_by_firm(
     task: dict,
     items: list[dict],
@@ -520,6 +560,26 @@ def _task_cov_by_firm(
 ) -> dict[str, float]:
     """Площадь задания по агрофирмам — единая логика сводок 1/2/6 (task_area_shared)."""
     from task_area_shared import task_cov_by_firm as _shared_task_cov_by_firm
+    from task_area_shared import item_area_in_window as _item_area
+
+    kept = [it for it in items if not _spray_item_excluded(task, it)]
+    if len(kept) != len(items):
+        # Общий хелпер масштабирует сумму MTFMI к task.covered_area. Чтобы гектары убранной
+        # культуры не «перетекли» в остальные, уменьшаем площадь задания пропорционально.
+        def _raw(lst: list[dict]) -> float:
+            tot = 0.0
+            for it in lst:
+                fid = it.get("field_id")
+                if not fid or not _field_ok(int(fid)) or not get_firm_for_field(int(fid)):
+                    continue
+                tot += _item_area(it, cutoff, window_start, parse_dt=parse_dt)
+            return tot
+
+        raw_all, raw_kept = _raw(items), _raw(kept)
+        if raw_all > 0:
+            task = dict(task)
+            task["covered_area"] = float(task.get("covered_area") or 0) * (raw_kept / raw_all)
+        items = kept
 
     return _shared_task_cov_by_firm(
         task,
@@ -870,6 +930,8 @@ async def fetch_all_data(
                         _fid_i = int(_fid)
                         if get_firm_for_field(_fid_i) != firm or not _field_ok(_fid_i):
                             continue
+                        if _spray_item_excluded(t, _item):
+                            continue
                         from mtfmi_batch_fetch import crop_of_item
 
                         _crop = crop_of_item(_item, "")
@@ -900,6 +962,8 @@ async def fetch_all_data(
                     continue
                 fid_i = int(fid)
                 if get_firm_for_field(fid_i) != firm or not _field_ok(fid_i):
+                    continue
+                if _spray_item_excluded(t, item):
                     continue
                 pm[mid]["track_area"] += item.get("covered_area_by_track") or 0
                 pm[mid]["work_distance_km"] += (item.get("work_distance") or 0) / 1000
@@ -1012,6 +1076,8 @@ async def fetch_all_data(
                 fid_i = int(fid)
                 firm = get_firm_for_field(fid_i)
                 if firm not in agrofirms:
+                    continue
+                if _spray_item_excluded(t, item):
                     continue
                 item_cov = _item_area_in_window(item, shift_cutoff, shift_start)
                 if item_cov <= 0.5:
@@ -1814,8 +1880,13 @@ def _write_veg_spray_crop_compact_block(
     start_row += 1
 
     days_elapsed = max((report_date - season_start).days, 1)
-    for i, crop in enumerate(VEG_CROP_ROWS, start=1):
+    shown = 0
+    for crop in VEG_CROP_ROWS:
         crop_label = crop_labels.get(crop, crop)
+        if _veg_crop_excluded(firm_name, crop) or _veg_crop_excluded(firm_name, crop_label):
+            continue
+        shown += 1
+        i = shown
         plan = float(plan_map.get(crop, plan_map.get(crop_label, 0.0)) or 0.0)
         fact = float(fact_map.get(crop, fact_map.get(crop_label, 0.0)) or 0.0)
         today = float(today_map.get(crop, today_map.get(crop_label, 0.0)) or 0.0)
@@ -1943,7 +2014,8 @@ def write_veggie_spray_sheet(
     ws.row_dimensions[2].height = 56
 
     data_row = 3
-    for crop in VEGGIE_CROP_ORDER:
+    shown_crops = [c for c in VEGGIE_CROP_ORDER if not _veg_crop_excluded(VEGGIE_FIRM, c)]
+    for crop in shown_crops:
         plan  = float(veggie_plans.get(crop, 0.0) or 0.0)
         if crop == "Свекла столовая":
             plan = float(veggie_plans.get("Свекла", plan) or plan)
@@ -1971,9 +2043,9 @@ def write_veggie_spray_sheet(
         ws.row_dimensions[data_row].height = 26
         data_row += 1
 
-    total_plan  = sum(float(veggie_plans.get(c, 0.0) or 0.0) for c in VEGGIE_CROP_ORDER)
-    total_fact  = sum(float(season_map.get(c, 0.0) or 0.0) for c in VEGGIE_CROP_ORDER)
-    total_today = sum(float(today_map.get(c, 0.0) or 0.0) for c in VEGGIE_CROP_ORDER)
+    total_plan  = sum(float(veggie_plans.get(c, 0.0) or 0.0) for c in shown_crops)
+    total_fact  = sum(float(season_map.get(c, 0.0) or 0.0) for c in shown_crops)
+    total_today = sum(float(today_map.get(c, 0.0) or 0.0) for c in shown_crops)
     total_rem   = max(total_plan - total_fact, 0.0)
     total_pct   = (total_fact / total_plan) if total_plan > 0 else 0.0
     total_vals  = ["Итого", round(total_plan, 2), round(total_fact, 2),
@@ -2210,16 +2282,17 @@ async def compare_spray_crops(report_date: date = REPORT_DATE) -> None:
                 ha = _item_area_in_window(item, cutoff, day_start)
                 if ha <= 0:
                     continue
+                group = "3.2 Опрыскивание (овощи)" if veg else "3.1 Опрыскивание"
                 old_name = str(field_to_crop.get(fid_i) or field_to_crop.get(fid) or "").strip()
                 if old_name and fid_i in field_to_crop:
                     label = _normalize_veggie_crop_label(old_name) if veg else old_name
-                    if label:
+                    if label and not _plan_crop_excluded(group, firm, label):
                         old[firm][label] += ha
                 hid = item.get("history_item_id")
                 new_name = hist_crop.get(int(hid), "") if hid is not None else ""
                 if new_name and new_name not in SKIP_CROPS:
                     label = _normalize_veggie_crop_label(new_name) if veg else new_name
-                    if label:
+                    if label and not _plan_crop_excluded(group, firm, label):
                         new[firm][label] += ha
         return (
             {firm: dict(crops) for firm, crops in old.items()},

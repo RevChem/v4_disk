@@ -16,43 +16,14 @@ from proverka.operation_registry import canonical_cropwise_report
 from proverka.reports_config import REPORTS, ReportSpec
 
 
-def _thematic_cropwise_ids(batch_report_ids: set[str] | None) -> set[str]:
-    if not batch_report_ids:
-        return set()
-    return {
-        rid for rid in batch_report_ids
-        if (spec := REPORTS.get(rid))
-        and spec.cropwise_comparable
-        and not spec.cropwise_per_operation
-    }
-
-
 def filter_ops_for_batch(
     ops: dict[str, dict[str, Any]],
     batch_report_ids: set[str] | None,
 ) -> dict[str, dict[str, Any]]:
-    """
-    Сводка 1/2 + тематические в одном batch: сверяем только операции,
-    для которых выбрана тематическая сводка (3, 6, 7…).
-    Если выбрана только 1/2 — все операции.
-    """
-    if not ops or not batch_report_ids:
-        return ops
-    per_op = any(REPORTS.get(r) and REPORTS[r].cropwise_per_operation for r in batch_report_ids)
-    thematic = _thematic_cropwise_ids(batch_report_ids)
-    if not per_op or not thematic:
-        return ops
-    filtered: dict[str, dict[str, Any]] = {}
-    for gn, op in ops.items():
-        canon = canonical_cropwise_report(gn)
-        if canon is None or canon in thematic or _always_reconcile_per_op(gn):
-            filtered[gn] = op
-    return filtered
+    """Операции сводки 1/2 проверяются все, даже если тематическую сводку не выбирали."""
+    return ops
 
 
-def _always_reconcile_per_op(group_name: str) -> bool:
-    """Операции с эталоном вне batch (сводка 10 для 5.4) — сверяем всегда."""
-    return group_name == "5.4 Уборка картофеля, лука"
 from proverka.season_cropwise import (
     ShiftWindowCache,
     work_type_ids_for_report,
@@ -61,9 +32,6 @@ from proverka.season_policy import resolve_group_season_policy
 from season_unified import season_rule_for_group
 from proverka.svodka_facts import compute_svodka_facts
 
-_WORK_GROUP_WT: dict[str, list[int]] = work_group_wt_map()
-
-
 def _wt_ids_for_operation(group_name: str, op: dict[str, Any]) -> list[int]:
     canonical = work_type_ids_for_group(group_name)
     if canonical:
@@ -71,7 +39,7 @@ def _wt_ids_for_operation(group_name: str, op: dict[str, Any]) -> list[int]:
     op_wts = [int(x) for x in (op.get("work_type_ids") or [])]
     if op_wts:
         return op_wts
-    return [int(x) for x in (_WORK_GROUP_WT.get(group_name) or [])]
+    return [int(x) for x in (work_group_wt_map().get(group_name) or [])]
 
 
 def _max_op_workers(count: int) -> int:
@@ -187,7 +155,7 @@ def fetch_work_for_operation(
     cw_spec = _cropwise_spec_for_group(group_name)
     t0, t1, _ = _shift_window_iso(cw_spec, report_date)
     wt_ids = work_type_ids_for_group(group_name) or [
-        int(x) for x in (_WORK_GROUP_WT.get(group_name) or [])
+        int(x) for x in (work_group_wt_map().get(group_name) or [])
     ]
     hints = list(_fact_hints_for_group(group_name)) or list(cw_spec.fact_column_hints)
     years = ui_check_years(report_date)
@@ -403,10 +371,13 @@ def _reconcile_one_operation(
 
     svodka_crop = display_op.get("area_today_by_firm_crop") or {}
     if svodka_crop and not combined["incomplete"]:
-        from proverka.crop_compare import compare_svodka_cropwise_crops
+        from proverka.crop_compare import compare_svodka_cropwise_crops, editor_rules_for
 
         cw_crop = work.get("editor_crop_areas") or {}
-        crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+        cmp_group, cmp_remap = editor_rules_for(str(source_report_id), group_name)
+        crop_cmp = compare_svodka_cropwise_crops(
+            svodka_crop, cw_crop, group_name=cmp_group, remap=cmp_remap,
+        )
         if crop_cmp:
             out["crop_comparisons"] = crop_cmp
             out["comparison"]["crop_diff_count"] = sum(
@@ -439,7 +410,7 @@ def _reconcile_one_operation(
 def _collect_all_wt_ids(ops: dict[str, dict[str, Any]]) -> list[int]:
     out: set[int] = set()
     for gn, op in ops.items():
-        wts = op.get("work_type_ids") or _WORK_GROUP_WT.get(gn) or []
+        wts = op.get("work_type_ids") or work_group_wt_map().get(gn) or []
         out.update(int(x) for x in wts)
     return sorted(out)
 

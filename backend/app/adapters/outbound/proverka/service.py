@@ -693,6 +693,9 @@ def _refresh_saved_reports(
 
 def run_job(job_id: str) -> None:
     _ensure_plan_path()
+    from report_platform import reload_editor_modules
+
+    reload_editor_modules()
     from proverka.runner import ProverkaCancelled, run_proverka_batch
 
     d = job_dir(job_id)

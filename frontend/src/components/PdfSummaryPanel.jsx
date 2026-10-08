@@ -320,18 +320,24 @@ function fileCell(row) {
   return formatHa(row.file_ha);
 }
 
+function columnCaption(row, side) {
+  if (row.source !== "sheets") return null;
+  return side === "left" ? "итого листа" : "сумма строк";
+}
+
 function CropwiseDiffDialog({ rows, onClose }) {
   const title = rows[0]?.title || (rows[0]?.report_id ? `Сводка ${rows[0].report_id}` : "Cropwise");
+  const sheetsOnly = rows.length > 0 && rows.every((row) => row.source === "sheets");
   return (
     <Dialog open={rows.length > 0} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Cropwise · {title}</DialogTitle>
+      <DialogTitle>{sheetsOnly ? "Листы" : "Cropwise"} · {title}</DialogTitle>
       <DialogContent>
         <Table size="small">
           <TableHead>
             <TableRow>
               <TableCell>Операция</TableCell>
-              <TableCell align="right">Файл, га</TableCell>
-              <TableCell align="right">Cropwise, га</TableCell>
+              <TableCell align="right">{sheetsOnly ? "Итого листа, га" : "Файл, га"}</TableCell>
+              <TableCell align="right">{sheetsOnly ? "Сумма строк, га" : "Cropwise, га"}</TableCell>
               <TableCell align="right">Разница, га</TableCell>
             </TableRow>
           </TableHead>
@@ -346,8 +352,22 @@ function CropwiseDiffDialog({ rows, onClose }) {
                     </Typography>
                   ) : null}
                 </TableCell>
-                <TableCell align="right">{fileCell(row)}</TableCell>
-                <TableCell align="right">{formatHa(row.cropwise_ha)}</TableCell>
+                <TableCell align="right">
+                  {fileCell(row)}
+                  {columnCaption(row, "left") ? (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {columnCaption(row, "left")}
+                    </Typography>
+                  ) : null}
+                </TableCell>
+                <TableCell align="right">
+                  {formatHa(row.cropwise_ha)}
+                  {columnCaption(row, "right") ? (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {columnCaption(row, "right")}
+                    </Typography>
+                  ) : null}
+                </TableCell>
                 <TableCell align="right">{formatHa(row.delta)}</TableCell>
               </TableRow>
             ))}

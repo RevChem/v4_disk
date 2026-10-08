@@ -226,14 +226,11 @@ def _noop_progress(_: str) -> None:
 def _per_op_prefetch_groups(report_ids: list[str]) -> list[tuple[str, list[int]]]:
     from proverka.work_groups import work_group_wt_map
     from proverka.operation_registry import OPERATION_PEERS, peer_reports_for_group
-    from proverka.operation_registry import canonical_cropwise_report
-    from proverka.report2_reconcile import _thematic_cropwise_ids
 
     per_op_rids = {rid for rid in report_ids if REPORTS[rid].cropwise_per_operation}
     if not per_op_rids:
         return []
 
-    thematic = _thematic_cropwise_ids(set(report_ids))
     wt_map = work_group_wt_map()
     out: list[tuple[str, list[int]]] = []
     seen: set[str] = set()
@@ -241,10 +238,6 @@ def _per_op_prefetch_groups(report_ids: list[str]) -> list[tuple[str, list[int]]
         peers = set(peer_reports_for_group(gn))
         if not peers & per_op_rids:
             continue
-        if per_op_rids and thematic:
-            canon = canonical_cropwise_report(gn)
-            if canon and canon not in thematic:
-                continue
         if gn in seen:
             continue
         wt = wt_map.get(gn)
@@ -259,6 +252,7 @@ def _prefetch_work_json(
     report_date: date,
     report_ids: list[str],
     prog: ProgressFn,
+    also_groups: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], int | None]:
     """Один последовательный загрузчик work.json на оба сезона смены."""
     from proverka.cropwise_ui import (
@@ -289,10 +283,16 @@ def _prefetch_work_json(
     report_jobs: list[str] = []
     for rid in std_rids:
         groups = tuple(REPORTS[rid].work_groups or ())
-        if len(groups) == 1:
+        extras = tuple((also_groups or {}).get(rid) or ())
+        if len(groups) == 1 and not extras:
             if groups[0] not in seen:
                 group_names.append(groups[0])
                 seen.add(groups[0])
+        elif groups or extras:
+            for name in (*groups, *extras):
+                if name not in seen:
+                    group_names.append(name)
+                    seen.add(name)
         else:
             report_jobs.append(rid)
 
@@ -330,8 +330,14 @@ def _prefetch_work_json(
             prefetched[rid] = op_map
     for rid in std_rids:
         groups = tuple(REPORTS[rid].work_groups or ())
-        if len(groups) == 1 and groups[0] in packed_groups:
-            prefetched[rid] = packed_groups[groups[0]]
+        extras = tuple((also_groups or {}).get(rid) or ())
+        names = tuple(dict.fromkeys((*groups, *extras)))
+        if len(names) == 1 and names[0] in packed_groups:
+            prefetched[rid] = packed_groups[names[0]]
+        elif len(names) > 1:
+            prefetched[rid] = {
+                name: packed_groups[name] for name in names if name in packed_groups
+            }
         elif f"report:{rid}" in loaded:
             prefetched[rid] = pack_loaded_work(loaded[f"report:{rid}"], years)
     return prefetched, None

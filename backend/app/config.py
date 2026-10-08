@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     public_base_url: str = "http://127.0.0.1:8080"
     # Schedule (MSK cron-like, stored in DB)
     schedule_timezone: str = "Europe/Moscow"
+    # Сколько минут после запланированного времени слот расписания ещё считается «живым»
+    # (догон при пропущенном тике beat, рестарте worker, повтор рассылки при сбое).
+    schedule_catchup_minutes: int = 15
     # Proverka: сколько часов хранить cookie Cropwise UI в мониторинге (не срок жизни _cropio_ses!)
     proverka_monitoring_cookie_ttl_hours: int = 24
 
@@ -178,6 +181,21 @@ class Settings(BaseSettings):
         if self.smtp_port == 465 and not self.smtp_use_ssl:
             object.__setattr__(self, "smtp_use_ssl", True)
             object.__setattr__(self, "smtp_use_tls", False)
+        return self
+
+    @model_validator(mode="after")
+    def _resolve_svodki_root(self) -> Settings:
+        """Относительный svodki_root ищем от текущей папки, затем от корня репозитория.
+
+        Из каталога backend/ (локальный запуск из README) путь «svodki» от cwd не существует,
+        а каталог лежит рядом с backend/. В Docker SVODKI_ROOT задан явно и не меняется.
+        """
+        root = Path(self.svodki_root).expanduser()
+        if root.is_absolute() or (Path.cwd() / root).exists():
+            return self
+        candidate = Path(__file__).resolve().parents[2] / root
+        if candidate.exists():
+            object.__setattr__(self, "svodki_root", str(candidate))
         return self
 
     model_config = SettingsConfigDict(

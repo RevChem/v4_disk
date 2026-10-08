@@ -54,6 +54,7 @@ def _job_to_dict(job: GenerationJob, db: Session, user: User | None = None) -> d
     cancelled: list[dict] = []
     logs: list[str] = []
     cropwise_diffs: list[dict] = []
+    created: list[dict] = []
     if job.result_json:
         try:
             parsed = json.loads(job.result_json)
@@ -63,6 +64,9 @@ def _job_to_dict(job: GenerationJob, db: Session, user: User | None = None) -> d
             raw_diffs = parsed.get("cropwise_diffs") or []
             if isinstance(raw_diffs, list):
                 cropwise_diffs = [row for row in raw_diffs if isinstance(row, dict)]
+            raw_created = parsed.get("created") or []
+            if isinstance(raw_created, list):
+                created = [row for row in raw_created if isinstance(row, dict)]
         except json.JSONDecodeError:
             pass
     user = repo.get_user_by_id(db, job.user_id) if job.user_id else None
@@ -85,6 +89,7 @@ def _job_to_dict(job: GenerationJob, db: Session, user: User | None = None) -> d
         "cancelled": cancelled,
         "logs": logs,
         "cropwise_diffs": cropwise_diffs,
+        "created": created,
         "cancel_requested": bool(job.cancel_requested),
         "can_cancel": can_cancel,
         "requested_by": user.username if user else None,

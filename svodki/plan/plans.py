@@ -96,6 +96,14 @@ WORK_GROUPS: list[tuple[str, list[int]]] = [
     ("5.4 Уборка картофеля, лука",         [75, 76, 77]),
 ]
 
+
+def work_group_ids(group_name: str) -> list[int]:
+    """work_type_id группы из WORK_GROUPS, уже с правками редактора."""
+    for name, ids in WORK_GROUPS:
+        if name == group_name:
+            return [int(x) for x in ids]
+    return []
+
 # =============================================================================
 # Количество собственных агрегатов
 # =============================================================================
@@ -952,11 +960,11 @@ VEG_CROP_PLAN_HA: dict[str, float] = {
 # ID ВИДОВ РАБОТ (work_type_id) — используются в API-запросах
 # =============================================================================
 
-# 0 1 4 5 6 7 8 9 11 15 виды посева (зерновые, пропашные, рапс)
-ALL_WT_IDS: set[int] = {3, 4, 69, 70, 71, 72, 119, 120}
+# 0 1 4 5 6 7 8 9 11 15 виды посева (зерновые, пропашные, рапс) — целиком «4.0 Посев»
+ALL_WT_IDS: set[int] = set(work_group_ids("4.0 Посев"))
 
-# 1 5 11 Овощные виды посева/посадки
-VEG_WT_IDS: set[int] = {68, 148, 172}
+# 1 5 11 Овощные виды посева/посадки — целиком «4.1 Посев (овощи)»
+VEG_WT_IDS: set[int] = set(work_group_ids("4.1 Посев (овощи)"))
 
 # 1 5 Fallback-культура по work_type_id для овощных операций
 VEG_WT_FALLBACK_CROP: dict[int, str] = {
@@ -1110,9 +1118,53 @@ def is_crop_omitted(group_name: str, firm: str, crop: str) -> bool:
     return False
 
 
+def is_crop_user_excluded(group_name: str, firm: str, crop: str) -> bool:
+    """Культуру убрали в «Редакторе планов» — её гектары не должны входить в итоги сводки.
+
+    Исключено, если выполнено любое из условий:
+    - скрыта для этой АФ («глаз» по фирме);
+    - ранг в группе = 0;
+    - режим «Не считать» у культуры, которая есть в plans.py этой группы.
+
+    Культура, которой нет в плане группы, по умолчанию тоже в режиме «не считать», но это
+    не решение пользователя: для вспашки и дискования такие гектары остаются в «Иных культурах»
+    (Cropwise считает всю операцию). Поэтому «Не считать» учитывается только для культур,
+    которые есть в базовом плане группы.
+    """
+    name = str(crop or "").strip()
+    if not name or name == OTHER_CROP_CODE:
+        return False
+    if is_crop_firm_hidden(group_name, firm, name):
+        return True
+    if is_crop_rank_hidden(group_name, name):
+        return True
+    if (str(group_name), name) in CROP_SKIP_REPORT_SET:
+        return name in (_BASE_GROUP_CROPS.get(str(group_name)) or frozenset())
+    return False
+
+
+def crop_filter_fingerprint() -> str:
+    """Отпечаток настроек редактора, меняющих состав культур в сводках (для ключей кэша)."""
+    import hashlib
+
+    parts = (
+        sorted(CROP_OTHER_SET),
+        sorted(CROP_SKIP_REPORT_SET),
+        sorted(CROP_RANK_HIDDEN_SET),
+        sorted(CROP_FIRM_HIDDEN_SET),
+        sorted(
+            (str(g), sorted(str(c) for c in crops))
+            for g, crops in _BASE_GROUP_CROPS.items()
+        ),
+    )
+    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()[:16]
+
+
 def plan_ha_for_report(group_name: str, firm: str, crop: str) -> float:
     """План, га: «Иные культуры» — сумма отмеченных культур этой группы и фирмы."""
     name = str(crop or "").strip()
+    if is_crop_user_excluded(group_name, firm, name):
+        return 0.0
     firm_plan = HARDCODED_PLAN.get(str(group_name), {}).get(str(firm), {})
     if not isinstance(firm_plan, dict):
         firm_plan = {}
@@ -1564,6 +1616,11 @@ _BASE_GROUP_CROPS: dict[str, frozenset[str]] = {
 def _apply_runtime_plans_edits() -> None:
     import os
 
+    # Редактор планов (backend/app/legacy/plans_editor.py) читает «чистую» базу: перед
+    # exec_module он ставит этот флаг и сам накладывает правки поверх. Иначе при заданном
+    # SVODKI_PLANS_EDITS_PATH правки попадали в «базу», и следующее сохранение стирало их из JSON.
+    if globals().get("_SVODKI_SKIP_RUNTIME_EDITS"):
+        return
     path = os.environ.get("SVODKI_PLANS_EDITS_PATH", "").strip()
     if not path:
         return
@@ -1571,8 +1628,11 @@ def _apply_runtime_plans_edits() -> None:
         from _apply_plans_edits import apply_plans_edits
 
         apply_plans_edits(path, globals())
-    except Exception:
-        pass
+    except Exception as exc:
+        # Раньше ошибка глоталась молча: сводка считалась без правок редактора.
+        import sys
+
+        print(f"[plans] ОШИБКА применения правок редактора ({path}): {exc!r}", file=sys.stderr, flush=True)
 
 
 _apply_runtime_plans_edits()

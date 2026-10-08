@@ -1,7 +1,7 @@
 """Celery tasks."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.adapters.outbound.persistence import repositories as repo
@@ -159,13 +159,140 @@ def _now_msk() -> datetime:
     return datetime.now(ZoneInfo(settings.schedule_timezone))
 
 
-def _should_run_now(entry: dict, now: datetime) -> bool:
-    return now.hour == int(entry.get("hour", 0)) and now.minute == int(entry.get("minute", 0))
+def _catchup_minutes() -> int:
+    try:
+        return max(1, int(settings.schedule_catchup_minutes))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _slot_age(entry: dict, now: datetime) -> timedelta:
+    """Сколько прошло с запланированного времени сегодня (отрицательное — слот ещё впереди)."""
+    slot = now.replace(
+        hour=int(entry.get("hour", 0)),
+        minute=int(entry.get("minute", 0)),
+        second=0,
+        microsecond=0,
+    )
+    return now - slot
+
+
+def _should_run_now(entry: dict, now: datetime, window_minutes: int | None = None) -> bool:
+    """Слот наступил и ещё не вышло окно догона.
+
+    Раньше требовалось точное совпадение минуты: тик beat раз в 60 с не привязан к границе
+    минуты, поэтому при дрейфе, рестарте worker или деплое запуск за день терялся. Теперь слот
+    считается «живым» ещё `schedule_catchup_minutes` минут; повторный запуск исключает
+    `_already_ran_today`. Окно не переходит через полночь (дата сводки — «сегодня»).
+    """
+    window = _catchup_minutes() if window_minutes is None else max(1, window_minutes)
+    return timedelta(0) <= _slot_age(entry, now) < timedelta(minutes=window)
+
+
+def _is_last_attempt(entry: dict, now: datetime, window_minutes: int | None = None) -> bool:
+    window = _catchup_minutes() if window_minutes is None else max(1, window_minutes)
+    return _slot_age(entry, now) >= timedelta(minutes=window - 1)
 
 
 def _already_ran_today(db, state_key: str, today: date) -> bool:
     state = repo.get_schedule_run_state(db, state_key)
     return bool(state and state.last_enqueued_on == today)
+
+
+def _run_generation_entry(db, entry: dict, now: datetime, today: date, results: dict) -> None:
+    entry_id = str(entry.get("id") or "")
+    state_key = run_state_key("gen", entry_id, int(entry["hour"]), int(entry["minute"]))
+    if _already_ran_today(db, state_key, today):
+        results["generation"].append({"id": entry_id, "skipped": "already_ran"})
+        return
+    report_ids = [str(x) for x in entry.get("report_ids") or []]
+    job_options = None
+    try:
+        from app.adapters.outbound.proverka.service import session_cookie_from_env
+
+        if session_cookie_from_env():
+            job_options = {"compare_cropwise": True}
+    except Exception:
+        log.warning("schedule.cropwise_cookie_unavailable")
+    job, _ = enqueue_or_run(
+        db,
+        user_id=None,
+        summary_date=today,
+        report_ids=report_ids,
+        job_options=job_options,
+    )
+    repo.mark_schedule_enqueued(db, state_key, today)
+    log.info(
+        "schedule.generation.enqueued",
+        entry_id=entry_id,
+        report_ids=report_ids,
+        summary_date=today.isoformat(),
+        job_id=job.id,
+    )
+    record_activity(
+        db,
+        action="schedule.generation.enqueued",
+        job_id=job.id,
+        report_ids=report_ids,
+        summary_date=today.isoformat(),
+        time=f"{int(entry['hour']):02d}:{int(entry['minute']):02d}",
+        entry_id=entry_id,
+    )
+    results["generation"].append({"id": entry_id, "job_id": job.id})
+
+
+def _run_mail_entry(db, entry: dict, now: datetime, today: date, results: dict) -> None:
+    entry_id = str(entry.get("id") or "")
+    state_key = run_state_key("mail", entry_id, int(entry["hour"]), int(entry["minute"]))
+    if _already_ran_today(db, state_key, today):
+        results["mail"].append({"id": entry_id, "skipped": "already_ran"})
+        return
+    report_ids = [str(x) for x in entry.get("report_ids") or []]
+    emails = [str(x) for x in entry.get("emails") or []]
+    mail_result = send_scheduled_reports(
+        report_ids=report_ids,
+        emails=emails,
+        summary_date=today,
+        subject=entry.get("subject"),
+    )
+    if mail_result.get("ok"):
+        # Отмечаем «выполнено» только при успехе: при сбое (PDF ещё не готовы, SMTP недоступен)
+        # рассылка повторится на следующих тиках в пределах окна догона.
+        repo.mark_schedule_enqueued(db, state_key, today)
+        log.info(
+            "schedule.mail.sent",
+            entry_id=entry_id,
+            report_ids=report_ids,
+            emails=mail_result.get("sent"),
+        )
+        record_activity(
+            db,
+            action="schedule.mail.sent",
+            report_ids=report_ids,
+            summary_date=today.isoformat(),
+            emails=mail_result.get("sent"),
+            time=f"{int(entry['hour']):02d}:{int(entry['minute']):02d}",
+            entry_id=entry_id,
+        )
+        results["mail"].append({"id": entry_id, "sent": mail_result.get("sent")})
+        return
+    last = _is_last_attempt(entry, now)
+    log.warning(
+        "schedule.mail.failed",
+        entry_id=entry_id,
+        error=mail_result.get("error"),
+        final=last,
+    )
+    if last:  # в журнал активности — один раз, когда попытки закончились
+        record_activity(
+            db,
+            action="schedule.mail.failed",
+            report_ids=report_ids,
+            summary_date=today.isoformat(),
+            error=mail_result.get("error"),
+            entry_id=entry_id,
+        )
+    results["mail"].append({"id": entry_id, "error": mail_result.get("error"), "will_retry": not last})
 
 
 @celery_app.task(name="app.adapters.inbound.celery.tasks.check_schedules")
@@ -178,102 +305,20 @@ def check_schedules() -> dict:
         now = _now_msk()
         today = now.date()
 
-        for entry in config.get("generation") or []:
-            if not entry.get("enabled", True):
-                continue
-            if not _should_run_now(entry, now):
-                continue
-            entry_id = str(entry.get("id") or "")
-            state_key = run_state_key("gen", entry_id, int(entry["hour"]), int(entry["minute"]))
-            if _already_ran_today(db, state_key, today):
-                results["generation"].append({"id": entry_id, "skipped": "already_ran"})
-                continue
-            report_ids = [str(x) for x in entry.get("report_ids") or []]
-            job_options = None
-            try:
-                from app.adapters.outbound.proverka.service import session_cookie_from_env
-
-                if session_cookie_from_env():
-                    job_options = {"compare_cropwise": True}
-            except Exception:
-                log.warning("schedule.cropwise_cookie_unavailable")
-            job, _ = enqueue_or_run(
-                db,
-                user_id=None,
-                summary_date=today,
-                report_ids=report_ids,
-                job_options=job_options,
-            )
-            repo.mark_schedule_enqueued(db, state_key, today)
-            log.info(
-                "schedule.generation.enqueued",
-                entry_id=entry_id,
-                report_ids=report_ids,
-                summary_date=today.isoformat(),
-                job_id=job.id,
-            )
-            record_activity(
-                db,
-                action="schedule.generation.enqueued",
-                job_id=job.id,
-                report_ids=report_ids,
-                summary_date=today.isoformat(),
-                time=f"{entry['hour']:02d}:{entry['minute']:02d}",
-                entry_id=entry_id,
-            )
-            results["generation"].append({"id": entry_id, "job_id": job.id})
-
-        for entry in config.get("mail") or []:
-            if not entry.get("enabled", True):
-                continue
-            if not _should_run_now(entry, now):
-                continue
-            entry_id = str(entry.get("id") or "")
-            state_key = run_state_key("mail", entry_id, int(entry["hour"]), int(entry["minute"]))
-            if _already_ran_today(db, state_key, today):
-                results["mail"].append({"id": entry_id, "skipped": "already_ran"})
-                continue
-            report_ids = [str(x) for x in entry.get("report_ids") or []]
-            emails = [str(x) for x in entry.get("emails") or []]
-            mail_result = send_scheduled_reports(
-                report_ids=report_ids,
-                emails=emails,
-                summary_date=today,
-                subject=entry.get("subject"),
-            )
-            repo.mark_schedule_enqueued(db, state_key, today)
-            if mail_result.get("ok"):
-                log.info(
-                    "schedule.mail.sent",
-                    entry_id=entry_id,
-                    report_ids=report_ids,
-                    emails=mail_result.get("sent"),
-                )
-                record_activity(
-                    db,
-                    action="schedule.mail.sent",
-                    report_ids=report_ids,
-                    summary_date=today.isoformat(),
-                    emails=mail_result.get("sent"),
-                    time=f"{entry['hour']:02d}:{entry['minute']:02d}",
-                    entry_id=entry_id,
-                )
-                results["mail"].append({"id": entry_id, "sent": mail_result.get("sent")})
-            else:
-                log.warning(
-                    "schedule.mail.failed",
-                    entry_id=entry_id,
-                    error=mail_result.get("error"),
-                )
-                record_activity(
-                    db,
-                    action="schedule.mail.failed",
-                    report_ids=report_ids,
-                    summary_date=today.isoformat(),
-                    error=mail_result.get("error"),
-                    entry_id=entry_id,
-                )
-                results["mail"].append({"id": entry_id, "error": mail_result.get("error")})
+        for kind, runner in (("generation", _run_generation_entry), ("mail", _run_mail_entry)):
+            for entry in config.get(kind) or []:
+                if not entry.get("enabled", True) or not _should_run_now(entry, now):
+                    continue
+                try:
+                    runner(db, entry, now, today, results)
+                except Exception as exc:
+                    # Сбой одной записи не должен останавливать остальные; слот не отмечен —
+                    # следующий тик повторит попытку в пределах окна догона.
+                    db.rollback()
+                    log.exception(
+                        "schedule.entry_failed", kind=kind, entry_id=str(entry.get("id") or "")
+                    )
+                    results[kind].append({"id": str(entry.get("id") or ""), "error": str(exc)})
         return results
     finally:
         db.close()

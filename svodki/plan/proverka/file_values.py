@@ -1231,6 +1231,207 @@ def operation_areas_from_path(path: Path, report_id: str) -> dict[str, float]:
     return {}
 
 
+_DAILY_CROP_HEADERS = ("Факт, сутки га", "Факт за сутки, га")
+_SHEET_CROP_GROUPS = {
+    "общий намолот": "5.0 Уборка",
+    "овощи": "5.4 Уборка картофеля, лука",
+    "сводка овощи": "5.4 Уборка картофеля, лука",
+}
+_CROP_SHEET_TITLES = frozenset({"Общий намолот", "Овощи", "Сводка овощи"})
+
+
+def _canonical_firm(label: str) -> str:
+    """Подпись ячейки → имя из FIRM_ORDER, если оно узнаётся."""
+    found = _firm_from_line(label)
+    return found or str(label or "").strip()
+
+
+def _header_index(values: list[Any], names: tuple[str, ...]) -> int | None:
+    wanted = {_flat_header(name) for name in names}
+    for index, cell in enumerate(values):
+        if _flat_header(cell) in wanted:
+            return index
+    return None
+
+
+def _group_for_sheet_section(section: str, sheet_title: str, report_id: str) -> str:
+    group = _group_for_title(section) if section else ""
+    if not group:
+        group = _SHEET_CROP_GROUPS.get(_flat_header(sheet_title).casefold(), "")
+    if not group and _flat_header(section).casefold() == "овощи":
+        group = "3.2 Опрыскивание (овощи)"
+    if not group:
+        group = _sole_work_group(report_id)
+    if not group and str(report_id) == "11":
+        group = "5.0 Уборка"
+    return group
+
+
+def _add_ha(bucket: dict[str, float], key: str, ha: float) -> None:
+    if not key:
+        return
+    bucket[key] = round(bucket.get(key, 0.0) + ha, 2)
+
+
+def _xlsx_summary_firm_areas(path: Path, report_id: str) -> dict[str, dict[str, float]]:
+    """Лист «Сводка»: операция → агрофирма → га за сутки.
+
+    PDF этой сводки печатается из того же листа, поэтому строки агрофирм
+    читаются здесь, а не из PDF.
+    """
+    if load_workbook is None:
+        raise RuntimeError(f"{path.name}: ImportError: нет openpyxl")
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    try:
+        if _SHEET_NAME not in wb.sheetnames:
+            return {}
+        out: dict[str, dict[str, float]] = {}
+        pending = ""
+        firm_idx: int | None = None
+        value_idx: int | None = None
+        current = ""
+        bucket: dict[str, float] = {}
+
+        def flush() -> None:
+            nonlocal bucket
+            group = _group_for_sheet_section(current, _SHEET_NAME, report_id)
+            if group and bucket:
+                dest = out.setdefault(group, {})
+                for firm, ha in bucket.items():
+                    _add_ha(dest, firm, ha)
+            bucket = {}
+
+        for row in wb[_SHEET_NAME].iter_rows(values_only=True):
+            values = list(row)
+            header = _header_indexes(values)
+            if header:
+                flush()
+                firm_idx, value_idx = header
+                current = pending
+                pending = ""
+                continue
+            title = _section_title(values)
+            if title:
+                pending = title
+                continue
+            if firm_idx is None or value_idx is None or max(firm_idx, value_idx) >= len(values):
+                continue
+            label = str(values[firm_idx] or "").strip()
+            if not label or label == _TOTAL_LABEL:
+                continue
+            try:
+                ha = float(values[value_idx] or 0)
+            except (TypeError, ValueError):
+                continue
+            _add_ha(bucket, _canonical_firm(label), ha)
+        flush()
+        return out
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    finally:
+        wb.close()
+
+
+def _xlsx_crop_column_areas(path: Path, report_id: str) -> dict[str, dict[str, float]]:
+    """Культура и суточный факт с листа «Сводка» и листов намолота."""
+    if load_workbook is None:
+        raise RuntimeError(f"{path.name}: ImportError: нет openpyxl")
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    try:
+        out: dict[str, dict[str, float]] = {}
+        for ws in wb.worksheets:
+            if ws.title != _SHEET_NAME and ws.title not in _CROP_SHEET_TITLES:
+                continue
+            pending = ""
+            crop_idx: int | None = None
+            value_idx: int | None = None
+            current = ""
+            bucket: dict[str, float] = {}
+
+            def flush(sheet_title: str = ws.title) -> None:
+                nonlocal bucket
+                group = _group_for_sheet_section(current, sheet_title, report_id)
+                if group and bucket:
+                    dest = out.setdefault(group, {})
+                    for crop, ha in bucket.items():
+                        _add_ha(dest, crop, ha)
+                bucket = {}
+
+            for row in ws.iter_rows(values_only=True):
+                values = list(row)
+                crop_at = _header_index(values, ("Культура",))
+                value_at = _header_index(values, _DAILY_CROP_HEADERS)
+                if crop_at is not None and value_at is not None:
+                    flush()
+                    crop_idx, value_idx = crop_at, value_at
+                    current = pending
+                    pending = ""
+                    continue
+                title = _section_title(values)
+                if title:
+                    pending = title
+                    continue
+                if crop_idx is None or value_idx is None or max(crop_idx, value_idx) >= len(values):
+                    continue
+                label = str(values[crop_idx] or "").strip()
+                if not label or label == _TOTAL_LABEL:
+                    continue
+                try:
+                    ha = float(values[value_idx] or 0)
+                except (TypeError, ValueError):
+                    continue
+                _add_ha(bucket, label, ha)
+            flush()
+        return out
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    finally:
+        wb.close()
+
+
+def _perf_workbook_firm_areas(path: Path) -> dict[str, dict[str, float]]:
+    """Сводки 1 и 10: агрофирмы с листов «Выраб. — …»."""
+    if load_workbook is None:
+        raise RuntimeError(f"{path.name}: ImportError: нет openpyxl")
+    from proverka.file_consistency import (
+        _perf_group,
+        _read_grouped_perf_blocks,
+        _read_perf_sheet,
+    )
+
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    try:
+        out: dict[str, dict[str, float]] = {}
+        for ws in wb.worksheets:
+            blocks: dict[str, dict[str, Any]] = {}
+            group = _perf_group(ws.title)
+            if group:
+                data = _read_perf_sheet(ws)
+                if data and data.get("by_firm"):
+                    blocks[group] = data
+            for name, data in _read_grouped_perf_blocks(ws).items():
+                if data.get("by_firm"):
+                    blocks[name] = data
+            for name, data in blocks.items():
+                dest = out.setdefault(name, {})
+                for label, ha in (data.get("by_firm") or {}).items():
+                    _add_ha(dest, _canonical_firm(str(label)), float(ha or 0))
+        return out
+    except Exception as exc:
+        raise _read_failure(path, exc) from exc
+    finally:
+        wb.close()
+
+
 def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
     """Операция → культура → га за сутки из файла."""
     rid = str(report_id)
@@ -1239,13 +1440,17 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
             from proverka.file_consistency import report2_xlsx_crop_areas
 
             return report2_xlsx_crop_areas(path)
+        out: dict[str, dict[str, float]] = {}
         if rid in {"1", "5"}:
             from proverka.file_consistency import read_report1_seeding_crops
 
-            seeded = read_report1_seeding_crops(path)
-            if seeded:
-                return seeded
-        return {}
+            out.update(read_report1_seeding_crops(path) or {})
+        for group, crops in _xlsx_crop_column_areas(path, rid).items():
+            dest = out.setdefault(group, {})
+            for crop, ha in crops.items():
+                if crop not in dest:
+                    dest[crop] = ha
+        return out
     if path.suffix.lower() != ".pdf":
         return {}
     if rid == "2":
@@ -1259,44 +1464,6 @@ def crop_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
     return {}
 
 
-def _xlsx_summary_firm_areas(path: Path, group: str) -> dict[str, dict[str, float]]:
-    """Лист «Сводка» одной таблицей (сводка 11): агрофирма → га за сутки."""
-    if load_workbook is None:
-        raise RuntimeError(f"{path.name}: ImportError: нет openpyxl")
-    try:
-        wb = load_workbook(path, read_only=True, data_only=True)
-    except Exception as exc:
-        raise _read_failure(path, exc) from exc
-    try:
-        if _SHEET_NAME not in wb.sheetnames:
-            raise ValueError(
-                f"нет листа «{_SHEET_NAME}», листы: {', '.join(map(str, wb.sheetnames))}"
-            )
-        firm_idx = value_idx = None
-        firms: dict[str, float] = {}
-        for row in wb[_SHEET_NAME].iter_rows(values_only=True):
-            values = list(row)
-            header = _header_indexes(values)
-            if header:
-                firm_idx, value_idx = header
-                firms = {}
-                continue
-            if firm_idx is None or value_idx is None or max(firm_idx, value_idx) >= len(values):
-                continue
-            name = str(values[firm_idx] or "").strip()
-            if not name or name == _TOTAL_LABEL:
-                continue
-            try:
-                firms[name] = round(float(values[value_idx] or 0), 2)
-            except (TypeError, ValueError):
-                continue
-        return {group: firms} if firms else {}
-    except Exception as exc:
-        raise _read_failure(path, exc) from exc
-    finally:
-        wb.close()
-
-
 def firm_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, float]]:
     """Операция → агрофирма → га за сутки из файла."""
     rid = str(report_id)
@@ -1305,9 +1472,11 @@ def firm_areas_from_path(path: Path, report_id: str) -> dict[str, dict[str, floa
             from proverka.file_consistency import report2_xlsx_firm_areas
 
             return report2_xlsx_firm_areas(path)
-        if rid == "11":
-            return _xlsx_summary_firm_areas(path, "5.0 Уборка")
-        return {}
+        if rid in {"1", "10"}:
+            firms = _perf_workbook_firm_areas(path)
+            if firms:
+                return firms
+        return _xlsx_summary_firm_areas(path, rid)
     if path.suffix.lower() != ".pdf":
         return {}
     if rid == "2":

@@ -77,7 +77,11 @@ from plans import (
     PLAN_RATE_PER_GROUP,
     WORK_GROUPS,
     SKIP_CROPS,
+    build_field_to_crop_general,
+    crop_for_disk_field,
+    is_crop_user_excluded,
 )
+from typing import NamedTuple
 
 # =============================================================================
 # КОНФИГУРАЦИЯ
@@ -462,6 +466,113 @@ def _empty_stats() -> dict:
     }
 
 
+class DiskCrops(NamedTuple):
+    """Культуры дискования: строка history, год поля, общая карта (как сводка 2)."""
+
+    history_crop: dict[int, str]
+    by_year: dict[int, dict[int, str]]
+    field_to_crop: dict[int, str]
+
+
+def _disk_history_years(report_date: date) -> tuple[int, int]:
+    """Сезон Cropwise и календарный год отчёта — оба, как field_to_crop_general у дискования."""
+    try:
+        from season_calendar import season_year_for_date
+
+        season = int(season_year_for_date(report_date))
+    except Exception:
+        season = report_date.year + (1 if report_date.month >= 7 else 0)
+    return season, report_date.year
+
+
+def load_disk_crops(report_date: date, field_ids: set[int] | None = None) -> DiskCrops:
+    """History полей дискования. Без карты исключение культур применить нельзя."""
+    season_year, calendar_year = _disk_history_years(report_date)
+    years = [calendar_year] if calendar_year == season_year else [calendar_year, season_year]
+    print(f"  Культуры дискования: history_items {years}" + (
+        f", {len(field_ids)} полей" if field_ids else ""
+    ))
+    crops = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "").strip()
+        for c in get_all_from_id("crops")
+        if c.get("id") is not None
+    }
+    history_by_year: dict[int, list[dict]] = {}
+    history_crop: dict[int, str] = {}
+    by_year: dict[int, dict[int, str]] = {}
+    for year in years:
+        rows = get_all_from_id("history_items", {"year": str(year)})
+        kept: list[dict] = []
+        for hi in rows:
+            if not hi.get("active"):
+                continue
+            fid, cid = hi.get("field_id"), hi.get("crop_id")
+            if not fid or not cid:
+                continue
+            try:
+                fid_i, cid_i = int(fid), int(cid)
+            except (TypeError, ValueError):
+                continue
+            if field_ids is not None and fid_i not in field_ids:
+                continue
+            name = crops.get(cid_i, "")
+            if not name:
+                continue
+            kept.append(hi)
+            hid = hi.get("id")
+            if hid is not None:
+                try:
+                    history_crop[int(hid)] = name
+                except (TypeError, ValueError):
+                    pass
+            by_year.setdefault(fid_i, {})[int(year)] = name
+        history_by_year[int(year)] = kept
+    field_to_crop = build_field_to_crop_general(
+        crop_map=crops,
+        history_by_year=history_by_year,
+        priority_year=season_year,
+        skip_crops=set(SKIP_CROPS or ()),
+    )
+    print(f"  Полей с культурой дискования: {len(field_to_crop)}")
+    return DiskCrops(history_crop, by_year, field_to_crop)
+
+
+def disk_item_crop(task: dict, item: dict, crops: DiskCrops) -> str:
+    """Культура строки. Пусто и «Зябь» — не культура дискования, гектары остаются."""
+    hid = item.get("history_item_id")
+    if hid is not None:
+        try:
+            named = str(crops.history_crop.get(int(hid)) or "").strip()
+        except (TypeError, ValueError):
+            named = ""
+        if named and named != "Зябь" and named not in SKIP_CROPS:
+            return named
+    fid = _as_int(item.get("field_id"))
+    if fid is None:
+        return ""
+    season = None
+    raw_season = task.get("season")
+    if raw_season is not None and str(raw_season).strip():
+        try:
+            season = int(raw_season)
+        except (TypeError, ValueError):
+            season = None
+    named = crop_for_disk_field(crops.by_year.get(fid) or {}, season)
+    if named and named not in SKIP_CROPS:
+        return named
+    fallback = str(crops.field_to_crop.get(fid) or "").strip()
+    return "" if not fallback or fallback == "Зябь" else fallback
+
+
+def disk_item_excluded(task: dict, item: dict, firm: str, crops: DiskCrops | None) -> bool:
+    if crops is None:
+        return False
+    crop = disk_item_crop(task, item, crops)
+    if not crop:
+        return False
+    return is_crop_user_excluded(WORK_TYPE_TITLE, firm, crop)
+
+
 def build_all_firm_stats(
     tasks_today:      list[dict],
     tasks_season:     list[dict],
@@ -471,11 +582,15 @@ def build_all_firm_stats(
     cutoff:           datetime,
     field_to_firm:    dict[int, str],
     implements_dict:  dict[int, dict],
+    disk_crops:       DiskCrops | None = None,
 ) -> dict[str, dict]:
     """
     Распределяет задания по агрофирмам на основе поля из mtfmi.
     Возвращает: firm_name → stats
     """
+    today_crop_by_firm: dict[str, dict[str, float]] = {
+        firm: defaultdict(float) for firm in AGROFIRMS
+    }
     # per_firm_machine[firm][machine_id] → агрегированные данные
     per_firm_machine: dict[str, dict[int, dict]] = {
         firm: {} for firm in AGROFIRMS
@@ -492,8 +607,11 @@ def build_all_firm_stats(
             if fid_i is None:
                 continue
             firm = field_to_firm.get(fid_i)
-            if firm:
-                firm_items[firm].append(item)
+            if not firm:
+                continue
+            if disk_item_excluded(t, item, firm, disk_crops):
+                continue
+            firm_items[firm].append(item)
 
         if not firm_items:
             continue
@@ -520,6 +638,10 @@ def build_all_firm_stats(
                     if h and h < cutoff:
                         cov_item_in += entry[1] or 0
                 cov += cov_item_in
+                if disk_crops is not None and cov_item_in > 0:
+                    crop_name = disk_item_crop(t, item, disk_crops)
+                    if crop_name:
+                        today_crop_by_firm[firm][crop_name] += cov_item_in
                 ratio = cov_item_in / cov_item_total if cov_item_total > 0 else 0.0
                 track_area       += (item.get("covered_area_by_track") or 0) * ratio
                 work_distance_km += ((item.get("work_distance") or 0) / 1000) * ratio
@@ -601,6 +723,8 @@ def build_all_firm_stats(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
+            if disk_item_excluded(t, item, firm, disk_crops):
+                continue
 
             hourly   = item.get("covered_area_hourly") or []
             item_cov = 0.0
@@ -645,11 +769,17 @@ def build_all_firm_stats(
             if round(d["cov_total"], 2) >= MIN_COUNT_AREA_HA
         }
 
+        area_by_crop = {
+            crop: round(ha, 2)
+            for crop, ha in today_crop_by_firm[firm].items()
+            if round(ha, 2) > 0
+        }
         if not pm_filtered:
             stats = _empty_stats()
             stats["avg_season"]          = avg_season
             stats["season_sum"]          = season_sum
             stats["season_machine_days"] = machine_days
+            stats["area_by_crop"]        = area_by_crop
             result[firm] = stats
             continue
 
@@ -705,6 +835,7 @@ def build_all_firm_stats(
             "season_machine_days": machine_days,
             "detail_own":          detail_own,
             "detail_hired":        detail_hired,
+            "area_by_crop":        area_by_crop,
         }
 
     return result
@@ -1248,9 +1379,16 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     implements_dict = bundle.implements_dict
 
     print("  Распределяем задания по агрофирмам через поля...")
+    field_ids: set[int] = set()
+    for items in mtfmi_map.values():
+        for item in items:
+            fid_i = _as_int(item.get("field_id"))
+            if fid_i is not None:
+                field_ids.add(fid_i)
+    disk_crops = load_disk_crops(report_date, field_ids)
     all_details = build_all_firm_stats(
         tasks_today, tasks_season, mtfmi_map, season_start, day_start, cutoff,
-        field_to_firm, implements_dict,
+        field_to_firm, implements_dict, disk_crops,
     )
 
     # Консольный вывод

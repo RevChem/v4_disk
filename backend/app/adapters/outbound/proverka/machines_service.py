@@ -181,6 +181,9 @@ def create_job(
 
 def run_job(job_id: str) -> None:
     _ensure_plan_path()
+    from report_platform import reload_editor_modules
+
+    reload_editor_modules()
     from proverka.machine_runner import MachineProverkaCancelled, run_machine_proverka_batch
 
     d = job_dir(job_id)

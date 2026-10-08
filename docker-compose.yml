@@ -106,7 +106,6 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       CROPWISE_API_TOKEN: ${CROPWISE_API_TOKEN}
       CROPWISE_BASE_URL: ${CROPWISE_BASE_URL:-https://operations.cropwise.com/api/v3}
-      CROPWISE_SEASON_YEAR: ${CROPWISE_SEASON_YEAR:-2026}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-svodki@chistai.ru}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-changeme-svodki-2026}
@@ -115,7 +114,8 @@ services:
     volumes:
       - disk_uploads:/app/uploads
       - ./data:/app/data
-      - ./svodki:/app/svodki:ro
+      # plans.py пишется кнопкой «Синхронизация plans.py» в редакторе планов.
+      - ./svodki:/app/svodki
       - ./backend/app:/app/app:ro
       - ./.env:/app/.env:ro
     ports:

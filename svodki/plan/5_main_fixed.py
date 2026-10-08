@@ -234,6 +234,21 @@ def _normalize_crop_name(raw: str) -> str:
     return " ".join(s.split())
 
 
+def _seed_item_excluded(wt, firm: str, item: dict) -> bool:
+    """Культура убрана в «Редакторе планов» (скрыта / «не считать») — гектары в итоги не идут."""
+    from mtfmi_batch_fetch import crop_of_item
+
+    raw = str(crop_of_item(item, "") or "").strip()
+    if not raw:
+        return False
+    try:
+        wt_id = int(wt)
+    except (TypeError, ValueError):
+        wt_id = None
+    group = _VEG_KEY if wt_id in VEG_WT_IDS else _SEED_KEY
+    return is_crop_user_excluded(group, firm, raw)
+
+
 def _map_veg_crop_label(raw_name: str) -> str | None:
     n = _normalize_crop_name(raw_name)
     if not n:
@@ -748,6 +763,8 @@ def build_all_firm_stats(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
+            if _seed_item_excluded(t.get("work_type_id"), firm, item):
+                continue
             if not _field_ok_for_seeding_fact(
                 fid_i,
                 fact_by_all_fields=fact_by_all_fields,
@@ -826,6 +843,8 @@ def build_all_firm_stats(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
+            if _seed_item_excluded(t.get("work_type_id"), firm, item):
+                continue
             if not _field_ok_for_seeding_fact(
                 fid_i,
                 fact_by_all_fields=fact_by_all_fields,
@@ -858,6 +877,8 @@ def build_all_firm_stats(
             if available_field_ids is not None and fid_i not in available_field_ids:
                 continue
             raw_crop = crop_of_item(item, "")
+            if raw_crop and is_crop_user_excluded("4.1 Посев (овощи)", firm, raw_crop):
+                continue
             veg_label = _map_veg_crop_label(raw_crop) if raw_crop else None
             if not veg_label:
                 continue
@@ -883,6 +904,8 @@ def build_all_firm_stats(
             if available_field_ids is not None and fid_i not in available_field_ids:
                 continue
             raw_crop = crop_of_item(item, "")
+            if raw_crop and is_crop_user_excluded("4.1 Посев (овощи)", firm, raw_crop):
+                continue
             veg_label = _map_veg_crop_label(raw_crop) if raw_crop else None
             if not veg_label:
                 continue
@@ -1135,6 +1158,8 @@ def build_crop_seeding_day_stats(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
+            if _seed_item_excluded(t.get("work_type_id"), firm, item):
+                continue
             if not _field_ok_for_seeding_fact(
                 fid_i,
                 fact_by_all_fields=fact_by_all_fields,
@@ -1245,11 +1270,13 @@ def write_crop_seeding_summary_sheet(
         crop_stats = crop_firm_stats.get(firm, {})
         day_stats = crop_day_stats.get(firm, {})
 
-        plan = _safe_float((PLAN_SEEDING_HA.get(firm) or {}).get(crop_name))
-        fact_season = _safe_float((crop_stats.get("fact_by_crop") or {}).get(crop_name))
-        fact_today = _safe_float((crop_stats.get("today_by_crop") or {}).get(crop_name))
-        hours_today = _safe_float(day_stats.get("engine_today"))
-        n_mach = int(_safe_float(day_stats.get("machines_today")))
+        excluded = is_crop_user_excluded("4.0 Посев", firm, crop_name)
+        plan = 0.0 if excluded else _safe_float((PLAN_SEEDING_HA.get(firm) or {}).get(crop_name))
+        # Факт сезона берётся из 1_main_dop, который правила редактора не применяет.
+        fact_season = 0.0 if excluded else _safe_float((crop_stats.get("fact_by_crop") or {}).get(crop_name))
+        fact_today = 0.0 if excluded else _safe_float((crop_stats.get("today_by_crop") or {}).get(crop_name))
+        hours_today = 0.0 if excluded else _safe_float(day_stats.get("engine_today"))
+        n_mach = 0 if excluded else int(_safe_float(day_stats.get("machines_today")))
 
         ostatok_ga = round(plan - fact_season, 2)
         fact_pct = round(fact_season / plan * 100, 1) if plan else 0.0

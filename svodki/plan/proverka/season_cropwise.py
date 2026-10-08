@@ -23,8 +23,6 @@ from proverka.cropwise_ui import aggregate_ui_task_rows, parse_work_report_body
 from proverka.reports_config import REPORTS
 from proverka.work_groups import work_group_wt_map
 
-_WORK_GROUP_MAP: dict[str, list[int]] = work_group_wt_map()
-
 # 73 — фрезерование, отдельная операция 2.6. В запрос культивации его не добавляем:
 # иначе колонка «Обработка почвы» смешивает два вида работ.
 REPORT_WT_EXTRAS: dict[str, list[int]] = {}
@@ -34,7 +32,7 @@ def work_type_ids_for_report(report_id: str) -> list[int]:
     spec = REPORTS[report_id]
     out: set[int] = set()
     for group_name in spec.work_groups:
-        ids = _WORK_GROUP_MAP.get(group_name)
+        ids = work_group_wt_map().get(group_name)
         if ids:
             out.update(int(x) for x in ids)
     out.update(REPORT_WT_EXTRAS.get(report_id, []))

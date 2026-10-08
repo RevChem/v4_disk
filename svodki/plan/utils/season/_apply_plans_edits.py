@@ -260,6 +260,68 @@ def _rebuild_crop_report_mode(globals_dict: dict[str, Any]) -> None:
     globals_dict["CROP_SKIP_REPORT_SET"] = frozenset(skip)
 
 
+def _deserialize_work_groups(raw: Any) -> list[tuple[str, list[int]]]:
+    """Формат редактора [{"name", "ids"}] → пары (название, [id]), как в plans.WORK_GROUPS.
+
+    Повтор логики plans_editor._deserialize_work_groups: сводки делают
+    ``for name, ids in WORK_GROUPS``, и список словарей ломает этот разбор.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[tuple[str, list[int]]] = []
+    for item in raw:
+        name = ""
+        ids_raw: Any = None
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            ids_raw = item.get("ids")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            name = str(item[0] or "").strip()
+            ids_raw = item[1]
+        if not name:
+            continue
+        ids: list[int] = []
+        if isinstance(ids_raw, (list, tuple)):
+            for x in ids_raw:
+                try:
+                    ids.append(int(x))
+                except (TypeError, ValueError):
+                    continue
+        out.append((name, ids))
+    return out
+
+
+def _ids_of_group(groups: Any, group_name: str) -> set[int]:
+    if not isinstance(groups, list):
+        return set()
+    out: set[int] = set()
+    for item in groups:
+        if not isinstance(item, (list, tuple)) or len(item) < 2 or item[0] != group_name:
+            continue
+        for x in item[1] or []:
+            try:
+                out.add(int(x))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _replace_id_set(globals_dict: dict[str, Any], key: str, ids: set[int]) -> None:
+    current = globals_dict.get(key)
+    if isinstance(current, set):
+        current.clear()
+        current.update(ids)
+        return
+    globals_dict[key] = set(ids)
+
+
+def _rebuild_work_group_id_sets(globals_dict: dict[str, Any]) -> None:
+    """ALL_WT_IDS и VEG_WT_IDS — это группы «4.0» и «4.1», а не отдельный список."""
+    groups = globals_dict.get("WORK_GROUPS")
+    _replace_id_set(globals_dict, "ALL_WT_IDS", _ids_of_group(groups, "4.0 Посев"))
+    _replace_id_set(globals_dict, "VEG_WT_IDS", _ids_of_group(groups, "4.1 Посев (овощи)"))
+
+
 def _rebuild_derived(globals_dict: dict[str, Any]) -> None:
     _rebuild_crop_firm_hidden(globals_dict)
     _rebuild_hardcoded_plan_flat(globals_dict)
@@ -268,6 +330,7 @@ def _rebuild_derived(globals_dict: dict[str, Any]) -> None:
     _rebuild_crop_report_mode(globals_dict)
     _rebuild_plan_seeding_ha(globals_dict)
     _rebuild_own_aggregates(globals_dict)
+    _rebuild_work_group_id_sets(globals_dict)
 
 
 def apply_plans_edits_data(raw: dict[str, Any], globals_dict: dict[str, Any]) -> None:
@@ -276,6 +339,11 @@ def apply_plans_edits_data(raw: dict[str, Any], globals_dict: dict[str, Any]) ->
         return
     for key, patch in raw.items():
         if key.startswith("__"):
+            continue
+        if key == "WORK_GROUPS":
+            groups = _deserialize_work_groups(patch)
+            if groups:
+                globals_dict[key] = groups
             continue
         current = globals_dict.get(key)
         if isinstance(patch, dict):

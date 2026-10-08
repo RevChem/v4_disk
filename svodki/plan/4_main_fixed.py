@@ -79,6 +79,8 @@ from plans import (
     PLAN_RATE_PER_GROUP,
     SKIP_CROPS,
     FIELD_NAME_FORCE_RULES,
+    is_crop_user_excluded as _plan_crop_excluded,
+    work_group_ids,
 )
 
 # =============================================================================
@@ -108,10 +110,7 @@ if _season_start_raw:
         pass
 
 WORK_TYPES: dict[int, str] = {
-    103: "2.1 Боронование зяби",
-    81:  "2.2 Боронование многолетних трав и стерни",
-    97:  "2.3 Боронование по всходам",
-    12:  "Боронование",
+    wt_id: "2.1 Боронование" for wt_id in work_group_ids("2.1 Боронование")
 }
 ALL_WT_IDS    = set(WORK_TYPES.keys())
 WORK_TYPE_TITLE = "Боронование"
@@ -457,6 +456,13 @@ def field_to_firm_fn(fid: int) -> str:
     return field_id_resolved_firm.get(int(fid), "")
 
 
+def _boron_item_excluded(firm: str, item: dict) -> bool:
+    """Культура убрана в «Редакторе планов» (скрыта / «не считать») — гектары в итоги не идут."""
+    from mtfmi_batch_fetch import crop_label
+
+    return _plan_crop_excluded("2.1 Боронование", firm, crop_label(item))
+
+
 # =============================================================================
 # АСИНХРОННЫЕ ЗАПРОСЫ
 # =============================================================================
@@ -625,6 +631,8 @@ async def fetch_all_data(
             firm = field_to_firm_fn(int(fid))
             if not firm:
                 continue
+            if _boron_item_excluded(firm, item):
+                continue
             cov_item = float(item.get("covered_area") or 0.0)
             if cov_item <= 0.5:
                 continue
@@ -661,6 +669,8 @@ async def fetch_all_data(
                 continue
             firm = field_to_firm_fn(int(fid))
             if not firm:
+                continue
+            if _boron_item_excluded(firm, item):
                 continue
             # Площадь через covered_area_hourly < cutoff (без нижней границы)
             hourly = item.get("covered_area_hourly") or []

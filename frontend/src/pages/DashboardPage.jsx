@@ -302,7 +302,11 @@ export default function DashboardPage({
       .slice()
       .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
     for (const job of jobs) {
-      for (const rid of job.report_ids || []) {
+      const requested = (job.report_ids || []).map(String).filter(Boolean);
+      const createdIds = (job.created || [])
+        .map((item) => String(item?.report_id || ""))
+        .filter(Boolean);
+      for (const rid of requested.length ? requested : createdIds) {
         delete map[String(rid)];
       }
       for (const row of job.cropwise_diffs) {

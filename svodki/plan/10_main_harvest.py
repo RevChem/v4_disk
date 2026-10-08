@@ -688,8 +688,19 @@ HARVEST_WT_IDS: set[int] = {
     if group_name == "5.0 Уборка"
     for wt_id in wt_ids
 }
-# wt для mtfmi-площади зерновых (без овощных 75/76/77)
-GRAIN_AREA_WT_IDS: frozenset[int] = frozenset({6, 7, 111, 118, 125, 126, 145})
+# work_type_id для уборки овощей (5.4) — как в сводке 1: все wt из WORK_GROUPS
+VEGETABLE_WORK_TYPE_IDS: list[int] = next(
+    (list(wt_ids) for group_name, wt_ids in WORK_GROUPS
+     if group_name == "5.4 Уборка картофеля, лука" and wt_ids),
+    [],
+)
+# Обратная совместимость (первый wt)
+VEGETABLE_WORK_TYPE: int = VEGETABLE_WORK_TYPE_IDS[0] if VEGETABLE_WORK_TYPE_IDS else 76
+# Зерновая площадь: «5.0» без ID, которые живут в «5.4». Скашивание (в том числе 84)
+# добавляется отдельно и не подменяет этот список.
+GRAIN_AREA_WT_IDS: frozenset[int] = frozenset(
+    wt_id for wt_id in HARVEST_WT_IDS if wt_id not in set(VEGETABLE_WORK_TYPE_IDS)
+)
 # + операции «Скашивание» — для «Кукуруза на силос» (площадь из machine_tasks/mtfmi)
 AREA_TASK_WT_IDS: frozenset[int] = GRAIN_AREA_WT_IDS | SILAGE_CORN_MOWING_WT_IDS
 ALL_WT_IDS = AREA_TASK_WT_IDS
@@ -699,16 +710,7 @@ VEGETABLE_FIELD_CROPS: frozenset[str] = frozenset({
     "Картофель", "Морковь", "Свекла столовая", "Свекла", "Капуста", "Лук",
 })
 
-# work_type_id для уборки овощей (5.4) — как в сводке 1: все wt из WORK_GROUPS
-VEGETABLE_WORK_TYPE_IDS: list[int] = next(
-    (list(wt_ids) for group_name, wt_ids in WORK_GROUPS
-     if group_name == "5.4 Уборка картофеля, лука" and wt_ids),
-    [75, 76, 77],
-)
-# Обратная совместимость (первый wt)
-VEGETABLE_WORK_TYPE: int = VEGETABLE_WORK_TYPE_IDS[0] if VEGETABLE_WORK_TYPE_IDS else 76
-
-# Зерновая уборка (5.0) — без овощных wt 75/76/77 (они в 5.4)
+# Зерновая уборка (5.0) — без овощных wt из «5.4»
 GRAIN_HARVEST_WT_IDS: frozenset[int] = frozenset(
     wt for wt in HARVEST_WT_IDS if wt not in set(VEGETABLE_WORK_TYPE_IDS)
 )

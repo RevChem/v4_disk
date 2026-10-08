@@ -20,14 +20,17 @@ import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import { fetchPlansEditorWorkTypes, formatError, updatePlansEditorWorkGroups } from "./api";
 
-function normalizeGroups(raw) {
+function normalizeGroups(raw, lockedNames) {
+  const locked = new Set(lockedNames || []);
   return (raw || []).map((g, index) => {
     const ids = Array.isArray(g?.ids) ? g.ids.map((x) => Number(x)).filter((x) => Number.isFinite(x)) : [];
+    const name = String(g?.name || "").trim();
     return {
       rowId: g?.rowId || `wg-${index}`,
-      name: String(g?.name || "").trim(),
+      name,
       ids,
-      idsText: idsToText(ids)
+      idsText: idsToText(ids),
+      locked: locked.has(name)
     };
   });
 }
@@ -57,6 +60,7 @@ function groupsKey(list) {
 
 export default function PlansWorkGroupsEditor({
   groups,
+  lockedNames = [],
   summaryDate = null,
   onSaved,
   saving,
@@ -73,7 +77,10 @@ export default function PlansWorkGroupsEditor({
   const baseKeyRef = useRef("");
   const nextRowIdRef = useRef(1);
 
-  const serverNormalized = useMemo(() => normalizeGroups(groups), [groups]);
+  const serverNormalized = useMemo(
+    () => normalizeGroups(groups, lockedNames),
+    [groups, lockedNames]
+  );
   const serverKey = useMemo(() => groupsKey(serverNormalized), [serverNormalized]);
   const draftKey = useMemo(() => groupsKey(draft), [draft]);
 
@@ -136,7 +143,7 @@ export default function PlansWorkGroupsEditor({
 
   function addRow() {
     const rowId = `wg-new-${nextRowIdRef.current++}`;
-    setDraft((prev) => [...prev, { rowId, name: "Новая группа", ids: [], idsText: "" }]);
+    setDraft((prev) => [...prev, { rowId, name: "Новая группа", ids: [], idsText: "", locked: false }]);
   }
 
   function deleteRow(index) {
@@ -172,9 +179,19 @@ export default function PlansWorkGroupsEditor({
     }
     const normalized = named.map(({ name, ids }) => ({ name, ids: [...new Set(ids)] }));
 
-    // Переименование/удаление группы «осиротит» правки планов, привязанные к её названию.
-    const newNames = new Set(normalized.map((g) => g.name));
-    const lost = serverNormalized.map((g) => g.name).filter((n) => n && !newNames.has(n));
+    const locked = new Set(lockedNames || []);
+    const present = new Set(normalized.map((g) => g.name));
+    const missingLocked = [...locked].filter((name) => name && !present.has(name));
+    if (missingLocked.length) {
+      setError(
+        `Нельзя переименовать или удалить группы, на которые ссылаются сводки: ${missingLocked.join(", ")}. У этих групп можно менять только ID.`
+      );
+      return;
+    }
+
+    // Переименование/удаление своей группы «осиротит» правки планов, привязанные к её названию.
+    const newNames = present;
+    const lost = serverNormalized.map((g) => g.name).filter((n) => n && !locked.has(n) && !newNames.has(n));
     if (lost.length) {
       const ok = window.confirm(
         `Группы будут удалены или переименованы: ${lost.join("; ")}.\n\n` +
@@ -226,6 +243,7 @@ export default function PlansWorkGroupsEditor({
           <Alert severity="info" sx={{ py: 0.5 }}>
             Каждая строка — блок в сводке 22. ID — это <strong>work_type</strong> из Cropwise API
             (<code>/work_types</code>). Несколько ID объединяются в одну группу.
+            Названия групп из plans.py менять нельзя: на них ссылаются сводки. У таких групп можно менять только ID.
           </Alert>
           <TableContainer component={Paper} variant="outlined">
             <Table size="small" stickyHeader>
@@ -246,7 +264,7 @@ export default function PlansWorkGroupsEditor({
                         fullWidth
                         value={row.name}
                         onChange={(e) => updateRow(index, { name: e.target.value })}
-                        disabled={saving}
+                        disabled={saving || row.locked}
                       />
                     </TableCell>
                     <TableCell sx={{ verticalAlign: "top" }}>
@@ -280,7 +298,7 @@ export default function PlansWorkGroupsEditor({
                         size="small"
                         aria-label="Удалить группу"
                         onClick={() => deleteRow(index)}
-                        disabled={saving || draft.length <= 1}
+                        disabled={saving || draft.length <= 1 || row.locked}
                       >
                         <DeleteOutlineRoundedIcon fontSize="small" />
                       </IconButton>

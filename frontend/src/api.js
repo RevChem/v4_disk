@@ -426,6 +426,14 @@ export async function fetchPlansEditor(summaryDate = null) {
   return data;
 }
 
+export async function syncPlansPy(summaryDate = null) {
+  const { data } = await api.post("/plans-editor/sync-py", null, {
+    params: summaryDate ? { summary_date: summaryDate } : undefined,
+    timeout: PLANS_TIMEOUT_MS,
+  });
+  return data;
+}
+
 export async function updatePlansEditorValue({ section_key, keys, value, summaryDate = null }) {
   const { data } = await api.put(
     "/plans-editor/value",

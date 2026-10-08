@@ -90,6 +90,7 @@ from plans import (
     FIELD_NAME_FORCE_RULES,
     SKIP_CROPS,
     is_crop_firm_hidden,
+    is_crop_user_excluded,
     crop_code_for_report,
     crop_sort_key_for_group,
     build_field_to_crop_general,
@@ -289,6 +290,20 @@ def _plow_report_crop(raw: str) -> str | None:
     return code
 
 
+def _plow_item_excluded(firm: str, item: dict) -> bool:
+    """Культура строки убрана в «Редакторе планов» (скрыта / «не считать») — в итоги не идёт."""
+    from mtfmi_batch_fetch import crop_of_item
+
+    name = str(crop_of_item(item, "") or "").strip()
+    if not name:
+        return False
+    mapped = _map_plow_crop_name(name) or name
+    return (
+        _plans.is_crop_user_excluded("2.4 Вспашка", firm, mapped)
+        or _plans.is_crop_user_excluded("2.4 Вспашка", firm, name)
+    )
+
+
 def _map_plow_crop_name(raw: str) -> str | None:
     """Нормализация культуры для вспашки → ключ из PLOW_SEASON_CROPS или None."""
     name = str(raw or "").strip()
@@ -397,6 +412,8 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
     отнесены к этой строке. Планы озимых и прочих культур из plans.py сюда
     не входят: в plans.py строки «Иные культуры» нет.
     """
+    if _plans.is_crop_user_excluded("2.4 Вспашка", firm, crop):
+        return 0.0
     if crop == PLOW_FIELD_OTHER_CROP:
         return _other_plan_ha("2.4 Вспашка", firm)
     return _editor_cell_plan_ha("2.4 Вспашка", firm, crop)
@@ -404,6 +421,8 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
 
 def _deep_plan_ha(firm: str, crop: str) -> float:
     """План глубокорыхления. «Иные культуры» — ячейка редактора и режим «Иные»."""
+    if _plans.is_crop_user_excluded("2.8 Глубокорыхление", firm, crop):
+        return 0.0
     if crop == _DEEP_OTHER_CROP:
         return _other_plan_ha("2.8 Глубокорыхление", firm)
     return _editor_cell_plan_ha("2.8 Глубокорыхление", firm, crop)
@@ -477,7 +496,9 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
         code = crop_code_for_report("2.4 Вспашка", crop)
         if code is None or code == PLOW_FIELD_OTHER_CROP:
             continue
-        if is_crop_firm_hidden("2.4 Вспашка", firm, crop):
+        if is_crop_firm_hidden("2.4 Вспашка", firm, crop) or is_crop_user_excluded(
+            "2.4 Вспашка", firm, crop
+        ):
             continue
         plan = _plow_plan_ha(firm, crop)
         st = firm_stats.get(crop, {})
@@ -1121,6 +1142,8 @@ def build_plow_stats_by_crop(
             firm = field_to_firm.get(fid_i)
             if not firm:
                 continue
+            if _plow_item_excluded(firm, item):
+                continue
             from mtfmi_batch_fetch import crop_of_item
 
             crop = _plow_report_crop(crop_of_item(item, ""))
@@ -1176,6 +1199,8 @@ def build_plow_stats_by_crop(
             fid_i = int(fid)
             firm = field_to_firm.get(fid_i)
             if not firm:
+                continue
+            if _plow_item_excluded(firm, item):
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
@@ -1330,6 +1355,12 @@ def build_all_firm_stats(
                 continue
             firm = field_to_firm.get(fid_i)
             if not firm:
+                continue
+            if wt in PLOW_WT_IDS and _plow_item_excluded(firm, item):
+                continue
+            if wt in DEEP_WT_IDS and _plans.is_crop_user_excluded(
+                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i)
+            ):
                 continue
             cov_h = _item_cov_before(cutoff, item)
             if cov_h <= 0:
@@ -1495,6 +1526,12 @@ def build_all_firm_stats(
                 continue
             firm = field_to_firm.get(fid_i)
             if not firm:
+                continue
+            if wt in PLOW_WT_IDS and _plow_item_excluded(firm, item):
+                continue
+            if wt in DEEP_WT_IDS and _plans.is_crop_user_excluded(
+                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i)
+            ):
                 continue
 
             cov = 0.0

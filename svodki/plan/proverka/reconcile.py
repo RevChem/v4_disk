@@ -418,7 +418,7 @@ def reconcile_one(
     groups = tuple(spec.work_groups or ())
     svodka_ops = svodka.get("operations") or {}
     if not combined["incomplete"] and len(groups) == 1:
-        from proverka.crop_compare import compare_svodka_cropwise_crops
+        from proverka.crop_compare import compare_svodka_cropwise_crops, editor_rules_for
 
         crop_cmp_all: list[dict] = []
         for gn in groups:
@@ -427,7 +427,10 @@ def reconcile_one(
             if not svodka_crop:
                 continue
             cw_crop = work.get("editor_crop_areas") or {}
-            crop_cmp = compare_svodka_cropwise_crops(svodka_crop, cw_crop)
+            cmp_group, cmp_remap = editor_rules_for(str(spec.report_id), gn)
+            crop_cmp = compare_svodka_cropwise_crops(
+                svodka_crop, cw_crop, group_name=cmp_group, remap=cmp_remap,
+            )
             for row in crop_cmp:
                 row["group"] = gn
             crop_cmp_all.extend(crop_cmp)
