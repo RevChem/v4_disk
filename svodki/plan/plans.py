@@ -413,7 +413,8 @@ HARDCODED_PLAN: dict[str, dict[str, dict[str, float]]] = {
             "Рапс яровой":          6110,
             "Подсолнечник":         0,
             "Соя":                  7383,
-            "Кукуруза на зерно":    734,
+            "Кукуруза на зерно":    15,
+            "Кукуруза на силос":    719,
             "Картофель":        0,
             "Морковь":            0,
             "Свекла столовая":    0,
@@ -432,7 +433,8 @@ HARDCODED_PLAN: dict[str, dict[str, dict[str, float]]] = {
             "Рапс яровой":         9048,
             "Подсолнечник":         32,
             "Соя":                  11813,
-            "Кукуруза на зерно":    1069,
+            "Кукуруза на зерно":    4,
+            "Кукуруза на силос":    1065,
         },
         "НурлатАгро": {
             "Пшеница озимая":       5808,
@@ -440,7 +442,8 @@ HARDCODED_PLAN: dict[str, dict[str, dict[str, float]]] = {
             "Рапс яровой":          10270,
             "Подсолнечник":         82,
             "Соя":                  4151,
-            "Кукуруза на зерно":    2002,
+            "Кукуруза на зерно":    39,
+            "Кукуруза на силос":    1963,
         },
         "Дрожжаное Рассвет Агро": {
             "Пшеница озимая":       4434,
@@ -448,7 +451,8 @@ HARDCODED_PLAN: dict[str, dict[str, dict[str, float]]] = {
             "Рапс яровой":          6339,
             "Подсолнечник":         32,
             "Соя":                  5524,
-            "Кукуруза на зерно":    734,
+            "Кукуруза на зерно":    536,
+            "Кукуруза на силос":    197,
         },
         "Актай": {
             "Пшеница озимая":       0,
@@ -1042,6 +1046,26 @@ CROP_OTHER_SET: frozenset[tuple[str, str]] = frozenset()
 CROP_SKIP_REPORT_SET: frozenset[tuple[str, str]] = frozenset()
 
 
+def _editor_added_to_plan(group_name: str, crop: str) -> bool:
+    """Культура есть в плане группы только потому, что её вписали в редакторе.
+
+    В plans.py её нет, поэтому по умолчанию она «не считать». Введённый план
+    важнее этого автоматического режима.
+    """
+    name = str(crop or "").strip()
+    if not name or name == OTHER_CROP_CODE:
+        return False
+    if name in (_BASE_GROUP_CROPS.get(str(group_name)) or frozenset()):
+        return False
+    firms = HARDCODED_PLAN.get(str(group_name)) or {}
+    if not isinstance(firms, dict):
+        return False
+    for crops in firms.values():
+        if isinstance(crops, dict) and name in crops:
+            return True
+    return False
+
+
 def crop_report_mode(group_name: str, crop: str) -> int:
     """0 — как есть, 1 — код «Иные культуры», 2 — в сводках не считать."""
     name = str(crop or "").strip()
@@ -1049,6 +1073,8 @@ def crop_report_mode(group_name: str, crop: str) -> int:
         return CROP_MODE_SKIP
     key = (str(group_name), name)
     if key in CROP_SKIP_REPORT_SET:
+        if _editor_added_to_plan(str(group_name), name):
+            return CROP_MODE_AS_IS
         return CROP_MODE_SKIP
     if key in CROP_OTHER_SET:
         return CROP_MODE_OTHER
@@ -1525,6 +1551,14 @@ def crop_for_disk_field(crops_by_year: dict[int, str], season_year: int | None) 
         if named and named != "Зябь":
             return named
     return ""
+
+
+# Культуры, которые уже лежат в plans.py. Редактор может добавить новые ключи;
+# их нельзя оставлять в автоматическом «не считать».
+_BASE_GROUP_CROPS: dict[str, frozenset[str]] = {
+    str(group): frozenset(_crops_present_in_group(str(group)))
+    for group in list(HARDCODED_PLAN)
+}
 
 
 def _apply_runtime_plans_edits() -> None:

@@ -75,13 +75,14 @@ def _write_detail_machines_min_area_note(ws, row: int, n_cols: int) -> int:
     ws.row_dimensions[row].height = DETAIL_MACHINES_MIN_AREA_NOTE_HEIGHT_PT
     return row + 1
 
+import plans as _plans
+
 from plans import (
     API_TOKEN,
     BASE_URL,
     AVAILABLE_OWN,
     WORK_GROUPS,
     PLAN_RATE_PER_GROUP,
-    HARDCODED_PLAN,
     PREFERRED_CROP_ORDER,
     FIRM_TO_FOLDER,
     FOLDER_TO_FIRM,
@@ -90,7 +91,6 @@ from plans import (
     SKIP_CROPS,
     is_crop_firm_hidden,
     crop_code_for_report,
-    plan_ha_for_report,
     crop_sort_key_for_group,
     build_field_to_crop_general,
     TZ_MSK as _TZ_MSK,
@@ -366,15 +366,26 @@ def _crop_sort_key(name: str) -> tuple[int, int, str]:
         return (1, 999, low)
 
 
+def _group_firm_plan(group: str, firm: str) -> dict:
+    """План фирмы после правок редактора, а не снимок на момент import."""
+    firms = _plans.HARDCODED_PLAN.get(group) or {}
+    if not isinstance(firms, dict):
+        return {}
+    firm_plan = firms.get(firm) or {}
+    return firm_plan if isinstance(firm_plan, dict) else {}
+
+
 def _editor_cell_plan_ha(group: str, firm: str, crop: str) -> float:
     """Одна ячейка редактора планов. Чужие культуры к ней не прибавляются."""
-    firm_plan = HARDCODED_PLAN.get(group, {}).get(firm, {})
-    if not isinstance(firm_plan, dict):
-        return 0.0
     try:
-        return float(firm_plan.get(crop) or 0.0)
+        return float(_group_firm_plan(group, firm).get(crop) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _other_plan_ha(group: str, firm: str) -> float:
+    """План строки «Иные культуры»: ячейка редактора и культуры режима «Иные»."""
+    return float(_plans.plan_ha_for_report(group, firm, PLOW_FIELD_OTHER_CROP) or 0.0)
 
 
 def _plow_plan_ha(firm: str, crop: str) -> float:
@@ -385,12 +396,14 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
     не входят: в plans.py строки «Иные культуры» нет.
     """
     if crop == PLOW_FIELD_OTHER_CROP:
-        return plan_ha_for_report("2.4 Вспашка", firm, crop)
+        return _other_plan_ha("2.4 Вспашка", firm)
     return _editor_cell_plan_ha("2.4 Вспашка", firm, crop)
 
 
 def _deep_plan_ha(firm: str, crop: str) -> float:
-    """План глубокорыхления. «Иные культуры» — только ячейка редактора."""
+    """План глубокорыхления. «Иные культуры» — ячейка редактора и режим «Иные»."""
+    if crop == _DEEP_OTHER_CROP:
+        return _other_plan_ha("2.8 Глубокорыхление", firm)
     return _editor_cell_plan_ha("2.8 Глубокорыхление", firm, crop)
 
 
@@ -448,7 +461,7 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
     crops: set[str] = set()
     firm_stats = by_firm_crop.get(firm, {})
     names = list(PLOW_SEASON_CROPS)
-    firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+    firm_plan = _group_firm_plan("2.4 Вспашка", firm)
     if isinstance(firm_plan, dict):
         for extra in firm_plan:
             if extra not in names:
@@ -2554,9 +2567,7 @@ def _deep_all_firms_rows(
     """
     crops: set[str] = set()
     for firm in FIRM_ORDER:
-        for crop, plan in (
-            HARDCODED_PLAN.get("2.8 Глубокорыхление", {}).get(firm, {}) or {}
-        ).items():
+        for crop, plan in _group_firm_plan("2.8 Глубокорыхление", firm).items():
             if float(plan or 0.0) > 0:
                 crops.add(str(crop))
         st = all_details.get(firm) or {}
