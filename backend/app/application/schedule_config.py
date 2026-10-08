@@ -1,6 +1,7 @@
 """Нормализация и валидация расписания автогенерации и рассылки."""
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any
@@ -61,6 +62,45 @@ def _normalize_time(entry: dict[str, Any]) -> tuple[int, int]:
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         raise ValueError(f"Некорректное время: {hour:02d}:{minute:02d}")
     return hour, minute
+
+
+def strip_developer_only_report_ids(config: dict[str, Any], hidden: frozenset[str]) -> dict[str, Any]:
+    """Убирает сводки роли «Разработчик» из ответа расписания."""
+    out = json.loads(json.dumps(config))
+    for section in ("generation", "mail"):
+        for entry in out.get(section) or []:
+            if isinstance(entry, dict):
+                entry["report_ids"] = [
+                    str(rid) for rid in (entry.get("report_ids") or []) if str(rid) not in hidden
+                ]
+    return out
+
+
+def restore_developer_only_report_ids(
+    before: dict[str, Any],
+    incoming: dict[str, Any],
+    hidden: frozenset[str],
+) -> dict[str, Any]:
+    """Возвращает уже сохранённые скрытые сводки, если правку делает не разработчик."""
+    out = json.loads(json.dumps(incoming))
+    kept: dict[tuple[str, str], list[str]] = {}
+    for section in ("generation", "mail"):
+        for entry in before.get(section) or []:
+            if not isinstance(entry, dict):
+                continue
+            kept[(section, str(entry.get("id") or ""))] = [
+                str(rid) for rid in (entry.get("report_ids") or []) if str(rid) in hidden
+            ]
+    for section in ("generation", "mail"):
+        for entry in out.get(section) or []:
+            if not isinstance(entry, dict):
+                continue
+            ids = [str(rid) for rid in (entry.get("report_ids") or []) if str(rid) not in hidden]
+            for rid in kept.get((section, str(entry.get("id") or "")), []):
+                if rid not in ids:
+                    ids.append(rid)
+            entry["report_ids"] = ids
+    return out
 
 
 def _normalize_report_ids(raw: Any) -> list[str]:

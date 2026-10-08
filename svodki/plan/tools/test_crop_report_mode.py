@@ -56,3 +56,36 @@ def test_rebuild_splits_modes():
     _rebuild_crop_report_mode(g)
     assert g["CROP_OTHER_SET"] == {(GROUP, "Нут")}
     assert g["CROP_SKIP_REPORT_SET"] == {(GROUP, "Пар")}
+
+
+def test_missing_catalog_crop_is_skipped_until_marked_counted():
+    plans.sync_crop_report_sets()
+    group = "2.4 Вспашка"
+    crop = "Введение в оборот 2027 год"
+    saved_mode = plans.CROP_REPORT_MODE[group][crop]
+    firms = plans.HARDCODED_PLAN[group]
+    created_firm = "АФ А" not in firms
+    firm = firms.setdefault("АФ А", {})
+    try:
+        assert crop in plans.ALL_REPORT_CROPS
+        assert crop not in plans._crops_present_in_group(group)
+        assert plans.crop_code_for_report(group, crop) is None
+        assert plans.crop_code_for_report(group, "Соя") == "Соя"
+        assert plans.crop_code_for_report("5.0 Уборка", "Соя") == "Соя"
+        assert plans.crop_code_for_report("5.0 Уборка", "Подсолнечник") == "Подсолнечник"
+        assert plans.crop_code_for_report("5.0 Уборка", "Кукуруза на зерно") == "Кукуруза на зерно"
+        assert plans.crop_code_for_report("5.0 Уборка", "Рапс яровой") == "Рапс яровой"
+        assert plans.crop_code_for_report("5.4 Уборка картофеля, лука", "Картофель") == "Картофель"
+
+        plans.CROP_REPORT_MODE[group][crop] = 0
+        firm[crop] = 12
+        plans.sync_crop_report_sets()
+        assert plans.crop_code_for_report(group, crop) == crop
+        assert plans.plan_ha_for_report(group, "АФ А", crop) == 12
+        assert plans.is_crop_omitted(group, "АФ А", crop) is False
+    finally:
+        plans.CROP_REPORT_MODE[group][crop] = saved_mode
+        firm.pop(crop, None)
+        if created_firm:
+            plans.HARDCODED_PLAN[group].pop("АФ А", None)
+        plans.sync_crop_report_sets()

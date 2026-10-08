@@ -5,8 +5,8 @@ import json
 from datetime import date
 from pathlib import Path
 
-from app.legacy.report_generation import _parse_report27_period_header
-from app.legacy.report_runner import list_job_completed_report_ids
+from app.legacy.report_generation import DEVELOPER_ONLY_REPORT_IDS, _parse_report27_period_header
+from app.legacy.report_runner import _report_id_from_filename, list_job_completed_report_ids
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -38,7 +38,13 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 log = get_logger(__name__)
 
 
-def _job_to_dict(job: GenerationJob, db: Session) -> dict:
+def _visible_report_ids(report_ids: list[str], user: User) -> list[str]:
+    if user.role == "developer":
+        return report_ids
+    return [rid for rid in report_ids if rid not in DEVELOPER_ONLY_REPORT_IDS]
+
+
+def _job_to_dict(job: GenerationJob, db: Session, user: User | None = None) -> dict:
     report_ids: list[str] = []
     try:
         report_ids = json.loads(job.report_ids or "[]")
@@ -68,8 +74,10 @@ def _job_to_dict(job: GenerationJob, db: Session) -> dict:
         "id": job.id,
         "status": job.status,
         "summary_date": job.summary_date.isoformat(),
-        "report_ids": report_ids,
-        "completed_report_ids": completed_report_ids,
+        "report_ids": _visible_report_ids(report_ids, user) if user is not None else report_ids,
+        "completed_report_ids": (
+            _visible_report_ids(completed_report_ids, user) if user is not None else completed_report_ids
+        ),
         "created_count": job.created_count,
         "failed_count": job.failed_count,
         "error_message": job.error_message,
@@ -86,8 +94,10 @@ def _job_to_dict(job: GenerationJob, db: Session) -> dict:
 
 
 @router.get("/catalog", response_model=ReportCatalogOut)
-def get_report_catalog(_: User = Depends(require_generate_access)):
-    return {"items": list_report_catalog_for_ui()}
+def get_report_catalog(user: User = Depends(require_generate_access)):
+    return {
+        "items": list_report_catalog_for_ui(include_developer_only=user.role == "developer")
+    }
 
 
 @router.get("/cropwise-cookie")
@@ -111,10 +121,10 @@ def get_available_dates(_: User = Depends(require_generate_access)):
 def list_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
-    _: User = Depends(require_generate_access),
+    user: User = Depends(require_generate_access),
 ):
     jobs = repo.list_generation_jobs(db, limit=limit)
-    return {"items": [_job_to_dict(j, db) for j in jobs]}
+    return {"items": [_job_to_dict(j, db, user) for j in jobs]}
 
 
 @router.post("/generate")
@@ -127,6 +137,8 @@ def generate_reports(
 ):
     summary_date = payload.summary_date
     report_ids = [str(x) for x in payload.report_ids] if payload.report_ids else []
+    if user.role != "developer" and any(rid in DEVELOPER_ONLY_REPORT_IDS for rid in report_ids):
+        raise HTTPException(status_code=403, detail="Сводка доступна только роли «Разработчик».")
     try:
         job_options = payload.generation_job_options()
     except ValueError as exc:
@@ -221,7 +233,7 @@ def cancel_job(
         report_ids=report_ids,
         full_cancel=not report_ids,
     )
-    return _job_to_dict(job, db)
+    return _job_to_dict(job, db, user)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusOut)
@@ -252,9 +264,11 @@ def get_job_status(job_id: str, db: Session = Depends(get_db), _: User = Depends
 def get_generated_files(
     summary_date: date,
     db: Session = Depends(get_db),
-    _: User = Depends(require_generate_access),
+    user: User = Depends(require_generate_access),
 ):
     files = enrich_generated_files(db, summary_date, list_generated_files(summary_date))
+    if user.role != "developer":
+        files = [row for row in files if str(row.get("report_id") or "") not in DEVELOPER_ONLY_REPORT_IDS]
     return GeneratedFileListOut(summary_date=summary_date, files=files)
 
 
@@ -262,10 +276,15 @@ def get_generated_files(
 def download_generated_file(
     summary_date: date,
     filename: str,
-    _: User = Depends(require_generate_access_flexible),
+    user: User = Depends(require_generate_access_flexible),
 ):
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Некорректное имя файла")
+    if (
+        user.role != "developer"
+        and _report_id_from_filename(filename) in DEVELOPER_ONLY_REPORT_IDS
+    ):
+        raise HTTPException(status_code=404, detail="Файл не найден")
     lower = filename.lower()
     if not (lower.endswith(".pdf") or lower.endswith(".xlsx")):
         raise HTTPException(status_code=400, detail="Доступны только PDF и Excel")

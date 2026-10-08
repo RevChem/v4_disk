@@ -20,6 +20,7 @@ class ReportCatalogEntry:
     cropwise_comparable: bool = False
     cropwise_per_operation: bool = False
     cross_check_only: bool = False
+    developer_only: bool = False
 
 
 REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
@@ -145,6 +146,13 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         work_groups=("5.0 Уборка",),
         cross_check_only=True,
     ),
+    ReportCatalogEntry(
+        "14.2",
+        "14.2_combine_yield_days.py",
+        "14.2. Аналитика урожайности комбайнов по сменам",
+        explicit_only=True,
+        developer_only=True,
+    ),
     ReportCatalogEntry("22", "text_svodka_2.py", "22. Выработка техники"),
     ReportCatalogEntry(
         "23",
@@ -203,6 +211,7 @@ REPORT_ARTIFACT_TITLES: dict[str, str] = {
     "12": "12. Статистика простоя",
     "13": "13. Обзор ХК",
     "14": "14. Выработка комбайнов",
+    "14.2": "14.2. Аналитика урожайности комбайнов",
     "22": "22. Дневная",
     "24": "24. Менее 0.5",
 }
@@ -223,6 +232,10 @@ EXPLICIT_ONLY_REPORT_IDS: frozenset[str] = frozenset(
 
 REPORT_PICKER_HIDDEN_IDS: frozenset[str] = frozenset(
     e.id for e in REPORT_CATALOG if not e.picker_visible
+)
+
+DEVELOPER_ONLY_REPORT_IDS: frozenset[str] = frozenset(
+    e.id for e in REPORT_CATALOG if e.developer_only
 )
 
 REPORT_PICKER_DEFAULT_SELECTED_IDS: frozenset[str] = frozenset(

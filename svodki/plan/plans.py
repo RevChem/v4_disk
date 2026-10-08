@@ -1030,6 +1030,7 @@ def is_crop_rank_hidden(group_name: str, crop: str) -> bool:
 
 # Учёт культуры в сводках (редактор «Площади, план га»):
 # 0 — считать отдельно, 1 — свернуть в «Иные культуры», 2 — не считать вовсе.
+# CROP_REPORT_MODE заполняется ниже: культуры, которых нет в плане группы, получают 2.
 OTHER_CROP_CODE = "Иные культуры"
 CROP_MODE_AS_IS = 0
 CROP_MODE_OTHER = 1
@@ -1133,6 +1134,113 @@ SEEDING_CROP_ORDER: tuple[str, ...] = (
     "Пшеница озимая",
     "Тритикале озимая",
 )
+
+# Названия с полей Cropwise, которых нет ключом в каждой группе HARDCODED_PLAN.
+_FIELD_CROP_NAMES: tuple[str, ...] = (
+    "Пшеница яровая",
+    "Нут",
+    "Залежь",
+    "Залежь, лес",
+    "Введение в оборот 2027 год",
+    "Луговые травы",
+    "Люцерна",
+    "Многолетние травы 2026 года",
+    "В пользовании у фермера",
+    "Передано в аренду",
+    "Дороги/лесополосы",
+    "Овраги/неудобия",
+    "Тритикале яровая",
+)
+
+
+def _plan_group_names() -> list[str]:
+    names = [str(name) for name, _ids in WORK_GROUPS]
+    for group in HARDCODED_PLAN:
+        if str(group) not in names:
+            names.append(str(group))
+    return names
+
+
+def _crops_present_in_group(group: str) -> set[str]:
+    found: set[str] = set()
+    firms = HARDCODED_PLAN.get(group) or {}
+    if not isinstance(firms, dict):
+        return found
+    for crops in firms.values():
+        if not isinstance(crops, dict):
+            continue
+        for crop in crops:
+            name = str(crop).strip()
+            if name and name != OTHER_CROP_CODE:
+                found.add(name)
+    return found
+
+
+def _all_report_crops() -> tuple[str, ...]:
+    names: set[str] = set()
+    for group in _plan_group_names():
+        names.update(_crops_present_in_group(group))
+    names.update(str(crop).strip() for crop in PREFERRED_CROP_ORDER)
+    names.update(str(crop).strip() for crop in SEEDING_CROP_ORDER)
+    names.update(str(crop).strip() for crop in _FIELD_CROP_NAMES)
+    names.discard("")
+    names.discard(OTHER_CROP_CODE)
+    names.discard("crop_None")
+    pref = _PREFERRED_CROP_INDEX
+
+    def _key(name: str) -> tuple[int, int | str]:
+        low = name.lower()
+        if low in pref:
+            return (0, pref[low])
+        return (1, low)
+
+    return tuple(sorted(names, key=_key))
+
+
+ALL_REPORT_CROPS: tuple[str, ...] = _all_report_crops()
+
+
+def _default_crop_report_mode() -> dict[str, dict[str, int]]:
+    """Культура есть в каталоге, но не в плане этой группы — в сводках не считать."""
+    catalog = set(ALL_REPORT_CROPS)
+    out: dict[str, dict[str, int]] = {}
+    for group in _plan_group_names():
+        missing = catalog - _crops_present_in_group(group)
+        if not missing:
+            continue
+        out[group] = {crop: CROP_MODE_SKIP for crop in sorted(missing, key=str.casefold)}
+    return out
+
+
+CROP_REPORT_MODE = _default_crop_report_mode()
+
+
+def sync_crop_report_sets() -> None:
+    """CROP_OTHER_SET / CROP_SKIP_REPORT_SET из текущего CROP_REPORT_MODE."""
+    global CROP_OTHER_SET, CROP_SKIP_REPORT_SET
+    other: list[tuple[str, str]] = []
+    skip: list[tuple[str, str]] = []
+    for group, crops in CROP_REPORT_MODE.items():
+        if not isinstance(crops, dict):
+            continue
+        for crop, mode_raw in crops.items():
+            try:
+                mode = int(mode_raw)
+            except (TypeError, ValueError):
+                continue
+            name = str(crop).strip()
+            if not name:
+                continue
+            pair = (str(group), name)
+            if mode == CROP_MODE_OTHER:
+                other.append(pair)
+            elif mode == CROP_MODE_SKIP:
+                skip.append(pair)
+    CROP_OTHER_SET = frozenset(other)
+    CROP_SKIP_REPORT_SET = frozenset(skip)
+
+
+sync_crop_report_sets()
 
 # План посева га по агрофирмам — строится из HARDCODED_PLAN["4.0 Посев"].
 # wheat_nitrate / raps_nitrate / raps_sulfate хранятся отдельно в PLAN_HA (выше).

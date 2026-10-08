@@ -218,11 +218,13 @@ def _extract_base_plans_uncached() -> dict[str, Any]:
         elif val is not None:
             base[key] = _json_safe(val)
     firms = getattr(mod, "FIRM_ORDER", None)
+    crops = getattr(mod, "ALL_REPORT_CROPS", ())
     work_group_names = [str(g["name"]) for g in base.get("WORK_GROUPS") or [] if isinstance(g, dict)]
     return {
         "sections": deepcopy(SECTION_DEFS),
         "work_groups": work_group_names,
-        "firms": [str(x) for x in firms] if isinstance(firms, list) else [],
+        "firms": [str(x) for x in firms] if isinstance(firms, (list, tuple)) else [],
+        "crops": [str(x) for x in crops] if isinstance(crops, (list, tuple)) else [],
         "base": base,
     }
 
@@ -479,7 +481,14 @@ def set_plan_value(
         if mode not in (0, 1, 2):
             raise ValueError("Учёт культуры: 0 — считать, 1 — иные культуры, 2 — не считать")
         bucket = sec_eff.setdefault(g, {})
-        if mode == 0:
+        base_bucket = (base.get("CROP_REPORT_MODE") or {}).get(g) or {}
+        try:
+            base_mode = int(base_bucket.get(crop) or 0)
+        except (TypeError, ValueError):
+            base_mode = 0
+        # 0 в базе не хранится. Если в базе уже 2, «Считать» нужно записать нулём,
+        # иначе правка сотрётся и культура снова не попадёт в сводки.
+        if mode == 0 and base_mode == 0:
             bucket.pop(crop, None)
         else:
             bucket[crop] = mode

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -400,17 +400,22 @@ export default function PlansEditor({ summaryDate = null }) {
     return [...ordered, ...rest];
   }, [state, sectionKey, workGroup, section]);
 
-  const cropsForMatrix = useMemo(() => {
-    if (!state || !workGroup || section?.kind !== "nested_3") return [];
-    const crops = new Set();
+  const { countedCrops, skippedCrops } = useMemo(() => {
+    if (!state || !workGroup || section?.kind !== "nested_3") {
+      return { countedCrops: [], skippedCrops: [] };
+    }
+    const crops = new Set(state.crops || []);
     for (const firmName of firmsForGroup) {
       Object.keys(state.effective?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) =>
         crops.add(c)
       );
       Object.keys(state.base?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) => crops.add(c));
     }
+    Object.keys(state.effective?.CROP_REPORT_MODE?.[workGroup] || {}).forEach((c) => crops.add(c));
+    crops.delete("Иные культуры");
     const ranks = state.effective?.CROP_DISPLAY_RANK?.[workGroup] || {};
-    return [...crops].sort((a, b) => {
+    const mode = state.effective?.CROP_REPORT_MODE?.[workGroup] || {};
+    const sorted = [...crops].sort((a, b) => {
       const raRaw = ranks[a];
       const rbRaw = ranks[b];
       const ra = raRaw === "" || raRaw == null ? null : Number(raRaw);
@@ -425,6 +430,15 @@ export default function PlansEditor({ summaryDate = null }) {
       if (bHas && !bHidden && (!aHas || aHidden)) return 1;
       return a.localeCompare(b, "ru");
     });
+    const countedCrops = [];
+    const skippedCrops = [];
+    for (const crop of sorted) {
+      const raw = mode[crop];
+      const flag = raw == null || raw === "" ? 0 : Number(raw);
+      if (flag === 2) skippedCrops.push(crop);
+      else countedCrops.push(crop);
+    }
+    return { countedCrops, skippedCrops };
   }, [state, sectionKey, workGroup, section, firmsForGroup]);
 
   const flatRows = useMemo(() => {
@@ -793,8 +807,9 @@ export default function PlansEditor({ summaryDate = null }) {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {cropsForMatrix.map((crop) => {
+                  {[...countedCrops, ...skippedCrops].map((crop, index) => {
                     const rankVal = state?.effective?.CROP_DISPLAY_RANK?.[workGroup]?.[crop];
+                    const atSkipSection = skippedCrops.length > 0 && index === countedCrops.length;
                     const rankNum = rankVal === "" || rankVal == null ? null : Number(rankVal);
                     const hidden = rankNum != null && Number.isFinite(rankNum) && rankNum <= 0;
                     const rankEdited = isEdited(
@@ -803,8 +818,61 @@ export default function PlansEditor({ summaryDate = null }) {
                       [crop]
                     );
                     return (
+                      <Fragment key={crop}>
+                        {atSkipSection && countedCrops.some(
+                          (name) => Number(state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[name]) === 1
+                        ) ? (
+                          <TableRow>
+                            <TableCell
+                              sx={{
+                                fontWeight: 700,
+                                position: "sticky",
+                                left: 0,
+                                zIndex: 2,
+                                bgcolor: "background.paper"
+                              }}
+                            >
+                              Иные культуры
+                            </TableCell>
+                            {firmsForGroup.map((firmName) => {
+                              const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
+                              const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
+                              let sum = Number(plan["Иные культуры"] || 0);
+                              for (const name of countedCrops) {
+                                if (Number(mode[name]) === 1) sum += Number(plan[name] || 0);
+                              }
+                              return (
+                                <TableCell key={`other-split-${firmName}`} align="center" sx={{ fontWeight: 700 }}>
+                                  {sum ? sum.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "—"}
+                                </TableCell>
+                              );
+                            })}
+                            <TableCell align="center" sx={{ color: "text.secondary" }}>
+                              сумма
+                            </TableCell>
+                            <TableCell />
+                          </TableRow>
+                        ) : null}
+                        {atSkipSection ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={firmsForGroup.length + 3}
+                              sx={{
+                                py: 0.75,
+                                borderTop: "2px solid",
+                                borderBottom: "2px solid",
+                                borderColor: "divider",
+                                bgcolor: (t) =>
+                                  t.palette.mode === "light" ? "grey.100" : "rgba(255,255,255,0.06)"
+                              }}
+                            >
+                              <Typography variant="caption" color="text.secondary">
+                                Не считать
+                              </Typography>
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
                       <TableRow
-                        key={crop}
                         hover
                         sx={
                           hidden
@@ -1027,9 +1095,10 @@ export default function PlansEditor({ summaryDate = null }) {
                           />
                         </TableCell>
                       </TableRow>
+                      </Fragment>
                     );
                   })}
-                  {cropsForMatrix.some(
+                  {skippedCrops.length === 0 && countedCrops.some(
                     (crop) => Number(state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[crop]) === 1
                   ) ? (
                     <TableRow>
@@ -1048,7 +1117,7 @@ export default function PlansEditor({ summaryDate = null }) {
                         const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
                         const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
                         let sum = Number(plan["Иные культуры"] || 0);
-                        for (const crop of cropsForMatrix) {
+                        for (const crop of countedCrops) {
                           if (Number(mode[crop]) === 1) sum += Number(plan[crop] || 0);
                         }
                         return (
@@ -1068,7 +1137,7 @@ export default function PlansEditor({ summaryDate = null }) {
             </TableContainer>
           )}
 
-          {section?.kind === "nested_3" && workGroup && cropsForMatrix.length === 0 && (
+          {section?.kind === "nested_3" && workGroup && countedCrops.length + skippedCrops.length === 0 && (
             <Alert severity="info">Для выбранной группы работ нет данных.</Alert>
           )}
             </>

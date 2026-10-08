@@ -298,6 +298,7 @@ def _catalog_constants():
         frozenset(cat.EXPLICIT_ONLY_REPORT_IDS),
         frozenset(cat.REPORT_PICKER_HIDDEN_IDS),
         frozenset(cat.REPORT_PICKER_DEFAULT_SELECTED_IDS),
+        frozenset(getattr(cat, "DEVELOPER_ONLY_REPORT_IDS", ())),
     )
 
 
@@ -307,6 +308,7 @@ REPORT_CONFIGS_BASE: tuple[ReportConfig, ...] = _build_report_configs_base()
     EXPLICIT_ONLY_REPORT_IDS,
     REPORT_PICKER_HIDDEN_IDS,
     REPORT_PICKER_DEFAULT_SELECTED_IDS,
+    DEVELOPER_ONLY_REPORT_IDS,
 ) = _catalog_constants()
 # Основной каталог скриптов — svodki/plan (plans.py, report_catalog.py).
 
@@ -348,11 +350,13 @@ def _format_ui_report_title(report_id: str, raw_title: str) -> str:
     return f"{rid}. {t}" if t else str(raw_title)
 
 
-def list_report_catalog_for_ui() -> list[dict[str, str | bool]]:
+def list_report_catalog_for_ui(*, include_developer_only: bool = False) -> list[dict[str, str | bool]]:
     """Каталог сводок для UI: единый источник с REPORT_CONFIGS_BASE."""
     rows: list[dict[str, str | bool]] = []
     for cfg in REPORT_CONFIGS_BASE:
         rid = str(cfg.id)
+        if rid in DEVELOPER_ONLY_REPORT_IDS and not include_developer_only:
+            continue
         rows.append(
             {
                 "id": rid,
