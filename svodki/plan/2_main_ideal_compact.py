@@ -3311,10 +3311,13 @@ def collect_work_data(
                             continue
 
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
-                        # Cropwise считает всю площадь операции. Культура вне плана
-                        # остаётся в итоге строкой «Иные культуры», а не выпадает.
+                        # Пустая культура остаётся в итоге. «Не считать» из редактора
+                        # в сводку не входит; «Иные культуры» сворачиваются в одну строку.
                         if crop:
-                            crop = crop_code_for_report(group_name, crop) or OTHER_CROP_CODE
+                            coded = crop_code_for_report(group_name, crop)
+                            if coded is None:
+                                continue
+                            crop = coded
                         else:
                             crop = OTHER_CROP_CODE
                     elif crop:
@@ -3336,13 +3339,13 @@ def collect_work_data(
                             raw_cov = float(item.get("covered_area") or 0)
                             portions = (
                                 {t_date: raw_cov}
-                                if raw_cov > 0 and group_period_start <= t_date < TODAY
+                                if raw_cov > 0 and harvest_period_start <= t_date < TODAY
                                 else {}
                             )
                         for shift_date, shift_cov in portions.items():
                             if shift_cov <= 0:
                                 continue
-                            if shift_date < group_period_start or shift_date >= TODAY:
+                            if shift_date < harvest_period_start or shift_date >= TODAY:
                                 continue
                             ha = float(shift_cov)
                             if group_name == PLOW_GROUP_NAME:
@@ -3490,7 +3493,10 @@ def collect_work_data(
                             continue
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         if crop:
-                            crop = crop_code_for_report(group_name, crop) or OTHER_CROP_CODE
+                            coded = crop_code_for_report(group_name, crop)
+                            if coded is None:
+                                continue
+                            crop = coded
                         else:
                             crop = OTHER_CROP_CODE
                         from task_area_shared import area_ha_by_shift_date
@@ -3505,7 +3511,7 @@ def collect_work_data(
                                 if (
                                     raw_cov > 0
                                     and close_date is not None
-                                    and group_period_start <= close_date < TODAY
+                                    and harvest_period_start <= close_date < TODAY
                                 )
                                 else {}
                             )
@@ -3513,7 +3519,7 @@ def collect_work_data(
                         for shift_date, shift_cov in portions.items():
                             if shift_cov <= 0:
                                 continue
-                            if shift_date < group_period_start or shift_date >= TODAY:
+                            if shift_date < harvest_period_start or shift_date >= TODAY:
                                 continue
                             ha = float(shift_cov)
                             if group_name == PLOW_GROUP_NAME:
@@ -4176,13 +4182,18 @@ def write_report_sheet(
                 allowed = GROUP_CROP_ONLY[group_name]
                 plan_crops = [
                     c for c in _planned_crops_for_group_firm(group_name, firm)
-                    if c in allowed
+                    if c in allowed or crop_code_for_report(group_name, c) == c
                 ]
                 all_crops = sorted(
                     set(all_crops) | set(plan_crops),
                     key=lambda c: _crop_sort_key_for_group(group_name, c),
                 )
-                all_crops = [c for c in all_crops if c in allowed]
+                all_crops = [
+                    c for c in all_crops
+                    if c in allowed
+                    or c == OTHER_CROP_CODE
+                    or crop_code_for_report(group_name, c) == c
+                ]
             if group_name == HARVEST_GROUP_NAME:
                 # Только лист 5.0: иные культуры и овощи не выводим; остальные группы не трогаем.
                 all_crops = [c for c in all_crops if not _harvest_crop_excluded(firm, c)]
@@ -4315,17 +4326,19 @@ def write_report_sheet(
         row += 1
 
         def _firm_plan_from_crops(gn: str, firm: str) -> float | None:
-            """Сумма планов по культурам из HARDCODED_PLAN для данной группы и агрофирмы."""
-            if _is_harvest_veg_group(gn):
-                total = sum(_plan_ha_for_crop(gn, firm, crop) for crop in HARVEST_VEG_CROPS)
-                return float(total) if total else None
-            if gn == PLOW_GROUP_NAME:
-                total = sum(_plan_ha_for_crop(gn, firm, crop) for crop in PLOW_SEASON_CROPS)
-                return float(total) if total else None
-            total = sum(
-                v for (g, f, _crop), v in HARDCODED_PLAN_FLAT.items()
-                if g == gn and f == firm
-            )
+            """План фирмы с учётом редактора: «Не считать» вне суммы, «Иные» — один раз."""
+            seen: set[str] = set()
+            total = 0.0
+            for crop in _planned_crops_for_group_firm(gn, firm):
+                code = crop_code_for_report(gn, crop)
+                if code is None or code in seen:
+                    continue
+                seen.add(code)
+                total += _plan_ha_for_crop(gn, firm, code)
+            if OTHER_CROP_CODE not in seen:
+                extra = _plan_ha_for_crop(gn, firm, OTHER_CROP_CODE)
+                if extra:
+                    total += extra
             return float(total) if total else None
 
         area_digits = 2 if group_name == PLOW_GROUP_NAME or _is_harvest_veg_group(group_name) else 1

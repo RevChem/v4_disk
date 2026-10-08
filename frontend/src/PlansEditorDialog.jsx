@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -10,14 +10,15 @@ import CloseFullscreenRoundedIcon from "@mui/icons-material/CloseFullscreenRound
 import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import PlansEditor from "./PlansEditor";
 
+function isComputerFullscreen() {
+  return document.fullscreenElement === document.documentElement;
+}
+
 export default function PlansEditorDialog({ open, onClose, summaryDate = null }) {
-  const paperRef = useRef(null);
   const [fullScreen, setFullScreen] = useState(false);
 
   useEffect(() => {
-    const sync = () => {
-      setFullScreen(document.fullscreenElement != null && document.fullscreenElement === paperRef.current);
-    };
+    const sync = () => setFullScreen(isComputerFullscreen());
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
@@ -33,7 +34,13 @@ export default function PlansEditorDialog({ open, onClose, summaryDate = null })
   useEffect(() => {
     if (!open || !fullScreen) return undefined;
     const onKey = (event) => {
-      if (event.key !== "Escape" || document.fullscreenElement !== paperRef.current) return;
+      if (event.key !== "Escape" || !isComputerFullscreen()) return;
+      // Список «Считать» и другие меню — тоже на Escape. Сначала закрывается меню.
+      const menuOpen = document.querySelector(".MuiMenu-root, .MuiPopover-root");
+      if (menuOpen) {
+        event.preventDefault();
+        return;
+      }
       event.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
@@ -41,13 +48,13 @@ export default function PlansEditorDialog({ open, onClose, summaryDate = null })
   }, [open, fullScreen]);
 
   async function toggleComputerFullscreen() {
-    const node = paperRef.current;
-    if (!node) return;
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
       } else {
-        await node.requestFullscreen();
+        // На весь документ, а не на бумагу диалога: меню MUI и календарь
+        // рисуются в body и иначе оказываются вне полноэкранного элемента.
+        await document.documentElement.requestFullscreen();
       }
     } catch {
       // Браузер может запретить полноэкранный режим без жеста пользователя.
@@ -58,28 +65,31 @@ export default function PlansEditorDialog({ open, onClose, summaryDate = null })
     <Dialog
       open={open}
       onClose={onClose}
+      fullScreen={fullScreen}
       fullWidth
       maxWidth={false}
       slotProps={{
         paper: {
-          ref: paperRef,
-          sx: {
-            display: "flex",
-            flexDirection: "column",
-            width: "min(1920px, 98vw)",
-            height: "min(1080px, 96vh)",
-            maxWidth: "98vw",
-            maxHeight: "96vh",
-            m: 1,
-            "&:fullscreen": {
-              width: "100%",
-              height: "100%",
-              maxWidth: "100%",
-              maxHeight: "100%",
-              m: 0,
-              borderRadius: 0
-            }
-          }
+          sx: fullScreen
+            ? {
+                display: "flex",
+                flexDirection: "column",
+                width: "100%",
+                height: "100%",
+                maxWidth: "100%",
+                maxHeight: "100%",
+                m: 0,
+                borderRadius: 0
+              }
+            : {
+                display: "flex",
+                flexDirection: "column",
+                width: "min(1920px, 98vw)",
+                height: "min(1080px, 96vh)",
+                maxWidth: "98vw",
+                maxHeight: "96vh",
+                m: 1
+              }
         }
       }}
     >

@@ -90,7 +90,6 @@ from plans import (
     SKIP_CROPS,
     is_crop_firm_hidden,
     crop_code_for_report,
-    is_crop_omitted,
     plan_ha_for_report,
     crop_sort_key_for_group,
     build_field_to_crop_general,
@@ -243,6 +242,7 @@ PLOW_SEASON_CROPS: frozenset[str] = frozenset({
     "Подсолнечник",
     "Соя",
     "Кукуруза на зерно",
+    "Кукуруза на силос",
     "Картофель",
     "Морковь",
     "Свекла столовая",
@@ -268,6 +268,20 @@ _UNMAPPED_CROP = "Культура не указана"
 _PREFERRED_CROP_INDEX = {name.lower(): i for i, name in enumerate(PREFERRED_CROP_ORDER)}
 
 
+def _plow_report_crop(raw: str) -> str | None:
+    """Культура вспашки после редактора планов.
+
+    Имя из сезонного списка сохраняется. Культура, которую вручную перевели
+    в «Считать» или «Иные культуры», не подменяется на «не определена».
+    """
+    name = str(raw or "").strip()
+    mapped = _map_plow_crop_name(name)
+    candidate = mapped or name
+    if not candidate:
+        return None
+    return crop_code_for_report("2.4 Вспашка", candidate)
+
+
 def _map_plow_crop_name(raw: str) -> str | None:
     """Нормализация культуры для вспашки → ключ из PLOW_SEASON_CROPS или None."""
     name = str(raw or "").strip()
@@ -280,7 +294,7 @@ def _map_plow_crop_name(raw: str) -> str | None:
         return "Свекла столовая"
     if "кукуруза" in n:
         if "силос" in n:
-            return None
+            return "Кукуруза на силос"
         return "Кукуруза на зерно"
     return None
 
@@ -348,7 +362,19 @@ def _crop_sort_key(name: str) -> tuple[int, int, str]:
 
 
 def _plow_plan_ha(firm: str, crop: str) -> float:
-    return plan_ha_for_report("2.4 Вспашка", firm, crop)
+    """Свой план культуры из редактора, без свёртки в «Иные культуры».
+
+    Свёртка делается только на листе «Сводно»: туда попадают культуры
+    вне именованного списка. Иначе план рапса, сои и остальных строк
+    обнуляется, а вся сумма остаётся на «Иные культуры».
+    """
+    firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+    if not isinstance(firm_plan, dict):
+        return 0.0
+    try:
+        return float(firm_plan.get(crop) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _deep_plan_ha(firm: str, crop: str) -> float:
@@ -409,13 +435,20 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
     crops: set[str] = set()
     firm_stats = by_firm_crop.get(firm, {})
     names = list(PLOW_SEASON_CROPS)
+    firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+    if isinstance(firm_plan, dict):
+        for extra in firm_plan:
+            if extra not in names:
+                names.append(str(extra))
     for extra in firm_stats:
-        if extra not in PLOW_SEASON_CROPS:
+        if extra not in names:
             names.append(extra)
     for crop in names:
-        if crop_code_for_report("2.4 Вспашка", crop) != crop:
+        if crop == "Иные культуры":
             continue
-        if is_crop_omitted("2.4 Вспашка", firm, crop):
+        if crop_code_for_report("2.4 Вспашка", crop) is None:
+            continue
+        if is_crop_firm_hidden("2.4 Вспашка", firm, crop):
             continue
         plan = _plow_plan_ha(firm, crop)
         st = firm_stats.get(crop, {})
@@ -1061,10 +1094,7 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            from mtfmi_batch_fetch import UNDEFINED_CROP
-
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
-            crop = crop_code_for_report("2.4 Вспашка", crop)
+            crop = _plow_report_crop(crop_of_item(item, ""))
             if crop is None:
                 continue
             if crop not in by_firm_crop[firm]:
@@ -1120,10 +1150,7 @@ def build_plow_stats_by_crop(
                 continue
             from mtfmi_batch_fetch import crop_of_item
 
-            from mtfmi_batch_fetch import UNDEFINED_CROP
-
-            crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
-            crop = crop_code_for_report("2.4 Вспашка", crop)
+            crop = _plow_report_crop(crop_of_item(item, ""))
             if crop is None:
                 continue
             if crop not in by_firm_crop[firm]:
