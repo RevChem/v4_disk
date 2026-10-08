@@ -2423,6 +2423,10 @@ def _prepare_group_selection(
     for group_name, wt_ids in WORK_GROUPS:
         if group_name == HARVEST_GROUP_NAME:
             wt_ids = [wt for wt in wt_ids if wt not in VEG_HARVEST_WT_IDS]
+        if group_name == PLOW_GROUP_NAME:
+            # 49 в справочнике — «2.5 Вспашка по многолетним травам и залежи».
+            # Колонка Cropwise «2.4 Вспашка» эту операцию не включает.
+            wt_ids = [wt for wt in wt_ids if int(wt) != 49]
         print(f"  Загружаем {group_name}...")
         use_report3_coverage_logic = (len(wt_ids) == 1 and wt_ids[0] == 55)
         use_report6_spray_logic = group_name in (SPRAY_GROUP_NAME, VEG_SPRAY_GROUP_NAME)

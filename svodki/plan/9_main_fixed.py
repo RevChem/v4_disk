@@ -2383,6 +2383,24 @@ def _plow_other_note_name(crop: str) -> str:
     return str(crop or "").strip()
 
 
+def _plow_footnote_crop(name: str) -> bool:
+    """В сноске только прочие культуры вроде многолетних трав.
+
+    Озимые, пар и овраги в строке «Иные» остаются, но списком под таблицей
+    не выводятся.
+    """
+    n = str(name or "").casefold().replace("ё", "е").strip()
+    if not n:
+        return False
+    if "озим" in n:
+        return False
+    if n == "пар" or n.startswith("пар ") or n.startswith("пар,"):
+        return False
+    if "овраг" in n:
+        return False
+    return True
+
+
 def _format_ha_ru(value: float) -> str:
     text = f"{float(value):,.2f}".replace(",", " ").replace(".", ",")
     return text
@@ -2446,16 +2464,34 @@ def _plow_all_firms_rows_field_and_veg(
         if abs(shown) < 0.005:
             continue
         label = _plow_other_note_name(crop)
+        if not _plow_footnote_crop(label):
+            continue
         other_parts[label] = other_parts.get(label, 0.0) + shown
     field_rows: list[tuple[str, float, float, float]] = []
     for crop in PLOW_FIELD_SUMMARY_NAMED:
         if crop not in named:
             continue
         field_rows.append((crop, *named[crop]))
-    other_plan = sum(
-        plan_ha_for_report("2.4 Вспашка", firm, PLOW_FIELD_OTHER_CROP)
-        for firm in FIRM_ORDER
-    )
+    # План «Иные» — культуры, которые на этом листе не имеют своей строки
+    # (озимые и прочие), плюс ячейка «Иные культуры» из редактора.
+    folded_crops = {
+        crop for crop in set(fact_by) | set(today_by) if crop not in keep
+    }
+    for firm in FIRM_ORDER:
+        firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+        if isinstance(firm_plan, dict):
+            folded_crops.update(
+                str(crop) for crop in firm_plan if str(crop) not in keep
+            )
+    other_plan = sum(_plan_of(crop) for crop in folded_crops)
+    for firm in FIRM_ORDER:
+        firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+        if not isinstance(firm_plan, dict):
+            continue
+        try:
+            other_plan += float(firm_plan.get(PLOW_FIELD_OTHER_CROP) or 0.0)
+        except (TypeError, ValueError):
+            continue
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
         field_rows.append((
             PLOW_FIELD_OTHER_CROP,
