@@ -135,6 +135,7 @@ PLOW_SEASON_CROPS: frozenset[str] = frozenset({
     "Подсолнечник",
     "Соя",
     "Кукуруза на зерно",
+    "Кукуруза на силос",
     "Картофель",
     "Морковь",
     "Свекла столовая",
@@ -973,7 +974,7 @@ def _map_plow_crop_name(raw: str) -> str | None:
         return "Свекла столовая"
     if "кукуруза" in n:
         if "силос" in n:
-            return None
+            return "Кукуруза на силос"
         return "Кукуруза на зерно"
     return None
 
