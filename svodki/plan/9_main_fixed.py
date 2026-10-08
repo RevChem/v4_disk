@@ -90,7 +90,6 @@ from plans import (
     SKIP_CROPS,
     is_crop_firm_hidden,
     crop_code_for_report,
-    plan_ha_for_report,
     crop_sort_key_for_group,
     build_field_to_crop_general,
     TZ_MSK as _TZ_MSK,
@@ -366,16 +365,9 @@ def _crop_sort_key(name: str) -> tuple[int, int, str]:
         return (1, 999, low)
 
 
-def _plow_plan_ha(firm: str, crop: str) -> float:
-    """План культуры из редактора планов.
-
-    «Иные культуры» — ячейка редактора плюс культуры, которые там отмечены
-    как «Иные». Остальные культуры читаются своей ячейкой и не переносятся
-    в эту строку.
-    """
-    if crop == PLOW_FIELD_OTHER_CROP:
-        return plan_ha_for_report("2.4 Вспашка", firm, crop)
-    firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
+def _editor_cell_plan_ha(group: str, firm: str, crop: str) -> float:
+    """Одна ячейка редактора планов. Чужие культуры к ней не прибавляются."""
+    firm_plan = HARDCODED_PLAN.get(group, {}).get(firm, {})
     if not isinstance(firm_plan, dict):
         return 0.0
     try:
@@ -384,8 +376,18 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
         return 0.0
 
 
+def _plow_plan_ha(firm: str, crop: str) -> float:
+    """План культуры из редактора планов.
+
+    «Иные культуры» — только одноимённая ячейка. В plans.py её нет:
+    число появляется правкой редактора и не складывается из других культур.
+    """
+    return _editor_cell_plan_ha("2.4 Вспашка", firm, crop)
+
+
 def _deep_plan_ha(firm: str, crop: str) -> float:
-    return plan_ha_for_report("2.8 Глубокорыхление", firm, crop)
+    """План глубокорыхления. «Иные культуры» — только ячейка редактора."""
+    return _editor_cell_plan_ha("2.8 Глубокорыхление", firm, crop)
 
 
 def _build_field_to_crop_deep(
@@ -2472,26 +2474,12 @@ def _plow_all_firms_rows_field_and_veg(
         if crop not in named:
             continue
         field_rows.append((crop, *named[crop]))
-    # План «Иные» — культуры, которые на этом листе не имеют своей строки
-    # (озимые и прочие), плюс ячейка «Иные культуры» из редактора.
-    folded_crops = {
-        crop for crop in set(fact_by) | set(today_by) if crop not in keep
-    }
-    for firm in FIRM_ORDER:
-        firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
-        if isinstance(firm_plan, dict):
-            folded_crops.update(
-                str(crop) for crop in firm_plan if str(crop) not in keep
-            )
-    other_plan = sum(_plan_of(crop) for crop in folded_crops)
-    for firm in FIRM_ORDER:
-        firm_plan = HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {})
-        if not isinstance(firm_plan, dict):
-            continue
-        try:
-            other_plan += float(firm_plan.get(PLOW_FIELD_OTHER_CROP) or 0.0)
-        except (TypeError, ValueError):
-            continue
+    # План — только ячейка «Иные культуры» в редакторе. Планы озимых и прочих
+    # культур из plans.py в эту строку не входят (раньше отсюда брались 40 000 га
+    # рапса озимого). Факт культур без своей строки остаётся в этой строке.
+    other_plan = sum(
+        _plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER
+    )
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
         field_rows.append((
             PLOW_FIELD_OTHER_CROP,
@@ -2537,7 +2525,12 @@ def _deep_other_label(name: str) -> str | None:
 def _deep_all_firms_rows(
     all_details: dict[str, dict],
 ) -> tuple[list[tuple[str, float, float, float]], str]:
-    """Культуры глубокорыхления и примечание к строке «Иные культуры»."""
+    """Культуры глубокорыхления и примечание к строке «Иные культуры».
+
+    План строки «Иные культуры» — только ячейка редактора планов.
+    Факт пара, зяби, люцерны, лука и культур без своего плана входит в факт
+    этой строки, но их планы из plans.py к ячейке не прибавляются.
+    """
     crops: set[str] = set()
     for firm in FIRM_ORDER:
         for crop, plan in (
@@ -2562,18 +2555,22 @@ def _deep_all_firms_rows(
             fact += float((st.get("deep_season_by_crop") or {}).get(crop) or 0.0)
             today += float((st.get("deep_today_by_crop") or {}).get(crop) or 0.0)
         plan, fact, today = round(plan, 2), round(fact, 2), round(today, 2)
+        if crop == _DEEP_OTHER_CROP:
+            other_fact += fact
+            other_today += today
+            continue
         other_label = _deep_other_label(crop)
         fold = other_label is not None or abs(plan) < 0.005
         if not fold:
             main.append((crop, plan, fact, today))
             continue
-        if abs(plan) < 0.005 and abs(fact) < 0.005 and abs(today) < 0.005:
+        if abs(fact) < 0.005 and abs(today) < 0.005:
             continue
-        other_plan += plan
         other_fact += fact
         other_today += today
         other_labels.add(other_label or crop)
 
+    other_plan = sum(_deep_plan_ha(firm, _DEEP_OTHER_CROP) for firm in FIRM_ORDER)
     rows = list(main)
     footnote = ""
     if other_labels or abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
