@@ -1,7 +1,7 @@
 """Редактор планов: база из svodki/plan/plans.py, правки только в JSON."""
 from __future__ import annotations
 
-from app.legacy.json_store_io import atomic_write_text, read_json_dict, serialized_rmw
+from app.legacy.json_store_io import adopt_legacy_json, atomic_write_text, read_json_dict, serialized_rmw
 
 import importlib.util
 import json
@@ -244,7 +244,10 @@ def plans_edits_path() -> Path:
 
 
 def load_edits_store() -> dict[str, Any]:
-    raw = read_json_dict(_resolve_edits_path(), label="plans_edits")
+    path = _resolve_edits_path()
+    legacy = Path(settings.upload_dir).expanduser() / "plans_edits.json"
+    adopt_legacy_json(path, legacy)
+    raw = read_json_dict(path, label="plans_edits")
     if not raw:
         return {}
     out: dict[str, Any] = {}

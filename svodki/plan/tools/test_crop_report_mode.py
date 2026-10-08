@@ -36,6 +36,24 @@ def test_bundle_renames_and_sums_plan():
         _set_modes()
 
 
+def test_explicit_other_plan_is_added_to_folded_crops():
+    _set_modes(other={"Нут"})
+    plans.HARDCODED_PLAN.setdefault(GROUP, {}).setdefault("АФ А", {})
+    firm = plans.HARDCODED_PLAN[GROUP]["АФ А"]
+    saved = dict(firm)
+    firm["Нут"] = 10
+    firm["Иные культуры"] = 7
+    try:
+        assert plans.plan_ha_for_report(GROUP, "АФ А", "Иные культуры") == 17
+        folded = plans.collapse_crop_areas(GROUP, {"Нут": 4, "Иные культуры": 7, "Соя": 1})
+        assert folded["Иные культуры"] == 11
+        assert folded["Соя"] == 1
+    finally:
+        firm.clear()
+        firm.update(saved)
+        _set_modes()
+
+
 def test_skip_drops_area_and_hides_the_row():
     _set_modes(skip={"Залежь"})
     try:

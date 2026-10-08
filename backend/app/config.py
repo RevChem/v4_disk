@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     svodki_root: str = "svodki"
     svodki_manual_overrides_path: str = ""
     svodki_plans_edits_path: str = ""
+    svodki_season_ranges_path: str = ""
     svodki_season_start_date: str = ""
     svodki_combine_season_start_date: str = ""
     svodki_script_timeout_sec: int = 3600

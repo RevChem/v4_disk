@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -11,54 +11,84 @@ import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import PlansEditor from "./PlansEditor";
 
 export default function PlansEditorDialog({ open, onClose, summaryDate = null }) {
+  const paperRef = useRef(null);
   const [fullScreen, setFullScreen] = useState(false);
 
   useEffect(() => {
-    if (!open) setFullScreen(false);
+    const sync = () => {
+      setFullScreen(document.fullscreenElement != null && document.fullscreenElement === paperRef.current);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  useEffect(() => {
+    if (open) return undefined;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    return undefined;
   }, [open]);
 
   useEffect(() => {
     if (!open || !fullScreen) return undefined;
     const onKey = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
+      if (event.key !== "Escape" || document.fullscreenElement !== paperRef.current) return;
       event.stopPropagation();
-      setFullScreen(false);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, fullScreen]);
 
+  async function toggleComputerFullscreen() {
+    const node = paperRef.current;
+    if (!node) return;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await node.requestFullscreen();
+      }
+    } catch {
+      // Браузер может запретить полноэкранный режим без жеста пользователя.
+    }
+  }
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      fullScreen={fullScreen}
       fullWidth
       maxWidth={false}
-      disableEscapeKeyDown={fullScreen}
-      sx={{
-        "& .MuiDialog-paper": {
-          display: "flex",
-          flexDirection: "column",
-          ...(fullScreen
-            ? { width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", m: 0 }
-            : {
-                width: "min(1920px, 98vw)",
-                height: "min(1080px, 96vh)",
-                maxWidth: "98vw",
-                maxHeight: "96vh",
-                m: 1
-              })
+      slotProps={{
+        paper: {
+          ref: paperRef,
+          sx: {
+            display: "flex",
+            flexDirection: "column",
+            width: "min(1920px, 98vw)",
+            height: "min(1080px, 96vh)",
+            maxWidth: "98vw",
+            maxHeight: "96vh",
+            m: 1,
+            "&:fullscreen": {
+              width: "100%",
+              height: "100%",
+              maxWidth: "100%",
+              maxHeight: "100%",
+              m: 0,
+              borderRadius: 0
+            }
+          }
         }
       }}
     >
       <DialogTitle sx={{ py: 1.25, px: 2, pr: 7, display: "flex", alignItems: "center" }}>
         Редактор планов (plans.py)
-        <Tooltip title={fullScreen ? "Свернуть (Esc)" : "На весь экран"}>
+        <Tooltip title={fullScreen ? "Выйти из полноэкранного режима (Esc)" : "На весь экран компьютера"}>
           <IconButton
-            aria-label={fullScreen ? "Выйти из полноэкранного режима" : "На весь экран"}
-            onClick={() => setFullScreen((value) => !value)}
+            aria-label={fullScreen ? "Выйти из полноэкранного режима" : "На весь экран компьютера"}
+            onClick={toggleComputerFullscreen}
             sx={{ position: "absolute", right: 8, top: 6 }}
           >
             {fullScreen ? <CloseFullscreenRoundedIcon /> : <OpenInFullRoundedIcon />}

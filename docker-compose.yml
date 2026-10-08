@@ -5,6 +5,9 @@
 x-worker-env: &worker-env
   SVODKI_SERVICE: worker
   UPLOAD_DIR: /app/uploads
+  # Ручные правки редактора планов — на диске хоста, не в томе контейнера.
+  SVODKI_PLANS_EDITS_PATH: /app/data/plans_edits.json
+  SVODKI_SEASON_RANGES_PATH: /app/data/season_ranges.json
   SVODKI_ROOT: /app/svodki
   DATABASE_URL: postgresql+psycopg2://svodki:svodki@postgres:5432/svodki
   REDIS_URL: redis://redis:6379/0
@@ -32,6 +35,7 @@ x-worker-common: &worker-common
     - .env
   volumes:
     - disk_uploads:/app/uploads
+    - ./data:/app/data
     - ./svodki:/app/svodki:ro
     - ./backend/app:/app/app:ro
     - ./.env:/app/.env:ro
@@ -90,6 +94,8 @@ services:
     environment:
       SVODKI_SERVICE: api
       UPLOAD_DIR: /app/uploads
+      SVODKI_PLANS_EDITS_PATH: /app/data/plans_edits.json
+      SVODKI_SEASON_RANGES_PATH: /app/data/season_ranges.json
       SVODKI_ROOT: /app/svodki
       DATABASE_URL: postgresql+psycopg2://svodki:svodki@postgres:5432/svodki
       REDIS_URL: redis://redis:6379/0
@@ -108,6 +114,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - disk_uploads:/app/uploads
+      - ./data:/app/data
       - ./svodki:/app/svodki:ro
       - ./backend/app:/app/app:ro
       - ./.env:/app/.env:ro

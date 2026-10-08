@@ -3276,15 +3276,8 @@ def collect_work_data(
                             _note_shift(firm_s, mid, tid, 0, "", cov_for_firm - noted, task, t_date)
                     continue
 
-                if group_name == PLOW_GROUP_NAME:
-                    if t_date == REPORT_SHIFT_DATE:
-                        if not _task_in_report_shift_window(
-                            task.get("end_time"), REPORT_DAY_START, REPORT_DAY_CUTOFF,
-                        ):
-                            continue
-                        hourly_cutoff = REPORT_DAY_CUTOFF
-                    else:
-                        hourly_cutoff = cutoff
+                if group_name == PLOW_GROUP_NAME and t_date == REPORT_SHIFT_DATE:
+                    hourly_cutoff = REPORT_DAY_CUTOFF
                 else:
                     hourly_cutoff = cutoff
 
@@ -3317,7 +3310,14 @@ def collect_work_data(
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
 
-                    if crop:
+                    if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
+                        # Cropwise считает всю площадь операции. Культура вне плана
+                        # остаётся в итоге строкой «Иные культуры», а не выпадает.
+                        if crop:
+                            crop = crop_code_for_report(group_name, crop) or OTHER_CROP_CODE
+                        else:
+                            crop = OTHER_CROP_CODE
+                    elif crop:
                         coded = crop_code_for_report(group_name, crop)
                         if coded is None:
                             continue
@@ -3326,6 +3326,46 @@ def collect_work_data(
                     crop_for_agg = (
                         crop if _harvest_grain_field_allowed(group_name, crop) else None
                     )
+
+                    if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
+                        # Часы — в смену работы, не в день закрытия задания (как Cropwise UI).
+                        from task_area_shared import area_ha_by_shift_date
+
+                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                        if not portions:
+                            raw_cov = float(item.get("covered_area") or 0)
+                            portions = (
+                                {t_date: raw_cov}
+                                if raw_cov > 0 and group_period_start <= t_date < TODAY
+                                else {}
+                            )
+                        for shift_date, shift_cov in portions.items():
+                            if shift_cov <= 0:
+                                continue
+                            if shift_date < group_period_start or shift_date >= TODAY:
+                                continue
+                            ha = float(shift_cov)
+                            if group_name == PLOW_GROUP_NAME:
+                                field_day_area[firm][shift_date][fid_i] += ha
+                                _note_shift(firm, mid, tid, fid_i, crop, ha, task, shift_date)
+                                agg[firm][crop][shift_date] += ha
+                                firm_crop_fields[firm][crop].add(fid_i)
+                                group_has_data = True
+                                if mid is not None:
+                                    machine_day_area[firm][shift_date][mid] += ha
+                                    machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
+                            else:
+                                machine_day_area[firm][shift_date][mid] += ha
+                                _note_shift(firm, mid, tid, fid_i, crop, ha, task, shift_date)
+                                if mid is not None:
+                                    machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
+                                if crop_for_agg:
+                                    machine_day_items[firm][shift_date][mid].append(
+                                        (fid_i, crop_for_agg, ha)
+                                    )
+                                field_day_area[firm][shift_date][int(fid)] += ha
+                                group_has_data = True
+                        continue
 
                     if is_harvest_veg:
                         from task_area_shared import harvest_area_booked_on_close
@@ -3448,6 +3488,52 @@ def collect_work_data(
                             continue
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
+                    if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
+                        if crop:
+                            crop = crop_code_for_report(group_name, crop) or OTHER_CROP_CODE
+                        else:
+                            crop = OTHER_CROP_CODE
+                        from task_area_shared import area_ha_by_shift_date
+
+                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                        if not portions:
+                            raw_cov = float(item.get("covered_area") or 0)
+                            end_dt = parse_dt(task.get("end_time"))
+                            close_date = _shift_date_from_dt(end_dt) if end_dt else None
+                            portions = (
+                                {close_date: raw_cov}
+                                if (
+                                    raw_cov > 0
+                                    and close_date is not None
+                                    and group_period_start <= close_date < TODAY
+                                )
+                                else {}
+                            )
+                        mid = task_machine.get(tid)
+                        for shift_date, shift_cov in portions.items():
+                            if shift_cov <= 0:
+                                continue
+                            if shift_date < group_period_start or shift_date >= TODAY:
+                                continue
+                            ha = float(shift_cov)
+                            if group_name == PLOW_GROUP_NAME:
+                                field_day_area[firm][shift_date][fid_i] += ha
+                                agg[firm][crop][shift_date] += ha
+                                firm_crop_fields[firm][crop].add(fid_i)
+                                group_has_data = True
+                                if mid is not None:
+                                    machine_day_area[firm][shift_date][mid] += ha
+                                    machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
+                            else:
+                                machine_day_area[firm][shift_date][mid] += ha
+                                if mid is not None:
+                                    machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
+                                machine_day_items[firm][shift_date][mid].append(
+                                    (fid_i, crop, ha)
+                                )
+                                field_day_area[firm][shift_date][int(fid)] += ha
+                                group_has_data = True
+                        continue
                     if crop:
                         coded = crop_code_for_report(group_name, crop)
                         if coded is None:
@@ -3509,6 +3595,7 @@ def collect_work_data(
                 bool(use_crop_via_agro_op and history_item_to_crop
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
                 bool(_HISTORY_FIELD_ONLY),
+                "tillage-shift-hours",
             ],
             stamp_parts=_make_stamp_parts(
                 group_name=group_name, task_machine=task_machine, task_shift=task_shift,
@@ -4106,8 +4193,14 @@ def write_report_sheet(
             # Важно для дискования: там area-логика без is_skip_crop, строки режем здесь.
             all_crops = [
                 c for c in all_crops
-                if not is_crop_omitted(group_name, firm, c)
-                and crop_code_for_report(group_name, c) == c
+                if (
+                    c == OTHER_CROP_CODE
+                    and group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME)
+                )
+                or (
+                    not is_crop_omitted(group_name, firm, c)
+                    and crop_code_for_report(group_name, c) == c
+                )
             ]
             if (
                 group_name != HARVEST_GROUP_NAME

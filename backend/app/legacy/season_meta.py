@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.legacy.json_store_io import atomic_write_text, read_json_dict, serialized_rmw
+from app.legacy.json_store_io import adopt_legacy_json, atomic_write_text, read_json_dict, serialized_rmw
 from app.legacy.manual_overrides import combine_season_start_for_date
 
 # Как season_unified.GROUP_SEASON_RULE (year_plus_one)
@@ -100,6 +100,7 @@ def current_season_year(report_date: date) -> int:
 
 def load_full_season_store(report_date: date | None = None) -> dict[str, Any]:
     path = season_ranges_path()
+    adopt_legacy_json(path, _upload_dir() / "season_ranges.json")
     # Битый файл уходит в *.corrupt-<ts> с записью в лог; сбой чтения — исключение (не {}).
     raw: dict[str, Any] = read_json_dict(path, label="season_ranges")
     cal_mod = _season_calendar_module()

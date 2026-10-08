@@ -32,6 +32,35 @@ from app.infrastructure.logging import get_logger
 
 log = get_logger(__name__)
 
+
+def adopt_legacy_json(dest: Path, legacy: Path) -> bool:
+    """Копирует старый JSON в новое место, если нового файла ещё нет.
+
+    Нужно при переносе правок из тома контейнера в каталог на хосте:
+    уже сохранённый файл не затирается.
+    """
+    if dest.exists():
+        return False
+    try:
+        if not legacy.is_file():
+            return False
+        if legacy.resolve() == dest.resolve():
+            return False
+    except OSError:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.adopt")
+    try:
+        tmp.write_bytes(legacy.read_bytes())
+        os.replace(tmp, dest)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        if dest.is_file():
+            return False
+        raise
+    log.info("json_store.adopted_legacy", dest=str(dest), legacy=str(legacy))
+    return True
+
 _DEFAULT_LOCK_NAME = "default"
 _LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[str, threading.RLock] = {}

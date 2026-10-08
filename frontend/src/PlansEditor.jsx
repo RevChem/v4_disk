@@ -119,7 +119,7 @@ function PlanNumberField({
   );
 }
 
-function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, onSave }) {
+function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, onSave, onPasteText }) {
   const [localValue, setLocalValue] = useState(() => formatPlanInputValue(effVal));
   const [focused, setFocused] = useState(false);
 
@@ -149,6 +149,13 @@ function PlanMatrixNumberField({ relativeKeys, effVal, baseVal, edited, saving, 
           e.preventDefault();
           e.currentTarget.blur();
         }
+      }}
+      onPaste={(e) => {
+        if (!onPasteText) return;
+        const text = e.clipboardData?.getData("text") ?? "";
+        if (!text.includes("\t")) return;
+        e.preventDefault();
+        onPasteText(text);
       }}
       disabled={saving}
       inputProps={{ style: { textAlign: "center" } }}
@@ -194,6 +201,7 @@ export default function PlansEditor({ summaryDate = null }) {
   const [success, setSuccess] = useState("");
   const [sectionKey, setSectionKey] = useState("CALENDAR_SEASONS");
   const [workGroup, setWorkGroup] = useState("");
+  const [dragCrop, setDragCrop] = useState(null);
   const [otherEditors, setOtherEditors] = useState([]);
   // loadGen — «последний загрузчик побеждает» только среди reload() (смена даты);
   // writeGen растёт при каждом применении ответа записи: опрос, начатый до записи, отбрасывается.
@@ -214,6 +222,37 @@ export default function PlansEditor({ summaryDate = null }) {
     writeGen.current += 1;
     setState(data);
   }, []);
+
+  const saveCropMode = useCallback(
+    async (crop, mode) => {
+      if (!workGroup || savingRef.current) return;
+      setSavingTracked(true);
+      setError("");
+      setSuccess("");
+      try {
+        const data = await updatePlansEditorValue({
+          section_key: "CROP_REPORT_MODE",
+          keys: [workGroup, crop],
+          value: mode,
+          summaryDate
+        });
+        applyWriteState(data);
+        setSuccess(
+          mode === 1
+            ? `«${crop}» входит в «Иные культуры».`
+            : mode === 2
+              ? `«${crop}» в сводках не считается.`
+              : `«${crop}» снова считается отдельно.`
+        );
+      } catch (e) {
+        setError(formatError(e, "Не удалось сохранить учёт культуры"));
+      } finally {
+        setSavingTracked(false);
+        setDragCrop(null);
+      }
+    },
+    [workGroup, summaryDate, applyWriteState, setSavingTracked]
+  );
 
   useEffect(() => {
     const token = newPlansEditToken();
@@ -514,6 +553,77 @@ export default function PlansEditor({ summaryDate = null }) {
     }
   };
 
+  const renderOtherCulturesRow = () => (
+    <TableRow>
+      <TableCell
+        title="Свой план, га. Культуры с режимом «Иные культуры» прибавляются к этому числу в сводке. Строку чисел можно вставить из таблицы."
+        sx={{
+          fontWeight: 700,
+          position: "sticky",
+          left: 0,
+          zIndex: 2,
+          bgcolor: "background.paper"
+        }}
+      >
+        Иные культуры
+      </TableCell>
+      {firmsForGroup.map((firmName, firmIndex) => {
+        const relativeKeys = [workGroup, firmName, "Иные культуры"];
+        const fullPath = [sectionKey, ...relativeKeys];
+        const effVal = getNested(state?.effective, fullPath);
+        const baseVal = getNested(state?.base, fullPath);
+        const edited = isEdited(
+          state?.base?.[sectionKey]?.[workGroup],
+          state?.effective?.[sectionKey]?.[workGroup],
+          [firmName, "Иные культуры"]
+        );
+        const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
+        const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
+        let folded = 0;
+        for (const name of countedCrops) {
+          if (Number(mode[name]) === 1) folded += Number(plan[name] || 0);
+        }
+        const own = Number(effVal || 0);
+        const reportTotal = own + folded;
+        return (
+          <TableCell key={`other-${firmName}`} align="center" sx={{ p: 0.75, minWidth: 148 }}>
+            <PlanMatrixNumberField
+              relativeKeys={relativeKeys}
+              effVal={effVal}
+              baseVal={baseVal}
+              edited={edited}
+              saving={saving}
+              onSave={saveValue}
+              onPasteText={async (text) => {
+                const cells = text
+                  .replace(/\r/g, "")
+                  .split("\n")[0]
+                  .split("\t")
+                  .map((part) => part.trim());
+                if (cells.length < 2) return;
+                for (let offset = 0; offset < cells.length; offset += 1) {
+                  const firm = firmsForGroup[firmIndex + offset];
+                  if (!firm || cells[offset] === "") continue;
+                  const ok = await saveValue([workGroup, firm, "Иные культуры"], cells[offset]);
+                  if (!ok) break;
+                }
+              }}
+            />
+            {folded ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                в сводке {reportTotal.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+              </Typography>
+            ) : null}
+          </TableCell>
+        );
+      })}
+      <TableCell align="center" sx={{ color: "text.secondary" }}>
+        свой план
+      </TableCell>
+      <TableCell />
+    </TableRow>
+  );
+
   if (loading && !state) {
     return (
       <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 2 }}>
@@ -647,7 +757,8 @@ export default function PlansEditor({ summaryDate = null }) {
           {section?.kind === "nested_3" && workGroup && countedCrops.length + skippedCrops.length > 0 && (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
               Культур: {countedCrops.length + skippedCrops.length}. Под чертой не считаются:{" "}
-              {skippedCrops.length}.
+              {skippedCrops.length}. Название можно перетащить через черту. В строке «Иные культуры»
+              можно вписать или вставить свой план.
             </Typography>
           )}
 
@@ -840,79 +951,88 @@ export default function PlansEditor({ summaryDate = null }) {
                     );
                     return (
                       <Fragment key={crop}>
-                        {atSkipSection && countedCrops.some(
-                          (name) => Number(state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[name]) === 1
-                        ) ? (
-                          <TableRow>
-                            <TableCell
-                              sx={{
-                                fontWeight: 700,
-                                position: "sticky",
-                                left: 0,
-                                zIndex: 2,
-                                bgcolor: "background.paper"
-                              }}
-                            >
-                              Иные культуры
-                            </TableCell>
-                            {firmsForGroup.map((firmName) => {
-                              const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
-                              const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
-                              let sum = Number(plan["Иные культуры"] || 0);
-                              for (const name of countedCrops) {
-                                if (Number(mode[name]) === 1) sum += Number(plan[name] || 0);
-                              }
-                              return (
-                                <TableCell key={`other-split-${firmName}`} align="center" sx={{ fontWeight: 700 }}>
-                                  {sum ? sum.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "—"}
-                                </TableCell>
-                              );
-                            })}
-                            <TableCell align="center" sx={{ color: "text.secondary" }}>
-                              сумма
-                            </TableCell>
-                            <TableCell />
-                          </TableRow>
-                        ) : null}
+                        {atSkipSection ? renderOtherCulturesRow() : null}
                         {atSkipSection ? (
-                          <TableRow>
+                          <TableRow
+                            onDragOver={(event) => {
+                              if (!dragCrop) return;
+                              event.preventDefault();
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              if (!dragCrop) return;
+                              saveCropMode(dragCrop.name, dragCrop.skipped ? 0 : 2);
+                            }}
+                          >
                             <TableCell
                               colSpan={firmsForGroup.length + 3}
                               sx={{
-                                py: 0.75,
+                                py: dragCrop ? 1.25 : 0.75,
                                 borderTop: "2px solid",
                                 borderBottom: "2px solid",
-                                borderColor: "divider",
+                                borderColor: dragCrop ? "primary.main" : "divider",
                                 bgcolor: (t) =>
-                                  t.palette.mode === "light" ? "grey.100" : "rgba(255,255,255,0.06)"
+                                  dragCrop
+                                    ? t.palette.mode === "light"
+                                      ? "rgba(25, 118, 210, 0.12)"
+                                      : "rgba(144, 202, 249, 0.16)"
+                                    : t.palette.mode === "light"
+                                      ? "grey.100"
+                                      : "rgba(255,255,255,0.06)"
                               }}
                             >
                               <Typography variant="caption" color="text.secondary">
-                                Не считать
+                                {dragCrop
+                                  ? dragCrop.skipped
+                                    ? "Отпустите здесь — культура будет считаться"
+                                    : "Отпустите здесь — культура не будет считаться"
+                                  : "Не считать"}
                               </Typography>
                             </TableCell>
                           </TableRow>
                         ) : null}
                       <TableRow
                         hover
+                        onDragOver={(event) => {
+                          if (!dragCrop || dragCrop.skipped === skippedCrops.includes(crop)) return;
+                          event.preventDefault();
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (!dragCrop || dragCrop.name === crop) return;
+                          const toSkip = skippedCrops.includes(crop);
+                          if (dragCrop.skipped === toSkip) return;
+                          saveCropMode(dragCrop.name, toSkip ? 2 : 0);
+                        }}
                         sx={
                           hidden
                             ? {
-                                opacity: 0.55,
+                                opacity: dragCrop?.name === crop ? 0.35 : 0.55,
                                 bgcolor: (t) =>
                                   t.palette.mode === "light" ? "action.hover" : "rgba(255,255,255,0.04)"
                               }
-                            : undefined
+                            : dragCrop?.name === crop
+                              ? { opacity: 0.35 }
+                              : undefined
                         }
                       >
                         <TableCell
+                          draggable={!saving}
+                          onDragStart={(event) => {
+                            event.dataTransfer.setData("text/plain", crop);
+                            event.dataTransfer.effectAllowed = "move";
+                            setDragCrop({ name: crop, skipped: skippedCrops.includes(crop) });
+                          }}
+                          onDragEnd={() => setDragCrop(null)}
+                          title="Перетащите через черту: сверху считать, снизу не считать"
                           sx={{
                             fontWeight: 500,
                             position: "sticky",
                             left: 0,
                             zIndex: 2,
                             bgcolor: "background.paper",
-                            whiteSpace: "nowrap"
+                            whiteSpace: "nowrap",
+                            cursor: saving ? "default" : "grab"
                           }}
                         >
                           {crop}
@@ -1024,31 +1144,8 @@ export default function PlansEditor({ summaryDate = null }) {
                               state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[crop] || 0
                             )}
                             disabled={saving}
-                            onChange={async (event) => {
-                              const mode = Number(event.target.value);
-                              setSavingTracked(true);
-                              setError("");
-                              setSuccess("");
-                              try {
-                                const data = await updatePlansEditorValue({
-                                  section_key: "CROP_REPORT_MODE",
-                                  keys: [workGroup, crop],
-                                  value: mode,
-                                  summaryDate
-                                });
-                                applyWriteState(data);
-                                setSuccess(
-                                  mode === 1
-                                    ? `«${crop}» входит в «Иные культуры».`
-                                    : mode === 2
-                                      ? `«${crop}» в сводках не считается.`
-                                      : `«${crop}» снова считается отдельно.`
-                                );
-                              } catch (e) {
-                                setError(formatError(e, "Не удалось сохранить учёт культуры"));
-                              } finally {
-                                setSavingTracked(false);
-                              }
+                            onChange={(event) => {
+                              saveCropMode(crop, Number(event.target.value));
                             }}
                             sx={{ minWidth: 148, fontSize: 13 }}
                           >
@@ -1119,38 +1216,36 @@ export default function PlansEditor({ summaryDate = null }) {
                       </Fragment>
                     );
                   })}
-                  {skippedCrops.length === 0 && countedCrops.some(
-                    (crop) => Number(state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[crop]) === 1
-                  ) ? (
-                    <TableRow>
+                  {skippedCrops.length === 0 ? renderOtherCulturesRow() : null}
+                  {skippedCrops.length === 0 ? (
+                    <TableRow
+                      onDragOver={(event) => {
+                        if (!dragCrop || dragCrop.skipped) return;
+                        event.preventDefault();
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (!dragCrop || dragCrop.skipped) return;
+                        saveCropMode(dragCrop.name, 2);
+                      }}
+                    >
                       <TableCell
+                        colSpan={firmsForGroup.length + 3}
                         sx={{
-                          fontWeight: 700,
-                          position: "sticky",
-                          left: 0,
-                          zIndex: 2,
-                          bgcolor: "background.paper"
+                          py: dragCrop && !dragCrop.skipped ? 1.25 : 0.75,
+                          borderTop: "2px solid",
+                          borderBottom: "2px solid",
+                          borderColor: dragCrop && !dragCrop.skipped ? "primary.main" : "divider",
+                          bgcolor: (t) =>
+                            t.palette.mode === "light" ? "grey.100" : "rgba(255,255,255,0.06)"
                         }}
                       >
-                        Иные культуры
+                        <Typography variant="caption" color="text.secondary">
+                          {dragCrop && !dragCrop.skipped
+                            ? "Отпустите здесь — культура не будет считаться"
+                            : "Не считать"}
+                        </Typography>
                       </TableCell>
-                      {firmsForGroup.map((firmName) => {
-                        const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
-                        const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
-                        let sum = Number(plan["Иные культуры"] || 0);
-                        for (const crop of countedCrops) {
-                          if (Number(mode[crop]) === 1) sum += Number(plan[crop] || 0);
-                        }
-                        return (
-                          <TableCell key={`other-${firmName}`} align="center" sx={{ fontWeight: 700 }}>
-                            {sum ? sum.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "—"}
-                          </TableCell>
-                        );
-                      })}
-                      <TableCell align="center" sx={{ color: "text.secondary" }}>
-                        сумма
-                      </TableCell>
-                      <TableCell />
                     </TableRow>
                   ) : null}
                 </TableBody>
