@@ -90,6 +90,7 @@ from plans import (
     SKIP_CROPS,
     is_crop_firm_hidden,
     crop_code_for_report,
+    plan_ha_for_report,
     crop_sort_key_for_group,
     build_field_to_crop_general,
     TZ_MSK as _TZ_MSK,
@@ -379,9 +380,12 @@ def _editor_cell_plan_ha(group: str, firm: str, crop: str) -> float:
 def _plow_plan_ha(firm: str, crop: str) -> float:
     """План культуры из редактора планов.
 
-    «Иные культуры» — только одноимённая ячейка. В plans.py её нет:
-    число появляется правкой редактора и не складывается из других культур.
+    «Иные культуры» — ячейка редактора плюс культуры, которые в редакторе
+    отнесены к этой строке. Планы озимых и прочих культур из plans.py сюда
+    не входят: в plans.py строки «Иные культуры» нет.
     """
+    if crop == PLOW_FIELD_OTHER_CROP:
+        return plan_ha_for_report("2.4 Вспашка", firm, crop)
     return _editor_cell_plan_ha("2.4 Вспашка", firm, crop)
 
 
@@ -2385,6 +2389,26 @@ def _plow_other_note_name(crop: str) -> str:
     return str(crop or "").strip()
 
 
+def _plow_is_perennial_grass(name: str) -> bool:
+    n = str(name or "").casefold().replace("ё", "е").strip()
+    return "многолетн" in n and "трав" in n
+
+
+def _plow_counts_as_other(crop: str) -> bool:
+    """Факт строки «Иные культуры»: многолетние травы и культуры редактора.
+
+    Озимые, пар и овраги в эту строку не входят — у них свой план в plans.py.
+    """
+    name = str(crop or "").strip()
+    if not name:
+        return False
+    if name == PLOW_FIELD_OTHER_CROP:
+        return True
+    if crop_code_for_report("2.4 Вспашка", name) == PLOW_FIELD_OTHER_CROP:
+        return True
+    return _plow_is_perennial_grass(name)
+
+
 def _plow_footnote_crop(name: str) -> bool:
     """В сноске только прочие культуры вроде многолетних трав.
 
@@ -2423,8 +2447,8 @@ def _plow_all_firms_rows_field_and_veg(
 ) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]], str]:
     """Полевые культуры (+ «Иные») и овощи — два блока сводной вспашки.
 
-    План «Иные культуры» — из редактора планов. Факт культур вне именованного
-    списка входит в эту строку, состав факта пишется сноской под таблицей.
+    План «Иные культуры» — ячейка редактора и культуры, отмеченные там
+    как «Иные». Факт строки — многолетние травы и те же отмеченные культуры.
     """
     fact_by: dict[str, float] = {}
     today_by: dict[str, float] = {}
@@ -2451,12 +2475,12 @@ def _plow_all_firms_rows_field_and_veg(
         today = today_by.get(crop, 0.0)
         if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
             veg.append((crop, round(plan, 2), round(fact, 2), round(today, 2)))
-    other_fact = fact_by.get(PLOW_FIELD_OTHER_CROP, 0.0)
-    other_today = today_by.get(PLOW_FIELD_OTHER_CROP, 0.0)
+    other_fact = 0.0
+    other_today = 0.0
     other_parts: dict[str, float] = {}
-    keep = set(PLOW_FIELD_SUMMARY_NAMED) | set(PLOW_VEGETABLE_CROPS) | {PLOW_FIELD_OTHER_CROP}
+    keep = set(PLOW_FIELD_SUMMARY_NAMED) | set(PLOW_VEGETABLE_CROPS)
     for crop in set(fact_by) | set(today_by):
-        if crop in keep:
+        if crop in keep or not _plow_counts_as_other(crop):
             continue
         fact = fact_by.get(crop, 0.0)
         today = today_by.get(crop, 0.0)
@@ -2474,9 +2498,6 @@ def _plow_all_firms_rows_field_and_veg(
         if crop not in named:
             continue
         field_rows.append((crop, *named[crop]))
-    # План — только ячейка «Иные культуры» в редакторе. Планы озимых и прочих
-    # культур из plans.py в эту строку не входят (раньше отсюда брались 40 000 га
-    # рапса озимого). Факт культур без своей строки остаётся в этой строке.
     other_plan = sum(
         _plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER
     )
