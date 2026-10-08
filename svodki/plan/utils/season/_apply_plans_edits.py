@@ -234,11 +234,38 @@ def _rebuild_crop_firm_hidden(globals_dict: dict[str, Any]) -> None:
     globals_dict["CROP_FIRM_HIDDEN_SET"] = frozenset(pairs)
 
 
+def _rebuild_crop_report_mode(globals_dict: dict[str, Any]) -> None:
+    """CROP_REPORT_MODE: группа → культура → 1 (иные) или 2 (не считать)."""
+    raw = globals_dict.get("CROP_REPORT_MODE")
+    other: list[tuple[str, str]] = []
+    skip: list[tuple[str, str]] = []
+    if isinstance(raw, dict):
+        for group, crops in raw.items():
+            if not isinstance(crops, dict):
+                continue
+            for crop, mode_raw in crops.items():
+                try:
+                    mode = int(mode_raw)
+                except (TypeError, ValueError):
+                    continue
+                name = str(crop).strip()
+                if not name:
+                    continue
+                pair = (str(group), name)
+                if mode == 1:
+                    other.append(pair)
+                elif mode == 2:
+                    skip.append(pair)
+    globals_dict["CROP_OTHER_SET"] = frozenset(other)
+    globals_dict["CROP_SKIP_REPORT_SET"] = frozenset(skip)
+
+
 def _rebuild_derived(globals_dict: dict[str, Any]) -> None:
     _rebuild_crop_firm_hidden(globals_dict)
     _rebuild_hardcoded_plan_flat(globals_dict)
     _rebuild_plan_11_ha(globals_dict)
     _rebuild_crop_display_rank(globals_dict)
+    _rebuild_crop_report_mode(globals_dict)
     _rebuild_plan_seeding_ha(globals_dict)
     _rebuild_own_aggregates(globals_dict)
 

@@ -60,6 +60,7 @@ PLAN_SECTION_LABELS = {
     "PLAN_RATE_PER_GROUP": "норма плана по группе",
     "CROP_DISPLAY_RANK": "порядок культур",
     "CROP_FIRM_HIDDEN": "скрытие культуры у фирмы",
+    "CROP_REPORT_MODE": "учёт культуры в сводках",
 }
 
 

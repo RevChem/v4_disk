@@ -1028,18 +1028,87 @@ def is_crop_rank_hidden(group_name: str, crop: str) -> bool:
     return (str(group_name), str(crop)) in hidden
 
 
+# Учёт культуры в сводках (редактор «Площади, план га»):
+# 0 — считать отдельно, 1 — свернуть в «Иные культуры», 2 — не считать вовсе.
+OTHER_CROP_CODE = "Иные культуры"
+CROP_MODE_AS_IS = 0
+CROP_MODE_OTHER = 1
+CROP_MODE_SKIP = 2
+CROP_REPORT_MODE: dict[str, dict[str, int]] = {}
+# Runtime после apply: (группа, культура).
+CROP_OTHER_SET: frozenset[tuple[str, str]] = frozenset()
+CROP_SKIP_REPORT_SET: frozenset[tuple[str, str]] = frozenset()
+
+
+def crop_report_mode(group_name: str, crop: str) -> int:
+    """0 — как есть, 1 — код «Иные культуры», 2 — в сводках не считать."""
+    name = str(crop or "").strip()
+    if not name:
+        return CROP_MODE_SKIP
+    key = (str(group_name), name)
+    if key in CROP_SKIP_REPORT_SET:
+        return CROP_MODE_SKIP
+    if key in CROP_OTHER_SET:
+        return CROP_MODE_OTHER
+    return CROP_MODE_AS_IS
+
+
+def crop_code_for_report(group_name: str, crop: str) -> str | None:
+    """Имя культуры в сводке. None — гектары этой культуры в группу не входят."""
+    name = str(crop or "").strip()
+    if not name:
+        return None
+    mode = crop_report_mode(group_name, name)
+    if mode == CROP_MODE_SKIP:
+        return None
+    if mode == CROP_MODE_OTHER:
+        return OTHER_CROP_CODE
+    return name
+
+
 def is_crop_omitted(group_name: str, firm: str, crop: str) -> bool:
-    """Не показывать культуру в сводке: SKIP / ранг 0 / скрытие по АФ."""
+    """Не показывать культуру в сводке: SKIP / ранг 0 / скрытие по АФ / «не считать»."""
     name = str(crop or "").strip()
     if not name:
         return True
     if name in SKIP_CROPS:
+        return True
+    if crop_report_mode(group_name, name) == CROP_MODE_SKIP:
         return True
     if is_crop_rank_hidden(group_name, name):
         return True
     if is_crop_firm_hidden(group_name, firm, name):
         return True
     return False
+
+
+def plan_ha_for_report(group_name: str, firm: str, crop: str) -> float:
+    """План, га: «Иные культуры» — сумма отмеченных культур этой группы и фирмы."""
+    name = str(crop or "").strip()
+    firm_plan = HARDCODED_PLAN.get(str(group_name), {}).get(str(firm), {})
+    if not isinstance(firm_plan, dict):
+        firm_plan = {}
+    if name == OTHER_CROP_CODE:
+        total = float(firm_plan.get(OTHER_CROP_CODE) or 0.0)
+        for src, raw in firm_plan.items():
+            if crop_report_mode(group_name, str(src)) == CROP_MODE_OTHER:
+                total += float(raw or 0.0)
+        return total
+    if crop_report_mode(group_name, name) != CROP_MODE_AS_IS:
+        return 0.0
+    raw = firm_plan.get(name)
+    return float(raw) if raw is not None else 0.0
+
+
+def collapse_crop_areas(group_name: str, areas: dict[str, float] | None) -> dict[str, float]:
+    """Складывает отмеченные культуры в «Иные культуры» и выбрасывает «не считать»."""
+    out: dict[str, float] = {}
+    for crop, raw in (areas or {}).items():
+        code = crop_code_for_report(group_name, str(crop))
+        if code is None:
+            continue
+        out[code] = out.get(code, 0.0) + float(raw or 0.0)
+    return out
 
 
 def crop_sort_key_for_group(group_name: str, crop: str) -> tuple[int, int, str]:

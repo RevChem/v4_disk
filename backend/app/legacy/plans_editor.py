@@ -22,6 +22,7 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "WORK_GROUPS",
     "CROP_DISPLAY_RANK",
     "CROP_FIRM_HIDDEN",
+    "CROP_REPORT_MODE",
 )
 
 LIST_EDITABLE_KEYS: frozenset[str] = frozenset({"WORK_GROUPS"})
@@ -326,7 +327,7 @@ def _prune_edits_to_diff(base: dict[str, Any], candidate: dict[str, Any]) -> dic
             pruned = _prune_nested_3(sec_base if isinstance(sec_base, dict) else {}, sec_cand)
         elif section_key == "CROP_FIRM_HIDDEN":
             pruned = _prune_nested_3_int(sec_base if isinstance(sec_base, dict) else {}, sec_cand)
-        elif section_key in {"AVAILABLE_OWN", "CROP_DISPLAY_RANK"}:
+        elif section_key in {"AVAILABLE_OWN", "CROP_DISPLAY_RANK", "CROP_REPORT_MODE"}:
             pruned = _prune_nested_2(sec_base if isinstance(sec_base, dict) else {}, sec_cand)
         else:
             pruned = _prune_flat(sec_base if isinstance(sec_base, dict) else {}, sec_cand)
@@ -470,6 +471,18 @@ def set_plan_value(
             raise ValueError("Для CROP_DISPLAY_RANK нужны keys: [группа, культура]")
         g, crop = keys
         sec_eff.setdefault(g, {})[crop] = int(round(float(value)))
+    elif section_key == "CROP_REPORT_MODE":
+        if len(keys) != 2:
+            raise ValueError("Для CROP_REPORT_MODE нужны keys: [группа, культура]")
+        g, crop = keys
+        mode = int(round(float(value)))
+        if mode not in (0, 1, 2):
+            raise ValueError("Учёт культуры: 0 — считать, 1 — иные культуры, 2 — не считать")
+        bucket = sec_eff.setdefault(g, {})
+        if mode == 0:
+            bucket.pop(crop, None)
+        else:
+            bucket[crop] = mode
     elif section_key == "CROP_FIRM_HIDDEN":
         if len(keys) != 3:
             raise ValueError("Для CROP_FIRM_HIDDEN нужны keys: [группа, фирма, культура]")

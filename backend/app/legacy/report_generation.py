@@ -6039,13 +6039,17 @@ def _is_detail_sheet_without_data(ws, sheet_title: str) -> bool:
         return False
     if sn in {"Уборка, овощи", "Уборка овощи", "Уборка овощей"}:
         return False
-    # Сводка 9: листы «Вспашка <культура>» и «Итого (все АФ)» — сводные таблицы, не пустая детализация АФ.
+    # Сводка 9: листы «Вспашка <культура>», «Итого (все АФ)» и «Глубокорыхление» —
+    # сводные таблицы, не пустая детализация АФ.
+    # «Итого (все АФ)» есть и в посеве: там строка 1 — заголовок «Посев …», его не трогаем.
     if _report9_plow_crop_from_sheet(sn) is not None:
         return False
     if sn == "Итого (все АФ)" or sn.startswith("Итого (все АФ)"):
         a1 = ws.cell(1, 1).value
-        if isinstance(a1, str) and "Вспашка" in a1:
+        if isinstance(a1, str) and ("Вспашка" in a1 or a1.strip() in {"№", "Культура"}):
             return False
+    if sn == "Глубокорыхление" or sn.startswith("Глубокорыхление"):
+        return False
     if _is_harvest_holding_sheet(ws, sheet_title):
         return False
     return not _sheet_has_own_or_hired_section(ws)
@@ -6243,6 +6247,16 @@ def _report5_seeding_crop_title(crop_name: str) -> str:
     return f"ПОСЕВ {crop.upper()}"
 
 
+def _report9_all_firms_work_line(sheet_name: str) -> str | None:
+    """Штамп «ВИД РАБОТ» для сводных листов по всем агрофирмам (как на эталонных страницах)."""
+    sn = (sheet_name or "").strip()
+    if sn == "Итого (все АФ)" or sn.startswith("Итого (все АФ)"):
+        return "ВИД РАБОТ: 2.4 Вспашка — Сводно по всем агрофирмам"
+    if sn == "Глубокорыхление" or sn.startswith("Глубокорыхление"):
+        return "ВИД РАБОТ: 2.8 Глубокорыхление — Сводно по всем агрофирмам"
+    return None
+
+
 def _report9_pdf_sheet_headers(sheet_name: str) -> tuple[str, str]:
     """Отчёт 9: сводка, листы вспашки по культурам, общий свод; АФ — ООО и оба вида работ."""
     sn = (sheet_name or "").strip()
@@ -6250,9 +6264,10 @@ def _report9_pdf_sheet_headers(sheet_name: str) -> tuple[str, str]:
     title = "ВЫРАБОТКА ТЕХНИКИ ПО АГРОФИРМАМ"
     if sn == "Сводка":
         return (title, wt_both)
-    # Общий свод по культурам (как стр. 4 сводки 5) — не штамповать как ООО.
-    if sn == "Итого (все АФ)" or sn.startswith("Итого (все АФ)"):
-        return (title, "ВИД РАБОТ: 2.4 Вспашка")
+    # Свод по культурам — не штамповать как ООО. Текст как на страницах сводки.
+    all_firms_line = _report9_all_firms_work_line(sn)
+    if all_firms_line is not None:
+        return (title, all_firms_line)
     # Листы культур (после фикса мультикультур) — не штамповать как ООО «ВСПАШКА …»:
     # иначе firm-continuation держит первую культуру и сдвигает шапки АФ.
     crop = _report9_plow_crop_from_sheet(sn)

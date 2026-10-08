@@ -88,7 +88,9 @@ from plans import (
     FIELD_NAME_FORCE_RULES,
     SKIP_CROPS,
     is_crop_firm_hidden,
+    crop_code_for_report,
     is_crop_omitted,
+    plan_ha_for_report,
     crop_sort_key_for_group,
     TZ_MSK as _TZ_MSK,
 )
@@ -327,9 +329,7 @@ def _crop_sort_key(name: str) -> tuple[int, int, str]:
 
 
 def _plow_plan_ha(firm: str, crop: str) -> float:
-    return float(
-        HARDCODED_PLAN.get("2.4 Вспашка", {}).get(firm, {}).get(crop, 0.0) or 0.0
-    )
+    return plan_ha_for_report("2.4 Вспашка", firm, crop)
 
 
 def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) -> list[str]:
@@ -341,12 +341,17 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
         if extra not in PLOW_SEASON_CROPS:
             names.append(extra)
     for crop in names:
+        if crop_code_for_report("2.4 Вспашка", crop) != crop:
+            continue
         if is_crop_omitted("2.4 Вспашка", firm, crop):
             continue
         plan = _plow_plan_ha(firm, crop)
         st = firm_stats.get(crop, {})
         if plan > 0 or (st.get("season_plow") or 0) > 0 or (st.get("plow_today") or 0) > 0:
             crops.add(crop)
+    other = firm_stats.get("Иные культуры") or {}
+    if _plow_plan_ha(firm, "Иные культуры") > 0 or (other.get("season_plow") or 0) > 0 or (other.get("plow_today") or 0) > 0:
+        crops.add("Иные культуры")
     return sorted(crops, key=_crop_sort_key)
 
 
@@ -987,6 +992,9 @@ def build_plow_stats_by_crop(
             from mtfmi_batch_fetch import UNDEFINED_CROP
 
             crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
+            crop = crop_code_for_report("2.4 Вспашка", crop)
+            if crop is None:
+                continue
             if crop not in by_firm_crop[firm]:
                 by_firm_crop[firm][crop] = _empty_crop_plow_stats()
 
@@ -1043,6 +1051,9 @@ def build_plow_stats_by_crop(
             from mtfmi_batch_fetch import UNDEFINED_CROP
 
             crop = _map_plow_crop_name(crop_of_item(item, "")) or UNDEFINED_CROP
+            crop = crop_code_for_report("2.4 Вспашка", crop)
+            if crop is None:
+                continue
             if crop not in by_firm_crop[firm]:
                 by_firm_crop[firm][crop] = _empty_crop_plow_stats()
 

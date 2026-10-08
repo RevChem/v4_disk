@@ -95,6 +95,7 @@ from plans import (
     PLAN_11_OVERRIDES,
     HARDCODED_PLAN,
     SKIP_CROPS,
+    collapse_crop_areas,
     PREFERRED_CROP_ORDER,
     PLAN_RATE_PER_GROUP,
     HIRED_GROUP_ID,
@@ -3168,8 +3169,46 @@ def _sum_multi_year_grass_plan(firm_plan: dict[str, float]) -> float:
 
 
 def _sum_other_cultures_plan(firm_plan: dict[str, float]) -> float:
-    """План для строки «Иные культуры»: многолетние травы + пар."""
-    return _sum_multi_year_grass_plan(firm_plan) + float(firm_plan.get("Пар", 0.0) or 0.0)
+    """План «Иные культуры»: травы и пар, плюс культуры, свёрнутые редактором планов."""
+    folded = collapse_crop_areas(WORK_TYPE_NAME, firm_plan)
+    bundled = float(folded.get("Иные культуры", 0.0) or 0.0)
+    return (
+        _sum_multi_year_grass_plan(folded)
+        + float(folded.get("Пар", 0.0) or 0.0)
+        + bundled
+    )
+
+
+def _fold_report1_crop_inputs(
+    season_data: dict[str, dict[str, float]],
+    day_stats: dict[str, dict],
+    plan_data: dict[str, dict[str, float]],
+) -> tuple[dict, dict, dict]:
+    """Культуры с флагом редактора: в «Иные культуры» или вне факта сводки 1."""
+    season = {
+        firm: collapse_crop_areas(WORK_TYPE_NAME, crops or {})
+        for firm, crops in (season_data or {}).items()
+    }
+    plan = {
+        firm: collapse_crop_areas(WORK_TYPE_NAME, crops or {})
+        for firm, crops in (plan_data or {}).items()
+    }
+    stats: dict[str, dict] = {}
+    for firm, row in (day_stats or {}).items():
+        copied = dict(row or {})
+        original = {
+            str(crop): float(ha or 0.0)
+            for crop, ha in (copied.get("area_by_crop") or {}).items()
+        }
+        folded = collapse_crop_areas(WORK_TYPE_NAME, original)
+        copied["area_by_crop"] = folded
+        dropped = sum(original.values()) - sum(folded.values())
+        if dropped > 0:
+            area_today = max(0.0, float(copied.get("area_today") or 0.0) - dropped)
+            copied["area_today"] = round(area_today, 2)
+            copied["today_by_field"] = {0: copied["area_today"]} if copied["area_today"] else {}
+        stats[firm] = copied
+    return season, stats, plan
 
 
 def get_fact_total(crop: str,
@@ -3283,6 +3322,9 @@ def write_crop_summary_sheet(
     plan_data:   dict[str, dict[str, float]],
     fert_data:   dict[str, dict[int, dict[str, float]]] | None = None,
 ) -> None:
+    season_data, day_stats, plan_data = _fold_report1_crop_inputs(
+        season_data, day_stats, plan_data,
+    )
     ws = wb.create_sheet("Сводка по культурам", 0)
     hdr = 1
     headers = [
@@ -3443,6 +3485,9 @@ def write_sheet1(wb: openpyxl.Workbook,
                  day_stats:   dict[str, dict],
                  plan_data:   dict[str, dict[str, float]],
                  fert_data:   dict[str, dict[int, dict[str, float]]] | None = None) -> None:
+    season_data, day_stats, plan_data = _fold_report1_crop_inputs(
+        season_data, day_stats, plan_data,
+    )
     n_raps = _raps_cols()
     total_cols = 1 + (_S1_COLS_PER_CROP * (len(SUMMARY_CROPS) - 1)) + n_raps + 2
     ws = wb.create_sheet("Свод по агрофирмам", 1)
@@ -5078,6 +5123,10 @@ async def build_report_async() -> None:
     print("Строим план...")
     with stage("план"):
         plan_data = build_plan_ha()
+
+    season_data, day_stats_main, plan_data = _fold_report1_crop_inputs(
+        season_data, day_stats_main, plan_data,
+    )
 
     all_group_stats: dict[str, dict[str, dict]] = {WORK_TYPE_NAME: day_stats_main}
     all_group_stats.update(other_group_stats)

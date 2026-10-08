@@ -20,6 +20,8 @@ import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
 import Typography from "@mui/material/Typography";
 import PlansSeasonsEditor from "./PlansSeasonsEditor";
 import PlansWorkGroupsEditor from "./PlansWorkGroupsEditor";
@@ -763,6 +765,13 @@ export default function PlansEditor({ summaryDate = null }) {
                     ))}
                     <TableCell
                       align="center"
+                      sx={{ fontWeight: 700, minWidth: 168 }}
+                      title="Иные культуры — одна строка плана и факта. Не считать — гектары в сводки не входят."
+                    >
+                      Учёт в сводках
+                    </TableCell>
+                    <TableCell
+                      align="center"
                       sx={{
                         fontWeight: 700,
                         minWidth: 104,
@@ -919,6 +928,46 @@ export default function PlansEditor({ summaryDate = null }) {
                             </TableCell>
                           );
                         })}
+                        <TableCell align="center" sx={{ p: 0.5, minWidth: 168 }}>
+                          <Select
+                            size="small"
+                            value={Number(
+                              state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[crop] || 0
+                            )}
+                            disabled={saving}
+                            onChange={async (event) => {
+                              const mode = Number(event.target.value);
+                              setSavingTracked(true);
+                              setError("");
+                              setSuccess("");
+                              try {
+                                const data = await updatePlansEditorValue({
+                                  section_key: "CROP_REPORT_MODE",
+                                  keys: [workGroup, crop],
+                                  value: mode,
+                                  summaryDate
+                                });
+                                applyWriteState(data);
+                                setSuccess(
+                                  mode === 1
+                                    ? `«${crop}» входит в «Иные культуры».`
+                                    : mode === 2
+                                      ? `«${crop}» в сводках не считается.`
+                                      : `«${crop}» снова считается отдельно.`
+                                );
+                              } catch (e) {
+                                setError(formatError(e, "Не удалось сохранить учёт культуры"));
+                              } finally {
+                                setSavingTracked(false);
+                              }
+                            }}
+                            sx={{ minWidth: 148, fontSize: 13 }}
+                          >
+                            <MenuItem value={0}>Считать</MenuItem>
+                            <MenuItem value={1}>Иные культуры</MenuItem>
+                            <MenuItem value={2}>Не считать</MenuItem>
+                          </Select>
+                        </TableCell>
                         <TableCell
                           align="center"
                           sx={{
@@ -980,6 +1029,40 @@ export default function PlansEditor({ summaryDate = null }) {
                       </TableRow>
                     );
                   })}
+                  {cropsForMatrix.some(
+                    (crop) => Number(state?.effective?.CROP_REPORT_MODE?.[workGroup]?.[crop]) === 1
+                  ) ? (
+                    <TableRow>
+                      <TableCell
+                        sx={{
+                          fontWeight: 700,
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 2,
+                          bgcolor: "background.paper"
+                        }}
+                      >
+                        Иные культуры
+                      </TableCell>
+                      {firmsForGroup.map((firmName) => {
+                        const plan = state?.effective?.HARDCODED_PLAN?.[workGroup]?.[firmName] || {};
+                        const mode = state?.effective?.CROP_REPORT_MODE?.[workGroup] || {};
+                        let sum = Number(plan["Иные культуры"] || 0);
+                        for (const crop of cropsForMatrix) {
+                          if (Number(mode[crop]) === 1) sum += Number(plan[crop] || 0);
+                        }
+                        return (
+                          <TableCell key={`other-${firmName}`} align="center" sx={{ fontWeight: 700 }}>
+                            {sum ? sum.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "—"}
+                          </TableCell>
+                        );
+                      })}
+                      <TableCell align="center" sx={{ color: "text.secondary" }}>
+                        сумма
+                      </TableCell>
+                      <TableCell />
+                    </TableRow>
+                  ) : null}
                 </TableBody>
               </Table>
             </TableContainer>

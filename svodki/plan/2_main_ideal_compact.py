@@ -1097,8 +1097,7 @@ def _crop_data_block(crop_data: dict, crop: str) -> dict:
 
 
 def _plan_ha_for_crop(group_name: str, firm: str, crop: str) -> float:
-    _plan_raw = HARDCODED_PLAN_FLAT.get((group_name, firm, crop))
-    return float(_plan_raw) if _plan_raw is not None else 0.0
+    return plan_ha_for_report(group_name, firm, crop)
 
 
 def _map_harvest_veg_crop(raw_name: str) -> str | None:
@@ -3318,6 +3317,12 @@ def collect_work_data(
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
 
+                    if crop:
+                        coded = crop_code_for_report(group_name, crop)
+                        if coded is None:
+                            continue
+                        crop = coded
+
                     crop_for_agg = (
                         crop if _harvest_grain_field_allowed(group_name, crop) else None
                     )
@@ -3443,6 +3448,11 @@ def collect_work_data(
                             continue
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
+                    if crop:
+                        coded = crop_code_for_report(group_name, crop)
+                        if coded is None:
+                            continue
+                        crop = coded
                     cov = float(item.get("covered_area") or 0)
                     mid = task_machine.get(tid)
                     if cov <= 0:
@@ -4097,7 +4107,17 @@ def write_report_sheet(
             all_crops = [
                 c for c in all_crops
                 if not is_crop_omitted(group_name, firm, c)
+                and crop_code_for_report(group_name, c) == c
             ]
+            if (
+                group_name != HARVEST_GROUP_NAME
+                and OTHER_CROP_CODE not in all_crops
+                and (
+                    OTHER_CROP_CODE in crop_data
+                    or _plan_ha_for_crop(group_name, firm, OTHER_CROP_CODE) > 0
+                )
+            ):
+                all_crops.append(OTHER_CROP_CODE)
             if not all_crops:
                 continue
 

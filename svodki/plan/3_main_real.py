@@ -57,6 +57,7 @@ from plans import (
     AVAILABLE_OWN,
     PLAN_RATE_PER_GROUP,
     SKIP_CROPS,
+    crop_code_for_report,
     is_crop_omitted,
 )
 
@@ -412,7 +413,8 @@ def load_year_crop_fields(
         if not (fid and crop_id and crop_id in crops_map and active):
             continue
         crop_name = crops_map[crop_id]
-        if crop_name in SKIP_CROPS:
+        crop_name = crop_code_for_report(WORK_TYPE_TITLE, crop_name)
+        if not crop_name or crop_name in SKIP_CROPS:
             continue
         if field_to_firm is not None:
             firm = field_to_firm.get(int(fid))
@@ -1666,12 +1668,12 @@ async def resolve_crops_from_mtfmi(
             if cid is None or int(cid) not in crops_map:
                 no_crop += 1
                 continue
-            crop_name = crops_map[int(cid)]
+            crop_name = crop_code_for_report(WORK_TYPE_TITLE, crops_map[int(cid)])
             fid = item.get("field_id")
             firm = field_to_firm.get(int(fid)) if fid is not None else None
             if not firm:
                 continue
-            if crop_name in SKIP_CROPS or is_crop_omitted(WORK_TYPE_TITLE, firm, crop_name):
+            if not crop_name or crop_name in SKIP_CROPS or is_crop_omitted(WORK_TYPE_TITLE, firm, crop_name):
                 skipped += 1
                 continue
             mtfmi_crop[int(raw_id)] = crop_name
