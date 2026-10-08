@@ -279,7 +279,12 @@ def _plow_report_crop(raw: str) -> str | None:
     candidate = mapped or name
     if not candidate:
         return None
-    return crop_code_for_report("2.4 Вспашка", candidate)
+    code = crop_code_for_report("2.4 Вспашка", candidate)
+    # «Не считать» и «Иные» не теряют имя: на сводной это строка «Иные»
+    # и сноска с гектарами, а не пустая ячейка.
+    if code in (None, PLOW_FIELD_OTHER_CROP):
+        return candidate
+    return code
 
 
 def _map_plow_crop_name(raw: str) -> str | None:
@@ -448,7 +453,8 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
     for crop in names:
         if crop == "Иные культуры":
             continue
-        if crop_code_for_report("2.4 Вспашка", crop) is None:
+        code = crop_code_for_report("2.4 Вспашка", crop)
+        if code is None or code == PLOW_FIELD_OTHER_CROP:
             continue
         if is_crop_firm_hidden("2.4 Вспашка", firm, crop):
             continue
@@ -2369,44 +2375,83 @@ def _plow_all_firms_rows(
     return rows
 
 
+def _plow_other_note_name(crop: str) -> str:
+    """Короткое имя для сноски: «Многолетние травы 2026 года» → «Многолетние травы»."""
+    n = str(crop or "").casefold().replace("ё", "е").strip()
+    if n.startswith("многолетние травы"):
+        return "Многолетние травы"
+    return str(crop or "").strip()
+
+
+def _format_ha_ru(value: float) -> str:
+    text = f"{float(value):,.2f}".replace(",", " ").replace(".", ",")
+    return text
+
+
+def _plow_other_footnote(parts: dict[str, float]) -> str:
+    """Сноска как на сводной вспашке: * Иные культуры: Многолетние травы 22,24 га."""
+    shown = [(name, ha) for name, ha in parts.items() if abs(ha) >= 0.005]
+    if not shown:
+        return ""
+    shown.sort(key=lambda item: (-abs(item[1]), item[0].casefold()))
+    bits = [f"{name} {_format_ha_ru(ha)} га" for name, ha in shown]
+    return "* Иные культуры: " + ", ".join(bits)
+
+
 def _plow_all_firms_rows_field_and_veg(
     by_firm_crop: dict[str, dict[str, dict]],
-) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]]]:
+) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]], str]:
     """Полевые культуры (+ «Иные») и овощи — два блока сводной вспашки.
 
-    «Иные культуры» — только то, что редактор планов относит к этой строке.
-    Культура со своим планом (например рапс озимый) остаётся отдельной строкой.
+    План «Иные культуры» — из редактора планов. Факт культур вне именованного
+    списка входит в эту строку, состав факта пишется сноской под таблицей.
     """
-    named_idx = {name: i for i, name in enumerate(PLOW_FIELD_SUMMARY_NAMED)}
+    fact_by: dict[str, float] = {}
+    today_by: dict[str, float] = {}
+    for firm_stats in by_firm_crop.values():
+        for crop, st in (firm_stats or {}).items():
+            name = str(crop)
+            fact_by[name] = fact_by.get(name, 0.0) + float(st.get("season_plow") or 0.0)
+            today_by[name] = today_by.get(name, 0.0) + float(st.get("plow_today") or 0.0)
+
+    def _plan_of(crop: str) -> float:
+        return sum(_plow_plan_ha(firm, crop) for firm in FIRM_ORDER)
+
     named: dict[str, tuple[float, float, float]] = {}
-    extra: list[tuple[str, float, float, float]] = []
-    other_fact = other_today = 0.0
-    veg: list[tuple[str, float, float, float]] = []
-    for crop, plan, fact, today in _plow_all_firms_rows(by_firm_crop):
-        if crop in PLOW_VEGETABLE_CROPS:
-            if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
-                veg.append((crop, plan, fact, today))
-            continue
-        if crop in named_idx:
-            named[crop] = (plan, fact, today)
-            continue
-        code = crop_code_for_report("2.4 Вспашка", crop)
-        if crop == PLOW_FIELD_OTHER_CROP or code in (None, PLOW_FIELD_OTHER_CROP):
-            other_fact += fact
-            other_today += today
-            continue
+    for crop in PLOW_FIELD_SUMMARY_NAMED:
+        plan = _plan_of(crop)
+        fact = fact_by.get(crop, 0.0)
+        today = today_by.get(crop, 0.0)
         if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
-            extra.append((crop, plan, fact, today))
+            named[crop] = (round(plan, 2), round(fact, 2), round(today, 2))
+    veg: list[tuple[str, float, float, float]] = []
+    for crop in PLOW_VEGETABLE_CROPS:
+        plan = _plan_of(crop)
+        fact = fact_by.get(crop, 0.0)
+        today = today_by.get(crop, 0.0)
+        if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
+            veg.append((crop, round(plan, 2), round(fact, 2), round(today, 2)))
+    other_fact = fact_by.get(PLOW_FIELD_OTHER_CROP, 0.0)
+    other_today = today_by.get(PLOW_FIELD_OTHER_CROP, 0.0)
+    other_parts: dict[str, float] = {}
+    keep = set(PLOW_FIELD_SUMMARY_NAMED) | set(PLOW_VEGETABLE_CROPS) | {PLOW_FIELD_OTHER_CROP}
+    for crop in set(fact_by) | set(today_by):
+        if crop in keep:
+            continue
+        fact = fact_by.get(crop, 0.0)
+        today = today_by.get(crop, 0.0)
+        other_fact += fact
+        other_today += today
+        shown = fact if abs(fact) >= 0.005 else today
+        if abs(shown) < 0.005:
+            continue
+        label = _plow_other_note_name(crop)
+        other_parts[label] = other_parts.get(label, 0.0) + shown
     field_rows: list[tuple[str, float, float, float]] = []
     for crop in PLOW_FIELD_SUMMARY_NAMED:
         if crop not in named:
             continue
-        plan, fact, today = named[crop]
-        if abs(plan) < 0.005 and abs(fact) < 0.005 and abs(today) < 0.005:
-            continue
-        field_rows.append((crop, plan, fact, today))
-    extra.sort(key=lambda row: _crop_sort_key(row[0]))
-    field_rows.extend(extra)
+        field_rows.append((crop, *named[crop]))
     other_plan = sum(
         plan_ha_for_report("2.4 Вспашка", firm, PLOW_FIELD_OTHER_CROP)
         for firm in FIRM_ORDER
@@ -2419,7 +2464,7 @@ def _plow_all_firms_rows_field_and_veg(
             round(other_today, 2),
         ))
     veg.sort(key=lambda r: _crop_sort_key(r[0]))
-    return field_rows, veg
+    return field_rows, veg, _plow_other_footnote(other_parts)
 
 
 _DEEP_OTHER_CROP = "Иные культуры"
@@ -2691,7 +2736,7 @@ def write_plow_all_firms_summary_sheet(
     header_rows: list[int] = []
     data_rows: list[int] = []
     note_rows: list[int] = []
-    field_rows, veg_rows = _plow_all_firms_rows_field_and_veg(by_firm_crop)
+    field_rows, veg_rows, field_note = _plow_all_firms_rows_field_and_veg(by_firm_crop)
     row = _write_all_firms_block(
         ws, styles, 1,
         "Вспашка — Сводно по всем агрофирмам",
@@ -2700,6 +2745,8 @@ def write_plow_all_firms_summary_sheet(
         title_rows,
         header_rows,
         data_rows,
+        footnote=field_note,
+        note_rows=note_rows,
     )
     gap_rows: list[int] = []
     if veg_rows:
