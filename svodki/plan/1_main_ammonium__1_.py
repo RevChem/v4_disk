@@ -414,8 +414,12 @@ def _harvest_perf_10_style(
     ftc = field_to_crop_map if field_to_crop_map is not None else field_to_crop
 
     def _firm_for_field(fid_i: int) -> str:
+        # Карта 10_main может не содержать поле (prefetch без кукурузы).
+        # Тогда фирма — из иерархии папок, уже собранной по полям заданий.
         if field_to_firm_map is not None:
-            return field_to_firm_map.get(fid_i) or ""
+            firm = field_to_firm_map.get(fid_i) or ""
+            if firm:
+                return firm
         return get_firm_for_field(fid_i) or ""
 
     per_firm_area: dict[str, float] = defaultdict(float)
@@ -423,14 +427,18 @@ def _harvest_perf_10_style(
     per_firm_mid_area: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
 
     del today_task_ids
+    shift_day = day_start.date()
     for t in tasks_with_area:
         mid = t.get("machine_id")
         if mid is None or not _is_harvest_combine(mid, machines_map):
             continue
         wt = t.get("work_type_id")
-        if wt not in AREA_TASK_WT_IDS:
+        try:
+            wt_i = int(wt)
+        except (TypeError, ValueError):
             continue
-        wt_i = int(wt)
+        if wt_i not in AREA_TASK_WT_IDS:
+            continue
         is_mowing = wt_i in SILAGE_CORN_MOWING_WT_IDS
         task_end = parse_dt(t.get("end_time"))
         for item in mtfmi_map.get(t["id"], []):
@@ -441,15 +449,26 @@ def _harvest_perf_10_style(
             firm = _firm_for_field(fid_i)
             if not firm:
                 continue
-            from task_area_shared import history_crop_name
+            from task_area_shared import area_ha_by_shift_date, history_crop_name
 
-            crop = history_crop_name(item, ftc.get(fid_i) or "", mowing=is_mowing)
+            mapped = ftc.get(fid_i) or ""
+            # Как 10_main: культура строки, не карта удобрений 1.1.
+            crop = history_crop_name(item, "", mowing=is_mowing)
             if is_mowing and crop != CORN_SILAGE_CROP:
-                continue
+                # Как 2_main: скашивание кукурузы берётся и по культуре поля.
+                if mapped and "кукуруза" in mapped.casefold():
+                    crop = CORN_SILAGE_CROP
+                else:
+                    continue
             cov = harvest_area_booked_on_close(
                 item, day_start=day_start, cutoff=cutoff,
                 task_end=task_end, parse_dt=parse_dt,
             )
+            # Сводка 2 кладёт часы в смену работы, а не только в день закрытия.
+            # Скашивание, закрытое после cutoff, иначе теряется (~68 га силоса).
+            if cov <= 0 and is_mowing:
+                portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                cov = float(portions.get(shift_day) or 0.0)
             if cov <= 0:
                 continue
             per_firm_area[firm] += cov
@@ -2812,7 +2831,7 @@ async def _fetch_day_stats_for_work_types_impl(
             raw_area = float(h_area.get(firm, 0.0))
             area_today = round(raw_area, 2)
             # Итого «Обработано за сутки» суммирует today_by_field, не area_today.
-            # Поля вне инвентаря 1.1 (кукуруза) туда не попадали — итог был ~1103.
+            # Кукуруза на силос вне инвентаря 1.1 иначе даёт ~1103 вместо ~1171.
             today_by_field = {0: area_today} if area_today else {}
         elif is_harvest:
             area_today = round(
@@ -2946,6 +2965,12 @@ async def _fetch_day_stats_for_work_types_impl(
         task_seasons=_fact_seasons,
         firm_keys=list(AGROFIRMS),
     )
+    if is_harvest and harvest_perf_10 is not None:
+        # Факты по инвентарю 1.1 затирают area_today и снова теряют силос.
+        # Итого и строки фирм остаются на площади 5.0 (как сводка 2).
+        for firm, st in result.items():
+            by_field = st.get("today_by_field") or {}
+            st["area_today"] = round(sum(float(v) for v in by_field.values()), 2)
 
     return result
  

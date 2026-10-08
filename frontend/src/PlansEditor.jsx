@@ -405,14 +405,28 @@ export default function PlansEditor({ summaryDate = null }) {
       return { countedCrops: [], skippedCrops: [] };
     }
     const crops = new Set(state.crops || []);
+    const present = new Set();
+    const planRoot = state.effective?.[sectionKey] || state.base?.[sectionKey] || {};
+    for (const firms of Object.values(planRoot)) {
+      if (!firms || typeof firms !== "object") continue;
+      for (const firmCrops of Object.values(firms)) {
+        if (!firmCrops || typeof firmCrops !== "object") continue;
+        Object.keys(firmCrops).forEach((c) => crops.add(c));
+      }
+    }
     for (const firmName of firmsForGroup) {
-      Object.keys(state.effective?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) =>
-        crops.add(c)
-      );
-      Object.keys(state.base?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) => crops.add(c));
+      Object.keys(state.effective?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) => {
+        crops.add(c);
+        present.add(c);
+      });
+      Object.keys(state.base?.[sectionKey]?.[workGroup]?.[firmName] || {}).forEach((c) => {
+        crops.add(c);
+        present.add(c);
+      });
     }
     Object.keys(state.effective?.CROP_REPORT_MODE?.[workGroup] || {}).forEach((c) => crops.add(c));
     crops.delete("Иные культуры");
+    present.delete("Иные культуры");
     const ranks = state.effective?.CROP_DISPLAY_RANK?.[workGroup] || {};
     const mode = state.effective?.CROP_REPORT_MODE?.[workGroup] || {};
     const sorted = [...crops].sort((a, b) => {
@@ -434,7 +448,8 @@ export default function PlansEditor({ summaryDate = null }) {
     const skippedCrops = [];
     for (const crop of sorted) {
       const raw = mode[crop];
-      const flag = raw == null || raw === "" ? 0 : Number(raw);
+      // Нет явного режима и культуры нет в плане этой операции — «Не считать».
+      const flag = raw == null || raw === "" ? (present.has(crop) ? 0 : 2) : Number(raw);
       if (flag === 2) skippedCrops.push(crop);
       else countedCrops.push(crop);
     }
@@ -628,6 +643,12 @@ export default function PlansEditor({ summaryDate = null }) {
                 <Tab key={g} value={g} label={g} sx={{ textTransform: "none", maxWidth: 360 }} />
               ))}
             </Tabs>
+          )}
+          {section?.kind === "nested_3" && workGroup && countedCrops.length + skippedCrops.length > 0 && (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Культур: {countedCrops.length + skippedCrops.length}. Под чертой не считаются:{" "}
+              {skippedCrops.length}.
+            </Typography>
           )}
 
           {seasonMeta && (section?.kind === "nested_3" || section?.kind === "nested_2") && (

@@ -349,6 +349,7 @@ class PlansEditorOut(BaseModel):
     sections: list[PlansEditorSectionOut]
     work_groups: list[str]
     firms: list[str]
+    crops: list[str] = Field(default_factory=list)
     base: dict[str, Any]
     edits: dict[str, Any]
     effective: dict[str, Any]
