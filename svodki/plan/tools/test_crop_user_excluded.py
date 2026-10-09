@@ -144,3 +144,78 @@ def test_totals_default_skip_dropped_except_plow_and_disk():
     # пустая культура и культура из плана не исключаются
     assert not p.is_crop_excluded_from_totals("2.1 Боронование", FIRM, "")
     assert not p.is_crop_excluded_from_totals("2.1 Боронование", FIRM, "Культура не определена")
+
+
+# --- итог Cropwise и итоги по фирмам: вычитание культур, исключённых в редакторе ---
+
+def test_editor_rules_for_modes():
+    from proverka.crop_compare import editor_rules_for
+
+    assert editor_rules_for("2", PLOW) == (PLOW, "remap")
+    assert editor_rules_for("3", "1.1 Внесение минеральных удобрений")[1] == "remap"
+    for rid in ("4", "7", "8", "10", "11"):
+        assert editor_rules_for(rid, "x") == ("x", "totals")
+    for rid in ("1", "5", "6"):
+        assert editor_rules_for(rid, "x") == ("x", "user")
+    assert editor_rules_for("9", PLOW)[0] is None
+
+
+def test_totals_mode_drops_out_of_plan_but_user_mode_keeps_it():
+    from proverka.crop_compare import apply_editor_crop_rules
+
+    _fresh_plans_with({})
+    cw = {"Нут": {FIRM: 7.0}, "Соя": {FIRM: 50.0}}
+    group = "2.1 Боронование"
+    assert "Нут" not in apply_editor_crop_rules(group, cw, remap="totals")
+    assert apply_editor_crop_rules(group, cw, remap="user")["Нут"] == {FIRM: 7.0}
+    # булев remap=False по-прежнему «user»
+    assert apply_editor_crop_rules(group, cw, remap=False)["Нут"] == {FIRM: 7.0}
+
+
+def test_adjust_totals_subtracts_excluded_winter_crops():
+    from proverka.crop_compare import adjust_cropwise_for_editor
+
+    _fresh_plans_with({"CROP_REPORT_MODE": {PLOW: {c: 2 for c in WINTER}}})
+    other = "АгроРаздолье"
+    cw = {
+        "Рапс озимый": {FIRM: 100.0, other: 20.0},
+        "Пшеница озимая": {FIRM: 30.0},
+        "Соя": {FIRM: 50.0},
+    }
+    got = adjust_cropwise_for_editor(
+        PLOW, cw, 200.0, {FIRM: 180.0, other: 20.0}, remap="remap",
+    )
+    assert got["excluded_by_firm"] == {FIRM: 130.0, other: 20.0}
+    assert got["excluded_ha"] == 150.0
+    assert got["total_ha"] == 50.0
+    assert got["by_firm"] == {FIRM: 50.0, other: 0.0}
+
+
+def test_adjust_totals_keeps_out_of_plan_on_plow_but_not_elsewhere():
+    from proverka.crop_compare import adjust_cropwise_for_editor
+
+    _fresh_plans_with({})
+    cw = {"Нут": {FIRM: 7.0}, "Соя": {FIRM: 50.0}}
+    plow = adjust_cropwise_for_editor(PLOW, cw, 57.0, {FIRM: 57.0}, remap="remap")
+    assert plow["excluded_ha"] == 0.0 and plow["total_ha"] == 57.0
+    harrow = adjust_cropwise_for_editor("2.1 Боронование", cw, 57.0, {FIRM: 57.0}, remap="remap")
+    assert harrow["excluded_ha"] == 7.0 and harrow["total_ha"] == 50.0
+
+
+def test_adjust_totals_is_noop_without_group_or_crops():
+    from proverka.crop_compare import adjust_cropwise_for_editor
+
+    for group, crops in ((None, {"Соя": {FIRM: 5.0}}), (PLOW, {}), (PLOW, None)):
+        got = adjust_cropwise_for_editor(group, crops, 12.345, {FIRM: 12.345}, remap="remap")
+        assert got["total_ha"] == 12.35 and got["excluded_ha"] == 0.0
+        assert got["by_firm"] == {FIRM: 12.35}
+
+
+def test_adjust_totals_never_goes_negative():
+    from proverka.crop_compare import adjust_cropwise_for_editor
+
+    _fresh_plans_with({"CROP_DISPLAY_RANK": {PLOW: {"Рапс озимый": 0}}})
+    got = adjust_cropwise_for_editor(
+        PLOW, {"Рапс озимый": {FIRM: 100.0}}, 90.0, {FIRM: 90.0}, remap="remap",
+    )
+    assert got["total_ha"] == 0.0 and got["by_firm"] == {FIRM: 0.0}

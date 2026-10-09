@@ -25,6 +25,10 @@ SUMMARY_TITLE = "СОВОКУПНАЯ ПЛОЩАДЬ ПО АГРОФИРМАМ"
 _TOTAL_LABEL = "Итого"
 _FIRM_HEADER = "Агрофирма"
 _CHILD_CROPS = frozenset({"кукуруза на силос", "кукуруза на зерно"})
+_CHILD_CROP_LABELS = {
+    "кукуруза на силос": "Кукуруза на силос",
+    "кукуруза на зерно": "Кукуруза на зерно",
+}
 _PARENT_CROP_ALIASES = {"кукуруза, из них:": "Кукуруза"}
 _ROUNDING_PER_ROW_HA = 0.05
 
@@ -165,6 +169,9 @@ def read_report2_sheet(ws: Any) -> dict[str, Any] | None:
         return None
 
     by_crop: dict[str, float] = {}
+    # Дочерние строки блока «Кукуруза, из них:» (силос / зерно). В суммы по культурам они
+    # не входят (уже посчитаны в родителе), но для сравнения с Cropwise нужны по отдельности.
+    child_crops: dict[str, float] = {}
     firm_from_crops: dict[str, float] = {}
     nonzero_by_firm: dict[str, int] = {}
     nonzero = 0
@@ -174,6 +181,10 @@ def read_report2_sheet(ws: Any) -> dict[str, Any] | None:
         if not firm or not crop:
             continue
         if crop.casefold() in _CHILD_CROPS:
+            child_value = _num(r[top_col]) if top_col < len(r) else None
+            if child_value is not None:
+                label = _CHILD_CROP_LABELS[crop.casefold()]
+                child_crops[label] = round(child_crops.get(label, 0.0) + child_value, 2)
             continue
         crop = _PARENT_CROP_ALIASES.get(crop.casefold(), crop)
         value = _num(r[top_col]) if top_col < len(r) else None
@@ -190,6 +201,7 @@ def read_report2_sheet(ws: Any) -> dict[str, Any] | None:
         "total": round(total, 2),
         "by_firm": by_firm,
         "by_crop": by_crop,
+        "by_crop_detail": {**by_crop, **child_crops},
         "firm_from_crops": firm_from_crops,
         "nonzero_rows": nonzero,
         "nonzero_rows_by_firm": nonzero_by_firm,
@@ -299,7 +311,13 @@ def report2_xlsx_firm_areas(path: Path) -> dict[str, dict[str, float]]:
 
 
 def report2_xlsx_crop_areas(path: Path) -> dict[str, dict[str, float]]:
-    return {g: dict(d["by_crop"]) for g, d in read_report2_workbook(path).items() if d["by_crop"]}
+    """Группа → культура → га за сутки для сравнения с Cropwise (включая силос и зерно кукурузы)."""
+    out: dict[str, dict[str, float]] = {}
+    for group, data in read_report2_workbook(path).items():
+        crops = data.get("by_crop_detail") or data["by_crop"]
+        if crops:
+            out[group] = dict(crops)
+    return out
 
 
 def report2_xlsx_internal_issues(path: Path) -> dict[str, list[dict[str, Any]]]:

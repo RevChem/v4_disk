@@ -648,3 +648,63 @@ def test_report1_reads_perf_sheets_not_only_harvest(tmp_path):
     assert areas["2.4 Вспашка"] == 686.21
     assert areas["2.8 Глубокорыхление"] == 8.25
     assert areas["1.1 Внесение минеральных удобрений"] == 12.0
+
+
+def test_crop_areas_for_cropwise_include_corn_silage_and_grain_children(tmp_path):
+    """Для сравнения с Cropwise «Кукуруза на силос» берётся из файла, а не теряется как 0/нет."""
+    crops = [
+        ("АФ А", "Рапс яровой", 300.0),
+        ("АФ А", "Кукуруза, из них:", 70.0),
+        ("АФ А", "Кукуруза на силос", 50.0),
+        ("АФ А", "Кукуруза на зерно", 20.0),
+        ("АФ Б", "Соя", 100.0),
+        ("АФ Б", "Кукуруза, из них:", 30.0),
+        ("АФ Б", "Кукуруза на силос", 10.0),
+        ("АФ Б", "Кукуруза на зерно", 20.0),
+    ]
+    path = _book(tmp_path, crops, [("АФ А", 370.0), ("АФ Б", 130.0)], 500.0)
+    data = read_report2_workbook(path)["5.0 Уборка"]
+    # внутренняя проверка суммы по-прежнему без двойного счёта
+    assert data["by_crop"]["Кукуруза"] == 100.0
+    assert "Кукуруза на силос" not in data["by_crop"]
+    assert sum(data["by_crop"].values()) == 500.0
+    assert report2_xlsx_internal_issues(path) == {}
+    # а для сравнения с Cropwise силос и зерно видны по отдельности
+    got = report2_xlsx_crop_areas(path)["5.0 Уборка"]
+    assert got["Кукуруза на силос"] == 60.0
+    assert got["Кукуруза на зерно"] == 40.0
+    assert got["Кукуруза"] == 100.0
+    assert got["Соя"] == 100.0
+
+
+def test_corn_silage_kept_in_crop_areas_of_other_reports(tmp_path):
+    """Сводки 1, 10, 11: «Кукуруза на силос» из «Общего намолота» не теряется при чтении файла."""
+    from proverka.file_values import crop_areas_from_path
+
+    crops = [
+        ("Рапс яровой", 1500.0),
+        ("Кукуруза, из них:", 103.72),
+        ("Кукуруза на зерно", 53.72),
+        ("Кукуруза на силос", 50.0),
+    ]
+    for rid, name in (
+        ("1", "1. report_main_2026-09-25.xlsx"),
+        ("10", "10. report_veg_2026-09-25.xlsx"),
+        ("11", "11. report_harvest_2026-09-25.xlsx"),
+    ):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Выраб. — 5.0 Уборка"
+        ws.append(PERF_HDR)
+        ws.append(["АФ А", 25, 10, 100.0])
+        ws.append(["Итого", 25, 10, 100.0])
+        g = wb.create_sheet("Общий намолот")
+        g.append(GENERAL_HDR)
+        for i, (crop, ha) in enumerate(crops, 1):
+            g.append([i, crop, 100, 50, 10, ha, 5])
+        g.append(["", "Итого", 100, 50, 10, 1653.72, 5])
+        path = tmp_path / name
+        wb.save(path)
+        got = crop_areas_from_path(path, rid)["5.0 Уборка"]
+        assert got["Кукуруза на силос"] == 50.0, rid
+        assert got["Кукуруза на зерно"] == 53.72, rid

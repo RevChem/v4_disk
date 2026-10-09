@@ -131,13 +131,13 @@ def test_works_window_stays_in_calendar_year_after_july():
 def test_editor_rules_follow_the_report():
     from proverka.crop_compare import editor_rules_for
 
-    assert editor_rules_for("2", "2.4 Вспашка") == ("2.4 Вспашка", True)
-    assert editor_rules_for("3", "1.1 Внесение минеральных удобрений")[1] is True
-    assert editor_rules_for("7", "2.9 Дискование") == ("2.9 Дискование", False)
-    assert editor_rules_for("6", "3.1 Опрыскивание") == ("3.1 Опрыскивание", False)
-    assert editor_rules_for("1", "2.9 Дискование")[0] is None
+    assert editor_rules_for("2", "2.4 Вспашка") == ("2.4 Вспашка", "remap")
+    assert editor_rules_for("3", "1.1 Внесение минеральных удобрений")[1] == "remap"
+    assert editor_rules_for("7", "2.9 Дискование") == ("2.9 Дискование", "totals")
+    assert editor_rules_for("6", "3.1 Опрыскивание") == ("3.1 Опрыскивание", "user")
+    assert editor_rules_for("1", "2.9 Дискование") == ("2.9 Дискование", "user")
     assert editor_rules_for("9", "2.4 Вспашка")[0] is None
-    assert editor_rules_for("11", "5.0 Уборка")[0] is None
+    assert editor_rules_for("11", "5.0 Уборка") == ("5.0 Уборка", "totals")
 
 
 def test_xlsx_summary_reads_firms_and_crops(tmp_path):

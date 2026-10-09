@@ -87,59 +87,148 @@ def cropwise_area_by_firm_crop(
 # Группы, где культуры вне плана сворачиваются в «Иные культуры» (как в сводке 2).
 _FOLD_TO_OTHER_GROUPS = ("2.4 Вспашка", "2.9 Дискование")
 
+# Режимы правил редактора на стороне Cropwise (какую функцию plans.py вызывает сама сводка):
+#   remap  — сводки 2, 3: crop_code_for_report, вне плана на вспашке/дисковании → «Иные»;
+#   totals — сводки 4, 7, 8, 10, 11: is_crop_excluded_from_totals (вне плана не считается);
+#   user   — сводки 1, 5, 6: только is_crop_user_excluded (скрытие, ранг 0, «Не считать»).
+MODE_REMAP = "remap"
+MODE_TOTALS = "totals"
+MODE_USER = "user"
+
+
+def _normalize_mode(remap: bool | str) -> str:
+    """Старый булев ``remap`` (True/False) остаётся рабочим."""
+    if isinstance(remap, str):
+        return remap if remap in (MODE_REMAP, MODE_TOTALS, MODE_USER) else MODE_USER
+    return MODE_REMAP if remap else MODE_USER
+
+
+def _crop_code_after_editor(plans_mod: Any, mode: str, group_name: str, firm: str, crop: str) -> str | None:
+    """Имя культуры в сводке после правил редактора. None — гектары в итог не входят."""
+    if plans_mod.is_crop_user_excluded(group_name, firm, crop):
+        return None
+    if mode == MODE_USER:
+        return str(crop)
+    if mode == MODE_TOTALS:
+        if plans_mod.is_crop_excluded_from_totals(group_name, firm, crop):
+            return None
+        return str(crop)
+    code = plans_mod.crop_code_for_report(group_name, crop)
+    if code is None:
+        if str(group_name) in _FOLD_TO_OTHER_GROUPS:
+            return plans_mod.OTHER_CROP_CODE
+        return None
+    return code
+
+
+def _load_plans() -> Any | None:
+    try:
+        import plans as _plans
+    except Exception:
+        return None
+    return _plans
+
 
 def apply_editor_crop_rules(
     group_name: str | None,
     by_firm_crop: dict[str, dict[str, float]] | None,
     *,
-    remap: bool = True,
+    remap: bool | str = True,
 ) -> dict[str, dict[str, float]]:
     """Культуры Cropwise → как их показывает сводка после «Редактора планов».
 
-    Скрытые и «не считать» отбрасываются всегда. ``remap=True`` (сводки 2 и 3) ещё
-    сворачивает культуры так же, как ``crop_code_for_report``: на вспашке и дисковании
-    вне плана — в «Иные культуры». ``remap=False`` (сводки 4, 5, 6, 8) только убирает
-    исключённые культуры и оставляет остальные имена как в сводке.
-    Без группы или при сбое импорта plans данные возвращаются как есть.
+    ``remap``: True / ``"remap"`` (сводки 2 и 3) — как ``crop_code_for_report``, на вспашке и
+    дисковании культуры вне плана сворачиваются в «Иные культуры». ``"totals"`` (сводки
+    4, 7, 8, 10, 11) — исключённые и вне плана культуры не считаются, остальные имена
+    остаются как в сводке. False / ``"user"`` (сводки 1, 5, 6) — только скрытые, ранг 0 и
+    «Не считать». Без группы или при сбое импорта plans данные возвращаются как есть.
     """
     src = by_firm_crop or {}
     if not group_name or not src:
         return src
-    try:
-        import plans as _plans
-    except Exception:
+    plans_mod = _load_plans()
+    if plans_mod is None:
         return src
-    fold = str(group_name) in _FOLD_TO_OTHER_GROUPS
+    mode = _normalize_mode(remap)
     out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for crop, by_firm in src.items():
         for firm, ha in (by_firm or {}).items():
-            if _plans.is_crop_user_excluded(group_name, firm, crop):
-                continue
-            if not remap:
-                out[str(crop)][firm] += float(ha or 0)
-                continue
-            code = _plans.crop_code_for_report(group_name, crop)
+            code = _crop_code_after_editor(plans_mod, mode, str(group_name), firm, str(crop))
             if code is None:
-                if not fold:
-                    continue
-                code = _plans.OTHER_CROP_CODE
+                continue
             out[code][firm] += float(ha or 0)
     return {c: dict(f) for c, f in out.items()}
 
 
-def editor_rules_for(report_id: str, group_name: str) -> tuple[str | None, bool]:
-    """Правила редактора для пары (сводка, группа): (группа или None, remap).
+def editor_excluded_by_firm(
+    group_name: str | None,
+    by_firm_crop: dict[str, dict[str, float]] | None,
+    *,
+    remap: bool | str = True,
+) -> dict[str, float]:
+    """Га Cropwise по фирмам, которые редактор исключил из сводки (скрыто, «Не считать», вне плана)."""
+    src = by_firm_crop or {}
+    if not group_name or not src:
+        return {}
+    plans_mod = _load_plans()
+    if plans_mod is None:
+        return {}
+    mode = _normalize_mode(remap)
+    out: dict[str, float] = defaultdict(float)
+    for crop, by_firm in src.items():
+        for firm, ha in (by_firm or {}).items():
+            if _crop_code_after_editor(plans_mod, mode, str(group_name), firm, str(crop)) is None:
+                out[firm] += float(ha or 0)
+    return {firm: round(ha, 2) for firm, ha in out.items() if ha >= 0.01}
 
-    None — правила не применяются (сводки 1, 9, 10, 11; у 9 свой маппинг).
-    remap=True — сводки 2 и 3, как crop_code_for_report.
-    remap=False — сводки 4, 5, 6, 7 и 8: только скрытые и «не считать».
+
+def adjust_cropwise_for_editor(
+    group_name: str | None,
+    crops_by_firm: dict[str, dict[str, float]] | None,
+    total_ha: float,
+    by_firm: dict[str, float] | None,
+    *,
+    remap: bool | str = True,
+) -> dict[str, Any]:
+    """Итог Cropwise и итоги по фирмам без гектаров культур, исключённых в редакторе.
+
+    Вычитаем исключённые гектары из уже посчитанных сумм work.json (а не пересобираем их
+    из cropRows): в сумме могут быть строки, которых нет в дереве культур.
+    Без группы или без разбивки по культурам суммы возвращаются как есть.
+    """
+    firms = {str(f): float(v or 0) for f, v in (by_firm or {}).items()}
+    excluded = editor_excluded_by_firm(group_name, crops_by_firm, remap=remap)
+    if not excluded:
+        return {
+            "total_ha": round(float(total_ha or 0), 2),
+            "by_firm": {f: round(v, 2) for f, v in firms.items()},
+            "excluded_ha": 0.0,
+            "excluded_by_firm": {},
+        }
+    adj_firms = {f: round(max(v - excluded.get(f, 0.0), 0.0), 2) for f, v in firms.items()}
+    excl_total = round(sum(excluded.values()), 2)
+    return {
+        "total_ha": round(max(float(total_ha or 0) - excl_total, 0.0), 2),
+        "by_firm": adj_firms,
+        "excluded_ha": excl_total,
+        "excluded_by_firm": excluded,
+    }
+
+
+def editor_rules_for(report_id: str, group_name: str) -> tuple[str | None, str]:
+    """Правила редактора для пары (сводка, группа): (группа или None, режим).
+
+    None — правила не применяются (сводка 9: у неё свой маппинг вспашки и глубокорыхления).
+    Режимы: ``remap`` — сводки 2 и 3; ``totals`` — 4, 7, 8, 10, 11; ``user`` — 1, 5, 6.
     """
     rid = str(report_id)
     if rid in {"2", "3"}:
-        return group_name, True
-    if rid in {"4", "5", "6", "7", "8"}:
-        return group_name, False
-    return None, False
+        return group_name, MODE_REMAP
+    if rid in {"4", "7", "8", "10", "11"}:
+        return group_name, MODE_TOTALS
+    if rid in {"1", "5", "6"}:
+        return group_name, MODE_USER
+    return None, MODE_USER
 
 
 def compare_svodka_cropwise_crops(
@@ -148,7 +237,7 @@ def compare_svodka_cropwise_crops(
     *,
     tolerance_ha: float = DIFF_MIN_HA,
     group_name: str | None = None,
-    remap: bool = True,
+    remap: bool | str = True,
 ) -> list[dict[str, Any]]:
     """
     Список сравнений по культурам (сумма по всем АФ + разбивка по фирмам).

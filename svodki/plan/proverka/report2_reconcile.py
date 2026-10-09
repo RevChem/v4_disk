@@ -277,6 +277,18 @@ def _reconcile_one_operation(
     cropwise_by_firm = combined["by_firm"]
     cropwise_total = float(combined["compare_ha"])
     ui_note = combined["note"]
+    from proverka.crop_compare import adjust_cropwise_for_editor, editor_rules_for
+
+    adj_group, adj_mode = editor_rules_for(str(source_report_id), group_name)
+    adj = adjust_cropwise_for_editor(
+        adj_group, combined["crops"], cropwise_total, cropwise_by_firm, remap=adj_mode,
+    )
+    cropwise_total = adj["total_ha"]
+    cropwise_by_firm = adj["by_firm"]
+    editor_excluded_ha = adj["excluded_ha"]
+    editor_excluded_by_firm = adj["excluded_by_firm"]
+    if editor_excluded_ha:
+        ui_note += f" Без {editor_excluded_ha:.2f} га культур, исключённых в «Редакторе планов»."
     ui_session = None
     ui_session_blocked = False
     required_ui_session = None
@@ -348,6 +360,8 @@ def _reconcile_one_operation(
             if svodka_by_firm.get(firm, 0) or cropwise_by_firm.get(firm, 0)
         },
         "cropwise_ui_ha": (season_cropwise or {}).get("cropwise_ui_ha", cropwise_total),
+        "cropwise_editor_excluded_ha": editor_excluded_ha,
+        "cropwise_editor_excluded_by_firm": editor_excluded_by_firm,
         "cropwise_api_ha": (season_cropwise or {}).get("cropwise_api_ha"),
         "cropwise_ui_vs_api_ha": (season_cropwise or {}).get("cropwise_ui_vs_api_ha"),
         "cropwise_api_session_season_ha": (season_cropwise or {}).get(
