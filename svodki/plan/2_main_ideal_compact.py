@@ -267,7 +267,8 @@ CORN_SILAGE_CROP = "Кукуруза на силос"
 CORN_SUMMARY_LABEL = "Кукуруза, из них:"
 # work_type_id «Скашивание» — кукуруза на силос (как 10_main_harvest).
 SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
-# Иные культуры и овощи — не выводить на листе 5.0 (эталон 08.07.2026).
+# Овощи и травы — не выводить на листе 5.0 (эталон 08.07.2026).
+# Строка «Иные культуры» из редактора планов на листе остаётся.
 HARVEST_CROP_EXCLUDE_BY_FIRM: dict[str, frozenset[str]] = {
     "АФ Чистопольская": frozenset({
         "Многолетние травы 2021 года",
@@ -846,8 +847,9 @@ def _remember_field_crops_by_year(history_by_year: dict, crops_map: dict) -> Non
 def _harvest_crop_excluded(firm: str, crop: str) -> bool:
     if crop in HARVEST_VEG_CROPS:
         return True
-    # Как 10_main: «Иные»/без культуры не выводим в разбивке (в фирменном итоге остаются).
-    if crop in {"Не определена", "Иные", "Иные культуры", "__other__"}:
+    # «Иные» и пустая культура остаются в итоге фирмы, без своей строки.
+    # «Иные культуры» — строка редактора планов, её показываем.
+    if crop in {"Не определена", "Иные", "__other__"}:
         return True
     excluded = HARVEST_CROP_EXCLUDE_BY_FIRM.get(firm)
     return excluded is not None and crop in excluded
@@ -1268,14 +1270,35 @@ def field_crops_per_season(
     return out
 
 
-def _accounted_crop_label(group_name: str, raw: str) -> str | None:
-    if group_name == PLOW_GROUP_NAME:
-        return _map_plow_crop_name(raw)
-    if _is_harvest_veg_group(group_name):
-        return _map_harvest_veg_crop(raw)
-    if is_skip_crop(raw):
+def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | None:
+    """Учётная площадь под тем же именем, что и строка сводки.
+
+    Режим «Иные культуры» из редактора планов складывается в одну строку
+    «Иные культуры». На вспашке и дисковании культура вне плана тоже остаётся
+    в этой строке, если её явно не убрали в «Не учитывать».
+    """
+    raw_name = str(raw or "").strip()
+    if not raw_name or is_skip_crop(raw_name):
         return None
-    return raw
+    if group_name == PLOW_GROUP_NAME:
+        label = _map_plow_crop_name(raw_name)
+    elif _is_harvest_veg_group(group_name):
+        label = _map_harvest_veg_crop(raw_name)
+    else:
+        label = raw_name
+    keep_unlisted = group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME)
+    if not label:
+        if keep_unlisted and not is_crop_user_excluded(group_name, firm, raw_name):
+            return OTHER_CROP_CODE
+        return None
+    if is_crop_user_excluded(group_name, firm, label):
+        return None
+    coded = crop_code_for_report(group_name, label)
+    if coded is None:
+        if keep_unlisted and not is_crop_user_excluded(group_name, firm, label):
+            return OTHER_CROP_CODE
+        return None
+    return coded
 
 
 def build_accounted_area_by_group(
@@ -1320,7 +1343,7 @@ def build_accounted_area_by_group(
                 continue
             labels: list[str] = []
             for raw in raws:
-                label = _accounted_crop_label(group_name, raw)
+                label = _accounted_crop_label(group_name, raw, firm)
                 if label and label not in labels:
                     labels.append(label)
             for label in labels:
@@ -2503,13 +2526,15 @@ def _prepare_group_selection(
             group_period_start, group_period_end = _merged_period_for_group(group_name, START_DATE)
         # Боронование — как new/4.main.py (не hourly, сезон с 01.01, только задания с covered_area>0).
         use_report4_boron_logic = group_name == BORON_GROUP_NAME
-        if use_report4_boron_logic:
+        own_ranges = bool(resolve_group_season_config(group_name, TODAY).get("has_own_ranges"))
+        if use_report4_boron_logic and not own_ranges:
             group_period_start = date(TODAY.year, 1, 1)
             group_period_end = TODAY
         # Один сезон в редакторе (календарь до 01.07) не должен обнулять факт
         # после этой даты. Сводки 1 и 6 режут machine_task.season и считают
         # смены до даты отчёта. Иначе «только 2026» в сентябре даёт нули.
-        group_period_end = fact_window_end(group_period_end, TODAY)
+        if not own_ranges:
+            group_period_end = fact_window_end(group_period_end, TODAY)
         # Дискование — площадь как в сводках 1 и 7: без is_skip_crop, только поля с культурой в сезоне.
         use_report17_area_logic = group_name == DISK_GROUP_NAME
         # Запрашиваем с запасом: от START_DATE 06:00 до (TODAY+1) 06:00
@@ -4123,33 +4148,32 @@ def write_report_sheet(
                     or crop_code_for_report(group_name, c) == c
                 ]
             if group_name == HARVEST_GROUP_NAME:
-                # Только лист 5.0: иные культуры и овощи не выводим; остальные группы не трогаем.
+                # Только лист 5.0: овощи и «Иные» без строки не выводим.
+                # «Иные культуры» из редактора планов остаётся.
                 all_crops = [c for c in all_crops if not _harvest_crop_excluded(firm, c)]
             excluded = GROUP_CROP_EXCLUDE.get(group_name)
             if excluded:
                 all_crops = [c for c in all_crops if c not in excluded]
             # Редактор планов: ранг 0 / глаз по АФ / SKIP_CROPS (залежь и т.п.).
-            # Важно для дискования: там area-логика без is_skip_crop, строки режем здесь.
+            # «Иные культуры» — одна строка на всех листах, не только вспашка и дискование.
             all_crops = [
                 c for c in all_crops
-                if (
-                    c == OTHER_CROP_CODE
-                    and group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME)
-                )
+                if c == OTHER_CROP_CODE
                 or (
                     not is_crop_omitted(group_name, firm, c)
                     and crop_code_for_report(group_name, c) == c
                 )
             ]
             if (
-                group_name != HARVEST_GROUP_NAME
-                and OTHER_CROP_CODE not in all_crops
+                OTHER_CROP_CODE not in all_crops
                 and (
                     OTHER_CROP_CODE in crop_data
+                    or OTHER_CROP_CODE in crop_area_ref
                     or _plan_ha_for_crop(group_name, firm, OTHER_CROP_CODE) > 0
                 )
             ):
                 all_crops.append(OTHER_CROP_CODE)
+                all_crops.sort(key=lambda c: _crop_sort_key_for_group(group_name, c))
             if not all_crops:
                 continue
 

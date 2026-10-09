@@ -108,3 +108,60 @@ def test_real_plans_new_group_firm_and_crop():
     assert changed == 3
     assert _as_dict(updated) == new_plan
     assert _source_contains_plan(updated, new_plan)
+
+
+def test_sync_writes_plans_py_and_keeps_editor_json(tmp_path, monkeypatch):
+    """Синхронизация копирует план в plans.py и не переписывает JSON редактора."""
+    from app.config import settings
+    from app.legacy import plans_editor as pe
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    (plan_dir / "plans.py").write_text(SAMPLE, encoding="utf-8")
+    edits_path = tmp_path / "plans_edits.json"
+    original = (
+        '{"HARDCODED_PLAN": {"2.4 Вспашка": {"АФ Чистопольская": {"Соя": 99}}}, '
+        '"AVAILABLE_OWN": {"2.4 Вспашка": {"АФ Чистопольская": 3}}}'
+    )
+    edits_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(pe, "_svodki_plan_dir", lambda: plan_dir)
+    monkeypatch.setattr(settings, "svodki_plans_edits_path", str(edits_path))
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+
+    note = pe._sync_hardcoded_plan_note(
+        {
+            "HARDCODED_PLAN": {
+                "2.4 Вспашка": {
+                    "АФ Чистопольская": {
+                        "Соя": 99,
+                        "Кукуруза на зерно": 734,
+                    }
+                }
+            }
+        }
+    )
+    assert not str(note).startswith("Не удалось")
+    written = (plan_dir / "plans.py").read_text(encoding="utf-8")
+    assert '"Соя": 99' in written
+    assert edits_path.read_text(encoding="utf-8") == original
+
+
+def test_season_year_ranges_stay_in_editor_json(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.legacy.season_meta import load_season_range_overrides, set_season_range_override
+
+    path = tmp_path / "season_ranges.json"
+    monkeypatch.setattr(settings, "svodki_season_ranges_path", str(path))
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    set_season_range_override(
+        "1.1 Внесение минеральных удобрений",
+        season_years=[2026, 2027],
+        year_ranges={
+            "2026": {"period_start": "2026-03-01", "period_end": "2026-06-30"},
+            "2027": {"period_start": "2026-07-01", "period_end": "2027-03-01"},
+        },
+    )
+    stored = load_season_range_overrides()["1.1 Внесение минеральных удобрений"]
+    assert stored["season_years"] == [2026, 2027]
+    assert stored["year_ranges"]["2026"]["period_start"] == "2026-03-01"
+    assert stored["year_ranges"]["2027"]["period_end"] == "2027-03-01"

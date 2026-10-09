@@ -325,12 +325,18 @@ class PlansEditorSectionOut(BaseModel):
     kind: str
 
 
+class PlansEditorYearRangeIn(BaseModel):
+    period_start: str
+    period_end: str
+
+
 class PlansEditorSeasonRangeUpdateIn(BaseModel):
     group_name: str = Field(min_length=1, max_length=300)
     period_start: str | None = None
     period_end: str | None = None
     season_year: int | None = None
     season_years: list[int] | None = None
+    year_ranges: dict[str, PlansEditorYearRangeIn] | None = None
     clear: bool = False
 
 

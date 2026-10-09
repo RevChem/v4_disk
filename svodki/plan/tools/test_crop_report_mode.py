@@ -76,6 +76,20 @@ def test_rebuild_splits_modes():
     assert g["CROP_SKIP_REPORT_SET"] == {(GROUP, "Пар")}
 
 
+def test_svodka2_labels_other_crops_as_inye_kultury():
+    import importlib
+
+    report = importlib.import_module("2_main_ideal_compact")
+    _set_modes(other={"Нут"})
+    try:
+        assert report._accounted_crop_label(GROUP, "Нут", "АФ А") == "Иные культуры"
+        assert report._accounted_crop_label(GROUP, "Соя", "АФ А") == "Соя"
+        assert report._harvest_crop_excluded("АФ Чистопольская", "Иные культуры") is False
+        assert report._harvest_crop_excluded("АФ Чистопольская", "Иные") is True
+    finally:
+        _set_modes()
+
+
 def test_missing_catalog_crop_is_skipped_until_marked_counted():
     plans.sync_crop_report_sets()
     group = "2.4 Вспашка"

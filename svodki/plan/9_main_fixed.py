@@ -193,6 +193,16 @@ if _season_start_raw:
         SEASON_START = date.fromisoformat(_season_start_raw)
     except ValueError:
         pass
+try:
+    from season_unified import season_start_from_editor
+
+    SEASON_START = season_start_from_editor(
+        ("2.4 Вспашка", "2.8 Глубокорыхление"),
+        REPORT_DATE,
+        SEASON_START,
+    )
+except Exception:
+    pass
 
 DAY_START_HOUR: int = 6
 DAY_END_HOUR:   int = 6
@@ -2488,13 +2498,32 @@ def _plow_other_footnote(parts: dict[str, float]) -> str:
     return "* Иные культуры: " + ", ".join(bits)
 
 
+def _plow_summary_row(
+    crop: str,
+    fact_by: dict[str, float],
+    today_by: dict[str, float],
+) -> tuple[str, float, float, float]:
+    plan = sum(_plow_plan_ha(firm, crop) for firm in FIRM_ORDER)
+    return (
+        crop,
+        round(plan, 2),
+        round(fact_by.get(crop, 0.0), 2),
+        round(today_by.get(crop, 0.0), 2),
+    )
+
+
 def _plow_all_firms_rows_field_and_veg(
     by_firm_crop: dict[str, dict[str, dict]],
 ) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]], str]:
     """Полевые культуры (+ «Иные») и овощи — два блока сводной вспашки.
 
-    План «Иные культуры» — ячейка редактора и культуры, отмеченные там
-    как «Иные». Факт строки — многолетние травы и те же отмеченные культуры.
+    Свои строки — те же культуры, что листы «Вспашка …»: режим «Учитывать»
+    в редакторе планов, с планом или фактом. «Не учитывать» строку убирает.
+    «Пшеница озимая» и другие культуры вне короткого списка яровых тоже
+    попадают сюда, если редактор их учитывает.
+
+    План «Иные культуры» — ячейка редактора и культуры режима «Иные».
+    Факт строки — многолетние травы и те же отмеченные культуры.
     """
     fact_by: dict[str, float] = {}
     today_by: dict[str, float] = {}
@@ -2504,27 +2533,30 @@ def _plow_all_firms_rows_field_and_veg(
             fact_by[name] = fact_by.get(name, 0.0) + float(st.get("season_plow") or 0.0)
             today_by[name] = today_by.get(name, 0.0) + float(st.get("plow_today") or 0.0)
 
-    def _plan_of(crop: str) -> float:
-        return sum(_plow_plan_ha(firm, crop) for firm in FIRM_ORDER)
+    own = [
+        crop
+        for crop in _plow_crops_for_report(by_firm_crop)
+        if crop != PLOW_FIELD_OTHER_CROP
+    ]
+    named_pos = {name: i for i, name in enumerate(PLOW_FIELD_SUMMARY_NAMED)}
 
-    named: dict[str, tuple[float, float, float]] = {}
-    for crop in PLOW_FIELD_SUMMARY_NAMED:
-        plan = _plan_of(crop)
-        fact = fact_by.get(crop, 0.0)
-        today = today_by.get(crop, 0.0)
-        if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
-            named[crop] = (round(plan, 2), round(fact, 2), round(today, 2))
-    veg: list[tuple[str, float, float, float]] = []
-    for crop in PLOW_VEGETABLE_CROPS:
-        plan = _plan_of(crop)
-        fact = fact_by.get(crop, 0.0)
-        today = today_by.get(crop, 0.0)
-        if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
-            veg.append((crop, round(plan, 2), round(fact, 2), round(today, 2)))
+    def _field_key(crop: str) -> tuple:
+        if crop in named_pos:
+            return (0, named_pos[crop], "")
+        return (1, *_crop_sort_key(crop))
+
+    field_names = sorted(
+        (crop for crop in own if crop not in PLOW_VEGETABLE_CROPS),
+        key=_field_key,
+    )
+    veg_names = [crop for crop in own if crop in PLOW_VEGETABLE_CROPS]
+    field_rows = [_plow_summary_row(crop, fact_by, today_by) for crop in field_names]
+    veg = [_plow_summary_row(crop, fact_by, today_by) for crop in veg_names]
+
     other_fact = 0.0
     other_today = 0.0
     other_parts: dict[str, float] = {}
-    keep = set(PLOW_FIELD_SUMMARY_NAMED) | set(PLOW_VEGETABLE_CROPS)
+    keep = set(field_names) | set(veg_names)
     for crop in set(fact_by) | set(today_by):
         if crop in keep or not _plow_counts_as_other(crop):
             continue
@@ -2539,11 +2571,6 @@ def _plow_all_firms_rows_field_and_veg(
         if not _plow_footnote_crop(label):
             continue
         other_parts[label] = other_parts.get(label, 0.0) + shown
-    field_rows: list[tuple[str, float, float, float]] = []
-    for crop in PLOW_FIELD_SUMMARY_NAMED:
-        if crop not in named:
-            continue
-        field_rows.append((crop, *named[crop]))
     # План «Иных» — ячейка редактора и культуры режима «Иные» по всем фирмам.
     other_plan = sum(_plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER)
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
@@ -2553,7 +2580,6 @@ def _plow_all_firms_rows_field_and_veg(
             round(other_fact, 2),
             round(other_today, 2),
         ))
-    veg.sort(key=lambda r: _crop_sort_key(r[0]))
     return field_rows, veg, _plow_other_footnote(other_parts)
 
 

@@ -2048,7 +2048,14 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     global machines_map
 
     day_start, cutoff = resolve_time_range(report_date, DAY_START_HOUR, DAY_END_HOUR)
-    season_start = datetime(SEASON_YEAR, 1, 1, tzinfo=TZ_MSK)
+    period_start = date(SEASON_YEAR, 1, 1)
+    try:
+        from season_unified import season_start_from_editor
+
+        period_start = season_start_from_editor("4.0 Посев", report_date, period_start)
+    except Exception:
+        pass
+    season_start = datetime(period_start.year, period_start.month, period_start.day, tzinfo=TZ_MSK)
 
     print(f"Отчёт 'Посев'  |  Дата: {report_date}")
     print(f"  Суточный диапазон: {day_start} — {cutoff}\n")
@@ -2056,7 +2063,6 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     field_to_firm: dict[int, str] = {}
     firm_names     = list(AGROFIRMS.keys())
     veg_firm_names = [name for name in VEG_REPORT_FIRMS if name in VEG_AGROFIRMS]
-    period_start = date(SEASON_YEAR, 1, 1)
     crop_season_year = season_year_for_date(report_date)
 
     def _sync_refs_r5() -> tuple[dict[int, str], dict[int, str], set[int]]:

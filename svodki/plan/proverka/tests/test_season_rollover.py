@@ -92,6 +92,49 @@ def test_corrupt_season_file_is_quarantined(tmp_path: Path, monkeypatch) -> None
     assert list(tmp_path.glob("season_ranges.json.corrupt-*"))
 
 
+def test_operation_year_ranges_override_shared_calendar() -> None:
+    """Даты сезона агрооперации важнее общего календаря и не склеиваются с 01.07."""
+    report = date(2027, 5, 1)
+    store = {
+        "calendar_seasons": cal.default_calendar_seasons(report),
+        "by_group": {
+            "1.1 Внесение минеральных удобрений": {
+                "season_years": [2026, 2027],
+                "season_year": 2027,
+                "year_ranges": {
+                    "2026": {"period_start": "2026-03-01", "period_end": "2026-06-30"},
+                    "2027": {"period_start": "2026-07-01", "period_end": "2027-03-01"},
+                },
+            }
+        },
+    }
+    cfg = su.resolve_group_season_config(
+        "1.1 Внесение минеральных удобрений", report, store=store
+    )
+    assert cfg["history_years"] == [2026, 2027]
+    assert cfg["has_own_ranges"] is True
+    assert cfg["period_start"] == "2026-03-01"
+    assert cfg["period_end"] == "2027-03-01"
+
+
+def test_season_start_from_editor_needs_every_group(monkeypatch) -> None:
+    def fake(name: str, report_date: date):
+        if name == "1.1 Внесение минеральных удобрений":
+            return (date(2026, 3, 1), date(2026, 6, 30))
+        return None
+
+    monkeypatch.setattr(su, "editor_period_bounds", fake)
+    report = date(2026, 10, 7)
+    assert su.season_start_from_editor(
+        "1.1 Внесение минеральных удобрений", report, date(2026, 1, 1)
+    ) == date(2026, 3, 1)
+    assert su.season_start_from_editor(
+        ("1.1 Внесение минеральных удобрений", "3.1 Опрыскивание"),
+        report,
+        date(2026, 1, 1),
+    ) == date(2026, 1, 1)
+
+
 def test_ui_check_years() -> None:
     from proverka.cropwise_ui import ui_check_years
 

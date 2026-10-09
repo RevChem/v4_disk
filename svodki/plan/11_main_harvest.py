@@ -103,8 +103,11 @@ if os.environ.get("REPORT_DATE"):
 
 def _combine_season_start(report_date: date) -> date:
     try:
-        from season_unified import combine_season_start_for_date
+        from season_unified import combine_season_start_for_date, editor_period_bounds
 
+        saved = editor_period_bounds("5.0 Уборка", report_date)
+        if saved:
+            return saved[0]
         return combine_season_start_for_date(report_date)
     except Exception:
         pass

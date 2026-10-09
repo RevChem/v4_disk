@@ -220,6 +220,11 @@ def update_plans_editor_season_range(
             period_end=payload.period_end,
             season_year=payload.season_year,
             season_years=list(payload.season_years) if payload.season_years is not None else None,
+            year_ranges=(
+                {str(k): v.model_dump() for k, v in payload.year_ranges.items()}
+                if payload.year_ranges is not None
+                else None
+            ),
             clear=bool(payload.clear),
         )
     except ValueError as exc:

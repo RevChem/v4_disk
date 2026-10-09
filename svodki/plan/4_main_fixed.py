@@ -110,6 +110,12 @@ if _season_start_raw:
         SEASON_START = date.fromisoformat(_season_start_raw)
     except ValueError:
         pass
+try:
+    from season_unified import season_start_from_editor
+
+    SEASON_START = season_start_from_editor("2.1 Боронование", REPORT_DATE, SEASON_START)
+except Exception:
+    pass
 
 WORK_TYPES: dict[int, str] = {
     wt_id: "2.1 Боронование" for wt_id in work_group_ids("2.1 Боронование")
@@ -1258,10 +1264,16 @@ def sync_season_start_for_report(report_date: date | None = None) -> None:
     if raw:
         try:
             SEASON_START = date.fromisoformat(raw)
-            return
         except ValueError:
-            pass
-    SEASON_START = date(rd.year, 3, 1)
+            SEASON_START = date(rd.year, 3, 1)
+    else:
+        SEASON_START = date(rd.year, 3, 1)
+    try:
+        from season_unified import season_start_from_editor
+
+        SEASON_START = season_start_from_editor("2.1 Боронование", rd, SEASON_START)
+    except Exception:
+        pass
 
 
 async def compute_harrowing_facts(

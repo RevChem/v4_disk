@@ -167,6 +167,9 @@ def save_season_range_overrides(by_group: dict[str, Any]) -> Path:
         if years:
             item["season_years"] = years
             item["season_year"] = years[-1]
+            ranges = _keep_year_ranges(meta.get("year_ranges"), years)
+            if ranges:
+                item["year_ranges"] = ranges
         if item:
             cleaned[key] = item
     store["by_group"] = cleaned
@@ -202,6 +205,69 @@ def set_calendar_seasons(calendar: dict[str, Any], report_date: date | None = No
     return store["calendar_seasons"]
 
 
+def _keep_year_ranges(raw: Any, years: list[int]) -> dict[str, dict[str, str]]:
+    """Оставляет только корректные диапазоны выбранных лет. Битые строки пропускает."""
+    if not isinstance(raw, dict) or not years:
+        return {}
+    allowed = {str(y) for y in years}
+    out: dict[str, dict[str, str]] = {}
+    for key, val in raw.items():
+        sk = str(key).strip()
+        if sk not in allowed or not isinstance(val, dict):
+            continue
+        start = _parse_iso_date(val.get("period_start"))
+        end = _parse_iso_date(val.get("period_end"))
+        if start is None or end is None or start > end:
+            continue
+        out[sk] = {"period_start": start.isoformat(), "period_end": end.isoformat()}
+    return out
+
+
+def _require_year_ranges(raw: Any, years: list[int]) -> dict[str, dict[str, str]]:
+    if not isinstance(raw, dict):
+        raise ValueError("Диапазоны сезонов: некорректные данные.")
+    out: dict[str, dict[str, str]] = {}
+    for year in years:
+        key = str(year)
+        val = raw.get(key)
+        if not isinstance(val, dict):
+            raise ValueError(f"Сезон {key}: укажите начало и конец периода.")
+        start = _parse_iso_date(val.get("period_start"))
+        end = _parse_iso_date(val.get("period_end"))
+        if start is None or end is None:
+            raise ValueError(f"Сезон {key}: укажите начало и конец периода (дата ГГГГ-ММ-ДД).")
+        if start > end:
+            raise ValueError(
+                f"Сезон {key}: начало ({start.isoformat()}) позже конца ({end.isoformat()})."
+            )
+        out[key] = {"period_start": start.isoformat(), "period_end": end.isoformat()}
+    return out
+
+
+def _effective_year_ranges(
+    years: list[int],
+    calendar: dict[str, dict[str, str]] | None,
+    override: dict[str, Any] | None,
+) -> dict[str, dict[str, str]]:
+    """Даты каждого выбранного сезона: своя правка операции или общий календарь."""
+    raw = {}
+    if isinstance(override, dict) and isinstance(override.get("year_ranges"), dict):
+        raw = override["year_ranges"]
+    out: dict[str, dict[str, str]] = {}
+    for year in years:
+        key = str(int(year))
+        custom = raw.get(key) if isinstance(raw.get(key), dict) else None
+        start = _parse_iso_date(custom.get("period_start")) if custom else None
+        end = _parse_iso_date(custom.get("period_end")) if custom else None
+        if start is None or end is None or start > end:
+            entry = (calendar or {}).get(key)
+            entry = entry if isinstance(entry, dict) else {}
+            start = _parse_iso_date(entry.get("period_start")) or date(int(year) - 1, 7, 1)
+            end = _parse_iso_date(entry.get("period_end")) or date(int(year), 7, 1)
+        out[key] = {"period_start": start.isoformat(), "period_end": end.isoformat()}
+    return out
+
+
 def _parse_iso_date(raw: Any) -> date | None:
     text = str(raw or "").strip().split("T")[0]
     if not text:
@@ -220,17 +286,17 @@ def set_season_range_override(
     period_end: str | None = None,
     season_year: int | None = None,
     season_years: list[int] | None = None,
+    year_ranges: dict[str, Any] | None = None,
     clear: bool = False,
 ) -> dict[str, Any]:
     name = str(group_name or "").strip()
     if not name:
         raise ValueError("Укажите группу работ.")
-    # Границы группы задаёт календарь сезонов. Молчаливый 200 оставлял бы
-    # клиента с датами, которые не сохранились.
+    # Одно окно на всю группу не пишется. Даты каждого сезона — в year_ranges.
     if str(period_start or "").strip() or str(period_end or "").strip():
         raise ValueError(
             "period_start и period_end для группы не сохраняются. "
-            "Даты сезона задаются в календаре сезонов."
+            "Даты сезона задаются отдельно для каждого выбранного года."
         )
     store = load_season_range_overrides()
     if clear:
@@ -250,6 +316,13 @@ def set_season_range_override(
     if years is not None:
         item["season_years"] = years
         item["season_year"] = years[-1]
+        if year_ranges is not None:
+            item["year_ranges"] = _require_year_ranges(year_ranges, years)
+        else:
+            prev = store.get(name) if isinstance(store.get(name), dict) else {}
+            kept = _keep_year_ranges(prev.get("year_ranges"), years)
+            if kept:
+                item["year_ranges"] = kept
 
     has_any = bool(_years_from_override(item))
     if not has_any:
@@ -397,6 +470,7 @@ def _build_group_meta(
                 }
             ),
             "has_override": has_override,
+            "year_ranges": _effective_year_ranges(years, calendar, override),
             "label": (
                 f"Операция: {name} · Сезон{'ы' if len(years) > 1 else ''}: {year_label} · "
                 f"Диапазон: {format_ru_date(start)}–{format_ru_date(end)}"
@@ -405,6 +479,9 @@ def _build_group_meta(
     ov = override or {}
     years = _years_from_override(ov) or list(default_years)
     calendar = calendar if calendar is not None else load_calendar_seasons(report_date)
+    custom_ranges = _keep_year_ranges(ov.get("year_ranges"), years)
+    if custom_ranges:
+        calendar = {**(calendar or {}), **custom_ranges}
     start, end = merged_period_for_group_years(years, report_date, calendar)
     has_override = bool(_years_from_override(ov))
     year_label = _format_years_label(years)
@@ -431,6 +508,7 @@ def _build_group_meta(
             }
         ),
         "has_override": has_override,
+        "year_ranges": _effective_year_ranges(years, calendar, ov),
         "label": (
             f"Операция: {name} · Сезон{'ы' if len(years) > 1 else ''}: {year_label} · "
             f"Диапазон: {format_ru_date(start)}–{format_ru_date(end)}"

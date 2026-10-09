@@ -50,6 +50,7 @@ export default function AppShell({
   secondaryToolbar = null,
   onPasswordChanged,
   cropwise = null,
+  equipment = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -128,6 +129,25 @@ export default function AppShell({
                         }}
                       >
                         Cropwise
+                      </Button>
+                    </Tooltip>
+                  ) : null}
+                  {equipment ? (
+                    <Tooltip title={equipment.caption}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={equipment.onClick}
+                        sx={{
+                          minWidth: 0,
+                          px: 1,
+                          py: 0.2,
+                          fontSize: "0.75rem",
+                          lineHeight: 1.5,
+                          textTransform: "none",
+                        }}
+                      >
+                        Оборудование
                       </Button>
                     </Tooltip>
                   ) : null}

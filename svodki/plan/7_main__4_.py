@@ -110,6 +110,12 @@ if _season_start_raw:
         SEASON_START = date.fromisoformat(_season_start_raw)
     except ValueError:
         pass
+try:
+    from season_unified import season_start_from_editor
+
+    SEASON_START = season_start_from_editor("2.9 Дискование", REPORT_DATE, SEASON_START)
+except Exception:
+    pass
 
 DAY_START_HOUR: int = 6
 DAY_END_HOUR:   int = 6

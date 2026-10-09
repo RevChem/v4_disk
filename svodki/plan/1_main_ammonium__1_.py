@@ -332,6 +332,17 @@ def _machine_qualifies_for_area(total: float, min_ha: float) -> bool:
     return tc >= min_ha
 
 
+def _group_period_end_if_set(group_name: str) -> date | None:
+    """Конец окна, если в редакторе сохранены свои даты сезонов этой операции."""
+    try:
+        cfg = resolve_group_season_config(group_name, REPORT_DATE)
+        if cfg.get("has_own_ranges") and cfg.get("period_end"):
+            return date.fromisoformat(str(cfg["period_end"])[:10])
+    except Exception:
+        return None
+    return None
+
+
 def _group_period_start(group_name: str) -> date:
     """Нижняя граница смен — единый season_unified (редактор планов)."""
     try:
@@ -2180,6 +2191,7 @@ async def _fetch_day_stats_for_work_types_impl(
     cutoff_str       = fetch_cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     DAY_START_HOUR   = 6
     group_period_start = _group_period_start(group_name)
+    group_period_end = _group_period_end_if_set(group_name)
     area_min_ha = _detail_area_min_ha(group_name)
     is_plow = group_name == PLOW_GROUP_NAME
     _fact_seasons = _allowed_task_seasons_for_group(group_name)
@@ -2380,6 +2392,8 @@ async def _fetch_day_stats_for_work_types_impl(
             continue
         shift_date, shift_ds, shift_co = sw
         if shift_date < group_period_start:
+            continue
+        if group_period_end is not None and shift_date > group_period_end:
             continue
         grain_mach = _counts_as_grain_machine(t)
 
@@ -2665,6 +2679,8 @@ async def _fetch_day_stats_for_work_types_impl(
                 continue
             shift_date, _, shift_co = sw
             if shift_date < group_period_start or shift_date >= REPORT_DATE:
+                continue
+            if group_period_end is not None and shift_date > group_period_end:
                 continue
             day_key = shift_date.isoformat()
             for item in items:

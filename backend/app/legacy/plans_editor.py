@@ -802,7 +802,7 @@ def _source_contains_plan(source: str, plan: dict[str, Any]) -> bool:
 
 
 def _sync_hardcoded_plan_note(effective: dict[str, Any]) -> str:
-    """Пишет HARDCODED_PLAN из редактора в plans.py и убирает эти правки из JSON."""
+    """Пишет HARDCODED_PLAN из редактора в plans.py. JSON редактора не меняет."""
     plan = effective.get("HARDCODED_PLAN")
     if not isinstance(plan, dict):
         return "В редакторе нет площадей плана."
@@ -817,10 +817,6 @@ def _sync_hardcoded_plan_note(effective: dict[str, Any]) -> str:
         with _BASE_CACHE_LOCK:
             _BASE_CACHE["key"] = None
             _BASE_CACHE["value"] = None
-        edits = deepcopy(load_edits_store())
-        if "HARDCODED_PLAN" in edits:
-            edits.pop("HARDCODED_PLAN", None)
-            save_edits_store(edits)
     except OSError as exc:
         return f"Не удалось записать plans.py: {exc}"
     except (ValueError, SyntaxError) as exc:
@@ -840,7 +836,7 @@ def _state_with_plan_sync(state: dict[str, Any], report_date: date | None) -> di
 
 @serialized_rmw(name="plans_edits")
 def sync_hardcoded_plan_to_file(report_date: date | None = None) -> dict[str, Any]:
-    """Кнопка «Синхронизация plans.py»: все площади плана из редактора → plans.py."""
+    """Кнопка «Синхронизация plans.py»: площади из редактора пишутся в plans.py, JSON не меняется."""
     state = get_editor_state(report_date)
     return _state_with_plan_sync(state, report_date)
 

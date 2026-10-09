@@ -71,6 +71,7 @@ export default function DashboardPage({
   onHeaderToolsChange,
   onOpenTaskFacts,
   compareCropwise = false,
+  equipmentRequest = 0,
 }) {
   const [summaryDateLocal, setSummaryDateLocal] = useState(todayIso());
   const summaryDate = summaryDateProp ?? summaryDateLocal;
@@ -110,6 +111,11 @@ export default function DashboardPage({
   const [report27CustomTimeTo, setReport27CustomTimeTo] = useState("06:00");
   const [report27CustomGenerating, setReport27CustomGenerating] = useState(false);
   const [report27CustomError, setReport27CustomError] = useState("");
+
+  useEffect(() => {
+    if (!equipmentRequest) return;
+    setProverkaMachinesOpen(true);
+  }, [equipmentRequest]);
 
   const canPlans = user?.role === "developer" || user?.role === "admin" || user?.role === "user";
   const canProverka = user?.role === "developer";
@@ -477,26 +483,6 @@ export default function DashboardPage({
                   На выбранную дату: {files.length} сводок
                 </Typography>
 
-                {availableDates.length > 0 && (
-                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                    {availableDates.slice(0, 8).map((d) => {
-                      const dateStr = d.summary_date;
-                      const selected = dateStr === summaryDate;
-                      return (
-                        <Chip
-                          key={dateStr}
-                          size="small"
-                          variant={selected ? "filled" : "outlined"}
-                          color={selected ? "primary" : "default"}
-                          clickable
-                          onClick={() => setSummaryDate(dateStr)}
-                          label={`${dateStr} · ${d.count}`}
-                        />
-                      );
-                    })}
-                  </Stack>
-                )}
-
                 <Box sx={{ p: 1.25, border: 1, borderColor: "divider", borderRadius: 1.5 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Typography variant="body2" color="text.secondary">
@@ -562,6 +548,25 @@ export default function DashboardPage({
                       ))}
                     </FormGroup>
                   </Collapse>
+                  {availableDates.length > 0 && (
+                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+                      {availableDates.slice(0, 8).map((d) => {
+                        const dateStr = d.summary_date;
+                        const selected = dateStr === summaryDate;
+                        return (
+                          <Chip
+                            key={dateStr}
+                            size="small"
+                            variant={selected ? "filled" : "outlined"}
+                            color={selected ? "primary" : "default"}
+                            clickable
+                            onClick={() => setSummaryDate(dateStr)}
+                            label={`${dateStr} · ${d.count}`}
+                          />
+                        );
+                      })}
+                    </Stack>
+                  )}
                 </Box>
 
                 <Button
@@ -648,7 +653,7 @@ export default function DashboardPage({
                         onClick={() => setProverkaMachinesOpen(true)}
                         startIcon={<PrecisionManufacturingRoundedIcon sx={{ fontSize: 18 }} />}
                       >
-                        Проверка кол-ва машин
+                        Оборудование
                       </Button>
                     )}
                   </>
@@ -762,6 +767,7 @@ export default function DashboardPage({
         open={proverkaMachinesOpen}
         onClose={() => setProverkaMachinesOpen(false)}
         summaryDate={summaryDate}
+        runToken={equipmentRequest}
       />
       <FieldSeasonDialog
         open={fieldSeasonOpen}

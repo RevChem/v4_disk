@@ -127,6 +127,7 @@ export default function App() {
     () => window.localStorage.getItem("svodki.cropwiseCheck") === "1",
   );
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
+  const [equipmentRequest, setEquipmentRequest] = useState(0);
   const cropwiseActive = cropwiseOn && cropwiseCookie;
   const cropwiseCaption = !cropwiseCookie
     ? "На сервере нет cookie Cropwise — сводки создаются без проверки"
@@ -639,6 +640,15 @@ export default function App() {
             ? { active: cropwiseActive, caption: cropwiseCaption, onToggle: toggleCropwise }
             : null
         }
+        equipment={
+          isDeveloper
+            ? {
+                caption:
+                  "Сверить число техники в готовых Excel за выбранную дату со сводкой 2",
+                onClick: () => setEquipmentRequest((n) => n + 1),
+              }
+            : null
+        }
         showAiButton={isDeveloper}
         onInterfaceOpen={() => setInterfaceOpen(true)}
         onAiOpen={() => setAiMenuOpen(true)}
@@ -670,6 +680,7 @@ export default function App() {
           }}
           onOpenTaskFacts={isDeveloper ? openTaskFacts : undefined}
           compareCropwise={cropwiseActive}
+          equipmentRequest={equipmentRequest}
         />
       </AppShell>
       <GenerationQueueDrawer

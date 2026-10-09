@@ -419,6 +419,36 @@ def _env_override_for_group(group_name: str, report_date: date) -> dict[str, Any
     return ov
 
 
+def _calendar_for_group(calendar: dict[str, Any], group_meta: dict[str, Any]) -> dict[str, Any]:
+    """Общий календарь сезонов, поверх него — даты конкретной агрооперации."""
+    cal = dict(calendar or {})
+    raw = group_meta.get("year_ranges") if isinstance(group_meta, dict) else None
+    if not isinstance(raw, dict):
+        return cal
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        ps = _parse_iso_date(entry.get("period_start"))
+        pe = _parse_iso_date(entry.get("period_end"))
+        if ps and pe and ps <= pe:
+            cal[str(key)] = {"period_start": ps.isoformat(), "period_end": pe.isoformat()}
+    return cal
+
+
+def _has_own_year_ranges(group_meta: dict[str, Any]) -> bool:
+    raw = group_meta.get("year_ranges") if isinstance(group_meta, dict) else None
+    if not isinstance(raw, dict):
+        return False
+    for entry in raw.values():
+        if not isinstance(entry, dict):
+            continue
+        ps = _parse_iso_date(entry.get("period_start"))
+        pe = _parse_iso_date(entry.get("period_end"))
+        if ps and pe and ps <= pe:
+            return True
+    return False
+
+
 def _editor_group_override(run_override: dict[str, Any] | None, group_name: str) -> dict[str, Any]:
     """Срез run_override.by_group для одной операции (proverka / тематические сводки)."""
     raw = (run_override or {}).get("by_group") or {}
@@ -494,28 +524,36 @@ def resolve_group_season_config(
 
     default_start = default_period_start_for_group(name, report_date)
     is_harvest = name.startswith("5.0 Уборка")
-    period_start = None if is_harvest else group_ov.get("period_start", run_ov.get("period_start"))
-    period_end = None if is_harvest else group_ov.get("period_end", run_ov.get("period_end"))
+    group_calendar = _calendar_for_group(calendar, gm)
+    own_ranges = _has_own_year_ranges(gm)
+    # Даты сезонов операции задают окно сами, в том числе для уборки.
+    period_locked = is_harvest and not own_ranges
+    if own_ranges:
+        period_start = None
+        period_end = None
+    else:
+        period_start = None if period_locked else group_ov.get("period_start", run_ov.get("period_start"))
+        period_end = None if period_locked else group_ov.get("period_end", run_ov.get("period_end"))
 
     if (
-        not is_harvest
+        not period_locked
         and period_start is None
         and period_end is None
-        and has_file_override
         and history_years
+        and (has_file_override or own_ranges)
     ):
         try:
             from season_calendar import merged_period_for_years
 
-            ps, pe = merged_period_for_years(history_years, report_date, calendar)
+            ps, pe = merged_period_for_years(history_years, report_date, group_calendar)
             period_start = ps.isoformat()
             period_end = pe.isoformat()
         except ImportError:
             period_start = period_end = None
 
-    if not is_harvest and period_start is None:
+    if not period_locked and not own_ranges and period_start is None:
         period_start = ov.get("period_start")
-    if not is_harvest and period_end is None:
+    if not period_locked and not own_ranges and period_end is None:
         period_end = ov.get("period_end")
 
     if not period_start or not period_end:
@@ -523,14 +561,12 @@ def resolve_group_season_config(
             from season_calendar import merged_period_for_years
 
             # none: окно дат до report_date (не календарь Cropwise — иначе обрезка на 01.07).
-            if is_harvest:
+            if period_locked:
                 ps, pe = combine_season_start_for_date(report_date), report_date
-            elif rule == "none" and not has_file_override:
+            elif rule == "none" and not has_file_override and not own_ranges:
                 ps, pe = default_start, report_date
-            elif has_file_override and history_years:
-                ps, pe = merged_period_for_years(history_years, report_date, calendar)
-            elif history_years and rule != "none":
-                ps, pe = merged_period_for_years(history_years, report_date, calendar)
+            elif history_years and (has_file_override or own_ranges or rule != "none"):
+                ps, pe = merged_period_for_years(history_years, report_date, group_calendar)
             elif name.startswith("5.0 Уборка"):
                 ps, pe = default_start, report_date
             else:
@@ -552,6 +588,7 @@ def resolve_group_season_config(
         "period_end": pe_iso,
         "task_season_plow_only": plow_only_for_rule(rule) and name == "2.4 Вспашка",
         "has_file_override": has_file_override,
+        "has_own_ranges": own_ranges,
         "crop_priority_year": history_years[-1] if history_years else season_year_for_date(report_date),
     }
 
@@ -745,6 +782,39 @@ def filter_tasks_by_group_seasons(
     if not allowed:
         return list(tasks)
     return [task for task in tasks if task_fact_season_text(task) in allowed]
+
+
+def editor_period_bounds(group_name: str, report_date: date) -> tuple[date, date] | None:
+    """Свои даты сезонов операции из редактора. None — дат ещё не сохраняли."""
+    cfg = resolve_group_season_config(str(group_name or "").strip(), report_date)
+    if not cfg.get("has_own_ranges"):
+        return None
+    try:
+        start = date.fromisoformat(str(cfg["period_start"])[:10])
+        end = date.fromisoformat(str(cfg["period_end"])[:10])
+    except ValueError:
+        return None
+    return start, end
+
+
+def season_start_from_editor(
+    group_names: str | list[str] | tuple[str, ...],
+    report_date: date,
+    fallback: date,
+) -> date:
+    """Начало окна сводки.
+
+    Если свои даты сохранены у каждой группы сводки — берётся самый ранний старт.
+    Иначе остаётся прежнее начало сводки, чтобы группа без своих дат не обрезалась.
+    """
+    if isinstance(group_names, str):
+        names = [group_names]
+    else:
+        names = [str(name).strip() for name in group_names if str(name).strip()]
+    bounds = [editor_period_bounds(name, report_date) for name in names]
+    if names and all(item is not None for item in bounds):
+        return min(item[0] for item in bounds if item is not None)
+    return fallback
 
 
 def period_range_for_group(group_name: str, report_date: date) -> tuple[date, date]:

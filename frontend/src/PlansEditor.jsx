@@ -220,6 +220,43 @@ function yearsFromSeasonMeta(meta) {
   return [];
 }
 
+function defaultYearRange(year, calendarSeasons) {
+  const y = Number(year);
+  const row = calendarSeasons?.[String(y)] || {};
+  return {
+    period_start: row.period_start || `${y - 1}-07-01`,
+    period_end: row.period_end || `${y}-07-01`,
+  };
+}
+
+function rangesForYears(years, meta, calendarSeasons) {
+  const stored = meta?.year_ranges || {};
+  const out = {};
+  for (const y of years) {
+    const key = String(y);
+    const row = stored[key] || calendarSeasons?.[key] || {};
+    out[key] = {
+      period_start: row.period_start || `${y - 1}-07-01`,
+      period_end: row.period_end || `${y}-07-01`,
+    };
+  }
+  return out;
+}
+
+function downloadPlansEditorJson(edits) {
+  const blob = new Blob([`${JSON.stringify(edits ?? {}, null, 2)}\n`], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "plans_edits.json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function PlansEditor({ summaryDate = null }) {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -268,8 +305,8 @@ export default function PlansEditor({ summaryDate = null }) {
           mode === 1
             ? `«${crop}» входит в «Иные культуры».`
             : mode === 2
-              ? `«${crop}» в сводках не считается.`
-              : `«${crop}» снова считается отдельно.`
+              ? `«${crop}» в сводках не учитывается.`
+              : `«${crop}» снова учитывается отдельно.`
         );
       } catch (e) {
         setError(formatError(e, "Не удалось сохранить учёт культуры"));
@@ -366,11 +403,20 @@ export default function PlansEditor({ summaryDate = null }) {
   const seasonLabel = seasonMeta?.label || "";
   const serverRangeYears = useMemo(() => yearsFromSeasonMeta(seasonMeta), [seasonMeta]);
   const [localRangeYearsByGroup, setLocalRangeYearsByGroup] = useState({});
+  const [localYearRangesByGroup, setLocalYearRangesByGroup] = useState({});
   const [dirtySeasonGroups, setDirtySeasonGroups] = useState(() => new Set());
   const seasonSelectionDirty = dirtySeasonGroups.has(workGroup);
   const rangeYears = seasonSelectionDirty
     ? localRangeYearsByGroup[workGroup] ?? serverRangeYears
     : serverRangeYears;
+  const calendarSeasons = state?.season_meta?.calendar_seasons || {};
+  const serverYearRanges = useMemo(
+    () => rangesForYears(serverRangeYears, seasonMeta, calendarSeasons),
+    [serverRangeYears, seasonMeta, calendarSeasons]
+  );
+  const yearRanges = seasonSelectionDirty
+    ? localYearRangesByGroup[workGroup] ?? serverYearRanges
+    : serverYearRanges;
 
   const seasonYearOptions = useMemo(() => {
     const fromMeta = Array.isArray(seasonMeta?.season_year_options)
@@ -382,18 +428,43 @@ export default function PlansEditor({ summaryDate = null }) {
   const toggleSeasonYear = (year) => {
     const y = Number(year);
     if (!Number.isFinite(y) || !workGroup) return;
+    const currentYears = localRangeYearsByGroup[workGroup] ?? serverRangeYears;
+    const set = new Set(currentYears);
+    if (set.has(y)) {
+      if (set.size <= 1) return;
+      set.delete(y);
+    } else {
+      set.add(y);
+    }
+    const nextYears = [...set].sort((a, b) => a - b);
+    const nextRanges = { ...(localYearRangesByGroup[workGroup] ?? serverYearRanges) };
+    const key = String(y);
+    if (set.has(y)) {
+      if (!nextRanges[key]) nextRanges[key] = defaultYearRange(y, calendarSeasons);
+    } else {
+      delete nextRanges[key];
+    }
+    for (const rangeKey of Object.keys(nextRanges)) {
+      if (!set.has(Number(rangeKey))) delete nextRanges[rangeKey];
+    }
     setDirtySeasonGroups((prev) => new Set(prev).add(workGroup));
-    setLocalRangeYearsByGroup((prev) => {
-      const current = prev[workGroup] ?? serverRangeYears;
-      const set = new Set(current);
-      if (set.has(y)) {
-        if (set.size <= 1) return prev;
-        set.delete(y);
-      } else {
-        set.add(y);
-      }
-      return { ...prev, [workGroup]: [...set].sort((a, b) => a - b) };
-    });
+    setLocalRangeYearsByGroup((prev) => ({ ...prev, [workGroup]: nextYears }));
+    setLocalYearRangesByGroup((prev) => ({ ...prev, [workGroup]: nextRanges }));
+  };
+
+  const updateYearRange = (year, field, value) => {
+    if (!workGroup) return;
+    const key = String(year);
+    const nextRanges = { ...(localYearRangesByGroup[workGroup] ?? serverYearRanges) };
+    nextRanges[key] = {
+      ...(nextRanges[key] || defaultYearRange(year, calendarSeasons)),
+      [field]: value,
+    };
+    setDirtySeasonGroups((prev) => new Set(prev).add(workGroup));
+    setLocalRangeYearsByGroup((prev) =>
+      prev[workGroup] ? prev : { ...prev, [workGroup]: serverRangeYears }
+    );
+    setLocalYearRangesByGroup((prev) => ({ ...prev, [workGroup]: nextRanges }));
   };
 
   const clearSeasonSelectionDraft = (groupName) => {
@@ -409,6 +480,12 @@ export default function PlansEditor({ summaryDate = null }) {
       delete next[groupName];
       return next;
     });
+    setLocalYearRangesByGroup((prev) => {
+      if (!(groupName in prev)) return prev;
+      const next = { ...prev };
+      delete next[groupName];
+      return next;
+    });
   };
 
   const saveSeasonRange = async ({ clear = false } = {}) => {
@@ -417,10 +494,21 @@ export default function PlansEditor({ summaryDate = null }) {
     setError("");
     setSuccess("");
     try {
+      const rangesPayload = {};
+      if (!clear) {
+        for (const y of rangeYears) {
+          const row = yearRanges[String(y)] || defaultYearRange(y, calendarSeasons);
+          rangesPayload[String(y)] = {
+            period_start: row.period_start,
+            period_end: row.period_end,
+          };
+        }
+      }
       const data = await updatePlansEditorSeasonRange(
         {
           group_name: workGroup,
           season_years: clear ? null : rangeYears,
+          year_ranges: clear ? null : rangesPayload,
           clear,
         },
         summaryDate
@@ -660,13 +748,13 @@ export default function PlansEditor({ summaryDate = null }) {
   const renderModeDivider = (kind) => {
     const targetMode = !dragCrop ? null : kind === "other" ? (dragCrop.mode === 1 ? 0 : 1) : dragCrop.mode === 2 ? 1 : 2;
     const active = Boolean(dragCrop) && targetMode !== dragCrop.mode;
-    const idleLabel = kind === "other" ? "Иные культуры" : "Не считать";
+    const idleLabel = kind === "other" ? "Иные культуры" : "Не учитываются";
     const hint =
       targetMode === 0
-        ? "Отпустите здесь — культура будет считаться"
+        ? "Отпустите здесь — культура будет учитываться"
         : targetMode === 1
           ? "Отпустите здесь — культура войдёт в «Иные культуры»"
-          : "Отпустите здесь — культура не будет считаться";
+          : "Отпустите здесь — культура не будет учитываться";
     return (
       <TableRow
         onDragOver={(event) => {
@@ -868,9 +956,9 @@ export default function PlansEditor({ summaryDate = null }) {
             MenuProps={{ disableScrollLock: true }}
             sx={{ minWidth: 148, fontSize: 13 }}
           >
-            <MenuItem value={0}>Считать</MenuItem>
+            <MenuItem value={0}>Учитываются</MenuItem>
             <MenuItem value={1}>Иные культуры</MenuItem>
-            <MenuItem value={2}>Не считать</MenuItem>
+            <MenuItem value={2}>Не учитываются</MenuItem>
           </Select>
         </TableCell>
         <TableCell align="center" sx={{ ...rankStickySx, p: 0.75 }}>
@@ -1064,7 +1152,7 @@ export default function PlansEditor({ summaryDate = null }) {
           )}
           {section?.kind === "nested_3" && workGroup && countedCrops.length + otherCrops.length + skippedCrops.length > 0 && (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Считать: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не считать:{" "}
+              Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
               {skippedCrops.length}. Название можно перетащить через черту.
             </Typography>
           )}
@@ -1092,35 +1180,74 @@ export default function PlansEditor({ summaryDate = null }) {
                   <Button
                     variant="outlined"
                     size="small"
-                    disabled={saving || !workGroup || !seasonMeta.has_override}
-                    onClick={() => saveSeasonRange({ clear: true })}
+                    disabled={!state}
+                    onClick={() => downloadPlansEditorJson(state?.edits)}
                   >
-                    Сбросить
+                    Скачать json
                   </Button>
                 </Stack>
-                <Stack spacing={0.75}>
-                  <Typography variant="caption" color="text.secondary">
-                    Сезоны Cropwise (можно несколько, напр. посев — 2026 и 2027):
-                  </Typography>
-                  <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-                    {seasonYearOptions.map((y) => {
-                      const selected = rangeYears.includes(y);
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={2}
+                  alignItems="flex-start"
+                >
+                  <Stack spacing={0.75} sx={{ flex: "1 1 auto" }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Сезоны Cropwise (можно несколько, напр. посев — 2026 и 2027):
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                      {seasonYearOptions.map((y) => {
+                        const selected = rangeYears.includes(y);
+                        return (
+                          <Chip
+                            key={y}
+                            label={String(y)}
+                            clickable
+                            color={selected ? "primary" : "default"}
+                            variant={selected ? "filled" : "outlined"}
+                            disabled={saving}
+                            onClick={() => toggleSeasonYear(y)}
+                          />
+                        );
+                      })}
+                    </Stack>
+                  </Stack>
+                  <Stack spacing={1} sx={{ flex: "0 0 auto" }}>
+                    {[...rangeYears].sort((a, b) => a - b).map((y) => {
+                      const row = yearRanges[String(y)] || defaultYearRange(y, calendarSeasons);
                       return (
-                        <Chip
-                          key={y}
-                          label={String(y)}
-                          clickable
-                          color={selected ? "primary" : "default"}
-                          variant={selected ? "filled" : "outlined"}
-                          disabled={saving}
-                          onClick={() => toggleSeasonYear(y)}
-                        />
+                        <Stack key={y} direction="row" spacing={1} alignItems="center">
+                          <Typography variant="body2" fontWeight={700} sx={{ width: 52 }}>
+                            {y}
+                          </Typography>
+                          <TextField
+                            size="small"
+                            type="date"
+                            label="Начало"
+                            value={row.period_start || ""}
+                            onChange={(e) => updateYearRange(y, "period_start", e.target.value)}
+                            disabled={saving}
+                            InputLabelProps={{ shrink: true }}
+                            sx={{ width: 168 }}
+                          />
+                          <TextField
+                            size="small"
+                            type="date"
+                            label="Конец"
+                            value={row.period_end || ""}
+                            onChange={(e) => updateYearRange(y, "period_end", e.target.value)}
+                            disabled={saving}
+                            InputLabelProps={{ shrink: true }}
+                            sx={{ width: 168 }}
+                          />
+                        </Stack>
                       );
                     })}
                   </Stack>
                 </Stack>
                 <Typography variant="caption" color="text.secondary">
-                  Диапазон считается из вкладки «Сезоны» + выбранные годы. По умолчанию сезоны:{" "}
+                  У каждого выбранного сезона свой диапазон дат. Если его ещё не сохраняли, даты берутся
+                  из вкладки «Сезоны». По умолчанию сезоны:{" "}
                   {(seasonMeta.default_season_years || [seasonMeta.default_season_year]).join(", ")}.
                   {seasonSelectionDirty
                     ? " Нажмите «Сохранить сезоны» — «Обновить» не сбрасывает несохранённый выбор."
@@ -1223,7 +1350,7 @@ export default function PlansEditor({ summaryDate = null }) {
                     <TableCell
                       align="center"
                       sx={{ ...modeStickySx, top: 0, zIndex: 5, fontWeight: 700 }}
-                      title="Иные культуры — одна строка плана и факта. Не считать — гектары в сводки не входят."
+                      title="Иные культуры — одна строка плана и факта. Не учитываются — гектары в сводки не входят."
                     >
                       Учёт в сводках
                     </TableCell>

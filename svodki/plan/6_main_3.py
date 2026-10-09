@@ -137,6 +137,16 @@ if _season_start_raw:
         SEASON_START = date.fromisoformat(_season_start_raw)
     except ValueError:
         pass
+try:
+    from season_unified import season_start_from_editor
+
+    SEASON_START = season_start_from_editor(
+        ("3.1 Опрыскивание", "3.2 Опрыскивание (овощи)"),
+        REPORT_DATE,
+        SEASON_START,
+    )
+except Exception:
+    pass
 
 # Настройка временного диапазона суток
 # DAY_START_HOUR — час начала суток (по умолчанию 6 = 06:00)

@@ -144,8 +144,8 @@ export default function PlansSeasonsEditor({
       </Button>
 
       <Typography variant="caption" color="text.secondary">
-        Файл: season_ranges.json → calendar_seasons. Даты групп работ задаются только выбором сезонов на
-        вкладках планов.
+        Файл: season_ranges.json → calendar_seasons. Это общие границы по умолчанию. У каждой
+        агрооперации даты выбранных сезонов задаются отдельно.
       </Typography>
     </Stack>
   );

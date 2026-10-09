@@ -463,12 +463,20 @@ export async function updatePlansEditorWorkGroups(groups, summaryDate = null) {
 }
 
 export async function updatePlansEditorSeasonRange(
-  { group_name, period_start = null, period_end = null, season_year = null, season_years = null, clear = false },
+  {
+    group_name,
+    period_start = null,
+    period_end = null,
+    season_year = null,
+    season_years = null,
+    year_ranges = null,
+    clear = false,
+  },
   summaryDate = null
 ) {
   const { data } = await api.put(
     "/plans-editor/season-range",
-    { group_name, period_start, period_end, season_year, season_years, clear },
+    { group_name, period_start, period_end, season_year, season_years, year_ranges, clear },
     { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: PLANS_TIMEOUT_MS }
   );
   return data;

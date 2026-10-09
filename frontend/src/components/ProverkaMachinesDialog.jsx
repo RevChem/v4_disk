@@ -34,7 +34,7 @@ import {
 
 // Полностью независимый от ProverkaDialog компонент: свой стейт, свой job,
 // свой API. Проверка читает уже готовые Excel за выбранную дату, сводки не пересчитываются.
-export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onComplete }) {
+export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onComplete, runToken = 0 }) {
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [jobId, setJobId] = useState(null);
@@ -43,6 +43,8 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
   const [running, setRunning] = useState(false);
   const [checkedAt, setCheckedAt] = useState(null);
   const runningRef = useRef(false);
+  const summaryDateRef = useRef(summaryDate);
+  summaryDateRef.current = summaryDate;
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
 
@@ -136,24 +138,67 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
     setSelectedIds(checked ? sortedCatalog.map((i) => i.id) : []);
   }
 
-  async function handleRun() {
+  async function startCheck(reportIds) {
     setError("");
-    if (!selectedIds.length) {
+    if (!reportIds.length) {
       setError("Выберите хотя бы одну сводку");
+      setRunning(false);
+      runningRef.current = false;
       return;
     }
     setRunning(true);
+    runningRef.current = true;
     setJob(null);
     try {
       const res = await runProverkaMachines({
         reportDate: summaryDate,
-        reportIds: selectedIds,
+        reportIds,
       });
       setJobId(res.job_id);
     } catch (e) {
       setError(String(e.message || e));
       setRunning(false);
+      runningRef.current = false;
     }
+  }
+
+  // Кнопка «Оборудование» в шапке: сразу сверяем сводку 2 и все сводки,
+  // которые с ней пересекаются по операциям. Таймер отсекает повтор StrictMode.
+  useEffect(() => {
+    if (!runToken) return undefined;
+    let cancelled = false;
+    let started = false;
+    runningRef.current = true;
+    setRunning(true);
+    setJob(null);
+    setError("");
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      started = true;
+      runProverkaMachines({ reportDate: summaryDateRef.current, reportIds: ["2"] })
+        .then((res) => {
+          if (cancelled) return;
+          setJobId(res.job_id);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setError(String(e.message || e));
+          setRunning(false);
+          runningRef.current = false;
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (!started) {
+        runningRef.current = false;
+        setRunning(false);
+      }
+    };
+  }, [runToken]);
+
+  async function handleRun() {
+    await startCheck(selectedIds);
   }
 
   async function handleCancel() {
@@ -185,6 +230,8 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
       }
     }
     return [...ids].sort((a, b) => {
+      if (a === "2") return -1;
+      if (b === "2") return 1;
       const na = Number(a);
       const nb = Number(b);
       if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na;
@@ -196,14 +243,14 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <PrecisionManufacturingRoundedIcon color="primary" />
-        Проверка количества машин
+        Оборудование
       </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
-            Дата отчёта: <strong>{summaryDate}</strong> · по готовым Excel-файлам: число
-            задействованной техники по операциям сверяется между сводками. Сначала
-            сформируйте нужные сводки.
+            Дата отчёта: <strong>{summaryDate}</strong> · по готовым Excel число техники
+            сверяется со <strong>сводкой 2</strong> по общим операциям. Сводки заново не
+            считаются: сначала сформируйте файлы за эту дату.
           </Typography>
 
           {job?.missing_file_report_ids?.length > 0 && (
@@ -299,8 +346,8 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
                     <TableCell>Операция</TableCell>
                     <TableCell>Сводки</TableCell>
                     {peerIds.map((rid) => (
-                      <TableCell key={rid} align="right">
-                        {rid}
+                      <TableCell key={rid} align="right" sx={rid === "2" ? { fontWeight: 700 } : undefined}>
+                        {rid === "2" ? "2" : rid}
                       </TableCell>
                     ))}
                     <TableCell align="right">Max diff</TableCell>
@@ -313,7 +360,7 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
                       <TableCell>{row.display_name || row.group_name}</TableCell>
                       <TableCell>{(row.active_reports || row.peer_reports || []).join("+")}</TableCell>
                       {peerIds.map((rid) => (
-                        <TableCell key={rid} align="right">
+                        <TableCell key={rid} align="right" sx={rid === "2" ? { fontWeight: 700 } : undefined}>
                           {row.totals?.[rid] ?? "—"}
                         </TableCell>
                       ))}

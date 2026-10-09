@@ -595,10 +595,13 @@ def get_namolot_harvest_holding(
     return round(season), round(day)
 
 def resolve_combine_season_start(report_date: date) -> date:
-    """Начало уборки: та же дата, что combine_season_start_for_date (10 июня)."""
+    """Начало уборки: свои даты «5.0 Уборка» из редактора, иначе 10 июня."""
     try:
-        from season_unified import combine_season_start_for_date
+        from season_unified import combine_season_start_for_date, editor_period_bounds
 
+        saved = editor_period_bounds("5.0 Уборка", report_date)
+        if saved:
+            return saved[0]
         return combine_season_start_for_date(report_date)
     except Exception:
         pass
@@ -616,6 +619,14 @@ def resolve_combine_season_start(report_date: date) -> date:
 
 def resolve_veg_season_start(report_date: date) -> date:
     """Сезон овощей 5.4 (1 июня ± SVODKI_WORK_SEASON_START_DATE)."""
+    try:
+        from season_unified import editor_period_bounds
+
+        saved = editor_period_bounds("5.4 Уборка картофеля, лука", report_date)
+        if saved:
+            return saved[0]
+    except Exception:
+        pass
     veg_start = date(report_date.year, 6, 1)
     if report_date < veg_start:
         veg_start = date(report_date.year - 1, 6, 1)
