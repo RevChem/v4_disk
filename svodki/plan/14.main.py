@@ -207,6 +207,25 @@ HARVEST_WORK_TYPE_IDS: tuple[int, ...] = tuple(sorted(
     | set(SILAGE_CORN_MOWING_WT_IDS)
 ))
 
+# Кормовые не входят в зерновую урожайность комбайнов (сводка 14.2).
+# Год в названии («Многолетние травы 2024 года») отсекается по префиксу.
+FORAGE_CROPS: frozenset[str] = frozenset({
+    "Кукуруза на силос",
+    "Однолетние травы",
+    "Многолетние травы",
+    "Люцерна",
+    "Луговые травы",
+})
+# Овощной блок 14.2: только культуры группы «5.4 Уборка картофеля, лука».
+VEG_CROPS_ALLOWED: frozenset[str] = frozenset({
+    "Картофель",
+    "Лук",
+    "Морковь",
+    "Свекла столовая",
+    "Свекла",
+    "Капуста",
+})
+
 # =============================================================================
 # NAMOLOT API — валовый сбор (т) по гос. номеру техники за смену
 # =============================================================================
@@ -2251,6 +2270,25 @@ def _reassign_spurious_crop_fragments(
     return df
 
 
+def _crop_listed(crop_name: str, catalog: frozenset[str] | set[str] | None) -> bool:
+    """Имя культуры входит в набор. «Многолетние травы» покрывает «… 2024 года»."""
+    if not catalog:
+        return False
+    norm = _normalize_crop_name(crop_name)
+    if not norm or norm == "—":
+        return False
+    for item in catalog:
+        item_n = _normalize_crop_name(item)
+        if not item_n:
+            continue
+        if norm == item_n:
+            return True
+        if item_n.endswith("травы") or item_n == "люцерна":
+            if norm.startswith(item_n + " "):
+                return True
+    return False
+
+
 def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dict],
                     harvester_ids: set[int], task_to_machine: dict, fmi_list: list[dict],
                     field_to_fg: dict, fg_to_folder: dict,
@@ -2260,7 +2298,9 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
                     field_to_crop_general: dict[int, str] | None = None,
                     field_to_group: dict[int, int] | None = None,
                     field_to_firm_folder: dict[int, int] | None = None,
-                    field_name_to_firm_folder: dict[str, int] | None = None) -> tuple[pd.DataFrame, list[int]]:
+                    field_name_to_firm_folder: dict[str, int] | None = None,
+                    allowed_crops: frozenset[str] | set[str] | None = None,
+                    excluded_crops: frozenset[str] | set[str] | None = None) -> tuple[pd.DataFrame, list[int]]:
     """
     Таблица СОБСТВЕННЫЕ по комбайнам.
     Данные — из API (machine_task_field_mapping_items, machines), не вручную.
@@ -2275,6 +2315,10 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
     один и тот же комбайн может за смену убирать две разные культуры, поэтому
     группировка по (machine_id, культура); номер группы — по полю с max площадью
     для этой пары. Если crop-параметры не переданы, «Культура» = «—».
+
+    allowed_crops / excluded_crops — необязательный отбор строк по культуре
+    (сводка 14.2: зерно без кормовых, овощи только из VEG_CROPS_ALLOWED).
+    Без них состав строк не меняется.
 
     Возвращает (DataFrame, номера групп по строкам для подсветки колонки «Номер группы»).
     """
@@ -2348,6 +2392,18 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
     else:
         firm_fmi = firm_fmi.copy()
         firm_fmi["crop"] = "—"
+
+    if allowed_crops is not None or excluded_crops is not None:
+        def _keep_crop(crop: str) -> bool:
+            if allowed_crops is not None and not _crop_listed(crop, allowed_crops):
+                return False
+            if excluded_crops is not None and _crop_listed(crop, excluded_crops):
+                return False
+            return True
+
+        firm_fmi = firm_fmi[firm_fmi["crop"].map(_keep_crop)]
+        if firm_fmi.empty:
+            return pd.DataFrame(columns=OWN_COLUMNS), []
 
     # Группа = поле: сквозной номер field_to_group[field_id]. Строка — (машина, культура, поле).
     if field_to_group is None:

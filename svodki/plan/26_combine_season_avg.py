@@ -505,7 +505,7 @@ def _fetch_period_machine_tasks() -> list[dict]:
     return unique_tasks
 
 
-def collect_data(
+async def collect_data(
     field_to_firm,
     machine_name,
     machine_group,
@@ -532,7 +532,8 @@ def collect_data(
 
     task_ids  = [t["id"] for t in harvester_tasks]
     print("  Загружаем field mapping items (async)...")
-    mtfmi_map = run_report_async(fetch_mtfmi_async(task_ids))
+    # Уже внутри build_report_async: повторный asyncio.run здесь падает.
+    mtfmi_map = await fetch_mtfmi_async(task_ids)
 
     # machine_id → firm → day → {secs, area}
     machine_firm_days: dict[int, dict] = defaultdict(
@@ -1128,7 +1129,7 @@ async def build_report_async() -> None:
         )
     field_to_firm, machine_name, machine_group, machine_reg, machine_vin = refs
     with stage("collect_data (mtfmi + расчёт)"):
-        result = collect_data(
+        result = await collect_data(
             field_to_firm, machine_name, machine_group, machine_reg, machine_vin,
             all_tasks=all_tasks,
         )

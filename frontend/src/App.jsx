@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CssBaseline, ThemeProvider } from "@mui/material";
 
 import AiMenuDialog from "./components/AiMenuDialog";
+import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import TaskFactsDialog from "./components/TaskFactsDialog";
@@ -128,6 +129,8 @@ export default function App() {
   );
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
+  const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
+  const [cookieRevision, setCookieRevision] = useState(0);
   const cropwiseActive = cropwiseOn && cropwiseCookie;
   const cropwiseCaption = !cropwiseCookie
     ? "На сервере нет cookie Cropwise — сводки создаются без проверки"
@@ -148,7 +151,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [canGenerate]);
+  }, [canGenerate, cookieRevision]);
 
   function toggleCropwise() {
     if (!cropwiseCookie) {
@@ -449,7 +452,6 @@ export default function App() {
     if (user) {
       items.push({ id: "users", label: "Пользователи" });
     }
-    items.push({ id: "dashboard", label: "Сводки" });
     if (canGenerate) {
       items.push({ id: "logs", label: "Логи" });
     }
@@ -565,6 +567,7 @@ export default function App() {
     setAiPromptsOpen(false);
     setAiMenuOpen(false);
     setInterfaceOpen(false);
+    setCookieDialogOpen(false);
     setGenFailedItems([]);
     setGenErrorLogs([]);
     setLogsFocus(null);
@@ -640,6 +643,7 @@ export default function App() {
             ? { active: cropwiseActive, caption: cropwiseCaption, onToggle: toggleCropwise }
             : null
         }
+        onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
         equipment={
           isDeveloper
             ? {
@@ -696,6 +700,11 @@ export default function App() {
         onThemeChange={setTheme}
         customBackground={customBackground}
         onSettingsSaved={applyInterfaceSettings}
+      />
+      <CropwiseCookieDialog
+        open={cookieDialogOpen && isDeveloper}
+        onClose={() => setCookieDialogOpen(false)}
+        onSaved={() => setCookieRevision((value) => value + 1)}
       />
       <AiMenuDialog
         open={aiMenuOpen}

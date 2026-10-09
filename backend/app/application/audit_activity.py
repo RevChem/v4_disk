@@ -327,6 +327,9 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
         return f"{username} изменил промпты AI-разбора"
     if action == "proverka.ai_prompts.reset":
         return f"{username} сбросил промпты AI-разбора"
+    if action == "proverka.session_cookie.updated":
+        state = "задана" if d.get("configured") else "очищена"
+        return f"{username} обновил cookie Cropwise ({state})"
     if action == "proverka.ai_settings.updated":
         model = d.get("model") or "deepseek"
         return f"{username} изменил настройки AI ({model})"

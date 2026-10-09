@@ -276,6 +276,28 @@ export async function fetchCropwiseCookie() {
   return Boolean(data?.available);
 }
 
+export async function fetchCropwiseSessionCookie() {
+  try {
+    const { data } = await api.get("/proverka/session-cookie", { timeout: 15_000 });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function saveCropwiseSessionCookie(cookie) {
+  try {
+    const { data } = await api.put(
+      "/proverka/session-cookie",
+      { cookie: cookie || "" },
+      { timeout: 15_000 },
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function generateReports(summaryDate, reportIds, options = {}) {
   try {
     const payload = {

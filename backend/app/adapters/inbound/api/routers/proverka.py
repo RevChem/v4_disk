@@ -55,6 +55,7 @@ from app.adapters.outbound.proverka.service import (
     list_catalog,
     read_job_status,
     session_cookie_from_env,
+    save_cropwise_session_cookie,
     platform_summary,
     refresh_dashboard_check,
     request_proverka_cancel,
@@ -71,6 +72,8 @@ from app.schemas import (
     ProverkaAiHistoryOut,
     ProverkaAiReportOut,
     CancelProverkaJobIn,
+    CropwiseSessionCookieIn,
+    CropwiseSessionCookieOut,
     ProverkaCatalogOut,
     ProverkaDashboardOut,
     ProverkaJobOut,
@@ -95,6 +98,38 @@ log = get_logger(__name__)
 @router.get("/catalog", response_model=ProverkaCatalogOut)
 def get_proverka_catalog(_: User = Depends(require_developer_access)):
     return {"items": list_catalog(), "env_cookie": session_cookie_from_env()}
+
+
+@router.get("/session-cookie", response_model=CropwiseSessionCookieOut)
+def get_cropwise_session_cookie(_: User = Depends(require_developer_access)):
+    cookie = session_cookie_from_env()
+    return {"cookie": cookie, "configured": bool(cookie)}
+
+
+@router.put("/session-cookie", response_model=CropwiseSessionCookieOut)
+def put_cropwise_session_cookie(
+    payload: CropwiseSessionCookieIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_developer_access),
+):
+    try:
+        cookie = save_cropwise_session_cookie(payload.cookie)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Не удалось записать CROPWISE_SESSION_COOKIE в .env",
+        ) from exc
+    record_activity(
+        db,
+        action="proverka.session_cookie.updated",
+        user_id=user.id,
+        ip=get_client_ip(request),
+        configured=bool(cookie),
+    )
+    return {"cookie": cookie, "configured": bool(cookie)}
 
 
 @router.get("/platform-summary")

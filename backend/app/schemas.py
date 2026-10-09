@@ -111,6 +111,15 @@ class ProverkaCatalogOut(BaseModel):
     env_cookie: str = ""
 
 
+class CropwiseSessionCookieIn(BaseModel):
+    cookie: str = ""
+
+
+class CropwiseSessionCookieOut(BaseModel):
+    cookie: str = ""
+    configured: bool = False
+
+
 class ProverkaSeasonOverride(BaseModel):
     """Переопределение сезона на один запуск (пустые поля = из Редактора планов)."""
 

@@ -23,7 +23,6 @@ import {
 import CloudUploadRoundedIcon from "@mui/icons-material/CloudUploadRounded";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
 import AgricultureOutlinedIcon from "@mui/icons-material/AgricultureOutlined";
-import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
 import EventRoundedIcon from "@mui/icons-material/EventRounded";
 import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
@@ -642,18 +641,6 @@ export default function DashboardPage({
                         startIcon={<FactCheckRoundedIcon sx={{ fontSize: 18 }} />}
                       >
                         Проверка сводок
-                      </Button>
-                    )}
-                    {canProverka && (
-                      <Button
-                        variant="outlined"
-                        fullWidth
-                        size="small"
-                        sx={sidebarToolBtnSx}
-                        onClick={() => setProverkaMachinesOpen(true)}
-                        startIcon={<PrecisionManufacturingRoundedIcon sx={{ fontSize: 18 }} />}
-                      >
-                        Оборудование
                       </Button>
                     )}
                   </>

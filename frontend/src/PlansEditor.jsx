@@ -243,14 +243,64 @@ function rangesForYears(years, meta, calendarSeasons) {
   return out;
 }
 
-function downloadPlansEditorJson(edits) {
-  const blob = new Blob([`${JSON.stringify(edits ?? {}, null, 2)}\n`], {
+function operationNames(state) {
+  const names = [];
+  const seen = new Set();
+  const push = (name) => {
+    const text = String(name || "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    names.push(text);
+  };
+  for (const group of state?.effective?.WORK_GROUPS || state?.base?.WORK_GROUPS || []) {
+    push(group?.name);
+  }
+  for (const sectionKey of ["HARDCODED_PLAN", "AVAILABLE_OWN", "CROP_DISPLAY_RANK", "CROP_REPORT_MODE", "CROP_FIRM_HIDDEN"]) {
+    for (const name of Object.keys(state?.effective?.[sectionKey] || {})) push(name);
+  }
+  for (const name of Object.keys(state?.effective?.PLAN_RATE_PER_GROUP || {})) push(name);
+  for (const name of Object.keys(state?.season_meta?.by_group || {})) push(name);
+  return names;
+}
+
+function downloadAgroOperationsJson(state, localSeasons) {
+  const groups = state?.effective?.WORK_GROUPS || state?.base?.WORK_GROUPS || [];
+  const idsByName = new Map(
+    groups.map((group) => [String(group?.name || "").trim(), group?.ids || []])
+  );
+  const dirty = localSeasons?.dirtySeasonGroups;
+  const operations = {};
+  for (const name of operationNames(state)) {
+    const meta = state?.season_meta?.by_group?.[name] || {};
+    const unsaved = Boolean(dirty?.has?.(name));
+    operations[name] = {
+      work_type_ids: idsByName.get(name) || [],
+      season_years: unsaved
+        ? localSeasons.localRangeYearsByGroup?.[name] ?? meta.season_years ?? []
+        : meta.season_years ?? [],
+      year_ranges: unsaved
+        ? localSeasons.localYearRangesByGroup?.[name] ?? meta.year_ranges ?? {}
+        : meta.year_ranges ?? {},
+      HARDCODED_PLAN: state?.effective?.HARDCODED_PLAN?.[name] || {},
+      AVAILABLE_OWN: state?.effective?.AVAILABLE_OWN?.[name] || {},
+      PLAN_RATE_PER_GROUP: state?.effective?.PLAN_RATE_PER_GROUP?.[name] ?? null,
+      CROP_DISPLAY_RANK: state?.effective?.CROP_DISPLAY_RANK?.[name] || {},
+      CROP_REPORT_MODE: state?.effective?.CROP_REPORT_MODE?.[name] || {},
+      CROP_FIRM_HIDDEN: state?.effective?.CROP_FIRM_HIDDEN?.[name] || {},
+    };
+  }
+  const payload = {
+    report_date: state?.season_meta?.report_date || null,
+    calendar_seasons: state?.season_meta?.calendar_seasons || {},
+    operations,
+  };
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "plans_edits.json";
+  link.download = "agro_operations.json";
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -1105,6 +1155,20 @@ export default function PlansEditor({ summaryDate = null }) {
             >
               Синхронизация plans.py
             </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={loading || !state}
+              onClick={() =>
+                downloadAgroOperationsJson(state, {
+                  dirtySeasonGroups,
+                  localRangeYearsByGroup,
+                  localYearRangesByGroup,
+                })
+              }
+            >
+              Скачать json
+            </Button>
           </Stack>
         </Stack>
 
@@ -1176,14 +1240,6 @@ export default function PlansEditor({ summaryDate = null }) {
                     onClick={() => saveSeasonRange()}
                   >
                     Сохранить сезоны
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    disabled={!state}
-                    onClick={() => downloadPlansEditorJson(state?.edits)}
-                  >
-                    Скачать json
                   </Button>
                 </Stack>
                 <Stack

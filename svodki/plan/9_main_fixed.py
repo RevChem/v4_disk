@@ -2515,12 +2515,12 @@ def _plow_summary_row(
 def _plow_all_firms_rows_field_and_veg(
     by_firm_crop: dict[str, dict[str, dict]],
 ) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]], str]:
-    """Полевые культуры (+ «Иные») и овощи — два блока сводной вспашки.
+    """Одна таблица сводной вспашки: полевые культуры, овощи и «Иные».
 
     Свои строки — те же культуры, что листы «Вспашка …»: режим «Учитывать»
     в редакторе планов, с планом или фактом. «Не учитывать» строку убирает.
-    «Пшеница озимая» и другие культуры вне короткого списка яровых тоже
-    попадают сюда, если редактор их учитывает.
+    Картофель и прочие овощи стоят в этой же таблице: отдельный блок не
+    вычитается из итога, и «Факт за сутки» сходится с первой страницей.
 
     План «Иные культуры» — ячейка редактора и культуры режима «Иные».
     Факт строки — многолетние травы и те же отмеченные культуры.
@@ -2545,18 +2545,16 @@ def _plow_all_firms_rows_field_and_veg(
             return (0, named_pos[crop], "")
         return (1, *_crop_sort_key(crop))
 
-    field_names = sorted(
-        (crop for crop in own if crop not in PLOW_VEGETABLE_CROPS),
-        key=_field_key,
-    )
-    veg_names = [crop for crop in own if crop in PLOW_VEGETABLE_CROPS]
+    # Овощи в той же таблице: иначе итог «Факт за сутки» меньше первой страницы
+    # на картофель (за 08.10.2026 это 7,82 га).
+    field_names = sorted(own, key=_field_key)
     field_rows = [_plow_summary_row(crop, fact_by, today_by) for crop in field_names]
-    veg = [_plow_summary_row(crop, fact_by, today_by) for crop in veg_names]
+    veg: list[tuple[str, float, float, float]] = []
 
     other_fact = 0.0
     other_today = 0.0
     other_parts: dict[str, float] = {}
-    keep = set(field_names) | set(veg_names)
+    keep = set(field_names)
     for crop in set(fact_by) | set(today_by):
         if crop in keep or not _plow_counts_as_other(crop):
             continue
@@ -2847,7 +2845,7 @@ def write_plow_all_firms_summary_sheet(
     *,
     sheet_index: int = 1,
 ) -> None:
-    """Вспашка: полевые культуры и овощи — две компактные таблицы на одном листе."""
+    """Вспашка сводно по всем агрофирмам: одна таблица, овощи в общем итоге."""
     styles = _make_styles()
     n = len(PLOW_ALL_FIRMS_COLS)
     title = PLOW_ALL_FIRMS_SHEET

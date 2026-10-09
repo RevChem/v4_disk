@@ -30,6 +30,26 @@ function roleLabel(role) {
   return ROLE_LABELS[role] || role;
 }
 
+function renderNavItem(item, activeId, onNavChange) {
+  const btn = (
+    <Button
+      variant={activeId === item.id ? "contained" : "outlined"}
+      size="small"
+      onClick={() => onNavChange(item.id)}
+    >
+      {item.label}
+    </Button>
+  );
+  if (item.badge) {
+    return (
+      <Badge key={item.id} badgeContent={item.badge} color="error" max={99}>
+        {btn}
+      </Badge>
+    );
+  }
+  return <span key={item.id}>{btn}</span>;
+}
+
 export default function AppShell({
   theme,
   customBackground,
@@ -51,6 +71,7 @@ export default function AppShell({
   onPasswordChanged,
   cropwise = null,
   equipment = null,
+  onCookieOpen = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -132,6 +153,25 @@ export default function AppShell({
                       </Button>
                     </Tooltip>
                   ) : null}
+                  {onCookieOpen ? (
+                    <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={onCookieOpen}
+                        sx={{
+                          minWidth: 0,
+                          px: 1,
+                          py: 0.2,
+                          fontSize: "0.75rem",
+                          lineHeight: 1.5,
+                          textTransform: "none",
+                        }}
+                      >
+                        Cookie
+                      </Button>
+                    </Tooltip>
+                  ) : null}
                   {equipment ? (
                     <Tooltip title={equipment.caption}>
                       <Button
@@ -151,35 +191,17 @@ export default function AppShell({
                       </Button>
                     </Tooltip>
                   ) : null}
-                  {nav?.map((item) => {
-                    const btn = (
-                      <Button
-                        variant={(navActiveId ?? activeNav) === item.id ? "contained" : "outlined"}
-                        size="small"
-                        onClick={() => onNavChange(item.id)}
-                      >
-                        {item.label}
-                      </Button>
-                    );
-                    const wrapped = item.badge ? (
-                      <Badge key={item.id} badgeContent={item.badge} color="error" max={99}>
-                        {btn}
-                      </Badge>
-                    ) : (
-                      <span key={item.id}>{btn}</span>
-                    );
-                    if (item.id !== "dashboard" || !showQueueButton) {
-                      return wrapped;
-                    }
-                    return (
-                      <Stack key={item.id} direction="row" spacing={1} alignItems="center">
-                        {wrapped}
-                        <Button size="small" variant="outlined" onClick={onQueueOpen}>
-                          {queueLabel || "Очередь"}
-                        </Button>
-                      </Stack>
-                    );
-                  })}
+                  {(nav || [])
+                    .filter((item) => item.id === "users")
+                    .map((item) => renderNavItem(item, navActiveId ?? activeNav, onNavChange))}
+                  {showQueueButton ? (
+                    <Button size="small" variant="outlined" onClick={onQueueOpen}>
+                      {queueLabel || "Очередь"}
+                    </Button>
+                  ) : null}
+                  {(nav || [])
+                    .filter((item) => item.id !== "users")
+                    .map((item) => renderNavItem(item, navActiveId ?? activeNav, onNavChange))}
                   {user && (
                     <Button
                       size="small"

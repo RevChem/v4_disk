@@ -79,6 +79,25 @@ def test_skip_winter_wheat_drops_row_and_hectares():
     assert "Пшеница" not in note
 
 
+def test_potato_is_in_the_same_total_as_field_crops():
+    r9 = _report9({})
+    by = _by_crop(r9, wheat_fact=0.0, wheat_today=0.0)
+    by[FIRM]["Картофель"] = {
+        "season_plow": 479.53,
+        "plow_today": 7.82,
+        "engine_plow": 0.0,
+        "plow_machines_today": 0,
+    }
+    field, veg, _note = r9._plow_all_firms_rows_field_and_veg(by)
+    assert veg == []
+    names = _names(field)
+    assert "Картофель" in names
+    assert names.index("Картофель") < names.index("Иные культуры")
+    potato = next(row for row in field if row[0] == "Картофель")
+    assert potato[2] == 479.53
+    assert potato[3] == 7.82
+
+
 def test_other_mode_folds_winter_wheat_into_other_row():
     r9 = _report9({"CROP_REPORT_MODE": {PLOW: {WHEAT: 1}}})
     field, _veg, _note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))

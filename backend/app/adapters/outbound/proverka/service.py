@@ -299,6 +299,14 @@ def session_cookie_from_env() -> str:
     return _strip_env_value(session_cookie())
 
 
+def save_cropwise_session_cookie(cookie: str) -> str:
+    """Заменяет CROPWISE_SESSION_COOKIE в .env. Дальше её читают проверки и DeepSeek."""
+    _ensure_plan_path()
+    from proverka.reconcile import save_session_cookie
+
+    return save_session_cookie(cookie)
+
+
 def dashboard_for_date(report_date: date) -> dict[str, Any]:
     latest = latest_job_for_date(report_date)
     ai = ai_report_for_date(report_date)

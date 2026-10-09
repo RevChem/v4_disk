@@ -55,11 +55,104 @@ def _strip_env_value(value: str) -> str:
     return text
 
 
-def load_env() -> None:
+def _read_cookie_assignment(raw_value: str) -> str:
+    """Снимает кавычки dotenv и обратные слэши только у CROPWISE_SESSION_COOKIE."""
+    text = raw_value.strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        inner = text[1:-1]
+        out: list[str] = []
+        index = 0
+        while index < len(inner):
+            if inner[index] == "\\" and index + 1 < len(inner):
+                out.append(inner[index + 1])
+                index += 2
+                continue
+            out.append(inner[index])
+            index += 1
+        return "".join(out).strip()
+    return _strip_env_value(raw_value)
+
+
+_SESSION_COOKIE_KEY = "CROPWISE_SESSION_COOKIE"
+
+
+def env_file_path() -> Path:
+    """Корневой .env. В Docker это /app/.env — тот же файл, что на хосте."""
     env_path = PLAN_DIR.parents[1] / ".env"
-    if not env_path.exists():
-        env_path = Path("/app/.env")
-    if not env_path.exists():
+    if env_path.is_file():
+        return env_path
+    fallback = Path("/app/.env")
+    if fallback.is_file():
+        return fallback
+    return env_path
+
+
+def normalize_cookie_header(raw: str) -> str:
+    """Одна строка Cookie. Префикс «Cookie:» и переносы строк склеиваются."""
+    text = (raw or "").strip()
+    if text.lower().startswith("cookie:"):
+        text = text.split(":", 1)[1].strip()
+    parts = [
+        part.strip().rstrip(";")
+        for part in text.replace("\r", "\n").split("\n")
+        if part.strip() and not part.strip().startswith("#")
+    ]
+    return "; ".join(parts)
+
+
+def _is_session_cookie_assignment(line: str) -> bool:
+    body = line.strip()
+    if not body or body.startswith("#"):
+        return False
+    key, sep, _value = body.partition("=")
+    return bool(sep) and key.strip() == _SESSION_COOKIE_KEY
+
+
+def _dotenv_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def rewrite_session_cookie_text(text: str, cookie: str) -> str:
+    """Заменяет CROPWISE_SESSION_COOKIE, не трогая остальные строки .env."""
+    assignment = f"{_SESSION_COOKIE_KEY}={_dotenv_quote(cookie)}"
+    found = False
+    out: list[str] = []
+    for line in text.splitlines():
+        if _is_session_cookie_assignment(line):
+            if not found:
+                out.append(assignment)
+                found = True
+            continue
+        out.append(line)
+    if not found:
+        out.append(assignment)
+    return "\n".join(out) + "\n"
+
+
+def save_session_cookie(cookie: str, *, path: Path | None = None) -> str:
+    """Пишет cookie в .env на месте (bind-mount файла не переносит inode)."""
+    normalized = normalize_cookie_header(cookie)
+    if len(normalized) > 16_000:
+        raise ValueError("Cookie слишком длинная")
+    target = path or env_file_path()
+    if not target.is_file():
+        raise ValueError(f"Файл .env не найден: {target}")
+    updated = rewrite_session_cookie_text(target.read_text(encoding="utf-8"), normalized)
+    with target.open("w", encoding="utf-8") as handle:
+        handle.write(updated)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if normalized:
+        os.environ[_SESSION_COOKIE_KEY] = normalized
+    else:
+        os.environ.pop(_SESSION_COOKIE_KEY, None)
+    return normalized
+
+
+def load_env() -> None:
+    env_path = env_file_path()
+    if not env_path.is_file():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -67,9 +160,12 @@ def load_env() -> None:
             k, _, v = line.partition("=")
             key = k.strip()
             value = _strip_env_value(v)
-            if key == "CROPWISE_SESSION_COOKIE":
+            if key == _SESSION_COOKIE_KEY:
+                value = _read_cookie_assignment(v)
                 if value:
                     os.environ[key] = value
+                else:
+                    os.environ.pop(key, None)
                 continue
             os.environ.setdefault(key, value)
 
