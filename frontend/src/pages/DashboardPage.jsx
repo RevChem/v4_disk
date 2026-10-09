@@ -477,6 +477,26 @@ export default function DashboardPage({
                   На выбранную дату: {files.length} сводок
                 </Typography>
 
+                {availableDates.length > 0 && (
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                    {availableDates.slice(0, 8).map((d) => {
+                      const dateStr = d.summary_date;
+                      const selected = dateStr === summaryDate;
+                      return (
+                        <Chip
+                          key={dateStr}
+                          size="small"
+                          variant={selected ? "filled" : "outlined"}
+                          color={selected ? "primary" : "default"}
+                          clickable
+                          onClick={() => setSummaryDate(dateStr)}
+                          label={`${dateStr} · ${d.count}`}
+                        />
+                      );
+                    })}
+                  </Stack>
+                )}
+
                 <Box sx={{ p: 1.25, border: 1, borderColor: "divider", borderRadius: 1.5 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Typography variant="body2" color="text.secondary">
@@ -632,26 +652,6 @@ export default function DashboardPage({
                       </Button>
                     )}
                   </>
-                )}
-
-                {availableDates.length > 0 && (
-                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-                    {availableDates.slice(0, 8).map((d) => {
-                      const dateStr = d.summary_date;
-                      const selected = dateStr === summaryDate;
-                      return (
-                        <Chip
-                          key={dateStr}
-                          size="small"
-                          variant={selected ? "filled" : "outlined"}
-                          color={selected ? "primary" : "default"}
-                          clickable
-                          onClick={() => setSummaryDate(dateStr)}
-                          label={`${dateStr} · ${d.count}`}
-                        />
-                      );
-                    })}
-                  </Stack>
                 )}
 
               </Stack>

@@ -1,6 +1,7 @@
 """Человекочитаемые записи аудита для UI «Логи»."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -79,6 +80,18 @@ def _quoted(text: Any, limit: int = 80) -> str:
     return f"«{s[:limit]}{'…' if len(s) > limit else ''}»"
 
 
+def _as_id_list(value: Any) -> list[str]:
+    """report_ids приходит списком или JSON-строкой вида '["1","2"]' (поле GenerationJob.report_ids)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return [value] if value.strip() else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(x) for x in value if str(x).strip()]
+
+
 def _ru_date(iso: Any) -> str:
     parts = str(iso or "").split("-")
     return f"{parts[2]}.{parts[1]}.{parts[0]}" if len(parts) == 3 and len(parts[0]) == 4 else str(iso or "")
@@ -147,7 +160,9 @@ def _change_text(action: str, d: dict[str, Any]) -> str | None:
     if action == "summary.comment.delete":
         return f"удалил комментарий к {_summary_ref(d)}"
     if action == "summary.delete":
-        return f"удалил сводку {_summary_ref(d)}"
+        rid, date_s = d.get("report_id"), _ru_date(d.get("summary_date"))
+        what = f"сводку {rid}" if rid else "сводку"
+        return f"удалил {what}" + (f" за {date_s}" if date_s else "")
     if action == "report1_page_order.update":
         return (
             f"изменил порядок страниц сводки {d.get('report_id') or '1'} "
@@ -317,6 +332,27 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
         return f"{username} изменил настройки AI ({model})"
     if action == "proverka.ai_settings.reset":
         return f"{username} сбросил настройки AI"
+    if action == "plans.sync_py":
+        return f"{username} синхронизировал plans.py из редактора планов"
+    if action == "interface.updated":
+        theme = f" (тема: {d['theme']})" if d.get("theme") else ""
+        return f"{username} изменил настройки интерфейса{theme}"
+    if action == "works_summary.generate":
+        return f"{username} запустил формирование сводки по работам"
+    if action == "field_season.generate":
+        return f"{username} запустил формирование сводки по сезонам полей"
+    if action == "reports.generation.cancel_requested":
+        rids = _as_id_list(d.get("report_ids"))
+        what = f"сводок {compact_report_ids(rids)}" if rids else "всех сводок"
+        return f"{username} отменил генерацию {what}{date_part}"
+    if action == "proverka.cancel_requested":
+        return f"{username} отменил проверку сводок{date_part}"
+    if action == "proverka_machines.requested":
+        rids = _as_id_list(d.get("report_ids"))
+        labels = compact_report_ids(rids) if rids else "все"
+        return f"{username} запустил проверку количества машин ({labels}){date_part}"
+    if action == "proverka_machines.cancel_requested":
+        return f"{username} отменил проверку количества машин{date_part}"
     if action == "proverka.evening_report":
         return "Автоматическая вечерняя проверка сводок и кол-ва машин (21:00 MSK) и отправка на почту"
     if action.startswith("schedule."):

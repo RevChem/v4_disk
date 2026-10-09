@@ -228,7 +228,7 @@ def cancel_job(
         user_id=user.id,
         ip=get_client_ip(request),
         job_id=job.id,
-        report_ids=report_ids or job.report_ids,
+        report_ids=report_ids or json.loads(job.report_ids or "[]"),
         summary_date=job.summary_date.isoformat(),
     )
     log.info(

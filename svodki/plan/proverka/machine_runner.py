@@ -1,40 +1,20 @@
 """Запуск сверки количества машин между сводками.
 
-Полностью независим от runner.py (сверка по гектарам / Cropwise UI):
-свой цикл, свой результат, свой JSON-файл на диске. Единственное общее —
-проверяемые сводки берутся из того же report_catalog / OPERATION_PEERS.
+Работает по готовым файлам, как проверка Cropwise (file_values.py): сводки
+заново не считаются и в API за фактами не ходят. Число машин читается из уже
+сохранённых .xlsx в uploads/<дата>/ (см. file_machines.py), затем те же файлы
+сверяются между собой через build_machine_cross_check (machine_compare.py).
 
-ЭТАП 1 (сейчас): источник факта по машинам — ЗАГЛУШКА (см. _stub_machines_
-today_by_firm ниже). Она нужна, чтобы обкатать весь путь целиком (job →
-API → фронт), не дожидаясь, пока каждая сводка (1, 2, 10, 11, …) научится
-реально считать уникальные machine_id за смену.
+Сводки, у которых файла нет за выбранную дату, пропускаются и попадают в
+missing_file_report_ids. Сводка 2 — главная для сверки: число машин берётся из
+таблицы «КОЛИЧЕСТВО ЗАДЕЙСТВОВАННЫХ АГРЕГАТОВ», колонка даты отчёта.
 
-ЭТАП 2 (следующим шагом, по одной сводке за раз): подставить сюда реальные
-данные — читать machines_today_by_firm, которое будет отдавать сама сводка
-(через extractors.py, по аналогии с area_today_by_firm), вместо стаба.
-Форма данных (operations[group_name]["machines_today_by_firm"]) уже
-рассчитана на это — при переходе на реальные факты сам build_machine_
-cross_check() в machine_compare.py менять не придётся.
-
-ГРАФТ СВОДКИ 1 (см. _apply_report1_donor_graft ниже): в боевой генерации
-отчётов сводка 1 для части операций (боронование, посев, опрыскивание,
-дискование, культивация) НЕ считает машины сама — при совместном запуске
-с донором (сводки 4/5/6/7/8) она получает готовое число графтом/PDF-page
-graft (см. backend/app/legacy/report_generation.py:
-REPORT1_FAST_SLAVE_GROUPS_BY_ID / _report1_fast_slave_ids,
-SVODKI_REPORT1_SKIP_DONOR_PERF_FETCH=1 по умолчанию). extractors.py же
-всегда пересчитывает сводку 1 полностью самостоятельно (через
-_fetch_other_group_stats), другим кодом, с другими порогами и окном —
-и для графт-групп это число никогда не показывается в реальном PDF.
-Раньше сверка на этом ловила ложный DIFF. Ниже перед сверкой те же
-группы у отчёта "1" заменяются на уже посчитанные числа донора из этой
-же пачки — так сверка сравнивает именно то, что реально попадает в PDF
-сводки 1.
+Графт сводки 1 здесь не нужен: в файле сводки 1 уже лежит то число, которое
+попало в Excel после генерации. apply_report1_donor_area_graft остаётся для
+runner.py (сверка по гектарам).
 """
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import os
 from datetime import date
@@ -83,53 +63,6 @@ def _report1_graft_enabled() -> bool:
     if _env_flag("SVODKI_REPORT1_STANDALONE", False):
         return False
     return _env_flag("SVODKI_REPORT1_SKIP_DONOR_PERF_FETCH", True)
-
-
-def _apply_report1_donor_graft(all_results: dict[str, Any]) -> None:
-    """Подставляет в результат сводки 1 machines_today_by_firm донора для
-    групп, которые в реальной генерации отчётов заполняются графтом, а не
-    собственным расчётом сводки 1 (см. REPORT1_FAST_SLAVE_GROUPS_BY_ID).
-    Ничего не делает, если сводки 1 нет в батче, донора нет в батче, или
-    графт в этой конфигурации выключен (см. _report1_graft_enabled).
-    """
-    reports = all_results.get("reports") or {}
-    r1 = reports.get(REPORT1_ID)
-    if not r1 or not _report1_graft_enabled():
-        return
-    r1_ops = (r1.get("svodka") or {}).get("operations") or {}
-    for donor_rid, group_name in REPORT1_FAST_SLAVE_GROUPS_BY_ID.items():
-        donor = reports.get(donor_rid)
-        if not donor:
-            continue
-        donor_op = (donor.get("svodka") or {}).get("operations", {}).get(group_name)
-        if not donor_op:
-            continue
-        r1_op = r1_ops.get(group_name)
-        if r1_op is None:
-            continue
-        machines = dict(donor_op.get("machines_today_by_firm") or {})
-        r1_op["machines_today_by_firm"] = machines
-        r1_op["total_machines"] = donor_op.get(
-            "total_machines", sum(machines.values()),
-        )
-        r1_op["_grafted_from_report_id"] = donor_rid
-
-    donor6 = reports.get("6")
-    if donor6:
-        donor6_ops = (donor6.get("svodka") or {}).get("operations") or {}
-        for group_name in REPORT1_DONOR6_EXTRA_GRAFT_GROUPS:
-            donor_op = donor6_ops.get(group_name)
-            if not donor_op:
-                continue
-            r1_op = r1_ops.get(group_name)
-            if r1_op is None:
-                continue
-            machines = dict(donor_op.get("machines_today_by_firm") or {})
-            r1_op["machines_today_by_firm"] = machines
-            r1_op["total_machines"] = donor_op.get(
-                "total_machines", sum(machines.values()),
-            )
-            r1_op["_grafted_from_report_id"] = "6"
 
 
 def _copy_donor_op_area_fields(donor_op: dict[str, Any], r1_op: dict[str, Any], donor_rid: str) -> None:
@@ -194,25 +127,6 @@ def apply_report1_donor_area_graft(all_results: dict[str, Any]) -> None:
             op_cmp[gn]["svodka_op_r2"] = grafted
 
 
-# Условный список агрофирм для заглушки. Реальные сводки берут AGROFIRMS
-# своего модуля (см. extractors.py) — тут это только для тех отчётов,
-# для которых факт по машинам ещё не подключён.
-_STUB_FIRMS = ["Фирма 1", "Фирма 2", "Фирма 3", "Фирма 4"]
-
-# Сводки, для которых machines_today_by_firm уже реально считается в
-# extractors.py — либо через _pack(machines_today_by_firm=...) (1, 3, 4,
-# 5, 7, 8, 9, 10, 11), либо напрямую в operations[...]["machines_today_
-# by_firm"] для многогрупповых сводок (2, 6, 9). У всех источник в итоге
-# один и тот же: len(...) по уникальным machine_id, которые уже считает
-# сам модуль сводки (per_firm_machine / pm_counted / "machines"/"n_mach").
-# Стаб теперь не нужен ни для одной подключённой сводки — оставлен в коде
-# только как безопасный fallback (см. _real_report_result), если у какой-то
-# сводки временно нет модуля/данных.
-REAL_MACHINE_DATA_REPORT_IDS: set[str] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "14",
-}
-
-
 def _expand_machine_peer_report_ids(report_ids: list[str]) -> list[str]:
     """Добавляет peer-сводки для machine cross-check (напр. 14 для 5.0 Уборка)."""
     present = set(report_ids)
@@ -231,70 +145,6 @@ class MachineProverkaCancelled(Exception):
     pass
 
 
-def _stub_machines_today_by_firm(
-    group_name: str,
-    rid: str,
-    report_date: date,
-    *,
-    agree_with: str | None = None,
-) -> dict[str, int]:
-    """ЗАГЛУШКА: детерминированное псевдослучайное число машин на фирму.
-
-    agree_with — если задан report_id, "эталонный" для этой операции
-    (обычно первый пир), то генерируем ТЕ ЖЕ числа, что и у него — чтобы
-    в стабе по умолчанию сверка сходилась (status=OK), а расхождение можно
-    было включить явно (см. STUB_FORCE_DIFF ниже) и проверить, что диалог
-    на фронте корректно подсвечивает DIFF.
-    """
-    seed_rid = agree_with or rid
-    out: dict[str, int] = {}
-    for firm in _STUB_FIRMS:
-        key = f"{group_name}|{seed_rid}|{report_date.isoformat()}|{firm}"
-        h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
-        out[firm] = h % 12  # 0..11 машин "на фирму" — просто для наглядности
-    return out
-
-
-def _stub_report_result(
-    rid: str,
-    report_date: date,
-    canonical_rid_by_group: dict[str, str],
-    *,
-    force_diff_groups: set[str] | None = None,
-) -> dict[str, Any]:
-    """Собирает заглушечный result для одной сводки в форме, которую ждёт
-    machine_compare.build_machine_cross_check (operations[group]
-    ["machines_today_by_firm"]).
-    """
-    force_diff_groups = force_diff_groups or set()
-    operations: dict[str, dict[str, Any]] = {}
-    for group_name, peers in OPERATION_PEERS.items():
-        if rid not in peers:
-            continue
-        canon = canonical_rid_by_group.get(group_name, rid)
-        agree_with = None if (rid == canon or group_name in force_diff_groups) else canon
-        machines = _stub_machines_today_by_firm(
-            group_name, rid, report_date, agree_with=agree_with,
-        )
-        operations[group_name] = {"machines_today_by_firm": machines}
-    return {
-        "report_id": rid,
-        "svodka": {"operations": operations},
-    }
-
-
-def _real_report_result(rid: str, report_date: date) -> dict[str, Any]:
-    """Реальный факт по машинам через тот же источник, что и у гектаров
-    (proverka.svodka_facts.compute_svodka_facts) — сам модуль сводки уже
-    отдаёт machines_today_by_firm в operations[group_name] (см. extractors.py).
-    """
-    from proverka.svodka_facts import compute_svodka_facts
-
-    spec = REPORTS[rid]
-    svodka = asyncio.run(compute_svodka_facts(spec, report_date))
-    return {"report_id": rid, "svodka": svodka}
-
-
 def run_machine_proverka_batch(
     report_date: date,
     report_ids: list[str],
@@ -303,14 +153,15 @@ def run_machine_proverka_batch(
     write_json: bool = True,
     progress: Callable[[str], None] | None = None,
     should_cancel_report: Callable[[str | None], bool] | None = None,
-    force_diff_groups: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Прогон проверки по машинам для набора сводок за одну дату.
+    """Сверка числа машин по готовым .xlsx сводок за одну дату."""
+    from proverka.file_machines import (
+        REPORTS_WITHOUT_MACHINES_IN_FILE,
+        MachineFileMissing,
+        machines_from_path,
+    )
+    from proverka.file_values import find_report_xlsx
 
-    Пока считает по ЗАГЛУШКЕ (см. модуль). Сигнатура и форма возврата
-    рассчитаны так, чтобы service.py / API / фронт не пришлось переделывать
-    на этапе 2, когда источник факта станет реальным.
-    """
     def prog(msg: str) -> None:
         if progress:
             progress(msg)
@@ -322,54 +173,51 @@ def run_machine_proverka_batch(
     unknown = [rid for rid in report_ids if rid not in REPORTS]
     known_ids = [rid for rid in report_ids if rid in REPORTS]
 
-    try:
-        from report_platform import bootstrap_platform
-
-        bootstrap_platform(report_date, do_reload_plans=True)
-    except Exception:
-        pass
-
-    prog("Сбор фактов по машинам…")
-
-    # "эталонная" сводка для каждой операции — та, что не 1/2 (или последняя
-    # из активных), чтобы заглушка была стабильна и не зависела от порядка
-    canonical_rid_by_group: dict[str, str] = {}
-    present = set(known_ids)
-    for group_name in OPERATION_PEERS:
-        peers = [r for r in peer_reports_for_machine_group(group_name) if r in present]
-        if not peers:
-            continue
-        canonical_rid_by_group[group_name] = next(
-            (r for r in peers if r not in ("1", "2")), peers[-1],
-        )
+    prog("Чтение готовых Excel…")
 
     all_results: dict[str, Any] = {"reports": {}, "report_date": report_date.isoformat()}
     cancelled_ids: list[str] = []
-    stub_used_for: list[str] = []
-    real_used_for: list[str] = []
+    file_report_ids: list[str] = []
+    missing_files: list[str] = []
+    no_machine_data: list[str] = []
+    read_errors: dict[str, str] = {}
     for rid in known_ids:
         if should_cancel_report and should_cancel_report(rid):
             cancelled_ids.append(rid)
             continue
-        if rid in REAL_MACHINE_DATA_REPORT_IDS:
-            prog(f"Сводка {rid}: {REPORTS[rid].title} (машины, реальный факт)")
-            try:
-                all_results["reports"][rid] = _real_report_result(rid, report_date)
-                real_used_for.append(rid)
-                continue
-            except Exception as exc:  # noqa: BLE001
-                prog(
-                    f"Сводка {rid}: не удалось получить реальный факт "
-                    f"по машинам ({exc}), временно заглушка"
-                )
-        prog(f"Сводка {rid}: {REPORTS[rid].title} (машины, заглушка)")
-        stub_used_for.append(rid)
-        all_results["reports"][rid] = _stub_report_result(
-            rid, report_date, canonical_rid_by_group,
-            force_diff_groups=set(force_diff_groups or []),
-        )
-
-    _apply_report1_donor_graft(all_results)
+        if rid in REPORTS_WITHOUT_MACHINES_IN_FILE:
+            no_machine_data.append(rid)
+            continue
+        prog(f"Сводка {rid}: {REPORTS[rid].title} (файл Excel)")
+        path = find_report_xlsx(report_date, rid)
+        if path is None:
+            missing_files.append(rid)
+            continue
+        try:
+            by_group = machines_from_path(path, rid, report_date)
+        except MachineFileMissing:
+            missing_files.append(rid)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            read_errors[rid] = str(exc)
+            prog(f"Сводка {rid}: файл не прочитан ({exc})")
+            continue
+        operations = {
+            group: {
+                "machines_today_by_firm": dict(machines),
+                "total_machines": sum(machines.values()),
+            }
+            for group, machines in by_group.items()
+        }
+        if not operations:
+            no_machine_data.append(rid)
+            continue
+        file_report_ids.append(rid)
+        all_results["reports"][rid] = {
+            "report_id": rid,
+            "svodka": {"operations": operations},
+            "file": path.name,
+        }
 
     prog("Сверка количества машин…")
     machine_cross_check = build_machine_cross_check(all_results)
@@ -387,9 +235,10 @@ def run_machine_proverka_batch(
         "report_ids": known_ids,
         "unknown_report_ids": unknown,
         "cancelled_report_ids": cancelled_ids,
-        "is_stub_data": bool(stub_used_for),
-        "real_data_report_ids": real_used_for,
-        "stub_data_report_ids": stub_used_for,
+        "file_report_ids": file_report_ids,
+        "missing_file_report_ids": missing_files,
+        "no_machine_data_report_ids": no_machine_data,
+        "file_read_errors": read_errors,
         "batch_json": str(batch_path) if write_json else None,
         "machine_cross_check": machine_cross_check,
         "machine_cross_check_rows": machine_cross_check.get("operations") or [],

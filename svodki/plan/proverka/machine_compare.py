@@ -7,12 +7,8 @@
 5.0 Уборка → peer_reports_for_machine_group): справочник «какая сводка кому
 пара по какой операции», без логики сверки по гектарам.
 
-СТАТУС: все сводки (1–11) отдают machines_today_by_firm по-настоящему,
-через extractors.py (см. machine_runner.REAL_MACHINE_DATA_REPORT_IDS).
-Заглушка (_stub_report_result в machine_runner.py) оставлена только как
-безопасный fallback на случай сбоя реального запроса для конкретной
-сводки — этот файл при переходе со стаба на реальные данные не менялся,
-как и было изначально задумано.
+ИСТОЧНИК: числа машин берутся из готовых Excel сводок (file_machines.py),
+запускает сверку machine_runner.run_machine_proverka_batch.
 """
 from __future__ import annotations
 
@@ -169,11 +165,7 @@ def build_machine_cross_check(batch: dict[str, Any]) -> dict[str, Any]:
             "max_diff_machines": max_diff,
             "status": status,
             "firms": firm_rows,
-            # {report_id сводки-1: report_id донора} — заполнено, только если
-            # число этой сводки в этой операции не посчитано ею самой, а
-            # взято графтом из донора того же батча (см. machine_runner.py:
-            # _apply_report1_donor_graft). Как в бою, где сводка 1 для этой
-            # операции просто копирует число донора в свой PDF.
+            # {report_id: report_id донора}; при чтении из Excel не заполняется.
             "grafted_from": grafted_from,
         })
 

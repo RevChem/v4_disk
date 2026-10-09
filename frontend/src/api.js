@@ -493,8 +493,13 @@ export async function updateSchedule(config) {
   return data;
 }
 
-export async function fetchActivityFeed(limit = 80) {
-  const { data } = await api.get("/activity/feed", { params: { limit }, timeout: 30_000 });
+/** Одна страница вкладки «Логов»: { tab, tabs[], items[], page, pages, total, users[] }. */
+export async function fetchActivityFeed({ tab, page = 1, pageSize = 50, userId = "", refresh = false } = {}) {
+  const params = { page, page_size: pageSize };
+  if (tab) params.tab = tab;
+  if (userId) params.user_id = userId;
+  if (refresh) params.refresh = true;
+  const { data } = await api.get("/activity/feed", { params, timeout: 60_000 });
   return data;
 }
 
@@ -820,14 +825,13 @@ export async function askTaskFacts({ question, useLlm = true, maxRows, ...filter
 // --- Проверка количества машин по операциям: независимый механизм, ---
 // --- свои job'ы, свой API, ничего общего с /proverka/run по гектарам. ---
 
-export async function runProverkaMachines({ reportDate, reportIds, forceDiffGroups }) {
+export async function runProverkaMachines({ reportDate, reportIds }) {
   try {
     const { data } = await api.post(
       "/proverka/run-machines",
       {
         report_date: reportDate,
         report_ids: reportIds,
-        force_diff_groups: forceDiffGroups || [],
       },
       { timeout: 60_000 }
     );

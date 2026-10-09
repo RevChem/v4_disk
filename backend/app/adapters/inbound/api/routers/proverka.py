@@ -205,7 +205,6 @@ def run_proverka_machines(
         report_date=payload.report_date,
         report_ids=report_ids,
         user_id=user.id,
-        force_diff_groups=list(payload.force_diff_groups or []),
     )
 
     if settings.celery_enabled:

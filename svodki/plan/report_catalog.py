@@ -184,6 +184,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         "27",
         "27_mechanizator_rating.py",
         "27. Рейтинг механизаторов",
+        picker_visible=False,  # запускается кнопкой «27·Excel — рейтинг за период»
         explicit_only=True,
     ),
     ReportCatalogEntry(

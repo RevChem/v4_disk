@@ -29,6 +29,16 @@ from app.models import GenerationJob
 log = get_logger(__name__)
 
 
+def _safe_activity(db: Session, **kwargs) -> None:
+    """Запись в журнал не должна ломать генерацию: сбой записи раньше уходил в общий
+    `except Exception`, и уже завершённое задание помечалось как failed без result_json."""
+    try:
+        record_activity(db, **kwargs)
+    except Exception as exc:
+        db.rollback()
+        log.warning("reports.generation.audit_failed", action=kwargs.get("action"), error=str(exc))
+
+
 def _user_email(db: Session, user_id: int | None) -> str | None:
     if user_id is None:
         return None
@@ -150,7 +160,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
                 report_id=rid,
                 error=item.get("error"),
             )
-            record_activity(
+            _safe_activity(
                 db,
                 action="reports.generation.report_failed",
                 user_id=job.user_id,
@@ -186,7 +196,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             user_email=user_email,
             status=final_status,
         )
-        record_activity(
+        _safe_activity(
             db,
             action="reports.generation.completed" if final_status == "completed" else "reports.generation.cancelled",
             user_id=job.user_id,
@@ -206,7 +216,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             error=str(exc),
             user_email=user_email,
         )
-        record_activity(
+        _safe_activity(
             db,
             action="reports.generation.failed",
             user_id=job.user_id,

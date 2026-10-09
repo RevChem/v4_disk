@@ -18,7 +18,6 @@ import {
   TableCell,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
 import PrecisionManufacturingRoundedIcon from "@mui/icons-material/PrecisionManufacturingRounded";
@@ -34,7 +33,7 @@ import {
 } from "../api";
 
 // Полностью независимый от ProverkaDialog компонент: свой стейт, свой job,
-// свой API. Ничего не читает и не пишет в состояние проверки по гектарам.
+// свой API. Проверка читает уже готовые Excel за выбранную дату, сводки не пересчитываются.
 export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onComplete }) {
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -46,7 +45,6 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
   const runningRef = useRef(false);
   runningRef.current = running;
   const [cancelling, setCancelling] = useState(false);
-  const [forceDiffInput, setForceDiffInput] = useState("");
 
   const sortedCatalog = useMemo(() => sortCatalogDesc(catalog), [catalog]);
 
@@ -147,14 +145,9 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
     setRunning(true);
     setJob(null);
     try {
-      const forceDiffGroups = forceDiffInput
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
       const res = await runProverkaMachines({
         reportDate: summaryDate,
         reportIds: selectedIds,
-        forceDiffGroups,
       });
       setJobId(res.job_id);
     } catch (e) {
@@ -208,29 +201,27 @@ export default function ProverkaMachinesDialog({ open, onClose, summaryDate, onC
       <DialogContent dividers>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
-            Дата отчёта: <strong>{summaryDate}</strong> · сводки между собой, по числу
-            задействованной техники за операцию
+            Дата отчёта: <strong>{summaryDate}</strong> · по готовым Excel-файлам: число
+            задействованной техники по операциям сверяется между сводками. Сначала
+            сформируйте нужные сводки.
           </Typography>
 
-          {job?.is_stub_data && (
+          {job?.missing_file_report_ids?.length > 0 && (
             <Alert severity="warning">
-              Часть сводок ещё считается по заглушке (тестовые данные):{" "}
-              {(job.stub_data_report_ids || []).join(", ") || "—"}.
-              {job.real_data_report_ids?.length
-                ? ` Реальный факт уже подключён: ${job.real_data_report_ids.join(", ")}.`
-                : ""}
+              Нет готового Excel за {summaryDate}: {job.missing_file_report_ids.join(", ")}. Эти
+              сводки в сверке не участвуют.
             </Alert>
           )}
-
-          <TextField
-            label="Форсировать DIFF по операциям (через запятую, для отладки)"
-            placeholder="5.0 Уборка, 4.0 Посев"
-            value={forceDiffInput}
-            onChange={(e) => setForceDiffInput(e.target.value)}
-            fullWidth
-            size="small"
-            disabled={running}
-          />
+          {job?.no_machine_data_report_ids?.length > 0 && (
+            <Alert severity="info">
+              В Excel нет числа машин: {job.no_machine_data_report_ids.join(", ")}.
+            </Alert>
+          )}
+          {Object.entries(job?.file_read_errors || {}).map(([rid, msg]) => (
+            <Alert severity="error" key={rid}>
+              Сводка {rid}: файл не прочитан ({msg})
+            </Alert>
+          ))}
 
           <Box>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>

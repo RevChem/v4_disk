@@ -981,15 +981,6 @@ export default function PlansEditor({ summaryDate = null }) {
             {saving && <Chip size="small" label="Сохранение…" color="primary" variant="outlined" />}
           </Stack>
 
-          <Alert severity="info" sx={{ py: 0.5 }}>
-            Площади плана записываются в <strong>plans.py</strong>. Остальные правки хранятся отдельно.
-            Жёлтая подсветка — ещё не совпадает с файлом.
-          </Alert>
-          {state?.has_edits && (
-            <Alert severity="warning" sx={{ py: 0.5 }}>
-              Есть сохранённые правки ({state.path})
-            </Alert>
-          )}
           {otherEditors.length > 0 && (
             <Alert severity="warning" sx={{ py: 0.5 }}>
               Планы одновременно правит <strong>{otherEditors.map((person) => person.name).join(", ")}</strong>.

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy import false, func, or_
+from sqlalchemy.orm import Session, defer
 
 from app.adapters.outbound.persistence import repositories as repo
 from app.application.audit_activity import (
@@ -16,7 +19,7 @@ from app.application.audit_activity import (
     report_title,
     user_label,
 )
-from app.models import User
+from app.models import AuditLog, GenerationJob, User
 
 
 # Записи аудита, которые не показываем в ленте «Логи».
@@ -25,6 +28,7 @@ HIDDEN_FEED_ACTIONS: tuple[str, ...] = (
     "reports.generation.requested",
     "reports.generation.completed",
     "reports.generation.failed",
+    "reports.generation.cancelled",  # то же самое видно в карточке задания (статус «отменено»)
     "auth.login.success",
 )
 
@@ -89,206 +93,474 @@ def _log_lines_for_report(logs: list[str], report_id: str) -> list[str]:
     return out[-30:]
 
 
-def build_activity_feed(
-    db: Session,
-    *,
-    viewer: User,
-    limit: int = 80,
-) -> dict[str, Any]:
-    """user_events — действия людей; report_events — ошибки/детали по сводкам."""
-    see_all = viewer.role in ("admin", "developer")
-    viewer_id = viewer.id
+# ── Постраничная лента ───────────────────────────────────────────────────────────────────
+# Каждая вкладка читается из БД отдельно: свой счётчик, свой offset/limit. Раньше все вкладки
+# делили один срез «последние 80 событий из 240 записей аудита», из-за чего старые правки
+# (например, в «Редакторе планов») просто не попадали в ответ.
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
+_CACHE_TTL_SECONDS = 20.0
+_MAX_SEASON_EVENTS_PER_JOB = 500
 
-    audit_rows = repo.list_audit_logs(
-        db,
-        limit=min(limit * 3, 300),
-        offset=0,
-        exclude_actions=HIDDEN_FEED_ACTIONS,
-    )
-    user_cache: dict[int, User | None] = {}
+REPORT_FAILED_ACTION = "reports.generation.report_failed"
 
-    def _user(uid: int | None) -> User | None:
+# (id вкладки, подпись, области event_area()). Порядок = порядок вкладок в интерфейсе.
+FIXED_TABS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("users", "Пользователи", ("Пользователи", "Прочее")),
+    ("reports", "Сводки", ("Сводки",)),
+    ("generation", "Генерация", ("Генерация",)),
+    ("seasons", "Сезоны", ()),
+    ("plans", "Редактор планов", ("Редактор планов",)),
+    ("page_order", "Порядок страниц", ("Порядок страниц",)),
+    ("pdf", "Подписи PDF", ("Подписи PDF",)),
+    ("cells", "Правки ячеек", ("Правки ячеек",)),
+    ("comments", "Комментарии", ("Комментарии",)),
+    ("schedule", "Расписание", ("Расписание",)),
+    ("proverka", "Проверка", ("Проверка",)),
+)
+_AREA_TO_TAB: dict[str, str] = {
+    area: tab_id for tab_id, _label, areas in FIXED_TABS for area in areas
+}
+# Вкладки, доступные не только разработчику.
+_PUBLIC_TABS = ("reports", "seasons")
+
+_JOB_STATUS_RU = {
+    "pending": "в очереди",
+    "running": "выполняется…",
+    "completed": "готово",
+    "cancelled": "отменено",
+}
+
+_CACHE: dict[tuple, tuple[float, Any]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+class _Scope:
+    """Кто смотрит ленту и какой фильтр по пользователю выбран."""
+
+    def __init__(self, viewer: User, user_filter: str | None) -> None:
+        self.viewer = viewer
+        self.see_all = viewer.role in ("admin", "developer")
+        self.developer = viewer.role == "developer"
+        self.uid = (user_filter or "").strip()
+
+    @property
+    def cache_key(self) -> tuple:
+        return ("all" if self.see_all else self.viewer.id, self.uid)
+
+
+def _user_id_filter(column: Any, uid: str) -> Any | None:
+    if not uid:
+        return None
+    if uid == "system":
+        return column.is_(None)
+    try:
+        return column == int(uid)
+    except ValueError:
+        return false()
+
+
+def _scope_audit(q: Any, scope: _Scope) -> Any:
+    if not scope.see_all:
+        q = q.filter(or_(AuditLog.user_id.is_(None), AuditLog.user_id == scope.viewer.id))
+    cond = _user_id_filter(AuditLog.user_id, scope.uid)
+    return q.filter(cond) if cond is not None else q
+
+
+def _scope_jobs(q: Any, scope: _Scope) -> Any:
+    if not scope.see_all:
+        q = q.filter(GenerationJob.user_id == scope.viewer.id)
+    cond = _user_id_filter(GenerationJob.user_id, scope.uid)
+    return q.filter(cond) if cond is not None else q
+
+
+def _cached(key: tuple, loader: Any, refresh: bool) -> Any:
+    now = time.monotonic()
+    if not refresh:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
+        if hit is not None and now - hit[0] < _CACHE_TTL_SECONDS:
+            return hit[1]
+    value = loader()
+    with _CACHE_LOCK:
+        _CACHE[key] = (now, value)
+        if len(_CACHE) > 64:
+            for old_key, _ in sorted(_CACHE.items(), key=lambda kv: kv[1][0])[:32]:
+                _CACHE.pop(old_key, None)
+    return value
+
+
+def _ts(dt: datetime | None) -> float:
+    return as_utc(dt).timestamp() if dt else 0.0
+
+
+class _Users:
+    """Кэш пользователей в рамках одного запроса."""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+        self._cache: dict[int, User | None] = {}
+
+    def get(self, uid: int | None) -> User | None:
         if uid is None:
             return None
-        if uid not in user_cache:
-            user_cache[uid] = repo.get_user_by_id(db, uid)
-        return user_cache[uid]
+        if uid not in self._cache:
+            self._cache[uid] = repo.get_user_by_id(self._db, uid)
+        return self._cache[uid]
 
-    user_events: list[dict[str, Any]] = []
-    report_events: list[dict[str, Any]] = []
-    seen_report_keys: set[str] = set()
-    seen_user_ids: set[str] = set()
+    def label(self, uid: int | None) -> str:
+        return user_label(self.get(uid))
 
-    for row in audit_rows:
-        if row.action in HIDDEN_FEED_ACTIONS:
+
+def _audit_event(row: AuditLog, users: _Users) -> dict[str, Any]:
+    details = _parse_details(row.details)
+    username = details.get("username") or users.label(row.user_id)
+    message = details.get("message") or format_action_message(row.action, username, details)
+    return {
+        "id": f"audit-{row.id}",
+        "created_at": iso_utc(row.created_at),
+        "action": row.action,
+        "message": message,
+        "user_id": row.user_id,
+        "username": username,
+        "ip": row.ip,
+        "job_id": details.get("job_id"),
+        "summary_date": details.get("summary_date") or details.get("report_date"),
+        "report_ids": details.get("report_ids") or [],
+        "details": details,
+        "area": event_area(row.action),
+    }
+
+
+def _error_event_from_audit(row: AuditLog, users: _Users) -> dict[str, Any]:
+    ev = _audit_event(row, users)
+    details = ev["details"]
+    rid = str(details.get("report_id") or "")
+    ev.pop("details", None)
+    ev.update({
+        "kind": "error",
+        "report_id": rid,
+        "title": details.get("title") or report_title(rid),
+        "status": "error",
+        "error": details.get("error") or ev["message"],
+        "log_lines": details.get("log_lines") or [],
+    })
+    return ev
+
+
+def _audit_rows(db: Session, scope: _Scope, actions: list[str], offset: int, limit: int) -> list[AuditLog]:
+    if not actions or limit <= 0:
+        return []
+    q = _scope_audit(db.query(AuditLog).filter(AuditLog.action.in_(actions)), scope)
+    return (
+        q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+def _audit_action_counts(db: Session, scope: _Scope) -> dict[str, int]:
+    q = db.query(AuditLog.action, func.count(AuditLog.id)).filter(
+        AuditLog.action.notin_(HIDDEN_FEED_ACTIONS)
+    )
+    q = _scope_audit(q, scope).group_by(AuditLog.action)
+    return {str(action): int(n) for action, n in q.all()}
+
+
+def _actions_by_tab(counts: dict[str, int]) -> dict[str, list[str]]:
+    """Какие действия аудита лежат на какой вкладке (неизвестные области — отдельные вкладки)."""
+    out: dict[str, list[str]] = {}
+    for action in counts:
+        if action == REPORT_FAILED_ACTION:
+            continue  # ошибки сводок — это вкладка «Сводки», а не «Генерация»
+        area = event_area(action)
+        if area == "Сезоны":
             continue
-        if not see_all and row.user_id not in (None, viewer_id):
-            continue
+        tab_id = _AREA_TO_TAB.get(area) or f"area:{area}"
+        out.setdefault(tab_id, []).append(action)
+    return out
+
+
+def _merge_page(streams: list[list[tuple[float, Any]]], offset: int, size: int) -> list[Any]:
+    """Слить уже отсортированные по убыванию потоки и взять страницу. Потоки — первые offset+size."""
+    merged = [item for stream in streams for item in stream]
+    merged.sort(key=lambda t: t[0], reverse=True)
+    return [obj for _, obj in merged[offset: offset + size]]
+
+
+# ── Ошибки по сводкам ────────────────────────────────────────────────────────────────────
+def _load_report_errors(db: Session, scope: _Scope) -> list[tuple[float, dict[str, Any]]]:
+    """Все ошибки сводок (новые сверху): из аудита + из заданий, которых в аудите нет."""
+    users = _Users(db)
+    out: list[tuple[float, dict[str, Any]]] = []
+    seen: set[str] = set()
+    covered: dict[str, int] = {}
+
+    q = _scope_audit(db.query(AuditLog).filter(AuditLog.action == REPORT_FAILED_ACTION), scope)
+    for row in q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).all():
         details = _parse_details(row.details)
-        user = _user(row.user_id)
-        username = details.get("username") or user_label(user)
-        message = details.get("message") or format_action_message(
-            row.action, username, details,
-        )
-        category = details.get("category") or (
-            "report" if row.action == "reports.generation.report_failed" else "user"
-        )
-
-        base = {
-            "id": f"audit-{row.id}",
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "action": row.action,
-            "message": message,
-            "user_id": row.user_id,
-            "username": username,
-            "ip": row.ip,
-            "job_id": details.get("job_id"),
-            "summary_date": details.get("summary_date") or details.get("report_date"),
-            "report_ids": details.get("report_ids") or [],
-            "details": details,
-            "area": event_area(row.action),
-        }
-
-        if category == "report" or row.action == "reports.generation.report_failed":
-            rid = str(details.get("report_id") or "")
-            key = f"{details.get('job_id')}:{rid}"
-            if key not in seen_report_keys:
-                seen_report_keys.add(key)
-                report_events.append({
-                    **base,
-                    "report_id": rid,
-                    "title": details.get("title") or report_title(rid),
-                    "status": "error",
-                    "error": details.get("error") or message,
-                    "log_lines": details.get("log_lines") or [],
-                })
-        else:
-            uid = base["id"]
-            if uid not in seen_user_ids:
-                seen_user_ids.add(uid)
-                user_events.append(base)
-
-    # generation_jobs — детализация по сводкам (ok/error)
-    jobs = repo.list_generation_jobs(db, limit=min(limit, 100))
-    season_events: list[dict[str, Any]] = []
-    for job in jobs:
-        if not see_all and job.user_id != viewer_id:
+        job_id = details.get("job_id")
+        key = f"{job_id}:{details.get('report_id') or ''}"
+        if key in seen:
             continue
-        user = _user(job.user_id)
-        username = user_label(user)
-        result = {}
-        if job.result_json:
-            try:
-                result = json.loads(job.result_json)
-            except json.JSONDecodeError:
-                result = {}
-        failed_map = {str(x.get("report_id")): x for x in (result.get("failed") or [])}
-        created_map = {str(x.get("report_id")): x for x in (result.get("created") or [])}
+        seen.add(key)
+        if job_id:
+            covered[str(job_id)] = covered.get(str(job_id), 0) + 1
+        out.append((_ts(row.created_at), _error_event_from_audit(row, users)))
+
+    # Старые задания (до появления аудита ошибок) и случаи, когда запись в аудит не удалась.
+    jq = db.query(GenerationJob).options(defer(GenerationJob.result_json)).filter(
+        GenerationJob.failed_count > 0
+    )
+    for job in _scope_jobs(jq, scope).order_by(GenerationJob.created_at.desc()).all():
+        if covered.get(job.id, 0) >= job.failed_count:
+            continue  # все ошибки задания уже есть в аудите — JSON не разбираем
+        result = _load_result(job.result_json)
         logs = result.get("logs") or []
-        season_events.extend(_season_events_from_logs(job, logs, username))
-        try:
-            rids = json.loads(job.report_ids or "[]")
-        except json.JSONDecodeError:
-            rids = []
-
-        reports_summary: list[dict[str, Any]] = []
-        for rid in rids:
-            rs = str(rid)
-            if rs in failed_map:
-                item = failed_map[rs]
-                status = "error"
-                error = str(item.get("error") or "ошибка")
-                title = item.get("title") or report_title(rs)
-                log_lines = _log_lines_for_report(logs, rs)
-                key = f"{job.id}:{rs}"
-                if key not in seen_report_keys:
-                    seen_report_keys.add(key)
-                    report_events.append({
-                        "id": f"job-{job.id}-{rs}",
-                        "created_at": (job.updated_at or job.created_at).isoformat(),
-                        "action": "reports.generation.report_failed",
-                        "message": f"Сводка {rs} ({title}): {error[:200]}",
-                        "user_id": job.user_id,
-                        "username": username,
-                        "job_id": job.id,
-                        "summary_date": job.summary_date.isoformat(),
-                        "report_id": rs,
-                        "title": title,
-                        "status": "error",
-                        "error": error,
-                        "log_lines": log_lines,
-                    })
-            else:
-                c = created_map.get(rs) or {}
-                status = "ok"
-                error = None
-                title = c.get("title") or report_title(rs)
-            reports_summary.append({
-                "report_id": rs,
-                "title": title,
-                "status": status,
-                "error": error,
-            })
-
-        has_error = bool(failed_map) or job.status == "failed"
-        if rids:
-            labels = compact_report_ids([str(x) for x in rids])
-            msg = f"{username} — сводки {labels} за {job.summary_date.isoformat()}"
-            if has_error:
-                msg += f" (ошибок: {len(failed_map) or 1})"
-            elif job.status == "completed":
-                msg += " — готово"
-            elif job.status == "running":
-                msg += " — выполняется…"
-            else:
-                msg += f" — {job.status}"
-
-            # одна карточка на job в ленте пользователей (если ещё нет audit completed)
-            jid = f"job-{job.id}"
-            if jid in seen_user_ids:
+        username = users.label(job.user_id)
+        when = job.updated_at or job.created_at
+        for item in result.get("failed") or []:
+            rid = str(item.get("report_id") or "")
+            key = f"{job.id}:{rid}"
+            if key in seen:
                 continue
-            seen_user_ids.add(jid)
-            user_events.append({
-                "id": jid,
-                "created_at": (job.created_at or datetime.utcnow()).isoformat(),
-                "action": "reports.generation.job",
-                "message": msg,
+            seen.add(key)
+            error = str(item.get("error") or "ошибка")
+            title = item.get("title") or report_title(rid)
+            out.append((_ts(when), {
+                "id": f"job-{job.id}-{rid}",
+                "kind": "error",
+                "created_at": iso_utc(when),
+                "action": REPORT_FAILED_ACTION,
+                "message": f"Сводка {rid} ({title}): {error[:200]}",
                 "user_id": job.user_id,
                 "username": username,
                 "job_id": job.id,
                 "summary_date": job.summary_date.isoformat(),
-                "report_ids": [str(x) for x in rids],
-                "reports": reports_summary,
-                "has_error": has_error,
-                "job_status": job.status,
-                "duration_seconds": job_total_seconds(job, result),
-                "area": event_area("reports.generation.job"),
+                "report_id": rid,
+                "title": title,
+                "status": "error",
+                "error": error,
+                "log_lines": _log_lines_for_report(logs, rid),
+                "area": "Сводки",
+            }))
+    out.sort(key=lambda t: t[0], reverse=True)
+    return out
+
+
+def _load_result(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# ── Несовпадения сезонов ─────────────────────────────────────────────────────────────────
+def _load_season_events(db: Session, scope: _Scope) -> list[tuple[float, dict[str, Any]]]:
+    users = _Users(db)
+    id_q = db.query(GenerationJob.id).filter(GenerationJob.result_json.like("%SEASON_MISMATCH%"))
+    job_ids = [
+        row[0]
+        for row in _scope_jobs(id_q, scope).order_by(GenerationJob.created_at.desc()).all()
+    ]
+    out: list[tuple[float, dict[str, Any]]] = []
+    # result_json с логами бывает тяжёлым — читаем пачками, не всё сразу.
+    for start in range(0, len(job_ids), 20):
+        chunk = job_ids[start: start + 20]
+        rows = {
+            job.id: job
+            for job in db.query(
+                GenerationJob.id,
+                GenerationJob.user_id,
+                GenerationJob.summary_date,
+                GenerationJob.created_at,
+                GenerationJob.updated_at,
+                GenerationJob.result_json,
+            ).filter(GenerationJob.id.in_(chunk))
+        }
+        for job_id in chunk:
+            job = rows.get(job_id)
+            if job is None:
+                continue
+            logs = _load_result(job.result_json).get("logs") or []
+            ts = _ts(job.updated_at or job.created_at)
+            for ev in _season_events_from_logs(job, logs, users.label(job.user_id)):
+                out.append((ts, ev))
+    out.sort(key=lambda t: t[0], reverse=True)  # сортировка устойчивая: порядок строк лога сохраняется
+    return out
+
+
+# ── Карточки заданий (вкладка «Генерация») ───────────────────────────────────────────────
+def _job_card(job: GenerationJob, username: str) -> dict[str, Any]:
+    result = _load_result(job.result_json)
+    failed_map = {str(x.get("report_id")): x for x in (result.get("failed") or [])}
+    created_map = {str(x.get("report_id")): x for x in (result.get("created") or [])}
+    try:
+        rids = [str(x) for x in json.loads(job.report_ids or "[]")]
+    except json.JSONDecodeError:
+        rids = []
+    # Пустой список = «все сводки»: показываем то, что реально было сформировано.
+    all_reports = not rids
+    if all_reports:
+        rids = list(dict.fromkeys([*created_map, *failed_map]))
+
+    reports_summary: list[dict[str, Any]] = []
+    for rs in rids:
+        if rs in failed_map:
+            item = failed_map[rs]
+            reports_summary.append({
+                "report_id": rs,
+                "title": item.get("title") or report_title(rs),
+                "status": "error",
+                "error": str(item.get("error") or "ошибка"),
+            })
+        else:
+            reports_summary.append({
+                "report_id": rs,
+                "title": (created_map.get(rs) or {}).get("title") or report_title(rs),
+                "status": "ok",
+                "error": None,
             })
 
-    user_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    report_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-    season_events.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-
-    if viewer.role != "developer":
-        user_events = []
-
-    if see_all:
-        user_rows = (
-            db.query(User)
-            .filter(User.is_active.is_(True))
-            .order_by(User.username.asc())
-            .all()
-        )
-        users = [{"id": u.id, "username": user_label(u)} for u in user_rows]
+    has_error = bool(failed_map) or job.status == "failed"
+    what = "все сводки" if all_reports and not rids else f"сводки {compact_report_ids(rids)}"
+    if all_reports and rids:
+        what = f"все сводки ({compact_report_ids(rids)})"
+    msg = f"{username} — {what} за {job.summary_date.isoformat()}"
+    if has_error:
+        msg += f" (ошибок: {len(failed_map) or 1})"
     else:
-        users = [{"id": viewer.id, "username": user_label(viewer)}]
+        msg += f" — {_JOB_STATUS_RU.get(job.status, job.status)}"
 
     return {
-        "user_events": user_events[:limit],
-        "report_events": report_events[:limit],
-        "season_events": season_events[:limit],
-        "users": users,
-        "viewer_can_see_all": see_all,
+        "id": f"job-{job.id}",
+        "created_at": iso_utc(job.created_at),
+        "action": "reports.generation.job",
+        "message": msg,
+        "user_id": job.user_id,
+        "username": username,
+        "job_id": job.id,
+        "summary_date": job.summary_date.isoformat(),
+        "report_ids": rids,
+        "reports": reports_summary,
+        "has_error": has_error,
+        "job_status": job.status,
+        "duration_seconds": job_total_seconds(job, result),
+        "area": event_area("reports.generation.job"),
+    }
+
+
+# ── Сборка страницы ──────────────────────────────────────────────────────────────────────
+def build_activity_page(
+    db: Session,
+    *,
+    viewer: User,
+    tab: str | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    user_filter: str | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Одна страница выбранной вкладки + счётчики всех вкладок.
+
+    tab — id вкладки (см. FIXED_TABS или «area:<название>»); page — с 1; user_filter —
+    id пользователя, «system» (действия без пользователя) или пусто (все).
+    """
+    scope = _Scope(viewer, user_filter)
+    size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
+    users = _Users(db)
+
+    counts = _audit_action_counts(db, scope) if scope.developer else {}
+    by_tab = _actions_by_tab(counts)
+
+    def audit_total(tab_id: str) -> int:
+        return sum(counts.get(a, 0) for a in by_tab.get(tab_id, []))
+
+    errors = _cached(("errors", scope.cache_key), lambda: _load_report_errors(db, scope), refresh)
+    seasons = _cached(("seasons", scope.cache_key), lambda: _load_season_events(db, scope), refresh)
+
+    jobs_q = _scope_jobs(db.query(func.count(GenerationJob.id)), scope)
+    jobs_total = int(jobs_q.scalar() or 0) if scope.developer else 0
+
+    totals: dict[str, int] = {
+        "reports": len(errors) + audit_total("reports"),
+        "seasons": len(seasons),
+    }
+    tabs: list[dict[str, Any]] = []
+    for tab_id, label, _areas in FIXED_TABS:
+        if not scope.developer and tab_id not in _PUBLIC_TABS:
+            continue
+        if tab_id == "generation":
+            totals[tab_id] = audit_total(tab_id) + jobs_total
+        elif tab_id not in totals:
+            totals[tab_id] = audit_total(tab_id)
+        tabs.append({"id": tab_id, "label": label, "count": totals[tab_id]})
+    if scope.developer:
+        extra = sorted(
+            (t for t in by_tab if t.startswith("area:")),
+            key=lambda t: t.removeprefix("area:").casefold(),
+        )
+        for tab_id in extra:
+            totals[tab_id] = audit_total(tab_id)
+            tabs.append({"id": tab_id, "label": tab_id.removeprefix("area:"), "count": totals[tab_id]})
+
+    visible = [t["id"] for t in tabs]
+    default_tab = "users" if scope.developer else "reports"
+    active = tab if tab in visible else default_tab
+    total = totals[active]
+    pages = max(1, -(-total // size))
+    page = max(1, min(int(page or 1), pages))
+    offset = (page - 1) * size
+    need = offset + size
+
+    items: list[dict[str, Any]]
+    if active == "seasons":
+        items = [ev for _, ev in seasons[offset: offset + size]]
+    elif active == "reports":
+        change_rows = _audit_rows(db, scope, by_tab.get("reports", []), 0, need)
+        change = [(_ts(r.created_at), {**_audit_event(r, users), "kind": "change"}) for r in change_rows]
+        items = _merge_page([change, errors[:need]], offset, size)
+    elif active == "generation":
+        audit_part = [
+            (_ts(r.created_at), ("audit", r))
+            for r in _audit_rows(db, scope, by_tab.get("generation", []), 0, need)
+        ]
+        jq = _scope_jobs(
+            db.query(GenerationJob).options(defer(GenerationJob.result_json)), scope
+        )
+        job_part = [
+            (_ts(j.created_at), ("job", j))
+            for j in jq.order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc()).limit(need).all()
+        ]
+        items = []
+        for kind, obj in _merge_page([audit_part, job_part], offset, size):
+            items.append(_audit_event(obj, users) if kind == "audit" else _job_card(obj, users.label(obj.user_id)))
+    else:
+        rows = _audit_rows(db, scope, by_tab.get(active, []), offset, size)
+        items = [_audit_event(r, users) for r in rows]
+
+    if scope.see_all:
+        user_rows = (
+            db.query(User).filter(User.is_active.is_(True)).order_by(User.username.asc()).all()
+        )
+        users_list = [{"id": u.id, "username": user_label(u)} for u in user_rows]
+    else:
+        users_list = [{"id": viewer.id, "username": user_label(viewer)}]
+
+    return {
+        "tab": active,
+        "tabs": tabs,
+        "items": items,
+        "page": page,
+        "pages": pages,
+        "page_size": size,
+        "total": total,
+        "users": users_list,
+        "viewer_can_see_all": scope.see_all,
     }
 
 
@@ -318,7 +590,7 @@ def _season_events_from_logs(job: Any, logs: list, username: str) -> list[dict[s
             "area": "Сезоны",
         })
         n += 1
-        if n >= 40:
+        if n >= _MAX_SEASON_EVENTS_PER_JOB:
             break
     return events
 

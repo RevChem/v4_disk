@@ -1,5 +1,5 @@
 """Запуск проверки количества машин (svodki/plan/proverka/machine_runner.py)
-из API.
+из API. Читает уже готовые Excel сводок, ничего не пересчитывает.
 
 Полностью независим от service.py (проверка сводок по гектарам ↔
 Cropwise): свой каталог заданий на диске, свои функции create/run/read,
@@ -148,7 +148,6 @@ def create_job(
     report_date: date,
     report_ids: list[str],
     user_id: int | None = None,
-    force_diff_groups: list[str] | None = None,
 ) -> str:
     job_id = str(uuid.uuid4())
     d = job_dir(job_id)
@@ -157,9 +156,6 @@ def create_job(
         "report_date": report_date.isoformat(),
         "report_ids": report_ids,
         "user_id": user_id,
-        # только для ручной проверки самого механизма на заглушке —
-        # заставить конкретные операции "разойтись", чтобы увидеть DIFF
-        "force_diff_groups": force_diff_groups or [],
     }
     (d / "params.json").write_text(json.dumps(params, ensure_ascii=False), encoding="utf-8")
     write_job_status(
@@ -171,7 +167,6 @@ def create_job(
             "report_ids": report_ids,
             "progress": "Ожидание…",
             "error": None,
-            "is_stub_data": True,
             "machine_cross_check": {},
             "machine_cross_check_rows": [],
         },
@@ -208,7 +203,6 @@ def run_job(job_id: str) -> None:
     params = json.loads(params_path.read_text(encoding="utf-8"))
     report_date = date.fromisoformat(params["report_date"])
     report_ids = list(params["report_ids"])
-    force_diff_groups = list(params.get("force_diff_groups") or [])
 
     def on_progress(msg: str) -> None:
         st = read_job_status(job_id) or {}
@@ -229,7 +223,6 @@ def run_job(job_id: str) -> None:
             write_json=True,
             progress=on_progress,
             should_cancel_report=is_cancelled,
-            force_diff_groups=force_diff_groups,
         )
         params_path.unlink(missing_ok=True)
         cancelled_ids = result.get("cancelled_report_ids") or []
@@ -244,9 +237,10 @@ def run_job(job_id: str) -> None:
                 "cancel_report_ids": cancelled_ids,
                 "progress": "Отменено" if final_status == "cancelled" else "Готово",
                 "error": None,
-                "is_stub_data": bool(result.get("is_stub_data")),
-                "real_data_report_ids": result.get("real_data_report_ids") or [],
-                "stub_data_report_ids": result.get("stub_data_report_ids") or [],
+                "file_report_ids": result.get("file_report_ids") or [],
+                "missing_file_report_ids": result.get("missing_file_report_ids") or [],
+                "no_machine_data_report_ids": result.get("no_machine_data_report_ids") or [],
+                "file_read_errors": result.get("file_read_errors") or {},
                 "unknown_report_ids": result.get("unknown_report_ids") or [],
                 "machine_cross_check": result.get("machine_cross_check") or {},
                 "machine_cross_check_rows": result.get("machine_cross_check_rows") or [],

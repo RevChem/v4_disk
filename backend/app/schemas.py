@@ -149,9 +149,6 @@ class ProverkaMachineRunIn(BaseModel):
 
     report_date: date
     report_ids: list[str] = Field(min_length=1)
-    # только для обкатки механизма на заглушке: намеренно "сломать" сверку
-    # по этим операциям, чтобы проверить, что DIFF корректно отображается
-    force_diff_groups: list[str] = Field(default_factory=list)
 
 
 class ProverkaMachineRunOut(BaseModel):
@@ -170,9 +167,10 @@ class ProverkaMachineJobOut(BaseModel):
     unknown_report_ids: list[str] = Field(default_factory=list)
     progress: str | None = None
     error: str | None = None
-    is_stub_data: bool = True
-    real_data_report_ids: list[str] = Field(default_factory=list)
-    stub_data_report_ids: list[str] = Field(default_factory=list)
+    file_report_ids: list[str] = Field(default_factory=list)
+    missing_file_report_ids: list[str] = Field(default_factory=list)
+    no_machine_data_report_ids: list[str] = Field(default_factory=list)
+    file_read_errors: dict[str, str] = Field(default_factory=dict)
     machine_cross_check: dict[str, Any] = Field(default_factory=dict)
     machine_cross_check_rows: list[dict[str, Any]] = Field(default_factory=list)
     checked_at: str | None = None
