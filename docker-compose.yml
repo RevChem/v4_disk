@@ -114,7 +114,8 @@ services:
     volumes:
       - disk_uploads:/app/uploads
       - ./data:/app/data
-      # plans.py пишется кнопкой «Синхронизация plans.py» в редакторе планов.
+      # Каждое сохранение в «Редакторе планов» пишет ./svodki/plan/plans.py.
+      # Это один файл: и в контейнере (/app/svodki), и в локальном репозитории.
       - ./svodki:/app/svodki
       - ./backend/app:/app/app:ro
       # rw: кнопка «Cookie» перезаписывает CROPWISE_SESSION_COOKIE в том же файле.

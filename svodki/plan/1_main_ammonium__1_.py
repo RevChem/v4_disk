@@ -540,7 +540,7 @@ REPORT1_INCLUDE_CROP_SUMMARY = True
 
 # Алиасы для обратной совместимости внутри скрипта
 AGROFIRMS = AGROFIRMS_META          # dict[str, tuple[folder_id, region_id, own_count)]
-PLAN_HA   = PLAN_11_HA              # план удобрений (озимые, без многолетних трав)
+PLAN_HA   = PLAN_11_HA              # снимок плана 1.1; сводка читает plans.HARDCODED_PLAN
 
 PLAN_OUTPUT: dict[str, float] = {k: 25.0 for k in AGROFIRMS}
 
@@ -1411,15 +1411,24 @@ def build_plan_ha() -> dict[str, dict[str, float]]:
             lc = crop.lower()
             if "рапс" in lc or "многолетние" in lc:
                 result[firm].pop(crop, None)
-        for crop, plan_val in PLAN_HA.get(firm, {}).items():
-            result[firm][crop] = plan_val
-        # Финальный слой: согласованные планы 1.1 (приоритет выше авто-плана).
-        for crop, plan_val in PLAN_11_OVERRIDES.get(firm, {}).items():
-            result[firm][crop] = plan_val
-    # Финальный слой: планы овощных культур из plans.VEG_CROP_PLAN_HA
-    # (суммарный план по холдингу; распределяем пропорционально авто-плану по фирмам).
+    # Овощи из «4.1 Посев», только если в плане 1.1 этой культуры нет.
+    agreed = plans.HARDCODED_PLAN.get(WORK_TYPE_NAME) or {}
+    if not isinstance(agreed, dict):
+        agreed = {}
+    agreed_names = {
+        str(crop)
+        for crops in agreed.values()
+        if isinstance(crops, dict)
+        for crop in crops
+    }
+    veg_covered = set(agreed_names)
+    for alias, canonical in _VEG_CROP_NAME_MAP.items():
+        if alias in agreed_names:
+            veg_covered.add(canonical)
     if _VEG_CROP_PLAN_HA:
         for crop, total_plan_val in _VEG_CROP_PLAN_HA.items():
+            if crop in veg_covered:
+                continue
             auto_total = sum(
                 auto_plan.get(firm, {}).get(crop, 0.0) for firm in AGROFIRMS
             )
@@ -1430,6 +1439,17 @@ def build_plan_ha() -> dict[str, dict[str, float]]:
                 elif auto_total <= 0 and crop in result.get(firm, {}):
                     # нет авто-данных, но культура есть — оставляем как есть
                     pass
+    # План редактора по всей группе 1.1 перекрывает автоплощадь и овощной посев.
+    for firm in AGROFIRMS:
+        firm_plan = agreed.get(firm)
+        if isinstance(firm_plan, dict):
+            for crop, plan_val in firm_plan.items():
+                try:
+                    result[firm][str(crop)] = float(plan_val or 0)
+                except (TypeError, ValueError):
+                    continue
+        for crop, plan_val in PLAN_11_OVERRIDES.get(firm, {}).items():
+            result[firm][crop] = plan_val
     return result
 
 

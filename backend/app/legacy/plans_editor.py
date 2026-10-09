@@ -1,4 +1,9 @@
-"""Редактор планов: база из svodki/plan/plans.py, правки только в JSON."""
+"""Редактор планов: база из svodki/plan/plans.py.
+
+Каждое сохранение сразу записывает эффективные значения в plans.py
+(том ./svodki в Docker — это же локальный файл). JSON хранит ещё не
+перенесённую разницу и при следующем чтении с ней сливается.
+"""
 from __future__ import annotations
 
 from app.legacy.json_store_io import adopt_legacy_json, atomic_write_text, read_json_dict, serialized_rmw
@@ -516,9 +521,7 @@ def set_plan_value(
     new_edits = _prune_edits_to_diff(base, effective)
     save_edits_store(new_edits)
     state = get_editor_state(report_date)
-    if section_key == "HARDCODED_PLAN":
-        state = _state_with_plan_sync(state, report_date)
-    return state
+    return _state_with_plan_sync(state, report_date)
 
 
 @serialized_rmw(name="plans_edits")
@@ -552,7 +555,7 @@ def set_work_groups(groups: list[dict[str, Any]], report_date: date | None = Non
     effective["WORK_GROUPS"] = normalized
     new_edits = _prune_edits_to_diff(base, effective)
     save_edits_store(new_edits)
-    return get_editor_state(report_date)
+    return _state_with_plan_sync(get_editor_state(report_date), report_date)
 
 
 def _format_plan_number(value: Any) -> str:
@@ -607,7 +610,7 @@ def _const_number(node: ast.AST) -> float | None:
     return None
 
 
-def _find_hardcoded_plan(tree: ast.AST) -> ast.Dict:
+def _find_assigned(tree: ast.AST, var_name: str) -> ast.AST:
     for node in tree.body:
         target = ""
         value: ast.AST | None = None
@@ -617,15 +620,26 @@ def _find_hardcoded_plan(tree: ast.AST) -> ast.Dict:
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             target = node.targets[0].id
             value = node.value
-        if target == "HARDCODED_PLAN" and isinstance(value, ast.Dict):
+        if target == var_name and value is not None:
             return value
-    raise ValueError("В plans.py не найден словарь HARDCODED_PLAN")
+    raise ValueError(f"В plans.py не найден {var_name}")
 
 
-def render_hardcoded_plan_source(source: str, plan: dict[str, Any]) -> tuple[str, int]:
+def _find_hardcoded_plan(tree: ast.AST, var_name: str = "HARDCODED_PLAN") -> ast.Dict:
+    value = _find_assigned(tree, var_name)
+    if isinstance(value, ast.Dict):
+        return value
+    raise ValueError(f"В plans.py не найден словарь {var_name}")
+
+
+def render_hardcoded_plan_source(
+    source: str,
+    plan: dict[str, Any],
+    var_name: str = "HARDCODED_PLAN",
+) -> tuple[str, int]:
     """Подставляет площади плана в исходник plans.py. Комментарии и прочие секции не трогает."""
     tree = ast.parse(source)
-    root = _find_hardcoded_plan(tree)
+    root = _find_hardcoded_plan(tree, var_name)
     starts = _line_starts(source)
     edits: list[tuple[int, int, str]] = []
     changed = 0
@@ -763,9 +777,13 @@ def render_hardcoded_plan_source(source: str, plan: dict[str, Any]) -> tuple[str
     return text, changed
 
 
-def _source_contains_plan(source: str, plan: dict[str, Any]) -> bool:
+def _source_contains_plan(
+    source: str,
+    plan: dict[str, Any],
+    var_name: str = "HARDCODED_PLAN",
+) -> bool:
     tree = ast.parse(source)
-    root = _find_hardcoded_plan(tree)
+    root = _find_hardcoded_plan(tree, var_name)
     groups: dict[str, ast.Dict] = {}
     for key, val in zip(root.keys, root.values):
         if isinstance(key, ast.Constant) and isinstance(key.value, str) and isinstance(val, ast.Dict):
@@ -801,6 +819,279 @@ def _source_contains_plan(source: str, plan: dict[str, Any]) -> bool:
     return True
 
 
+def _count_numbers(raw: Any) -> int:
+    if isinstance(raw, dict):
+        return sum(_count_numbers(v) for v in raw.values())
+    try:
+        float(raw)
+    except (TypeError, ValueError):
+        return 0
+    return 1
+
+
+def _format_number_tree(key: str, raw: Any, key_indent: str) -> list[str]:
+    if isinstance(raw, dict):
+        inner = key_indent + "    "
+        lines = [f"{key_indent}{_py_string(key)}: {{"]
+        for child_key, child_val in raw.items():
+            lines.extend(_format_number_tree(str(child_key), child_val, inner))
+        lines.append(f"{key_indent}}},")
+        return lines
+    return [f"{key_indent}{_py_string(key)}: {_format_plan_number(float(raw))},"]
+
+
+def _format_mapping_literal(data: dict[str, Any], key_indent: str) -> str:
+    if not data:
+        return "{}"
+    lines = ["{"]
+    for key, raw in data.items():
+        if isinstance(raw, dict):
+            inner = _format_mapping_literal(raw, key_indent + "    ")
+            lines.append(f"{key_indent}{_py_string(str(key))}: {inner},")
+        else:
+            lines.append(
+                f"{key_indent}{_py_string(str(key))}: {_format_plan_number(float(raw))},"
+            )
+    close_indent = key_indent[:-4] if key_indent.endswith("    ") else ""
+    lines.append(f"{close_indent}}}")
+    return "\n".join(lines)
+
+
+def _apply_span_edits(source: str, edits: list[tuple[int, int, str]]) -> str:
+    text = source
+    for start, end, repl in sorted(edits, key=lambda item: (item[0], item[1]), reverse=True):
+        text = text[:start] + repl + text[end:]
+    if text != source:
+        ast.parse(text)
+    return text
+
+
+def _queue_insert_before_close(
+    source: str,
+    starts: list[int],
+    edits: list[tuple[int, int, str]],
+    node: ast.AST,
+    block: str,
+    close_char: str,
+) -> None:
+    if not block or node.end_lineno is None or node.end_col_offset is None:
+        return
+    payload = block if block.endswith("\n") else block + "\n"
+    line = source.splitlines()[node.end_lineno - 1]
+    if line.lstrip().startswith(close_char):
+        edits.append((starts[node.end_lineno - 1], starts[node.end_lineno - 1], payload))
+    else:
+        brace = _abs_pos(source, starts, node.end_lineno, node.end_col_offset) - 1
+        edits.append((brace, brace, "\n" + payload))
+    children = getattr(node, "values", None) or getattr(node, "elts", None) or []
+    if not children:
+        return
+    last = children[-1]
+    if last.end_lineno is None or last.end_col_offset is None:
+        return
+    pos = _abs_pos(source, starts, last.end_lineno, last.end_col_offset)
+    i = pos
+    while i < len(source) and source[i] != close_char:
+        if source[i] == ",":
+            return
+        if source[i] == "#":
+            while i < len(source) and source[i] != "\n":
+                i += 1
+            continue
+        i += 1
+    edits.append((pos, pos, ","))
+
+
+def render_nested_number_dict(source: str, var_name: str, data: dict[str, Any]) -> tuple[str, int]:
+    """Обновляет словарь чисел любой вложенности. Комментарии рядом не трогает."""
+    tree = ast.parse(source)
+    root = _find_hardcoded_plan(tree, var_name)
+    starts = _line_starts(source)
+    edits: list[tuple[int, int, str]] = []
+    changed = 0
+
+    def sync(node: ast.Dict, payload: dict[str, Any], key_indent: str) -> None:
+        nonlocal changed
+        existing: dict[str, ast.AST] = {}
+        for key, val in zip(node.keys, node.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                existing[str(key.value)] = val
+        fresh: list[str] = []
+        for key, raw in payload.items():
+            name = str(key)
+            if isinstance(raw, dict):
+                child = existing.get(name)
+                if isinstance(child, ast.Dict):
+                    sync(child, raw, _indent_of_keys(child, key_indent + "    "))
+                else:
+                    fresh.extend(_format_number_tree(name, raw, key_indent))
+                    changed += _count_numbers(raw)
+                continue
+            try:
+                num = float(raw)
+            except (TypeError, ValueError):
+                continue
+            current = existing.get(name)
+            if not isinstance(current, ast.AST):
+                fresh.append(f"{key_indent}{_py_string(name)}: {_format_plan_number(num)},")
+                changed += 1
+                continue
+            old = _const_number(current)
+            if old is None or current.end_lineno is None or current.end_col_offset is None:
+                continue
+            if abs(old - num) < 1e-9:
+                continue
+            start = _abs_pos(source, starts, current.lineno, current.col_offset)
+            end = _abs_pos(source, starts, current.end_lineno, current.end_col_offset)
+            edits.append((start, end, _format_plan_number(num)))
+            changed += 1
+        if fresh:
+            _queue_insert_before_close(source, starts, edits, node, "\n".join(fresh) + "\n", "}")
+
+    sync(root, data, _indent_of_keys(root, "    "))
+    return _apply_span_edits(source, edits), changed
+
+
+def _source_contains_number_dict(source: str, var_name: str, data: dict[str, Any]) -> bool:
+    tree = ast.parse(source)
+    root = _find_hardcoded_plan(tree, var_name)
+
+    def walk(node: ast.AST, payload: Any) -> bool:
+        if isinstance(payload, dict):
+            if not isinstance(node, ast.Dict):
+                return False
+            kids: dict[str, ast.AST] = {}
+            for key, val in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    kids[str(key.value)] = val
+            return all(str(key) in kids and walk(kids[str(key)], raw) for key, raw in payload.items())
+        try:
+            num = float(payload)
+        except (TypeError, ValueError):
+            return True
+        old = _const_number(node)
+        return old is not None and abs(old - num) < 1e-9
+
+    return walk(root, data)
+
+
+def _work_group_id_lists(source: str) -> dict[str, list[int]]:
+    tree = ast.parse(source)
+    root = _find_assigned(tree, "WORK_GROUPS")
+    if not isinstance(root, ast.List):
+        raise ValueError("WORK_GROUPS не список")
+    out: dict[str, list[int]] = {}
+    for elt in root.elts:
+        if not isinstance(elt, ast.Tuple) or len(elt.elts) < 2:
+            continue
+        name_n, ids_n = elt.elts[0], elt.elts[1]
+        if not (
+            isinstance(name_n, ast.Constant)
+            and isinstance(name_n.value, str)
+            and isinstance(ids_n, ast.List)
+        ):
+            continue
+        ids: list[int] = []
+        for item in ids_n.elts:
+            if isinstance(item, ast.Constant) and isinstance(item.value, int) and not isinstance(item.value, bool):
+                ids.append(int(item.value))
+        out[str(name_n.value)] = ids
+    return out
+
+
+def render_work_groups_source(source: str, groups: list[Any]) -> tuple[str, int]:
+    """Обновляет ID групп работ и дописывает новые группы. Существующие названия не удаляет."""
+    tree = ast.parse(source)
+    root = _find_assigned(tree, "WORK_GROUPS")
+    if not isinstance(root, ast.List):
+        raise ValueError("WORK_GROUPS не список")
+    starts = _line_starts(source)
+    edits: list[tuple[int, int, str]] = []
+    changed = 0
+    existing: dict[str, ast.List] = {}
+    for elt in root.elts:
+        if not isinstance(elt, ast.Tuple) or len(elt.elts) < 2:
+            continue
+        name_n, ids_n = elt.elts[0], elt.elts[1]
+        if (
+            isinstance(name_n, ast.Constant)
+            and isinstance(name_n.value, str)
+            and isinstance(ids_n, ast.List)
+        ):
+            existing[str(name_n.value)] = ids_n
+    fresh: list[str] = []
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        ids: list[int] = []
+        for raw in item.get("ids") or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        node = existing.get(name)
+        if node is None:
+            fresh.append(f"    ({_py_string(name)}, [{', '.join(str(i) for i in ids)}]),")
+            changed += 1
+            continue
+        old = _work_group_id_lists(source).get(name)
+        if old == ids or node.end_lineno is None or node.end_col_offset is None:
+            continue
+        start = _abs_pos(source, starts, node.lineno, node.col_offset)
+        end = _abs_pos(source, starts, node.end_lineno, node.end_col_offset)
+        edits.append((start, end, "[" + ", ".join(str(i) for i in ids) + "]"))
+        changed += 1
+    if fresh:
+        _queue_insert_before_close(source, starts, edits, root, "\n".join(fresh) + "\n", "]")
+    text = _apply_span_edits(source, edits)
+    return text, changed
+
+
+def _source_contains_work_groups(source: str, groups: list[Any]) -> bool:
+    found = _work_group_id_lists(source)
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        ids = []
+        for raw in item.get("ids") or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if found.get(name) != ids:
+            return False
+    return True
+
+
+def render_crop_report_mode_editor(source: str, updates: dict[str, Any]) -> tuple[str, int]:
+    """Дописывает точечные режимы культур в CROP_REPORT_MODE_EDITOR."""
+    if not updates:
+        return source, 0
+    tree = ast.parse(source)
+    node = _find_hardcoded_plan(tree, "CROP_REPORT_MODE_EDITOR")
+    current = ast.literal_eval(ast.unparse(node))
+    if not isinstance(current, dict):
+        current = {}
+    merged = _deep_merge(current, updates)
+    if merged == current:
+        return source, 0
+    formatted = _format_mapping_literal(merged, "    ")
+    starts = _line_starts(source)
+    if node.end_lineno is None or node.end_col_offset is None:
+        raise ValueError("CROP_REPORT_MODE_EDITOR без позиции")
+    start = _abs_pos(source, starts, node.lineno, node.col_offset)
+    end = _abs_pos(source, starts, node.end_lineno, node.end_col_offset)
+    text = source[:start] + formatted + source[end:]
+    ast.parse(text)
+    return text, _count_numbers(updates)
+
+
 def _sync_hardcoded_plan_note(effective: dict[str, Any]) -> str:
     """Пишет HARDCODED_PLAN из редактора в plans.py. JSON редактора не меняет."""
     plan = effective.get("HARDCODED_PLAN")
@@ -826,8 +1117,70 @@ def _sync_hardcoded_plan_note(effective: dict[str, Any]) -> str:
     return "plans.py уже совпадает с редактором."
 
 
+_NUMBER_DICT_SECTIONS = ("AVAILABLE_OWN", "PLAN_RATE_PER_GROUP", "CROP_DISPLAY_RANK")
+
+
+def _persist_editor_to_plans_py(effective: dict[str, Any]) -> str:
+    """Пишет все секции редактора в plans.py. JSON редактора не меняет."""
+    path = _svodki_plan_dir() / "plans.py"
+    try:
+        source = path.read_text(encoding="utf-8")
+        original = source
+        changed = 0
+        plan = effective.get("HARDCODED_PLAN")
+        if isinstance(plan, dict) and plan:
+            source, n = render_hardcoded_plan_source(source, plan)
+            changed += n
+            if not _source_contains_plan(source, plan):
+                return "Не удалось записать plans.py: не все площади попали в файл."
+        for name in _NUMBER_DICT_SECTIONS:
+            data = effective.get(name)
+            if not isinstance(data, dict) or not data:
+                continue
+            source, n = render_nested_number_dict(source, name, data)
+            changed += n
+            if not _source_contains_number_dict(source, name, data):
+                return f"Не удалось записать plans.py: секция {name} записана не полностью."
+        hidden = effective.get("CROP_FIRM_HIDDEN")
+        if isinstance(hidden, dict) and hidden:
+            source, n = render_hardcoded_plan_source(source, hidden, "CROP_FIRM_HIDDEN")
+            changed += n
+            if not _source_contains_plan(source, hidden, "CROP_FIRM_HIDDEN"):
+                return "Не удалось записать plans.py: скрытие культур записано не полностью."
+        groups = effective.get("WORK_GROUPS")
+        if isinstance(groups, list) and groups:
+            source, n = render_work_groups_source(source, groups)
+            changed += n
+            if not _source_contains_work_groups(source, groups):
+                return "Не удалось записать plans.py: группы работ записаны не полностью."
+        mode_diff: dict[str, Any] = {}
+        eff_modes = effective.get("CROP_REPORT_MODE")
+        if isinstance(eff_modes, dict) and eff_modes:
+            try:
+                base_modes = (extract_base_plans().get("base") or {}).get("CROP_REPORT_MODE") or {}
+            except Exception:
+                base_modes = None
+            if isinstance(base_modes, dict) and base_modes:
+                mode_diff = _prune_nested_2(base_modes, eff_modes)
+        if mode_diff:
+            source, n = render_crop_report_mode_editor(source, mode_diff)
+            changed += n
+        if source != original:
+            atomic_write_text(path, source)
+        with _BASE_CACHE_LOCK:
+            _BASE_CACHE["key"] = None
+            _BASE_CACHE["value"] = None
+    except OSError as exc:
+        return f"Не удалось записать plans.py: {exc}"
+    except (ValueError, SyntaxError) as exc:
+        return f"Не удалось записать plans.py: {exc}"
+    if changed:
+        return f"plans.py обновлён: {changed} значений."
+    return "plans.py уже совпадает с редактором."
+
+
 def _state_with_plan_sync(state: dict[str, Any], report_date: date | None) -> dict[str, Any]:
-    note = _sync_hardcoded_plan_note(state.get("effective") or {})
+    note = _persist_editor_to_plans_py(state.get("effective") or {})
     if not note.startswith("Не удалось"):
         state = get_editor_state(report_date)
     state["plans_py_note"] = note
@@ -836,7 +1189,7 @@ def _state_with_plan_sync(state: dict[str, Any], report_date: date | None) -> di
 
 @serialized_rmw(name="plans_edits")
 def sync_hardcoded_plan_to_file(report_date: date | None = None) -> dict[str, Any]:
-    """Кнопка «Синхронизация plans.py»: площади из редактора пишутся в plans.py, JSON не меняется."""
+    """Кнопка «Синхронизация plans.py»: все секции редактора пишутся в plans.py, JSON не меняется."""
     state = get_editor_state(report_date)
     return _state_with_plan_sync(state, report_date)
 

@@ -918,23 +918,11 @@ SKIP_CROPS = {
 }
 
 
-# =============================================================================
-# Удалить позже. 1 сводка
-# =============================================================================
-
-_PLAN_11_MANUAL_CROPS = {
-    "Рапс озимый", "Пшеница озимая", "Тритикале озимая",
-    "Многолетние травы", "Многолетние травы 2019 года", "Многолетние травы 2021 года",
-    "Многолетние травы 2022 года", "Многолетние травы 2023 года",
-    "Многолетние травы 2024 года", "Многолетние травы 2025 года",
-}
-
-
+# План внесения 1.1 для сводки: все культуры группы, как в редакторе планов.
 PLAN_11_HA: dict[str, dict[str, float]] = {
     firm: {
         crop: float(val)
         for crop, val in crops.items()
-        if crop in _PLAN_11_MANUAL_CROPS
     }
     for firm, crops in HARDCODED_PLAN.get("1.1 Внесение минеральных удобрений", {}).items()
 }
@@ -1340,6 +1328,19 @@ def _default_crop_report_mode() -> dict[str, dict[str, int]]:
 
 
 CROP_REPORT_MODE = _default_crop_report_mode()
+
+# Режимы, которые «Редактор планов» записал в этот файл поверх автоматических:
+# 0 — считать, 1 — иные культуры, 2 — не считать.
+CROP_REPORT_MODE_EDITOR: dict[str, dict[str, int]] = {}
+for _mode_group, _mode_crops in CROP_REPORT_MODE_EDITOR.items():
+    if not isinstance(_mode_crops, dict):
+        continue
+    _mode_bucket = CROP_REPORT_MODE.setdefault(str(_mode_group), {})
+    for _mode_crop, _mode_raw in _mode_crops.items():
+        try:
+            _mode_bucket[str(_mode_crop)] = int(_mode_raw)
+        except (TypeError, ValueError):
+            continue
 
 
 def sync_crop_report_sets() -> None:

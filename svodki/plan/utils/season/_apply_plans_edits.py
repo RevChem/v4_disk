@@ -43,20 +43,7 @@ def _rebuild_hardcoded_plan_flat(globals_dict: dict[str, Any]) -> None:
 
 
 def _rebuild_plan_11_ha(globals_dict: dict[str, Any]) -> None:
-    manual_crops = globals_dict.get("_PLAN_11_MANUAL_CROPS")
-    if not isinstance(manual_crops, set):
-        manual_crops = {
-            "Рапс озимый",
-            "Пшеница озимая",
-            "Тритикале озимая",
-            "Многолетние травы",
-            "Многолетние травы 2019 года",
-            "Многолетние травы 2021 года",
-            "Многолетние травы 2022 года",
-            "Многолетние травы 2023 года",
-            "Многолетние травы 2024 года",
-            "Многолетние травы 2025 года",
-        }
+    """План 1.1 для сводки — все культуры группы, без белого списка."""
     hp = globals_dict.get("HARDCODED_PLAN")
     if not isinstance(hp, dict):
         return
@@ -69,11 +56,10 @@ def _rebuild_plan_11_ha(globals_dict: dict[str, Any]) -> None:
             continue
         row: dict[str, float] = {}
         for crop, val in crops.items():
-            if crop in manual_crops:
-                try:
-                    row[str(crop)] = float(val)
-                except (TypeError, ValueError):
-                    row[str(crop)] = 0.0
+            try:
+                row[str(crop)] = float(val)
+            except (TypeError, ValueError):
+                row[str(crop)] = 0.0
         if row:
             out[str(firm)] = row
     globals_dict["PLAN_11_HA"] = out

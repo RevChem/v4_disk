@@ -110,6 +110,82 @@ def test_real_plans_new_group_firm_and_crop():
     assert _source_contains_plan(updated, new_plan)
 
 
+EDITOR_SAMPLE = '''\
+HARDCODED_PLAN = {
+    "1.1 Внесение минеральных удобрений": {
+        "АФ Чистопольская": {
+            "Подсолнечник": 1,
+            "Соя": 2,
+        },
+    },
+    "2.4 Вспашка": {
+        "АФ Чистопольская": {
+            "Соя": 10,
+        },
+    },
+}
+AVAILABLE_OWN = {
+    "2.4 Вспашка": {
+        "АФ Чистопольская": 1,
+    },
+}
+PLAN_RATE_PER_GROUP = {
+    "2.4 Вспашка": 40,
+}
+CROP_DISPLAY_RANK = {}
+CROP_FIRM_HIDDEN = {}
+CROP_REPORT_MODE_EDITOR = {}
+WORK_GROUPS = [
+    ("2.4 Вспашка", [49]),
+]
+'''
+
+
+def test_persist_writes_every_operation_and_keeps_json(tmp_path, monkeypatch):
+    """Любая правка всех групп работ сразу попадает в plans.py, JSON не стирается."""
+    from app.config import settings
+    from app.legacy import plans_editor as pe
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    (plan_dir / "plans.py").write_text(EDITOR_SAMPLE, encoding="utf-8")
+    edits_path = tmp_path / "plans_edits.json"
+    original_json = '{"HARDCODED_PLAN": {"2.4 Вспашка": {"АФ Чистопольская": {"Соя": 99}}}}'
+    edits_path.write_text(original_json, encoding="utf-8")
+    monkeypatch.setattr(pe, "_svodki_plan_dir", lambda: plan_dir)
+    monkeypatch.setattr(settings, "svodki_plans_edits_path", str(edits_path))
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+
+    note = pe._persist_editor_to_plans_py(
+        {
+            "HARDCODED_PLAN": {
+                "1.1 Внесение минеральных удобрений": {
+                    "АФ Чистопольская": {"Подсолнечник": 3367, "Соя": 3457},
+                },
+                "2.4 Вспашка": {"АФ Чистопольская": {"Соя": 99}},
+            },
+            "AVAILABLE_OWN": {"2.4 Вспашка": {"АФ Чистопольская": 8}},
+            "PLAN_RATE_PER_GROUP": {"2.4 Вспашка": 41},
+            "CROP_DISPLAY_RANK": {"2.4 Вспашка": {"Соя": 3}},
+            "CROP_FIRM_HIDDEN": {"2.4 Вспашка": {"АФ Чистопольская": {"Соя": 1}}},
+            "WORK_GROUPS": [
+                {"name": "2.4 Вспашка", "ids": [49, 57]},
+                {"name": "2.1 Боронование", "ids": [12]},
+            ],
+        }
+    )
+    assert not str(note).startswith("Не удалось")
+    written = (plan_dir / "plans.py").read_text(encoding="utf-8")
+    assert '"Подсолнечник": 3367' in written
+    assert '"Соя": 99' in written
+    assert '"АФ Чистопольская": 8' in written
+    assert '"2.4 Вспашка": 41' in written
+    assert '"Соя": 3' in written
+    assert "[49, 57]" in written
+    assert "2.1 Боронование" in written
+    assert edits_path.read_text(encoding="utf-8") == original_json
+
+
 def test_sync_writes_plans_py_and_keeps_editor_json(tmp_path, monkeypatch):
     """Синхронизация копирует план в plans.py и не переписывает JSON редактора."""
     from app.config import settings

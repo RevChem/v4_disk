@@ -27,6 +27,8 @@ def edits_file(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
     # как в docker-compose: переменная окружения указывает на тот же файл правок
     monkeypatch.setenv("SVODKI_PLANS_EDITS_PATH", str(path))
+    # Иначе set_plan_value переписал бы рабочий svodki/plan/plans.py.
+    monkeypatch.setattr(pe, "_persist_editor_to_plans_py", lambda _effective: "тест: файл не пишем")
     _reset_cache()
     yield path
     _reset_cache()
