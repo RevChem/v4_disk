@@ -165,6 +165,22 @@ def test_xlsx_summary_reads_firms_and_crops(tmp_path):
     assert crops["3.2 Опрыскивание (овощи)"]["Картофель"] == 5.5
 
 
+def test_report1_skips_crop_that_the_plan_does_not_count():
+    from app.application.cropwise_file_check import _crops_for_file_check
+
+    file_map = {"Пшеница озимая": 10.0}
+    cropwise_map = {"Пшеница озимая": 10.0, "Многолетние травы 2022 года": 1.47}
+    kept_file, kept_cw = _crops_for_file_check("1", "4.0 Посев", file_map, cropwise_map)
+    assert "Многолетние травы 2022 года" not in kept_cw
+    assert kept_file["Пшеница озимая"] == 10.0
+    assert kept_cw["Пшеница озимая"] == 10.0
+
+    still = _crops_for_file_check(
+        "2", "4.0 Посев", {}, {"Многолетние травы 2022 года": 1.47},
+    )
+    assert still[1]["Многолетние травы 2022 года"] == 1.47
+
+
 def test_generate_options_keep_cropwise_flag():
     body = GenerateReportsIn(summary_date=date(2026, 10, 7), compare_cropwise=True)
     assert body.generation_job_options() == {"compare_cropwise": True}

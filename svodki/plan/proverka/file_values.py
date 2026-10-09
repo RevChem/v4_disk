@@ -1380,7 +1380,8 @@ def _xlsx_crop_column_areas(path: Path, report_id: str) -> dict[str, dict[str, f
                 if crop_idx is None or value_idx is None or max(crop_idx, value_idx) >= len(values):
                     continue
                 label = str(values[crop_idx] or "").strip()
-                if not label or label == _TOTAL_LABEL:
+                # «Кукуруза, из них:» — заголовок блока, гектары уже в силос/зерно.
+                if not label or label == _TOTAL_LABEL or "из них" in label.casefold():
                     continue
                 try:
                     ha = float(values[value_idx] or 0)

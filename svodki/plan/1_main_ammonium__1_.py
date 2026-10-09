@@ -3063,6 +3063,18 @@ async def _fetch_other_group_stats(
     return result
 
 
+def _firm_day_area_ha(stats: dict | None) -> float:
+    """Суточные га строки выработки — та же база, что и «Итого».
+
+    SVODKI_DAILY_FACTS_DAILY подменяет area_today цифрой из TaskStore. Она не
+    сходится со сводкой 2 и с Cropwise, а «Итого» уже суммирует today_by_field.
+    """
+    by_field = (stats or {}).get("today_by_field") or {}
+    if by_field:
+        return round(sum(float(v) for v in by_field.values()), 2)
+    return round(float((stats or {}).get("area_today") or 0.0), 2)
+
+
 def _today_area_total_ha(
     day_stats: dict[str, dict],
     firms: list[str] | None = None,
@@ -3822,7 +3834,7 @@ def write_perf_sheet(
     for firm in target_firms:
         s      = day_stats.get(firm, _empty_stats())
         n_mach = s["n_mach"]
-        area   = float(s["area_today"])
+        area   = _firm_day_area_ha(s)
         hours  = s["hours_today"]
         avg_s  = s["avg_season"]
         plan   = get_plan_rate_for_group(group_name, firm)
@@ -4699,7 +4711,7 @@ def write_tillage_combined_sheet(
         for firm in AGROFIRMS:
             s      = gstats.get(firm, _empty_stats())
             n_mach = s["n_mach"]
-            area   = float(s["area_today"])
+            area   = _firm_day_area_ha(s)
             hours  = s["hours_today"]
             avg_s  = s["avg_season"]
             plan   = get_plan_rate_for_group(group_name, firm)

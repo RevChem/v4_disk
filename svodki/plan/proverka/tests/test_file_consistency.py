@@ -708,3 +708,5 @@ def test_corn_silage_kept_in_crop_areas_of_other_reports(tmp_path):
         got = crop_areas_from_path(path, rid)["5.0 Уборка"]
         assert got["Кукуруза на силос"] == 50.0, rid
         assert got["Кукуруза на зерно"] == 53.72, rid
+        assert "Кукуруза, из них:" not in got, rid
+        assert not any("из них" in name.casefold() for name in got), rid

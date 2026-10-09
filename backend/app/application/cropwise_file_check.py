@@ -186,6 +186,29 @@ def _matrix_firms(matrix: dict[str, dict[str, float]]) -> dict[str, float]:
     return {firm: round(ha, 2) for firm, ha in totals.items() if ha > 0}
 
 
+def _crops_for_file_check(
+    report_id: str,
+    group: str,
+    file_map: dict,
+    cropwise_map: dict,
+) -> tuple[dict, dict]:
+    """Культура вне плана группы в файл сводки 1 не попадает.
+
+    Сводка 2 такие гектары не сравнивает. В итоге операции сводки 1 они остаются,
+    отдельная строка «файл 0, Cropwise N» ошибкой не является.
+    """
+    if str(report_id) != "1" or not cropwise_map:
+        return file_map, cropwise_map
+    from plans import crop_code_for_report
+
+    kept = {
+        name: ha
+        for name, ha in cropwise_map.items()
+        if name in file_map or crop_code_for_report(group, name) is not None
+    }
+    return file_map, kept
+
+
 def _matrix_crops(matrix: dict[str, dict[str, float]]) -> dict[str, float]:
     return {
         crop: round(sum(float(ha or 0) for ha in by_firm.values()), 2)
@@ -353,9 +376,12 @@ def compare_generated_files_to_work_json(
                 firm_cw,
                 "агрофирма",
             )
+            file_crop_map, crop_cw = _crops_for_file_check(
+                rid, group, file_crops.get(group) or {}, crop_cw,
+            )
             diffs += _append_part_diffs(
                 add_row, lines, rid, title, group, note,
-                file_crops.get(group) or {},
+                file_crop_map,
                 crop_cw,
                 "культура",
             )
