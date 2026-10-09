@@ -1501,9 +1501,17 @@ async def fetch_fertilizer_11_mtfmi(
     )
 
     _t = _tprint("1.1 machine_tasks", _t)
+    # Как сводка 2: и сутки, и «Факт общий» — только сезоны из редактора планов.
+    # Иначе при выборе одного 2027 в итог попадают задания сезона 2026 из того же окна дат.
+    _fert_seasons = task_season_years_set_for_group(WORK_TYPE_NAME, REPORT_DATE)
+    _n_today, _n_season = len(tasks_today), len(tasks_season)
+    tasks_today = filter_tasks_by_group_seasons(tasks_today, WORK_TYPE_NAME, REPORT_DATE)
+    tasks_season = filter_tasks_by_group_seasons(tasks_season, WORK_TYPE_NAME, REPORT_DATE)
+    _need = "+".join(sorted(_fert_seasons or [])) or "все"
     print(
-        f"    [1.1] Заданий за сутки: {len(tasks_today)}, "
-        f"за сезон (с {PERIOD_START_DATE}): {len(tasks_season)}"
+        f"    [1.1] Заданий за сутки: {_n_today} → {len(tasks_today)}, "
+        f"за сезон (с {PERIOD_START_DATE}): {_n_season} → {len(tasks_season)} "
+        f"(сезон заданий: {_need})"
     )
 
     all_task_ids = list({t["id"] for t in tasks_today + tasks_season})
