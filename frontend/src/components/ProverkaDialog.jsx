@@ -173,9 +173,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
     try {
       const data = await fetchProverkaCatalog();
       const items = sortCatalogDesc(data.items || []);
-      const saved = String(data.env_cookie || "").trim();
-      setEnvCookie(Boolean(saved));
-      if (saved) setCookie((prev) => (prev.trim() ? prev : saved));
+      setEnvCookie(Boolean(data.cookie_configured));
       setCatalog(items);
       // выбор сохраняется между открытиями окна; по умолчанию — все сводки
       setSelectedIds((prev) => {
@@ -596,8 +594,8 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             disabled={running}
             helperText={
               envCookie
-                ? "Подставлен из .env. Можно заменить; пустое поле снова берёт cookie сервера."
-                : "В .env нет CROPWISE_SESSION_COOKIE — вставьте cookie вручную."
+                ? "На сервере cookie задана, здесь она не показывается. Пустое поле использует её; вставьте другую, только чтобы заменить на этот запуск."
+                : "На сервере нет cookie — вставьте свою."
             }
             sx={{ "& .MuiInputBase-root": { fontSize: "0.8rem" } }}
           />

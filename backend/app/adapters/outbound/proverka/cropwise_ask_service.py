@@ -16,7 +16,7 @@ def _mod():
 
 def cropwise_groups() -> dict[str, Any]:
     mod = _mod()
-    return {"groups": mod.list_groups(), "env_cookie": mod.env_session_cookie()}
+    return {"groups": mod.list_groups(), "cookie_configured": bool(mod.env_session_cookie())}
 
 
 def cropwise_query(

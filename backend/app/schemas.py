@@ -108,7 +108,7 @@ class ProverkaCatalogItemOut(BaseModel):
 
 class ProverkaCatalogOut(BaseModel):
     items: list[ProverkaCatalogItemOut] = Field(default_factory=list)
-    env_cookie: str = ""
+    cookie_configured: bool = False
 
 
 class CropwiseSessionCookieIn(BaseModel):
@@ -116,7 +116,6 @@ class CropwiseSessionCookieIn(BaseModel):
 
 
 class CropwiseSessionCookieOut(BaseModel):
-    cookie: str = ""
     configured: bool = False
 
 

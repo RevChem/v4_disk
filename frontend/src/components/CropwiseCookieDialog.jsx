@@ -14,6 +14,7 @@ import { fetchCropwiseSessionCookie, saveCropwiseSessionCookie } from "../api";
 
 export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
   const [cookie, setCookie] = useState("");
+  const [configured, setConfigured] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -21,11 +22,12 @@ export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
   useEffect(() => {
     if (!open) return undefined;
     let cancelled = false;
+    setCookie("");
     setError("");
     setLoading(true);
     fetchCropwiseSessionCookie()
       .then((data) => {
-        if (!cancelled) setCookie(String(data?.cookie || ""));
+        if (!cancelled) setConfigured(Boolean(data?.configured));
       })
       .catch((err) => {
         if (!cancelled) setError(String(err.message || err));
@@ -38,14 +40,15 @@ export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
     };
   }, [open]);
 
-  async function handleSave() {
+  async function writeCookie(next) {
     setSaving(true);
     setError("");
     try {
-      const saved = await saveCropwiseSessionCookie(cookie);
-      setCookie(String(saved?.cookie || ""));
+      const saved = await saveCropwiseSessionCookie(next);
+      setConfigured(Boolean(saved?.configured));
+      setCookie("");
       await onSaved?.(saved);
-      onClose?.();
+      if (next.trim()) onClose?.();
     } catch (err) {
       setError(String(err.message || err));
     } finally {
@@ -58,11 +61,12 @@ export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
       <DialogTitle>Cookie</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Значение записывается в .env как CROPWISE_SESSION_COOKIE и заменяет прежнюю cookie.
-          Проверки сводок, сверка с Cropwise и запросы DeepSeek берут её оттуда.
+          {configured
+            ? "Cookie задана. Посмотреть или скопировать её нельзя: можно только удалить или вставить новую."
+            : "Cookie не задана. Вставьте свою — она запишется в .env и будет использоваться для проверок и DeepSeek."}
         </Typography>
         <TextField
-          label="Cookie Cropwise"
+          label="Новая cookie"
           value={cookie}
           onChange={(event) => setCookie(event.target.value)}
           multiline
@@ -73,7 +77,7 @@ export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
           autoComplete="off"
           spellCheck={false}
           placeholder="_cropio_ses=...; другие_куки=..."
-          helperText="Вставьте заголовок Cookie из DevTools. Пустое поле очищает cookie. Несколько строк склеиваются через «;»."
+          helperText="Только вставка новой cookie. Текущее значение на экран не выводится."
         />
         {error ? (
           <Alert severity="error" sx={{ mt: 2 }}>
@@ -82,10 +86,17 @@ export default function CropwiseCookieDialog({ open, onClose, onSaved }) {
         ) : null}
       </DialogContent>
       <DialogActions>
+        <Button color="error" onClick={() => void writeCookie("")} disabled={loading || saving || !configured}>
+          Удалить
+        </Button>
         <Button onClick={onClose} disabled={saving}>
           Отмена
         </Button>
-        <Button variant="contained" onClick={() => void handleSave()} disabled={loading || saving}>
+        <Button
+          variant="contained"
+          onClick={() => void writeCookie(cookie)}
+          disabled={loading || saving || !cookie.trim()}
+        >
           {saving ? "Сохранение…" : "Сохранить"}
         </Button>
       </DialogActions>

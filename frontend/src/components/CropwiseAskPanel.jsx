@@ -67,9 +67,7 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
       .then((data) => {
         if (cancelled) return;
         setGroupOptions((data?.groups || []).map((g) => g.name));
-        const saved = String(data?.env_cookie || "").trim();
-        setEnvCookie(Boolean(saved));
-        if (saved) setCookie((prev) => (prev.trim() ? prev : saved));
+        setEnvCookie(Boolean(data?.cookie_configured));
       })
       .catch((e) => {
         if (!cancelled) setQueryError(String(e.message || e));
@@ -142,8 +140,8 @@ export default function CropwiseAskPanel({ summaryDate, open }) {
         size="small"
         helperText={
           envCookie
-            ? "Подставлен из .env. Можно заменить; пустое поле снова берёт cookie сервера."
-            : "В .env нет CROPWISE_SESSION_COOKIE — вставьте cookie вручную."
+            ? "На сервере cookie задана, здесь она не показывается. Пустое поле использует её; вставьте другую, только чтобы заменить на этот запрос."
+            : "На сервере нет cookie — вставьте свою."
         }
       />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>

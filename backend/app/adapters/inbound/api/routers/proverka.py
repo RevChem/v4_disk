@@ -97,13 +97,12 @@ log = get_logger(__name__)
 
 @router.get("/catalog", response_model=ProverkaCatalogOut)
 def get_proverka_catalog(_: User = Depends(require_developer_access)):
-    return {"items": list_catalog(), "env_cookie": session_cookie_from_env()}
+    return {"items": list_catalog(), "cookie_configured": bool(session_cookie_from_env())}
 
 
 @router.get("/session-cookie", response_model=CropwiseSessionCookieOut)
 def get_cropwise_session_cookie(_: User = Depends(require_developer_access)):
-    cookie = session_cookie_from_env()
-    return {"cookie": cookie, "configured": bool(cookie)}
+    return {"configured": bool(session_cookie_from_env())}
 
 
 @router.put("/session-cookie", response_model=CropwiseSessionCookieOut)
@@ -129,7 +128,7 @@ def put_cropwise_session_cookie(
         ip=get_client_ip(request),
         configured=bool(cookie),
     )
-    return {"cookie": cookie, "configured": bool(cookie)}
+    return {"configured": bool(cookie)}
 
 
 @router.get("/platform-summary")
