@@ -96,6 +96,7 @@ from plans import (
     HARDCODED_PLAN,
     SKIP_CROPS,
     collapse_crop_areas,
+    is_crop_user_excluded,
     PREFERRED_CROP_ORDER,
     PLAN_RATE_PER_GROUP,
     HIRED_GROUP_ID,
@@ -108,8 +109,11 @@ from plans import (
 _VEG_KEY = "4.1 Посев (овощи)"
 _VEG_CROP_NAME_MAP: dict[str, str] = {"Свекла столовая": "Свекла"}
 _VEG_CROP_PLAN_HA: dict[str, float] = {}
-for _firm_crops in HARDCODED_PLAN.get(_VEG_KEY, {}).values():
+for _firm, _firm_crops in HARDCODED_PLAN.get(_VEG_KEY, {}).items():
     for _crop, _val in _firm_crops.items():
+        # Овощи, убранные в «Редакторе планов» (не считать / ранг 0 / скрытие по АФ), в план не входят.
+        if is_crop_user_excluded(_VEG_KEY, _firm, _crop):
+            continue
         _key = _VEG_CROP_NAME_MAP.get(_crop, _crop)
         _VEG_CROP_PLAN_HA[_key] = _VEG_CROP_PLAN_HA.get(_key, 0.0) + float(_val or 0.0)
 
@@ -126,6 +130,7 @@ if os.environ.get("REPORT_DATE"):
 
 from season_unified import (
     clear_season_cache,
+    filter_tasks_by_group_seasons,
     period_range_for_group,
     resolve_group_season_config,
     task_season_str_for_group,
@@ -418,25 +423,28 @@ def _harvest_perf_10_style(
     dict[str, set[int]],
     dict[str, dict[int, float]],
 ]:
-    """Площадь и комбайны за сутки — как _populate_harvest_cache_tables (10_main)."""
-    ftc = field_to_crop_map if field_to_crop_map is not None else field_to_crop
+    """Площадь и комбайны за сутки — как process() в _populate_harvest_cache_tables.
+
+    Лишние гектары на листе «Выраб. — 5.0» относительно «Общий намолот» давали:
+    задания чужого сезона, скашивание по культуре поля (не строки) и часы
+    скашивания у заданий, закрытых вне смены.
+    """
+    del field_to_crop_map, today_task_ids
 
     def _firm_for_field(fid_i: int) -> str:
-        # Карта 10_main может не содержать поле (prefetch без кукурузы).
-        # Тогда фирма — из иерархии папок, уже собранной по полям заданий.
+        # Как cache.field_to_firm в 10_main: поле вне карты в итог не входит.
         if field_to_firm_map is not None:
-            firm = field_to_firm_map.get(fid_i) or ""
-            if firm:
-                return firm
+            return field_to_firm_map.get(fid_i) or ""
         return get_firm_for_field(fid_i) or ""
 
     per_firm_area: dict[str, float] = defaultdict(float)
     per_firm_machines: dict[str, set[int]] = defaultdict(set)
     per_firm_mid_area: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
 
-    del today_task_ids
-    shift_day = day_start.date()
-    for t in tasks_with_area:
+    tasks = filter_tasks_by_group_seasons(
+        tasks_with_area, HARVEST_GRAIN_GROUP_NAME, REPORT_DATE,
+    )
+    for t in tasks:
         mid = t.get("machine_id")
         if mid is None or not _is_harvest_combine(mid, machines_map):
             continue
@@ -449,6 +457,8 @@ def _harvest_perf_10_style(
             continue
         is_mowing = wt_i in SILAGE_CORN_MOWING_WT_IDS
         task_end = parse_dt(t.get("end_time"))
+        if task_end is None or not (day_start <= task_end < cutoff):
+            continue
         for item in mtfmi_map.get(t["id"], []):
             fid = item.get("field_id")
             if fid is None:
@@ -457,33 +467,21 @@ def _harvest_perf_10_style(
             firm = _firm_for_field(fid_i)
             if not firm:
                 continue
-            from task_area_shared import area_ha_by_shift_date, history_crop_name
+            from task_area_shared import history_crop_name
 
-            mapped = ftc.get(fid_i) or ""
-            # Как 10_main: культура строки, не карта удобрений 1.1.
             crop = history_crop_name(item, "", mowing=is_mowing)
             if is_mowing and crop != CORN_SILAGE_CROP:
-                # Как 2_main: скашивание кукурузы берётся и по культуре поля.
-                if mapped and "кукуруза" in mapped.casefold():
-                    crop = CORN_SILAGE_CROP
-                else:
-                    continue
+                continue
             cov = harvest_area_booked_on_close(
                 item, day_start=day_start, cutoff=cutoff,
                 task_end=task_end, parse_dt=parse_dt,
             )
-            # Сводка 2 кладёт часы в смену работы, а не только в день закрытия.
-            # Скашивание, закрытое после cutoff, иначе теряется (~68 га силоса).
-            if cov <= 0 and is_mowing:
-                portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-                cov = float(portions.get(shift_day) or 0.0)
             if cov <= 0:
                 continue
             per_firm_area[firm] += cov
-            if mid is not None and _is_harvest_combine(mid, machines_map):
-                mid_i = int(mid)
-                per_firm_machines[firm].add(mid_i)
-                per_firm_mid_area[firm][mid_i] += cov
+            mid_i = int(mid)
+            per_firm_machines[firm].add(mid_i)
+            per_firm_mid_area[firm][mid_i] += cov
 
     return per_firm_area, per_firm_machines, per_firm_mid_area
 
@@ -3218,12 +3216,19 @@ def _fold_report1_crop_inputs(
     plan_data: dict[str, dict[str, float]],
 ) -> tuple[dict, dict, dict]:
     """Культуры с флагом редактора: в «Иные культуры» или вне факта сводки 1."""
+    def _kept(firm: str, crops: dict) -> dict:
+        """Без культур, убранных в редакторе (скрытие по АФ, ранг 0, «Не считать»)."""
+        return {
+            c: v for c, v in (crops or {}).items()
+            if not is_crop_user_excluded(WORK_TYPE_NAME, firm, str(c))
+        }
+
     season = {
-        firm: collapse_crop_areas(WORK_TYPE_NAME, crops or {})
+        firm: collapse_crop_areas(WORK_TYPE_NAME, _kept(firm, crops))
         for firm, crops in (season_data or {}).items()
     }
     plan = {
-        firm: collapse_crop_areas(WORK_TYPE_NAME, crops or {})
+        firm: collapse_crop_areas(WORK_TYPE_NAME, _kept(firm, crops))
         for firm, crops in (plan_data or {}).items()
     }
     stats: dict[str, dict] = {}
@@ -3233,7 +3238,7 @@ def _fold_report1_crop_inputs(
             str(crop): float(ha or 0.0)
             for crop, ha in (copied.get("area_by_crop") or {}).items()
         }
-        folded = collapse_crop_areas(WORK_TYPE_NAME, original)
+        folded = collapse_crop_areas(WORK_TYPE_NAME, _kept(firm, original))
         copied["area_by_crop"] = folded
         dropped = sum(original.values()) - sum(folded.values())
         if dropped > 0:
@@ -4785,6 +4790,28 @@ def _write_group_perf_sheet(
     )
 
 
+def _sync_harvest_day_area_from_cache(all_group_stats: dict, cache) -> None:
+    """«Обработано за сутки» на стр. 1 = фирмы «Факт за сутки» листа «Общий намолот».
+
+    Оба числа — сумма area_by_firm_total кэша сводки 10, уже округлённая по фирмам.
+    """
+    gstats = all_group_stats.get(HARVEST_GRAIN_GROUP_NAME) or {}
+    by_firm = getattr(cache, "area_by_firm_total", None) or {}
+    before = 0.0
+    after = 0.0
+    for firm, st in gstats.items():
+        before += float(st.get("area_today") or 0.0)
+        pair = by_firm.get(firm)
+        today = round(float(pair[1]), 2) if pair else 0.0
+        st["area_today"] = today
+        st["today_by_field"] = {0: today} if today else {}
+        after += today
+    print(
+        f"  5.0 сутки: выработка {before:.2f} га → общий намолот {after:.2f} га",
+        flush=True,
+    )
+
+
 async def _append_harvest_block_async(
     wb: openpyxl.Workbook,
     all_group_stats: dict[str, dict[str, dict]],
@@ -4792,20 +4819,26 @@ async def _append_harvest_block_async(
     """Блок уборки (стр. 1–4 PDF): 5.0 + сводки 11/10."""
     import traceback
 
-    _write_group_perf_sheet(wb, all_group_stats, REPORT1_HARVEST_PERF_GROUP)
-
     main10_path = _resolve_main10_path()
     mod10 = None
-    field_to_crop_shared: dict[int, str] | None = None
-
+    harvest_cache = None
     if main10_path is not None:
         try:
             mod10 = _load_py_module("main10_for_r1", main10_path)
             _configure_harvest_module(mod10, REPORT_DATE)
-            field_to_crop_shared = mod10.get_field_to_crop()
-            print(f"  field_to_crop (сводка 10): {len(field_to_crop_shared)} полей.")
         except Exception as e:
-            print(f"  field_to_crop (сводка 10): ошибка — {e}")
+            print(f"  сводка 10: ошибка загрузки — {e}")
+            mod10 = None
+        if mod10 is not None:
+            try:
+                harvest_cache = await mod10.prepare_harvest_cache_async(REPORT_DATE)
+                _sync_harvest_day_area_from_cache(all_group_stats, harvest_cache)
+            except Exception:
+                print("Листы намолота (сводка 10): ошибка при подготовке данных — листы пропущены:")
+                traceback.print_exc()
+                harvest_cache = None
+
+    _write_group_perf_sheet(wb, all_group_stats, REPORT1_HARVEST_PERF_GROUP)
 
     main11_path = _resolve_main11_path()
     if main11_path is None:
@@ -4823,15 +4856,8 @@ async def _append_harvest_block_async(
             print(f"Лист «Сводка oвощi»: ошибка — {e}")
             traceback.print_exc()
 
-    if main10_path is None or mod10 is None:
-        print("Намолot: 10_main_harvest.py не найден, листы пропущены.")
-        return
-
-    try:
-        harvest_cache = await mod10.prepare_harvest_cache_async(REPORT_DATE)
-    except Exception:
-        print("Листы намолота (сводка 10): ошибка при подготовке данных — листы пропущены:")
-        traceback.print_exc()
+    if main10_path is None or mod10 is None or harvest_cache is None:
+        print("Намолот: данные сводки 10 не подготовлены, листы пропущены.")
         return
 
     try:

@@ -80,6 +80,8 @@ from plans import (
     build_field_to_crop_general,
     crop_for_disk_field,
     is_crop_user_excluded,
+    is_crop_excluded_from_totals,
+    crop_code_for_report,
 )
 from typing import NamedTuple
 
@@ -570,7 +572,7 @@ def disk_item_excluded(task: dict, item: dict, firm: str, crops: DiskCrops | Non
     crop = disk_item_crop(task, item, crops)
     if not crop:
         return False
-    return is_crop_user_excluded(WORK_TYPE_TITLE, firm, crop)
+    return is_crop_excluded_from_totals(WORK_TYPE_TITLE, firm, crop)
 
 
 def build_all_firm_stats(
@@ -641,6 +643,8 @@ def build_all_firm_stats(
                 if disk_crops is not None and cov_item_in > 0:
                     crop_name = disk_item_crop(t, item, disk_crops)
                     if crop_name:
+                        # «Иные культуры» в редакторе: одна строка, как во 2-й сводке.
+                        crop_name = crop_code_for_report(WORK_TYPE_TITLE, crop_name) or crop_name
                         today_crop_by_firm[firm][crop_name] += cov_item_in
                 ratio = cov_item_in / cov_item_total if cov_item_total > 0 else 0.0
                 track_area       += (item.get("covered_area_by_track") or 0) * ratio

@@ -135,6 +135,10 @@ async def build_report_async_v2() -> None:
     season_data, day_stats_main, fert_data, _cmp_mtfmi, _cmp_agro, today_ops_detail = fert_bundle
     all_group_stats: dict[str, dict[str, dict]] = {legacy.WORK_TYPE_NAME: day_stats_main}
     all_group_stats.update(other_group_stats)
+    if harvest_prepared is not None:
+        sync_harvest = getattr(legacy, "_sync_harvest_day_area_from_cache", None)
+        if callable(sync_harvest):
+            sync_harvest(all_group_stats, harvest_prepared[1])
 
     print(f"\n[{tag}] Формируем Excel...")
     wb = openpyxl.Workbook()

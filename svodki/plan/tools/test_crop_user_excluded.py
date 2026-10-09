@@ -121,3 +121,26 @@ def test_proverka_applies_editor_rules_to_cropwise_side():
     assert all(r["status"] == "OK" for r in rows), rows
     rows_raw = compare_svodka_cropwise_crops(sv, cw)
     assert any(r["status"] != "OK" for r in rows_raw)
+
+
+# --- is_crop_excluded_from_totals: общее правило для сводок 1, 4, 7, 8, 10 ---
+
+def test_totals_user_skip_and_hidden():
+    p = _fresh_plans_with({"CROP_REPORT_MODE": {"5.0 Уборка": {"Рапс озимый": 2}},
+                           "CROP_FIRM_HIDDEN": {"5.0 Уборка": {FIRM: {"Соя": 1}}}})
+    assert p.is_crop_excluded_from_totals("5.0 Уборка", FIRM, "Рапс озимый")
+    assert p.is_crop_excluded_from_totals("5.0 Уборка", FIRM, "Соя")
+    assert not p.is_crop_excluded_from_totals("5.0 Уборка", "АгроРаздолье", "Соя")
+    assert p.plan_ha_for_report("5.0 Уборка", FIRM, "Рапс озимый") == 0.0
+
+
+def test_totals_default_skip_dropped_except_plow_and_disk():
+    p = _fresh_plans_with({})
+    # культура вне плана группы: по умолчанию «Не считать», как во 2-й сводке
+    assert p.is_crop_excluded_from_totals("2.1 Боронование", FIRM, "Пар")
+    # вспашка и дискование: гектары остаются в «Иных»
+    assert not p.is_crop_excluded_from_totals("2.4 Вспашка", FIRM, "Нут")
+    assert not p.is_crop_excluded_from_totals("2.9 Дискование", FIRM, "Пар")
+    # пустая культура и культура из плана не исключаются
+    assert not p.is_crop_excluded_from_totals("2.1 Боронование", FIRM, "")
+    assert not p.is_crop_excluded_from_totals("2.1 Боронование", FIRM, "Культура не определена")

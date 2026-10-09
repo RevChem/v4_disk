@@ -78,6 +78,7 @@ from plans import (
     PLAN_RATE_PER_GROUP,
     AVAILABLE_OWN,
     WORK_GROUPS,
+    is_crop_excluded_from_totals,
 )
 
 # =============================================================================
@@ -971,6 +972,14 @@ def _avg_season_from_daily(
     return round(sum(vals) / len(vals), 1) if vals else 0.0
 
 
+def _crop_excluded_by_editor(firm: str, crop: str, wt, veg_wt_ids) -> bool:
+    """«Редактор планов»: «Не считать» / ранг 0 / скрытие по АФ — гектары в итоги не идут."""
+    if not crop:
+        return False
+    group = "5.4 Уборка картофеля, лука" if wt in veg_wt_ids else "5.0 Уборка"
+    return is_crop_excluded_from_totals(group, firm, crop)
+
+
 def aggregate_harvest_by_firm(
     tasks_today:   list[dict],
     tasks_season:  list[dict],
@@ -1018,6 +1027,8 @@ def aggregate_harvest_by_firm(
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
                 continue
+            if _crop_excluded_by_editor(firm, crop, wt, veg_wt_ids):
+                continue
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):
                     continue
@@ -1047,6 +1058,8 @@ def aggregate_harvest_by_firm(
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop_i != CORN_SILAGE_CROP:
+                continue
+            if _crop_excluded_by_editor(firm_i, crop_i, wt, veg_wt_ids):
                 continue
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm_i, crop_i, veg_ctx=veg_ctx):
@@ -1158,6 +1171,8 @@ def aggregate_harvest_by_firm(
                 mowing=wt in SILAGE_CORN_MOWING_WT_IDS,
             )
             if wt in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
+                continue
+            if _crop_excluded_by_editor(firm, crop, wt, veg_wt_ids):
                 continue
             if wt in veg_wt_ids:
                 if not _veg_item_allowed(firm, crop, veg_ctx=veg_ctx):

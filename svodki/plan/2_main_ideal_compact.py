@@ -4255,20 +4255,7 @@ def write_report_sheet(
 
         def _firm_plan_from_crops(gn: str, firm: str) -> float | None:
             """План фирмы с учётом редактора: «Не считать» вне суммы, «Иные» — один раз."""
-            seen: set[str] = set()
-            total = 0.0
-            for crop in _planned_crops_for_group_firm(gn, firm):
-                if is_crop_user_excluded(gn, firm, crop):
-                    continue
-                code = crop_code_for_report(gn, crop)
-                if code is None or code in seen:
-                    continue
-                seen.add(code)
-                total += _plan_ha_for_crop(gn, firm, code)
-            if OTHER_CROP_CODE not in seen:
-                extra = _plan_ha_for_crop(gn, firm, OTHER_CROP_CODE)
-                if extra:
-                    total += extra
+            total = firm_group_plan_ha(gn, firm)
             return float(total) if total else None
 
         area_digits = 2 if group_name == PLOW_GROUP_NAME or _is_harvest_veg_group(group_name) else 1

@@ -80,6 +80,8 @@ from plans import (
     SKIP_CROPS,
     FIELD_NAME_FORCE_RULES,
     is_crop_user_excluded as _plan_crop_excluded,
+    is_crop_excluded_from_totals as _plan_crop_excluded_totals,
+    crop_code_for_report as _plan_crop_code,
     work_group_ids,
 )
 
@@ -457,10 +459,10 @@ def field_to_firm_fn(fid: int) -> str:
 
 
 def _boron_item_excluded(firm: str, item: dict) -> bool:
-    """Культура убрана в «Редакторе планов» (скрыта / «не считать») — гектары в итоги не идут."""
+    """Культура убрана в «Редакторе планов» (скрыта / ранг 0 / «не считать») — гектары в итоги не идут."""
     from mtfmi_batch_fetch import crop_label
 
-    return _plan_crop_excluded("2.1 Боронование", firm, crop_label(item))
+    return _plan_crop_excluded_totals("2.1 Боронование", firm, crop_label(item))
 
 
 # =============================================================================
@@ -686,6 +688,8 @@ async def fetch_all_data(
             from mtfmi_batch_fetch import crop_label
 
             crop_name = crop_label(item)
+            # «Иные культуры» в редакторе: строка сводки одна, как во 2-й сводке.
+            crop_name = _plan_crop_code("2.1 Боронование", crop_name) or crop_name
             today_crop_by_firm[firm][crop_name] += cov_item
             if _cap is not None:
                 from mtfmi_batch_fetch import crop_of_item

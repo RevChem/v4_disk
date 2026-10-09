@@ -70,8 +70,9 @@ from plans import (
     FIRM_ORDER,
     FIELD_NAME_FORCE_RULES,
     WORK_GROUPS,
-    HARDCODED_PLAN_FLAT,
     HIRED_GROUP_ID,
+    plan_ha_for_report,
+    is_crop_excluded_from_totals,
 )
 
 API_TOKEN = (
@@ -780,7 +781,8 @@ CROP_CONFIGS: dict[str, tuple[int, dict[str, tuple[float, list[int]]]]] = {
         _CROP_TO_WT[crop],
         {
             firm: (
-                HARDCODED_PLAN_FLAT.get((_HARVEST_PLAN_GROUP, firm, crop), 0.0),
+                # План и «Не считать» / скрытие / ранг 0 — из «Редактора планов».
+                plan_ha_for_report(_HARVEST_PLAN_GROUP, firm, crop),
                 [],
             )
             for firm in FIRM_ORDER
@@ -805,12 +807,14 @@ _VEG_DISPLAY_TO_PLAN_CROP: dict[str, str] = {
 
 VEGETABLE_CONFIG: dict[str, tuple[float, list[int], float, float, float, float]] = {
     display_crop: (
-        HARDCODED_PLAN_FLAT.get(
-            (_VEG_HARVEST_PLAN_GROUP, _VEG_HARVEST_FIRM, plan_crop), 0.0
-        ),
+        plan_ha_for_report(_VEG_HARVEST_PLAN_GROUP, _VEG_HARVEST_FIRM, plan_crop),
         [], 0, 0, 0.0, 0,
     )
     for display_crop, plan_crop in _VEG_DISPLAY_TO_PLAN_CROP.items()
+    # Овощ, убранный в «Редакторе планов», в сводку не попадает ни планом, ни фактом.
+    if not is_crop_excluded_from_totals(
+        _VEG_HARVEST_PLAN_GROUP, _VEG_HARVEST_FIRM, plan_crop
+    )
 }
 
 # Сезон овощей (5.4) — с 1 июня (как сводка 2 HARVEST_SEASON_START).
@@ -1947,6 +1951,13 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 crop = history_crop_name(item, "", mowing=is_mowing)
                 if is_mowing and crop != CORN_SILAGE_CROP:
                     continue
+                # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
+                if (
+                    crop
+                    and crop not in VEGETABLE_FIELD_CROPS
+                    and is_crop_excluded_from_totals("5.0 Уборка", firm, crop)
+                ):
+                    continue
                 if day_start is not None:
                     cov = harvest_area_booked_on_close(
                         item, day_start=day_start, cutoff=t_to,
@@ -2840,11 +2851,15 @@ def build_crop_report(
         tasks_map = _all_harvest_tasks_map(cache)
 
     rows = []
+    # Культура скрыта / «не считать» для этой АФ в «Редакторе планов» — строки фирмы нет.
     firm_order_with_plans = [
         (firm_name, agrofirms[firm_name])
         for firm_name in AGROFARM_ORDER
         if firm_name in agrofirms
+        and not is_crop_excluded_from_totals(_HARVEST_PLAN_GROUP, firm_name, crop_name)
     ]
+    if not firm_order_with_plans:
+        return pd.DataFrame(columns=COLUMNS)
 
     # Асинхронный блок: все агрофирмы с plan_ids параллельно
     async def fetch_all_firms() -> dict[str, tuple[float, float]]:

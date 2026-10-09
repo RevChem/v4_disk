@@ -1143,6 +1143,54 @@ def is_crop_user_excluded(group_name: str, firm: str, crop: str) -> bool:
     return False
 
 
+# Группы, где гектары культур вне плана остаются в итоге (строка «Иные культуры»):
+# Cropwise считает всю операцию целиком, «Не считать» тут решает только пользователь.
+_KEEP_UNLISTED_AS_OTHER_GROUPS = frozenset({"2.4 Вспашка", "2.9 Дискование"})
+
+
+def is_crop_excluded_from_totals(group_name: str, firm: str, crop: str) -> bool:
+    """Гектары культуры не входят в итоги сводки группы (правила «Редактора планов»).
+
+    Те же правила, что во 2-й сводке: скрытие по фирме, ранг 0, «Не считать». Для групп,
+    кроме вспашки и дискования, культура вне плана группы тоже «не считается»
+    (режим по умолчанию 2); во вспашке и дисковании такие гектары остаются в «Иных».
+    Пустая культура никогда не исключается.
+    """
+    name = str(crop or "").strip()
+    if not name:
+        return False
+    if is_crop_user_excluded(group_name, firm, name):
+        return True
+    if str(group_name) in _KEEP_UNLISTED_AS_OTHER_GROUPS:
+        return False
+    return crop_code_for_report(group_name, name) is None
+
+
+def firm_group_plan_ha(group_name: str, firm: str) -> float:
+    """План фирмы по группе, как его видит «Редактор планов».
+
+    Сумма планов всех культур группы, кроме «Не считать» / скрытых / ранга 0;
+    культуры режима «Иные» входят один раз вместе с ячейкой «Иные культуры».
+    Общая точка для итогов «План, га» по фирме во всех сводках.
+    """
+    firms = HARDCODED_PLAN.get(str(group_name)) or {}
+    firm_plan = firms.get(str(firm)) if isinstance(firms, dict) else None
+    firm_plan = firm_plan if isinstance(firm_plan, dict) else {}
+    seen: set[str] = set()
+    total = 0.0
+    for crop in firm_plan:
+        if is_crop_user_excluded(group_name, firm, crop):
+            continue
+        code = crop_code_for_report(group_name, crop)
+        if code is None or code in seen:
+            continue
+        seen.add(code)
+        total += plan_ha_for_report(group_name, firm, code)
+    if OTHER_CROP_CODE not in seen:
+        total += plan_ha_for_report(group_name, firm, OTHER_CROP_CODE)
+    return float(total)
+
+
 def crop_filter_fingerprint() -> str:
     """Отпечаток настроек редактора, меняющих состав культур в сводках (для ключей кэша)."""
     import hashlib

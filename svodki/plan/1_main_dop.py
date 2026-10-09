@@ -59,6 +59,7 @@ from plans import (
     VEG_CROP_ROWS,
     VEG_WT_FALLBACK_CROP,
     HARDCODED_PLAN,
+    is_crop_user_excluded,
     SKIP_CROPS as _SKIP_CROPS,
     build_field_to_crop,
 )
@@ -171,8 +172,11 @@ _VEG_KEY  = "4.1 Посев (овощи)"
 
 _VEG_CROP_NAME_MAP: dict[str, str] = {"Свекла столовая": "Свекла"}
 VEG_CROP_PLAN_HA: dict[str, float] = {}
-for _firm_crops in HARDCODED_PLAN.get(_VEG_KEY, {}).values():
+for _firm, _firm_crops in HARDCODED_PLAN.get(_VEG_KEY, {}).items():
     for _crop, _val in _firm_crops.items():
+        # Овощи, убранные в «Редакторе планов» (не считать / ранг 0 / скрытие по АФ), в план не входят.
+        if is_crop_user_excluded(_VEG_KEY, _firm, _crop):
+            continue
         _key = _VEG_CROP_NAME_MAP.get(_crop, _crop)
         VEG_CROP_PLAN_HA[_key] = VEG_CROP_PLAN_HA.get(_key, 0.0) + float(_val or 0.0)
 

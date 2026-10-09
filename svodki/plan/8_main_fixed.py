@@ -83,7 +83,7 @@ from plans import (
     AVAILABLE_OWN,
     PLAN_RATE_PER_GROUP,
     SKIP_CROPS,
-    is_crop_user_excluded as _plan_crop_excluded,
+    is_crop_excluded_from_totals as _plan_crop_excluded,
     work_group_ids,
 )
 

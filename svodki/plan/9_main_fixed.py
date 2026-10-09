@@ -92,6 +92,7 @@ from plans import (
     is_crop_firm_hidden,
     is_crop_user_excluded,
     crop_code_for_report,
+    firm_group_plan_ha,
     crop_sort_key_for_group,
     build_field_to_crop_general,
     TZ_MSK as _TZ_MSK,
@@ -222,16 +223,11 @@ DEEP_OWN_COUNT: dict[str, int] = dict(AVAILABLE_OWN["2.8 Глубокорыхл�
 PLAN_DAY_PLOW: float = PLAN_RATE_PER_GROUP.get("2.4 Вспашка", 40.0)
 PLAN_DAY_DEEP: float = PLAN_RATE_PER_GROUP.get("2.8 Глубокорыхление", 38.0)
 
-# План га сезон (индивидуален для каждой фирмы, не хранится в plans.py)
-PLAN_SEASON_PLOW: dict[str, float] = {
-    "АФ Чистопольская":           22047,
-    "АгроРаздолье":               20373,
-    "Аксу-Агро":                  20152,
-    "НурлатАгро":                 33127,
-    "Дрожжаное Рассвет Агро":     13046,
-    "Актай":                        958,
-    "Лениногорская Птицефабрика":     0,
-}
+# План га сезон по фирме — из «Редактора планов» (plans.firm_group_plan_ha), как во 2-й сводке:
+# озимые входят, если не отмечены «Не считать»; «Иные культуры» — ячейка редактора и культуры режима «Иные».
+def _plow_season_plan(firm: str) -> float:
+    return firm_group_plan_ha("2.4 Вспашка", firm)
+
 
 # --- Вспашка по культурам (как 2_main_ideal_compact, раздел 2.4) ------------
 # Культура поля — только history_items year=SEASON_YEAR (2027), не 2026+2027.
@@ -263,8 +259,6 @@ PLOW_FIELD_SUMMARY_NAMED: tuple[str, ...] = (
     "Кукуруза на зерно",
 )
 PLOW_FIELD_OTHER_CROP = "Иные культуры"
-# Временный план строки «Иные культуры» на сводной вспашке.
-PLOW_OTHER_PLAN_HACK = 8118.0
 PLOW_DEEP_SUMMARY_SHEET = "Глубокорыхление"
 _UNMAPPED_CROP = "Культура не указана"
 
@@ -2101,7 +2095,7 @@ def _build_summary_rows(
     rows = []
     for i, firm_name in enumerate(firm_names, start=1):
         st = all_details[firm_name]
-        _, plan_day, plan_season, own_count = PLAN_DAY_PLOW, PLAN_DAY_PLOW, PLAN_SEASON_PLOW.get(firm_name, 0), PLOW_OWN_COUNT.get(firm_name, 0)
+        _, plan_day, plan_season, own_count = PLAN_DAY_PLOW, PLAN_DAY_PLOW, _plow_season_plan(firm_name), PLOW_OWN_COUNT.get(firm_name, 0)
 
         n_mach     = st["machines_today"]
         area_today = st["area_today"]
@@ -2550,7 +2544,8 @@ def _plow_all_firms_rows_field_and_veg(
         if crop not in named:
             continue
         field_rows.append((crop, *named[crop]))
-    other_plan = PLOW_OTHER_PLAN_HACK
+    # План «Иных» — ячейка редактора и культуры режима «Иные» по всем фирмам.
+    other_plan = sum(_plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER)
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
         field_rows.append((
             PLOW_FIELD_OTHER_CROP,
