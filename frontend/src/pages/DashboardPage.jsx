@@ -54,6 +54,18 @@ import {
 } from "../api";
 import dayjs from "dayjs";
 
+const CROPWISE_DIFF_MIN_HA = 1;
+
+function cropwiseDiffCounts(row) {
+  const delta = Number(row?.delta);
+  if (Number.isFinite(delta)) return Math.abs(delta) >= CROPWISE_DIFF_MIN_HA;
+  if (row?.status === "missing") {
+    const cropwise = Number(row.cropwise_ha);
+    return Number.isFinite(cropwise) && Math.abs(cropwise) >= CROPWISE_DIFF_MIN_HA;
+  }
+  return row?.status === "unread" || row?.status === "diff";
+}
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -316,7 +328,7 @@ export default function DashboardPage({
       }
       for (const row of job.cropwise_diffs) {
         const rid = String(row.report_id || "");
-        if (!rid) continue;
+        if (!rid || !cropwiseDiffCounts(row)) continue;
         if (!map[rid]) map[rid] = [];
         map[rid].push(row);
       }

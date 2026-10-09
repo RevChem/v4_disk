@@ -1,4 +1,4 @@
-"""Порог сверки файла сводки с суммой work.json — 0.5 га, как ha_thresholds."""
+"""Порог сверки файла сводки с суммой work.json — 1 га (красная точка у сводки)."""
 from __future__ import annotations
 
 import os
@@ -15,10 +15,11 @@ from app.schemas import GenerateReportsIn  # noqa: E402
 from datetime import date
 
 
-def test_match_uses_half_hectare():
+def test_match_ignores_diff_under_one_hectare():
     assert ha_matches(100, 100.4)
-    assert not ha_matches(100, 100.6)
-    assert ha_matches(1000, 1000.4)
+    assert ha_matches(100, 100.99)
+    assert not ha_matches(100, 101)
+    assert ha_matches(1000, 1000.9)
     assert not ha_matches(1000, 1006)
 
 

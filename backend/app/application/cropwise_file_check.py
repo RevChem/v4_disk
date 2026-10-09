@@ -5,10 +5,12 @@ import time
 from datetime import date
 from typing import Any
 
-def ha_matches(file_ha: float, cropwise_ha: float) -> bool:
-    from proverka.ha_thresholds import diff_is_significant
+# Красная точка у сводки: расхождение со Cropwise меньше 1 га ошибкой не считается.
+CROPWISE_DIFF_MIN_HA = 1.0
 
-    return not diff_is_significant(abs(float(file_ha) - float(cropwise_ha)))
+
+def ha_matches(file_ha: float, cropwise_ha: float) -> bool:
+    return abs(float(file_ha) - float(cropwise_ha)) < CROPWISE_DIFF_MIN_HA
 
 
 def work_json_total(
@@ -237,7 +239,6 @@ def compare_generated_files_to_work_json(
         return ["Cropwise: нет CROPWISE_SESSION_COOKIE, проверка пропущена."], []
 
     from proverka.file_values import crop_areas_from_path, firm_areas_from_path, operation_areas_from_path
-    from proverka.ha_thresholds import DIFF_MIN_HA
     from proverka.report2_reconcile import _fact_hints_for_group
     from proverka.reports_config import REPORTS
     from proverka.runner import _prefetch_work_json
@@ -325,7 +326,7 @@ def compare_generated_files_to_work_json(
                 add_row(rid, title, group, "unread", None, None, note)
                 continue
             if file_ha is None:
-                if cropwise_ha > DIFF_MIN_HA:
+                if cropwise_ha >= CROPWISE_DIFF_MIN_HA:
                     lines.append(
                         f"[{rid}] {group}: в файле нет этой операции, "
                         f"Cropwise {cropwise_ha:.2f} га{note}."
@@ -363,6 +364,11 @@ def compare_generated_files_to_work_json(
     for row in build_sheet_checks(report_date, ids):
         if row.get("status") in (None, "OK"):
             continue
+        sheet_file = row.get("total_ha")
+        sheet_other = row.get("firms_ha") if row.get("firms_ha") is not None else row.get("crops_ha")
+        if sheet_file is not None and sheet_other is not None:
+            if abs(float(sheet_file) - float(sheet_other)) < CROPWISE_DIFF_MIN_HA:
+                continue
         issues = row.get("issues") or []
         note = "; ".join(
             str(item.get("kind") or item) if isinstance(item, dict) else str(item)
