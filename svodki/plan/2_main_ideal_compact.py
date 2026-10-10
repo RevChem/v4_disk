@@ -793,6 +793,7 @@ def _tasks_from_index(
     if season_start is None or cutoff is None:
         return []
     out: list[dict] = []
+    seen: set[int] = set()
     for wt_id in wt_ids:
         for row in source.get(wt_id, []):
             end_dt = parse_dt(
@@ -800,8 +801,19 @@ def _tasks_from_index(
             )
             if end_dt is None:
                 continue
-            if season_start <= end_dt < cutoff:
-                out.append(row)
+            if not (season_start <= end_dt < cutoff):
+                continue
+            rid = row.get("id")
+            if rid is not None:
+                try:
+                    rid_i = int(rid)
+                except (TypeError, ValueError):
+                    rid_i = None
+                if rid_i is not None:
+                    if rid_i in seen:
+                        continue
+                    seen.add(rid_i)
+            out.append(row)
     return out
 
 def is_skip_crop(crop_name: str) -> bool:
@@ -3306,10 +3318,7 @@ def collect_work_data(
                             _note_shift(firm_s, mid, tid, 0, "", cov_for_firm - noted, task, t_date)
                     continue
 
-                if group_name == PLOW_GROUP_NAME and t_date == REPORT_SHIFT_DATE:
-                    hourly_cutoff = REPORT_DAY_CUTOFF
-                else:
-                    hourly_cutoff = cutoff
+                hourly_cutoff = cutoff
 
                 for item in mtfmi_map.get(tid, []):
                     fid = item.get("field_id")
@@ -3401,6 +3410,33 @@ def collect_work_data(
                             )
                         continue
 
+                    if group_name == PLOW_GROUP_NAME and not (
+                        CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None
+                    ):
+                        # Часы — в смену работы, не в день закрытия задания.
+                        # Иначе сутки забирают гектары прошлых смен того же задания.
+                        from task_area_shared import area_ha_by_shift_date
+
+                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
+                        if not portions:
+                            raw_cov = float(item.get("covered_area") or 0)
+                            portions = {t_date: raw_cov} if raw_cov > 0 else {}
+                        for shift_date, shift_cov in portions.items():
+                            if shift_cov <= 0:
+                                continue
+                            if shift_date < group_period_start or shift_date >= TODAY:
+                                continue
+                            ha = float(shift_cov)
+                            field_day_area[firm][shift_date][fid_i] += ha
+                            _note_shift(firm, mid, tid, fid_i, crop, ha, task, shift_date)
+                            agg[firm][crop][shift_date] += ha
+                            firm_crop_fields[firm][crop].add(fid_i)
+                            group_has_data = True
+                            if mid is not None:
+                                machine_day_area[firm][shift_date][mid] += ha
+                                machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
+                        continue
+
                     if use_report4_boron_logic:
                         # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
                         cov = float(item.get("covered_area") or 0)
@@ -3417,18 +3453,6 @@ def collect_work_data(
                             cov = item.get("covered_area") or 0
 
                     if cov <= 0:
-                        continue
-
-                    if group_name == PLOW_GROUP_NAME:
-                        # «Выполнено» = все поля с season==year+1 (фирма из field_to_firm_all).
-                        field_day_area[firm][t_date][fid_i] += float(cov)
-                        _note_shift(firm, mid, tid, fid_i, crop, cov, task, t_date)
-                        agg[firm][crop][t_date] += float(cov)
-                        firm_crop_fields[firm][crop].add(fid_i)
-                        group_has_data = True
-                        if mid is not None:
-                            machine_day_area[firm][t_date][mid] += float(cov)
-                            machine_day_group[firm][t_date][mid] = machine_group.get(mid, 0)
                         continue
 
                     machine_day_area[firm][t_date][mid] += float(cov)
@@ -3554,7 +3578,7 @@ def collect_work_data(
                 bool(use_crop_via_agro_op and history_item_to_crop
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
                 bool(_HISTORY_FIELD_ONLY),
-                "tillage-close-shift",
+                "plow-hour-shift",
             ],
             stamp_parts=_make_stamp_parts(
                 group_name=group_name, task_machine=task_machine, task_shift=task_shift,
