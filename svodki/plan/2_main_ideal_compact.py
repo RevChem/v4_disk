@@ -3240,9 +3240,10 @@ def collect_work_data(
                     def _spray_row_ok(item: dict) -> bool:
                         crop_s = _spray_row_crop(item)
                         if group_name == SPRAY_GROUP_NAME:
-                            return crop_s not in VEG_SPRAY_CROPS
+                            # Как сводка 1: пустая культура строки в сутки не входит.
+                            return bool(crop_s) and crop_s not in VEG_SPRAY_CROPS
                         if group_name == VEG_SPRAY_GROUP_NAME:
-                            return crop_s in VEG_SPRAY_CROPS
+                            return bool(crop_s) and crop_s in VEG_SPRAY_CROPS
                         return True
 
                     def _spray_field_ok(fid_i: int) -> bool:
@@ -3415,33 +3416,6 @@ def collect_work_data(
                             )
                         continue
 
-                    if group_name == PLOW_GROUP_NAME and not (
-                        CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None
-                    ):
-                        # Часы — в смену работы, не в день закрытия задания.
-                        # Иначе сутки забирают гектары прошлых смен того же задания.
-                        from task_area_shared import area_ha_by_shift_date
-
-                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-                        if not portions:
-                            raw_cov = float(item.get("covered_area") or 0)
-                            portions = {t_date: raw_cov} if raw_cov > 0 else {}
-                        for shift_date, shift_cov in portions.items():
-                            if shift_cov <= 0:
-                                continue
-                            if shift_date < harvest_period_start or shift_date >= TODAY:
-                                continue
-                            ha = float(shift_cov)
-                            field_day_area[firm][shift_date][fid_i] += ha
-                            _note_shift(firm, mid, tid, fid_i, crop, ha, task, shift_date)
-                            agg[firm][crop][shift_date] += ha
-                            firm_crop_fields[firm][crop].add(fid_i)
-                            group_has_data = True
-                            if mid is not None:
-                                machine_day_area[firm][shift_date][mid] += ha
-                                machine_day_group[firm][shift_date][mid] = machine_group.get(mid, 0)
-                        continue
-
                     if use_report4_boron_logic:
                         # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
                         cov = float(item.get("covered_area") or 0)
@@ -3475,7 +3449,8 @@ def collect_work_data(
                         # Cropwise UI: картофель в колонке 5.0, не только 5.4.
                         agg[firm][crop][t_date] += float(cov)
                         firm_crop_fields[firm][crop].add(fid_i)
-                    if use_report17_area_logic:
+                    if use_report17_area_logic or group_name == PLOW_GROUP_NAME:
+                        # Вспашка: как сводка 1, часы до конца смены закрытия задания.
                         field_day_area[firm][t_date][int(fid)] += float(cov)
 
             for task in tasks_b:
@@ -3587,7 +3562,7 @@ def collect_work_data(
                 bool(use_crop_via_agro_op and history_item_to_crop
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
                 bool(_HISTORY_FIELD_ONLY),
-                "plow-hour-shift",
+                "plow-close-shift",
             ],
             stamp_parts=_make_stamp_parts(
                 group_name=group_name, task_machine=task_machine, task_shift=task_shift,
@@ -3626,7 +3601,7 @@ def collect_work_data(
                 firm: defaultdict(
                     float,
                     {
-                        t_date: round(sum(float(v) for v in by_fid.values()), 2)
+                        t_date: sum(float(v) for v in by_fid.values())
                         for t_date, by_fid in field_day_area[firm].items()
                         if sum(by_fid.values()) > 0
                     },
