@@ -3451,7 +3451,12 @@ def collect_work_data(
                         firm_crop_fields[firm][crop].add(fid_i)
                     if use_report17_area_logic or group_name == PLOW_GROUP_NAME:
                         # Вспашка: как сводка 1, часы до конца смены закрытия задания.
+                        # Сводка по фирмам берётся из полей, а строки культур — из agg.
+                        # Для вспашки flush не вызывается, поэтому культуру пишем здесь.
                         field_day_area[firm][t_date][int(fid)] += float(cov)
+                        if group_name == PLOW_GROUP_NAME and crop_for_agg:
+                            agg[firm][crop_for_agg][t_date] += float(cov)
+                            firm_crop_fields[firm][crop_for_agg].add(fid_i)
 
             for task in tasks_b:
                 tid = task["id"]
