@@ -2259,7 +2259,9 @@ def _resolve_firm_for_fact(
     """
     if _HISTORY_FIELD_ONLY:
         if use_report3_field_filter or group_name in (
-            {DISK_GROUP_NAME, HARVEST_GROUP_NAME} | TILLAGE_GROUPS | FACT_BY_ALL_FIELDS_GROUPS
+            {DISK_GROUP_NAME, HARVEST_GROUP_NAME, SPRAY_GROUP_NAME, VEG_SPRAY_GROUP_NAME}
+            | TILLAGE_GROUPS
+            | FACT_BY_ALL_FIELDS_GROUPS
         ):
             return field_to_firm_all.get(fid_i)
         if fid_i not in period_available_ids:
@@ -3244,12 +3246,10 @@ def collect_work_data(
                         return True
 
                     def _spray_field_ok(fid_i: int) -> bool:
-                        if _HISTORY_FIELD_ONLY:
-                            return fid_i in active_available_ids
-                        return (
-                            fid_i in active_available_ids
-                            and fid_i in active_crop_map
-                        )
+                        # Как сводка 1: любое поле, фирма режется отдельно.
+                        # Список «доступных» полей сезона отбрасывал часть гектаров.
+                        del fid_i
+                        return True
 
                     def _spray_firm_for_field(fid_i: int) -> str:
                         return _resolve_firm_for_fact(
@@ -3349,9 +3349,14 @@ def collect_work_data(
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
 
-                    # Редактор планов: культура скрыта / «не считать» — гектары не входят в итоги
-                    # (раньше при вспашке/дисковании они уходили в «Иные культуры»).
-                    if crop and is_crop_user_excluded(group_name, firm, crop):
+                    # Редактор планов: культура скрыта / «не считать» — гектары не входят в итоги.
+                    # Дискование — как сводка 1: такие гектары остаются в суточной площади
+                    # (строка «Иные культуры»), иначе сутки занижаются.
+                    if (
+                        crop
+                        and group_name != DISK_GROUP_NAME
+                        and is_crop_user_excluded(group_name, firm, crop)
+                    ):
                         continue
 
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
@@ -3424,7 +3429,7 @@ def collect_work_data(
                         for shift_date, shift_cov in portions.items():
                             if shift_cov <= 0:
                                 continue
-                            if shift_date < group_period_start or shift_date >= TODAY:
+                            if shift_date < harvest_period_start or shift_date >= TODAY:
                                 continue
                             ha = float(shift_cov)
                             field_day_area[firm][shift_date][fid_i] += ha
@@ -3508,7 +3513,11 @@ def collect_work_data(
                             continue
                         if group_name == VEG_SPRAY_GROUP_NAME and crop not in VEG_SPRAY_CROPS:
                             continue
-                    if crop and is_crop_user_excluded(group_name, firm, crop):
+                    if (
+                        crop
+                        and group_name != DISK_GROUP_NAME
+                        and is_crop_user_excluded(group_name, firm, crop)
+                    ):
                         continue
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         if crop:
