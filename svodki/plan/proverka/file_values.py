@@ -1313,6 +1313,16 @@ def _xlsx_summary_firm_areas(path: Path, report_id: str) -> dict[str, dict[str, 
                 current = pending
                 pending = ""
                 continue
+            # Блок культур на том же листе («Культура» / «Остаток») стоит в тех же
+            # колонках, что агрофирма и суточные га. Иначе «Свекла» с остатком 1 га
+            # читается как агрофирма, хотя факта посева за сутки нет.
+            if _header_index(values, ("Культура",)) is not None:
+                flush()
+                firm_idx = None
+                value_idx = None
+                current = ""
+                pending = ""
+                continue
             title = _section_title(values)
             if title:
                 pending = title
@@ -1322,11 +1332,14 @@ def _xlsx_summary_firm_areas(path: Path, report_id: str) -> dict[str, dict[str, 
             label = str(values[firm_idx] or "").strip()
             if not label or label == _TOTAL_LABEL:
                 continue
+            firm = _firm_from_line(label)
+            if not firm:
+                continue
             try:
                 ha = float(values[value_idx] or 0)
             except (TypeError, ValueError):
                 continue
-            _add_ha(bucket, _canonical_firm(label), ha)
+            _add_ha(bucket, firm, ha)
         flush()
         return out
     except Exception as exc:

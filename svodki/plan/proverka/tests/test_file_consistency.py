@@ -710,3 +710,40 @@ def test_corn_silage_kept_in_crop_areas_of_other_reports(tmp_path):
         assert got["Кукуруза на зерно"] == 53.72, rid
         assert "Кукуруза, из них:" not in got, rid
         assert not any("из них" in name.casefold() for name in got), rid
+
+
+def test_veg_crop_remainder_is_not_a_firm(tmp_path):
+    """Остаток «Свекла» 1 га на листе «Сводка» не становится агрофирмой посева."""
+    from proverka.file_values import firm_areas_from_path
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Сводка"
+    ws.append(["Посев / посадка овощных культур"])
+    ws.append([
+        "№ п/п",
+        "Агрофирма",
+        "Плановая выработка, га/сутки",
+        "Количество задействованной техники",
+        "Общий объем выполненной работы за сутки, га",
+    ])
+    ws.append([1, "АФ Чистопольская", 10, 1, 12.5])
+    ws.append(["Итого", None, 10, 1, 12.5])
+    ws.append(["Овощи"])
+    ws.append([
+        "№ п/п",
+        "Культура",
+        "План, га",
+        "Факт, га",
+        "Остаток га",
+        "%",
+        "Факт, сутки га",
+    ])
+    ws.append([1, "Свекла", 45, 44, 1.0, 97.8, 0])
+    path = tmp_path / "5. report_seeding_2026-10-10.xlsx"
+    wb.save(path)
+    firms = firm_areas_from_path(path, "5")
+    veg = firms.get("4.1 Посев (овощи)", {})
+    assert veg.get("АФ Чистопольская") == 12.5
+    assert "Свекла" not in veg
+    assert all("свекл" not in name.casefold() for name in veg)

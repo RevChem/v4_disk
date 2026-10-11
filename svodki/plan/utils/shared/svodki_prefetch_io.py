@@ -8,8 +8,11 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+
+# Границы смены в запросах — strftime московского времени без пояса.
+TZ_MSK = timezone(timedelta(hours=3))
 
 _LOAD_LOCK = threading.Lock()
 _ENDPOINTS: dict[str, Any] | None = None
@@ -73,7 +76,10 @@ def _parse_window_bound(s: str) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        # Строка собрана из московской смены (strftime без пояса).
+        # Как UTC окно сдвигалось на 3 часа: задания с end_time до 09:00 МСК
+        # выпадали из суток, хотя API их отдавал.
+        return dt.replace(tzinfo=TZ_MSK)
     return dt
 
 
