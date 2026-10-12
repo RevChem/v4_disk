@@ -60,7 +60,7 @@ const modeStickySx = {
   position: "sticky",
   right: RANK_COL_PX,
   zIndex: 2,
-  minWidth: 168,
+  minWidth: 268,
   bgcolor: "background.paper",
   borderLeft: 1,
   borderColor: "divider"
@@ -827,8 +827,20 @@ export default function PlansEditor({ summaryDate = null }) {
           </TableCell>
         );
       })}
-      <TableCell align="center" sx={{ ...modeStickySx, color: "text.secondary" }}>
-        свой план
+      <TableCell align="center" sx={{ ...modeStickySx, p: 0.5 }}>
+        <Select
+          size="small"
+          value={otherLayout}
+          disabled={saving}
+          onChange={(event) => {
+            saveOtherLayout(Number(event.target.value));
+          }}
+          MenuProps={{ disableScrollLock: true }}
+          sx={{ minWidth: 248, fontSize: 13 }}
+        >
+          <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
+          <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
+        </Select>
       </TableCell>
       <TableCell sx={rankStickySx} />
     </TableRow>
@@ -1254,30 +1266,10 @@ export default function PlansEditor({ summaryDate = null }) {
             </Tabs>
           )}
           {section?.kind === "nested_3" && workGroup && countedCrops.length + otherCrops.length + skippedCrops.length > 0 && (
-            <Stack spacing={1} sx={{ mb: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
-                Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
-                {skippedCrops.length}. Название можно перетащить через черту.
-              </Typography>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Typography variant="caption" color="text.secondary">
-                  Иные культуры в сводках
-                </Typography>
-                <Select
-                  size="small"
-                  value={otherLayout}
-                  disabled={saving}
-                  onChange={(event) => {
-                    saveOtherLayout(Number(event.target.value));
-                  }}
-                  MenuProps={{ disableScrollLock: true }}
-                  sx={{ minWidth: 280, fontSize: 13 }}
-                >
-                  <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
-                  <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
-                </Select>
-              </Stack>
-            </Stack>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
+              {skippedCrops.length}. Название можно перетащить через черту.
+            </Typography>
           )}
 
           {seasonMeta && (section?.kind === "nested_3" || section?.kind === "nested_2") && (
@@ -1438,7 +1430,7 @@ export default function PlansEditor({ summaryDate = null }) {
                 stickyHeader
                 size="small"
                 sx={{
-                  minWidth: Math.max(960, firmsForGroup.length * 168 + 280),
+                  minWidth: Math.max(1060, firmsForGroup.length * 168 + 380),
                   "& .MuiTableCell-head": { zIndex: 4, bgcolor: "background.paper" }
                 }}
               >
