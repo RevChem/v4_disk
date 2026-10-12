@@ -25,6 +25,8 @@ import Select from "@mui/material/Select";
 import Typography from "@mui/material/Typography";
 import PlansSeasonsEditor from "./PlansSeasonsEditor";
 import PlansWorkGroupsEditor from "./PlansWorkGroupsEditor";
+import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import VisibilityOffRoundedIcon from "@mui/icons-material/VisibilityOffRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 import IconButton from "@mui/material/IconButton";
@@ -59,12 +61,17 @@ const rankStickySx = {
 const MODE_COL_PX = 268;
 
 const modeColSx = {
+  position: "sticky",
+  right: RANK_COL_PX,
+  zIndex: 3,
   width: MODE_COL_PX,
   minWidth: MODE_COL_PX,
   maxWidth: MODE_COL_PX,
   bgcolor: "background.paper",
-  borderRight: 1,
-  borderColor: "divider"
+  borderLeft: 1,
+  borderColor: "divider",
+  boxShadow: (t) =>
+    t.palette.mode === "light" ? "-6px 0 8px -6px rgba(0,0,0,0.12)" : "-6px 0 8px -6px rgba(0,0,0,0.45)"
 };
 
 function isEdited(base, effective, keys) {
@@ -326,6 +333,7 @@ export default function PlansEditor({ summaryDate = null }) {
   const reloadInFlight = useRef(false);
   const pollInFlight = useRef(false);
   const savingRef = useRef(false);
+  const firmsScrollRef = useRef(null);
 
   const setSavingTracked = useCallback((value) => {
     const next = Boolean(value);
@@ -775,21 +783,6 @@ export default function PlansEditor({ summaryDate = null }) {
       >
         Иные культуры
       </TableCell>
-      <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
-        <Select
-          size="small"
-          value={otherLayout}
-          disabled={saving}
-          onChange={(event) => {
-            saveOtherLayout(Number(event.target.value));
-          }}
-          MenuProps={{ disableScrollLock: true }}
-          sx={{ width: "100%", fontSize: 13 }}
-        >
-          <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
-          <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
-        </Select>
-      </TableCell>
       {firmsForGroup.map((firmName, firmIndex) => {
         const relativeKeys = [workGroup, firmName, "Иные культуры"];
         const fullPath = [sectionKey, ...relativeKeys];
@@ -843,6 +836,21 @@ export default function PlansEditor({ summaryDate = null }) {
           </TableCell>
         );
       })}
+      <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
+        <Select
+          size="small"
+          value={otherLayout}
+          disabled={saving}
+          onChange={(event) => {
+            saveOtherLayout(Number(event.target.value));
+          }}
+          MenuProps={{ disableScrollLock: true }}
+          sx={{ width: "100%", fontSize: 13 }}
+        >
+          <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
+          <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
+        </Select>
+      </TableCell>
       <TableCell sx={rankStickySx} />
     </TableRow>
   );
@@ -954,22 +962,6 @@ export default function PlansEditor({ summaryDate = null }) {
             </Typography>
           ) : null}
         </TableCell>
-        <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
-          <Select
-            size="small"
-            value={sectionMode}
-            disabled={saving}
-            onChange={(event) => {
-              saveCropMode(crop, Number(event.target.value));
-            }}
-            MenuProps={{ disableScrollLock: true }}
-            sx={{ width: "100%", fontSize: 13 }}
-          >
-            <MenuItem value={0}>Учитываются</MenuItem>
-            <MenuItem value={1}>Иные культуры</MenuItem>
-            <MenuItem value={2}>Не учитываются</MenuItem>
-          </Select>
-        </TableCell>
         {firmsForGroup.map((firmName) => {
           const relativeKeys = [workGroup, firmName, crop];
           const fullPath = [sectionKey, ...relativeKeys];
@@ -1063,6 +1055,22 @@ export default function PlansEditor({ summaryDate = null }) {
             </TableCell>
           );
         })}
+        <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
+          <Select
+            size="small"
+            value={sectionMode}
+            disabled={saving}
+            onChange={(event) => {
+              saveCropMode(crop, Number(event.target.value));
+            }}
+            MenuProps={{ disableScrollLock: true }}
+            sx={{ width: "100%", fontSize: 13 }}
+          >
+            <MenuItem value={0}>Учитываются</MenuItem>
+            <MenuItem value={1}>Иные культуры</MenuItem>
+            <MenuItem value={2}>Не учитываются</MenuItem>
+          </Select>
+        </TableCell>
         <TableCell align="center" sx={{ ...rankStickySx, p: 0.75 }}>
           <PlanMatrixNumberField
             relativeKeys={[workGroup, crop]}
@@ -1162,7 +1170,7 @@ export default function PlansEditor({ summaryDate = null }) {
         </List>
       </Box>
 
-      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ p: 2, pb: 1, flexShrink: 0 }}>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
             <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 200 }}>
@@ -1226,7 +1234,7 @@ export default function PlansEditor({ summaryDate = null }) {
 
         <Divider />
 
-        <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2 }}>
+        <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto", p: 2 }}>
           {section?.kind === "calendar_seasons" ? (
             <PlansSeasonsEditor
               calendarSeasons={state?.season_meta?.calendar_seasons || {}}
@@ -1258,8 +1266,9 @@ export default function PlansEditor({ summaryDate = null }) {
                 setWorkGroup(String(value));
               }}
               variant="scrollable"
-              scrollButtons="auto"
-              sx={{ mb: 1, borderBottom: 1, borderColor: "divider" }}
+              scrollButtons
+              allowScrollButtonsMobile
+              sx={{ mb: 1, width: "100%", minWidth: 0, maxWidth: "100%", borderBottom: 1, borderColor: "divider" }}
             >
               {groupsForSection.map((g) => (
                 <Tab key={g} value={g} label={g} sx={{ textTransform: "none", maxWidth: 360 }} />
@@ -1267,10 +1276,34 @@ export default function PlansEditor({ summaryDate = null }) {
             </Tabs>
           )}
           {section?.kind === "nested_3" && workGroup && countedCrops.length + otherCrops.length + skippedCrops.length > 0 && (
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
-              {skippedCrops.length}. Название можно перетащить через черту.
-            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1, minWidth: 0 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 0 }}>
+                Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
+                {skippedCrops.length}. Название можно перетащить через черту.
+              </Typography>
+              <Tooltip title="Предыдущие агрофирмы">
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label="Агрофирмы влево"
+                    onClick={() => firmsScrollRef.current?.scrollBy({ left: -240, behavior: "smooth" })}
+                  >
+                    <ChevronLeftRoundedIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Следующие агрофирмы">
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label="Агрофирмы вправо"
+                    onClick={() => firmsScrollRef.current?.scrollBy({ left: 240, behavior: "smooth" })}
+                  >
+                    <ChevronRightRoundedIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Stack>
           )}
 
           {seasonMeta && (section?.kind === "nested_3" || section?.kind === "nested_2") && (
@@ -1426,12 +1459,19 @@ export default function PlansEditor({ summaryDate = null }) {
           )}
 
           {section?.kind === "nested_3" && workGroup && (
-            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: "100%", overflow: "auto" }}>
+            <TableContainer
+              ref={firmsScrollRef}
+              component={Paper}
+              variant="outlined"
+              sx={{ width: "100%", maxWidth: "100%", maxHeight: "100%", overflow: "auto" }}
+            >
               <Table
                 stickyHeader
                 size="small"
                 sx={{
                   minWidth: Math.max(1100, firmsForGroup.length * 168 + MODE_COL_PX + RANK_COL_PX + 200),
+                  borderCollapse: "separate",
+                  borderSpacing: 0,
                   "& .MuiTableCell-head": { zIndex: 4, bgcolor: "background.paper" }
                 }}
               >
@@ -1450,18 +1490,18 @@ export default function PlansEditor({ summaryDate = null }) {
                     >
                       Культура
                     </TableCell>
+                    {firmsForGroup.map((firmName) => (
+                      <TableCell key={firmName} align="center" sx={{ fontWeight: 600, minWidth: 168 }}>
+                        {firmName}
+                      </TableCell>
+                    ))}
                     <TableCell
                       align="center"
-                      sx={{ ...modeColSx, top: 0, zIndex: 4, fontWeight: 700 }}
+                      sx={{ ...modeColSx, top: 0, zIndex: 5, fontWeight: 700 }}
                       title="Одной строкой — в сводке только «Иные культуры» по агрофирмам. По культурам — отдельные строки. Не учитываются — гектары в сводки не входят."
                     >
                       Учёт в сводках
                     </TableCell>
-                    {firmsForGroup.map((firmName) => (
-                      <TableCell key={firmName} align="center" sx={{ fontWeight: 600, minWidth: 148 }}>
-                        {firmName}
-                      </TableCell>
-                    ))}
                     <TableCell
                       align="center"
                       sx={{ ...rankStickySx, top: 0, zIndex: 6, fontWeight: 700 }}
