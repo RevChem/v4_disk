@@ -56,13 +56,14 @@ const rankStickySx = {
     t.palette.mode === "light" ? "-6px 0 8px -6px rgba(0,0,0,0.12)" : "-6px 0 8px -6px rgba(0,0,0,0.45)"
 };
 
-const modeStickySx = {
-  position: "sticky",
-  right: RANK_COL_PX,
-  zIndex: 2,
-  minWidth: 268,
+const MODE_COL_PX = 268;
+
+const modeColSx = {
+  width: MODE_COL_PX,
+  minWidth: MODE_COL_PX,
+  maxWidth: MODE_COL_PX,
   bgcolor: "background.paper",
-  borderLeft: 1,
+  borderRight: 1,
   borderColor: "divider"
 };
 
@@ -774,6 +775,21 @@ export default function PlansEditor({ summaryDate = null }) {
       >
         Иные культуры
       </TableCell>
+      <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
+        <Select
+          size="small"
+          value={otherLayout}
+          disabled={saving}
+          onChange={(event) => {
+            saveOtherLayout(Number(event.target.value));
+          }}
+          MenuProps={{ disableScrollLock: true }}
+          sx={{ width: "100%", fontSize: 13 }}
+        >
+          <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
+          <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
+        </Select>
+      </TableCell>
       {firmsForGroup.map((firmName, firmIndex) => {
         const relativeKeys = [workGroup, firmName, "Иные культуры"];
         const fullPath = [sectionKey, ...relativeKeys];
@@ -827,21 +843,6 @@ export default function PlansEditor({ summaryDate = null }) {
           </TableCell>
         );
       })}
-      <TableCell align="center" sx={{ ...modeStickySx, p: 0.5 }}>
-        <Select
-          size="small"
-          value={otherLayout}
-          disabled={saving}
-          onChange={(event) => {
-            saveOtherLayout(Number(event.target.value));
-          }}
-          MenuProps={{ disableScrollLock: true }}
-          sx={{ minWidth: 248, fontSize: 13 }}
-        >
-          <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
-          <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
-        </Select>
-      </TableCell>
       <TableCell sx={rankStickySx} />
     </TableRow>
   );
@@ -953,6 +954,22 @@ export default function PlansEditor({ summaryDate = null }) {
             </Typography>
           ) : null}
         </TableCell>
+        <TableCell align="center" sx={{ ...modeColSx, p: 0.5 }}>
+          <Select
+            size="small"
+            value={sectionMode}
+            disabled={saving}
+            onChange={(event) => {
+              saveCropMode(crop, Number(event.target.value));
+            }}
+            MenuProps={{ disableScrollLock: true }}
+            sx={{ width: "100%", fontSize: 13 }}
+          >
+            <MenuItem value={0}>Учитываются</MenuItem>
+            <MenuItem value={1}>Иные культуры</MenuItem>
+            <MenuItem value={2}>Не учитываются</MenuItem>
+          </Select>
+        </TableCell>
         {firmsForGroup.map((firmName) => {
           const relativeKeys = [workGroup, firmName, crop];
           const fullPath = [sectionKey, ...relativeKeys];
@@ -1046,22 +1063,6 @@ export default function PlansEditor({ summaryDate = null }) {
             </TableCell>
           );
         })}
-        <TableCell align="center" sx={{ ...modeStickySx, p: 0.5 }}>
-          <Select
-            size="small"
-            value={sectionMode}
-            disabled={saving}
-            onChange={(event) => {
-              saveCropMode(crop, Number(event.target.value));
-            }}
-            MenuProps={{ disableScrollLock: true }}
-            sx={{ minWidth: 148, fontSize: 13 }}
-          >
-            <MenuItem value={0}>Учитываются</MenuItem>
-            <MenuItem value={1}>Иные культуры</MenuItem>
-            <MenuItem value={2}>Не учитываются</MenuItem>
-          </Select>
-        </TableCell>
         <TableCell align="center" sx={{ ...rankStickySx, p: 0.75 }}>
           <PlanMatrixNumberField
             relativeKeys={[workGroup, crop]}
@@ -1430,7 +1431,7 @@ export default function PlansEditor({ summaryDate = null }) {
                 stickyHeader
                 size="small"
                 sx={{
-                  minWidth: Math.max(1060, firmsForGroup.length * 168 + 380),
+                  minWidth: Math.max(1100, firmsForGroup.length * 168 + MODE_COL_PX + RANK_COL_PX + 200),
                   "& .MuiTableCell-head": { zIndex: 4, bgcolor: "background.paper" }
                 }}
               >
@@ -1449,18 +1450,18 @@ export default function PlansEditor({ summaryDate = null }) {
                     >
                       Культура
                     </TableCell>
+                    <TableCell
+                      align="center"
+                      sx={{ ...modeColSx, top: 0, zIndex: 4, fontWeight: 700 }}
+                      title="Одной строкой — в сводке только «Иные культуры» по агрофирмам. По культурам — отдельные строки. Не учитываются — гектары в сводки не входят."
+                    >
+                      Учёт в сводках
+                    </TableCell>
                     {firmsForGroup.map((firmName) => (
                       <TableCell key={firmName} align="center" sx={{ fontWeight: 600, minWidth: 148 }}>
                         {firmName}
                       </TableCell>
                     ))}
-                    <TableCell
-                      align="center"
-                      sx={{ ...modeStickySx, top: 0, zIndex: 5, fontWeight: 700 }}
-                      title="Одной строкой — в сводке только «Иные культуры» по агрофирмам. По культурам — отдельные строки. Не учитываются — гектары в сводки не входят."
-                    >
-                      Учёт в сводках
-                    </TableCell>
                     <TableCell
                       align="center"
                       sx={{ ...rankStickySx, top: 0, zIndex: 6, fontWeight: 700 }}
