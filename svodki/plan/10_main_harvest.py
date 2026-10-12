@@ -424,6 +424,11 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
             # Картофель, лук и прочие овощи в тексте Namolot не из зернового
             # списка: культура берётся с поля Cropwise, как в рабочей сводке.
             crop = field_to_crop_map.get(fid) if fid is not None else None
+        if crop:
+            # «Свекла» в справочнике поля — та же строка отчёта, что «Свекла столовая».
+            veg_crop = _normalize_veg_crop_name(crop)
+            if veg_crop:
+                crop = veg_crop
         if not firm or not crop:
             agg.unmatched_fields.add(spp or "")
             if not crop:
@@ -3425,33 +3430,24 @@ def build_holding_summary_grain(report_date: date,
 # =============================================================================
 
 def _normalize_veg_crop_name(crop: str | None) -> str | None:
+    """Имя культуры овощного листа: как в рабочей сводке, плюс «ё»→«е».
+
+    «Свекла» из справочника Cropwise — это строка «Свекла столовая».
+    """
     if not crop:
         return None
-    if crop in _VEG_HARVEST_CROPS:
-        return crop
-    if crop == "Свекла":
+    folded = str(crop).replace("ё", "е").replace("Ё", "Е").strip()
+    if not folded:
+        return None
+    if folded in _VEG_HARVEST_CROPS:
+        return folded
+    if folded == "Свекла":
         return "Свекла столовая"
-    low = crop.lower()
+    low = folded.casefold()
     for key in _VEG_HARVEST_CROPS:
-        if low.startswith(key.lower()):
+        if low.startswith(key.casefold()):
             return key
     return None
-
-
-def _veg_item_crop(item: dict) -> str | None:
-    """Культура строки площади овощей — history_item_id строки (как в остальных сводках).
-
-    Возвращает UNDEFINED_CROP, если у строки нет history_item_id или запись истории
-    принадлежит другому полю: гектары не выбрасываются, а остаются отдельной строкой.
-    None — строка с культурой, которая не относится к овощам уборки (в таблицу не идёт).
-    Карта поля field_to_crop_map здесь не используется.
-    """
-    from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
-
-    raw = crop_of_item(item, "")
-    if not raw:
-        return UNDEFINED_CROP
-    return _normalize_veg_crop_name(raw)
 
 
 _net_weight_cache: dict[date, dict[str, float]] = {}
@@ -3645,17 +3641,6 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         },
         log_prefix="[r10 VEG] ",
     )
-    try:
-        _sdir = Path(__file__).resolve().parent / "utils" / "season"
-        if not _sdir.is_dir():
-            _sdir = Path(__file__).resolve().parents[1] / "svodki" / "plan" / "utils" / "season"
-        if _sdir.is_dir() and str(_sdir) not in sys.path:
-            sys.path.insert(0, str(_sdir))
-        from season_unified import filter_tasks_by_group_seasons as _filter_seasons
-
-        all_tasks = _filter_seasons(all_tasks, "5.4 Уборка картофеля, лука", report_date)
-    except Exception:
-        pass
     print(f"    [VEG] заданий: {len(all_tasks)}", flush=True)
 
     tasks_in_period: list[dict] = []
@@ -3667,7 +3652,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
         elif t.get("end_time") in (None, ""):
             no_shift_tasks.append(t)
 
-    all_tasks_for_mtfmi = list(all_tasks)
+    all_tasks_for_mtfmi = tasks_in_period + no_shift_tasks
     if not all_tasks_for_mtfmi:
         _VEG_MACHINES_TODAY_BY_FIRM = {_VEG_HARVEST_FIRM: 0}
         print("    [VEG] нет заданий в периоде", flush=True)
@@ -3712,6 +3697,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
     mtfmi_map = run_report_async(_fetch_all_mtfmi())
     print(f"    [VEG] mtfmi загружено для {len(mtfmi_map)} заданий", flush=True)
 
+    field_to_crop_map = get_field_to_crop()
     field_to_firm_map = load_field_to_firm()
     agg: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
     _note = None
@@ -3723,9 +3709,12 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
     except Exception:
         _note = None
 
-    for task in all_tasks:
+    for task in tasks_in_period:
         tid = task["id"]
-        end_dt = parse_dt(task.get("end_time"))
+        shift = _veg_shift_info(task.get("end_time"), report_date)
+        if not shift:
+            continue
+        t_date, _day_start, hourly_cutoff = shift
         for item in mtfmi_map.get(tid, []):
             fid = item.get("field_id")
             if not fid:
@@ -3733,17 +3722,10 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             fid_i = int(fid)
             if field_to_firm_map.get(fid_i) != _VEG_HARVEST_FIRM:
                 continue
-            crop = _veg_item_crop(item)
+            crop = _normalize_veg_crop_name(field_to_crop_map.get(fid_i))
             if not crop:
                 continue
-            shift = _veg_shift_info(task.get("end_time"), report_date)
-            if shift is None:
-                continue
-            t_date, shift_start, shift_cutoff = shift
-            cov = harvest_area_booked_on_close(
-                item, day_start=shift_start, cutoff=shift_cutoff,
-                task_end=end_dt, parse_dt=parse_dt,
-            )
+            cov = _veg_mtfmi_cov(item, hourly_cutoff)
             if cov <= _VEG_MIN_AREA_HA:
                 continue
             agg[crop][t_date] += cov
@@ -3772,7 +3754,7 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             fid_i = int(fid)
             if field_to_firm_map.get(fid_i) != _VEG_HARVEST_FIRM:
                 continue
-            crop = _veg_item_crop(item)
+            crop = _normalize_veg_crop_name(field_to_crop_map.get(fid_i))
             if not crop:
                 continue
             cov = float(item.get("covered_area") or 0)
@@ -3782,14 +3764,12 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
 
     _VEG_MACHINES_TODAY_BY_FIRM = {_VEG_HARVEST_FIRM: len(veg_machines_today)}
 
-    from mtfmi_batch_fetch import UNDEFINED_CROP as _VEG_UNDEFINED
-
     crop_area: dict[str, dict[str, float]] = {}
-    for crop_name in list(VEGETABLE_CONFIG) + [_VEG_UNDEFINED]:
+    for crop_name in VEGETABLE_CONFIG:
         by_date = agg.get(crop_name, {})
         crop_area[crop_name] = {
             "total": round(sum(v for d, v in by_date.items() if d < report_date), 1),
-            "today": round(by_date.get(report_shift_date, 0.0), 2),
+            "today": round(by_date.get(report_shift_date, 0.0), 1),
         }
 
     rows = []
@@ -3824,26 +3804,6 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
             "Валовый сбор за сутки, т":                       harvest_today,
             "Зачетный вес за сезон, т":                       net_weight_by_crop.get(crop_name, 0),
             "Урожайность за сезон (по валовому сбору), т/га": yld_season,
-        })
-
-    undef = crop_area.get(_VEG_UNDEFINED) or {}
-    if undef.get("total", 0.0) > 0 or undef.get("today", 0.0) > 0:
-        print(
-            f"    [VEG] {_VEG_UNDEFINED}: {undef.get('total', 0.0)} га общий, "
-            f"{undef.get('today', 0.0)} га за сутки (нет history_item_id у строки площади)",
-            flush=True,
-        )
-        rows.append({
-            "№ п/п":                                          len(rows) + 1,
-            "Культура":                                       _VEG_UNDEFINED,
-            "План, га":                                       0.0,
-            "Факт общий, га":                                 undef.get("total", 0.0),
-            "Факт за сутки, га":                               undef.get("today", 0.0),
-            "Убранная площадь в %":                           0.0,
-            "Валовый сбор общий, т":                          0.0,
-            "Валовый сбор за сутки, т":                       0.0,
-            "Зачетный вес за сезон, т":                       0,
-            "Урожайность за сезон (по валовому сбору), т/га": 0.0,
         })
 
     result = pd.DataFrame(rows, columns=VEG_COLUMNS)

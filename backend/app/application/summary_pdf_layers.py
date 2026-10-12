@@ -232,8 +232,12 @@ def rebuild_summary_pdf_layers(item: Summary) -> None:
     save_cell_edits_store(edits_store)
 
 
-def apply_future_comments_for_summary(item: Summary) -> list[dict]:
-    """Подтянуть шаблоны комментариев «на будущее» и пересобрать PDF при изменениях."""
+def apply_future_comments_for_summary(item: Summary, *, rebuild: bool = True) -> list[dict]:
+    """Подтянуть шаблоны комментариев «на будущее».
+
+    rebuild=False — только записать строки. После генерации PDF снимок базы ещё
+    от прошлой сводки, его нельзя подмешивать здесь: штамп делает хук генерации.
+    """
     from app.legacy.comments_store import apply_future_comments_to_summary
 
     report_id = report_id_from_title(item.title)
@@ -244,13 +248,11 @@ def apply_future_comments_for_summary(item: Summary) -> list[dict]:
         report_id=report_id,
         base_pdf_path=item.file_path,
     )
-    if changed:
-        save_comments_store(store)
+    save_comments_store(store)
+    if rebuild and changed:
         try:
             rebuild_summary_pdf_layers(item)
         except Exception:
             save_comments_store(store)
             raise
-    else:
-        save_comments_store(store)
     return comments

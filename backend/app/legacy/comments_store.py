@@ -135,10 +135,12 @@ def get_comment_pdf_base_path(
     working_pdf: Path,
     *,
     report_id: str,
+    refresh: bool = False,
 ) -> Path:
     """PDF без слоя комментариев: один раз копируется с рабочего файла, merge всегда с этой копии.
 
     Иначе при каждом сохранении читается уже «нарисованный» PDF и оверлей дублируется.
+    refresh=True — снимок устарел (новая генерация сводки): перезаписать его текущим PDF.
     """
     working_pdf = working_pdf.resolve()
     ensure_summary_bucket(
@@ -152,14 +154,14 @@ def get_comment_pdf_base_path(
     if not isinstance(bucket, dict):
         raise RuntimeError("internal: summary comments bucket missing")
     raw = bucket.get("comment_pdf_base_path")
-    if isinstance(raw, str) and raw.strip():
+    if not refresh and isinstance(raw, str) and raw.strip():
         p = Path(raw.strip()).resolve()
         if p.is_file():
             return p
     root = Path(settings.upload_dir).resolve() / "_comment_pdf_bases"
     root.mkdir(parents=True, exist_ok=True)
     base = root / f"{int(summary_id)}.pdf"
-    if not base.exists():
+    if refresh or not base.exists():
         shutil.copy2(working_pdf, base)
     bucket["comment_pdf_base_path"] = str(base.resolve())
     return base.resolve()
