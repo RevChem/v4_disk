@@ -96,7 +96,13 @@ from plans import (
     HARDCODED_PLAN,
     SKIP_CROPS,
     collapse_crop_areas,
+    firm_group_plan_ha,
     is_crop_user_excluded,
+    plan_ha_for_report,
+    other_crops_as_rows,
+    crop_report_mode,
+    crop_sort_key_for_group,
+    CROP_MODE_OTHER,
     PREFERRED_CROP_ORDER,
     PLAN_RATE_PER_GROUP,
     HIRED_GROUP_ID,
@@ -3247,23 +3253,39 @@ def _is_multi_year_grass_crop(crop: str) -> bool:
     return True
 
 
+def _report1_other_kept_apart(crop: str) -> bool:
+    """Культура режима «Иные», которую в этой группе показываем своей строкой."""
+    name = str(crop or "").strip()
+    if not name or name in SKIP_CROPS or name == "Иные культуры":
+        return False
+    if not other_crops_as_rows(WORK_TYPE_NAME):
+        return False
+    return crop_report_mode(WORK_TYPE_NAME, name) == CROP_MODE_OTHER
+
+
 def _sum_multi_year_grass(crops: dict[str, float]) -> float:
-    return sum(float(v or 0.0) for k, v in crops.items() if _is_multi_year_grass_crop(k))
-
-
-def _sum_multi_year_grass_plan(firm_plan: dict[str, float]) -> float:
-    return sum(float(v or 0.0) for k, v in firm_plan.items() if _is_multi_year_grass_crop(k))
-
-
-def _sum_other_cultures_plan(firm_plan: dict[str, float]) -> float:
-    """План «Иные культуры»: травы и пар, плюс культуры, свёрнутые редактором планов."""
-    folded = collapse_crop_areas(WORK_TYPE_NAME, firm_plan)
-    bundled = float(folded.get("Иные культуры", 0.0) or 0.0)
-    return (
-        _sum_multi_year_grass_plan(folded)
-        + float(folded.get("Пар", 0.0) or 0.0)
-        + bundled
+    return sum(
+        float(v or 0.0)
+        for k, v in crops.items()
+        if _is_multi_year_grass_crop(k) and not _report1_other_kept_apart(k)
     )
+
+
+def _plan_ha_like_report2(firm: str, crop: str) -> float:
+    """План культуры как во 2-й сводке (plan_ha_for_report).
+
+    Строка «Многолетние травы» в 1-й сводке складывает все годы этой культуры.
+    """
+    if _is_multi_year_grass_crop(crop):
+        firm_plan = (HARDCODED_PLAN.get(WORK_TYPE_NAME) or {}).get(firm) or {}
+        if not isinstance(firm_plan, dict):
+            return 0.0
+        return sum(
+            plan_ha_for_report(WORK_TYPE_NAME, firm, str(name))
+            for name in firm_plan
+            if _is_multi_year_grass_crop(str(name)) and not _report1_other_kept_apart(str(name))
+        )
+    return plan_ha_for_report(WORK_TYPE_NAME, firm, crop)
 
 
 def _fold_report1_crop_inputs(
@@ -3440,15 +3462,13 @@ def write_crop_summary_sheet(
     agg_fact: dict[str, float] = defaultdict(float)
     agg_today: dict[str, float] = defaultdict(float)
 
-    # Считаем строго тем же правилом, что в листе "Свод по агрофирмам",
-    # чтобы итоги по культурам полностью совпадали между таблицами.
+    # «План, га» — как колонка «План» / «План, га» во 2-й сводке
+    # (plan_ha_for_report и firm_group_plan_ha), не автоплощадь полей.
     for firm in AGROFIRMS:
-        firm_plan = plan_data.get(firm, {})
         crops_fact = season_data.get(firm, {})
         crops_today = day_stats.get(firm, {}).get("area_by_crop", {})
-        firm_fert = (fert_data or {}).get(firm, {})
         for crop in CROP_SUMMARY_CROPS:
-            plan_val = firm_plan.get(crop, 0.0)
+            plan_val = _plan_ha_like_report2(firm, crop)
             fact_val = _mu_season_fact(
                 crop, firm, crops_fact, crops_today,
             )
@@ -3471,7 +3491,7 @@ def write_crop_summary_sheet(
 
         _cell(ws, data_row, 1, idx, bg=_COLOR_DATA)
         _cell(ws, data_row, 2, crop, halign="left", bg=row_bg)
-        _cell(ws, data_row, 3, round(plan_val) if plan_val else 0, bg=_COLOR_DATA, number_format=NF_INT)
+        _cell(ws, data_row, 3, plan_val if plan_val else 0, bg=_COLOR_DATA, number_format=NF_INT)
         _cell(ws, data_row, 4, fact_val, bg=_COLOR_DATA, number_format=NF_DEC2)
         _cell(ws, data_row, 5, rem, bg=_COLOR_DATA, number_format=NF_DEC2)
         _cell(ws, data_row, 6, share, bg=_COLOR_DATA, number_format="0.00")
@@ -3484,39 +3504,96 @@ def write_crop_summary_sheet(
         data_row += 1
 
     # ── Иные культуры ─────────────────────────────────────────────────────────
-    # Собираем культуры из season_data и day_stats, которых нет в CROP_SUMMARY_CROPS
+    # Собираем культуры из season_data и day_stats, которых нет в CROP_SUMMARY_CROPS.
+    # Режим «по культурам»: отмеченные в редакторе культуры — своими строками.
     crop_summary_set = set(CROP_SUMMARY_CROPS)
     other_fact_by_crop: dict[str, float] = {}
     other_raw_fact: dict[str, float] = {}
     other_today_by_crop: dict[str, float] = {}
+    split_fact: dict[str, float] = {}
+    split_today: dict[str, float] = {}
+
+    def _summary_split_name(crop: str) -> bool:
+        name = str(crop or "").strip()
+        if not name or name in crop_summary_set:
+            return False
+        return _report1_other_kept_apart(name)
+
     for firm in AGROFIRMS:
         crops_fact = season_data.get(firm, {})
         crops_today = day_stats.get(firm, {}).get("area_by_crop", {})
         for crop, val in crops_fact.items():
             v = float(val or 0.0)
+            if _summary_split_name(crop):
+                split_fact[crop] = split_fact.get(crop, 0.0) + v
+                continue
             norm = _summary_crop_key(crop)
             if norm not in crop_summary_set and crop not in SKIP_CROPS:
                 other_fact_by_crop[norm] = other_fact_by_crop.get(norm, 0.0) + v
                 if v > 0:
                     other_raw_fact[crop] = other_raw_fact.get(crop, 0.0) + v
         for crop, val in crops_today.items():
+            if _summary_split_name(crop):
+                split_today[crop] = split_today.get(crop, 0.0) + float(val or 0.0)
+                continue
             norm = _summary_crop_key(crop)
             if norm not in crop_summary_set and crop not in SKIP_CROPS:
                 other_today_by_crop[norm] = other_today_by_crop.get(norm, 0.0) + float(val or 0.0)
+        firm_plan = (HARDCODED_PLAN.get(WORK_TYPE_NAME) or {}).get(firm) or {}
+        if isinstance(firm_plan, dict):
+            for crop in firm_plan:
+                if _summary_split_name(str(crop)):
+                    split_fact.setdefault(str(crop), split_fact.get(str(crop), 0.0))
+
+    split_names = sorted(
+        set(split_fact) | set(split_today),
+        key=lambda name: crop_sort_key_for_group(WORK_TYPE_NAME, name),
+    )
+    row_idx = len(CROP_SUMMARY_CROPS) + 1
+    for name in split_names:
+        plan_val = round(
+            sum(plan_ha_for_report(WORK_TYPE_NAME, firm, name) for firm in AGROFIRMS),
+            2,
+        )
+        fact_val = round(split_fact.get(name, 0.0), 2)
+        today_val = round(split_today.get(name, 0.0), 2)
+        rem = round(plan_val - fact_val, 2)
+        share = round(fact_val / plan_val * 100, 2) if plan_val > 0 else 0.0
+        fcd = compute_forecast_end_date(plan_val, fact_val, today_val)
+        fc_bg = _COLOR_ALERT_FORECAST if forecast_date_is_alert(fcd) else _COLOR_DATA
+        _cell(ws, data_row, 1, row_idx, bg=_COLOR_DATA)
+        _cell(ws, data_row, 2, name, halign="left", bg=_COLOR_DATA)
+        _cell(ws, data_row, 3, plan_val if plan_val else 0, bg=_COLOR_DATA, number_format=NF_INT)
+        _cell(ws, data_row, 4, fact_val, bg=_COLOR_DATA, number_format=NF_DEC2)
+        _cell(ws, data_row, 5, rem, bg=_COLOR_DATA, number_format=NF_DEC2)
+        _cell(ws, data_row, 6, share, bg=_COLOR_DATA, number_format="0.00")
+        _cell(ws, data_row, 7, today_val if today_val else 0, bg=_COLOR_DATA, number_format=NF_DEC2)
+        _cell(ws, data_row, 8, fcd, bg=fc_bg, number_format=NF_DATE)
+        ws.row_dimensions[data_row].height = 18
+        total_plan += plan_val
+        total_fact += fact_val
+        total_today += today_val
+        total_rem += rem
+        data_row += 1
+        row_idx += 1
 
     other_fact = round(sum(other_fact_by_crop.values()), 2)
     other_today = round(sum(other_today_by_crop.values()), 2)
-    other_plan = round(
-        sum(_sum_other_cultures_plan(plan_data.get(firm, {})) for firm in AGROFIRMS),
-        2,
+    other_plan = sum(
+        max(
+            0.0,
+            firm_group_plan_ha(WORK_TYPE_NAME, firm)
+            - sum(_plan_ha_like_report2(firm, crop) for crop in CROP_SUMMARY_CROPS)
+            - sum(plan_ha_for_report(WORK_TYPE_NAME, firm, name) for name in split_names),
+        )
+        for firm in AGROFIRMS
     )
     other_rem = round(other_plan - other_fact, 2)
     other_share = round(other_fact / other_plan * 100, 2) if other_plan > 0 else 0.0
 
-    other_row_idx = len(CROP_SUMMARY_CROPS) + 1
-    _cell(ws, data_row, 1, other_row_idx, bg=_COLOR_DATA)
+    _cell(ws, data_row, 1, row_idx, bg=_COLOR_DATA)
     _cell(ws, data_row, 2, "Иные культуры", halign="left", bg=_COLOR_DATA)
-    _cell(ws, data_row, 3, round(other_plan) if other_plan else 0, bg=_COLOR_DATA, number_format=NF_INT)
+    _cell(ws, data_row, 3, other_plan if other_plan else 0, bg=_COLOR_DATA, number_format=NF_INT)
     _cell(ws, data_row, 4, other_fact, bg=_COLOR_DATA, number_format=NF_DEC2)
     _cell(ws, data_row, 5, other_rem, bg=_COLOR_DATA, number_format=NF_DEC2)
     _cell(ws, data_row, 6, other_share, bg=_COLOR_DATA, number_format="0.00")
@@ -3532,11 +3609,15 @@ def write_crop_summary_sheet(
 
     _cell(ws, data_row, 1, "", bold=True, bg=_COLOR_TOTAL)
     _cell(ws, data_row, 2, "Итого", bold=True, bg=_COLOR_TOTAL, halign="left")
-    total_plan_display = float(
-        sum(round(agg_plan.get(c, 0.0)) for c in CROP_SUMMARY_CROPS)
-        + round(other_plan)
+    total_plan_display = round(
+        sum(firm_group_plan_ha(WORK_TYPE_NAME, firm) for firm in AGROFIRMS),
+        1,
     )
-    _cell(ws, data_row, 3, int(total_plan_display), bold=True, bg=_COLOR_TOTAL, number_format=NF_INT)
+    _cell(
+        ws, data_row, 3, total_plan_display,
+        bold=True, bg=_COLOR_TOTAL,
+        number_format=NF_INT if abs(total_plan_display - round(total_plan_display)) < 1e-9 else NF_DEC1,
+    )
     _cell(ws, data_row, 4, round(total_fact, 2), bold=True, bg=_COLOR_TOTAL, number_format=NF_DEC2)
     _cell(ws, data_row, 5, round(total_rem, 2), bold=True, bg=_COLOR_TOTAL, number_format=NF_DEC2)
     _cell(
@@ -3574,6 +3655,37 @@ def write_crop_summary_sheet(
 # ЛИСТ 2: СВОД ПО АГРОФИРМАМ (агрофирма × культура, только WORK_TYPE_ID=55)
 # =============================================================================
 
+def _report1_firm_extra_crops(
+    season_data: dict[str, dict[str, float]],
+    day_stats: dict[str, dict],
+    plan_data: dict[str, dict[str, float]],
+) -> list[str]:
+    """Культуры режима «Иные», которым на листе фирм нужна своя колонка."""
+    if not other_crops_as_rows(WORK_TYPE_NAME):
+        return []
+    summary = set(SUMMARY_CROPS)
+    names: set[str] = set()
+
+    def _take(crop: str) -> None:
+        if _report1_other_kept_apart(crop) and str(crop) not in summary:
+            names.add(str(crop))
+
+    for firm_crops in (season_data or {}).values():
+        for crop in firm_crops or {}:
+            _take(str(crop))
+    for row in (day_stats or {}).values():
+        for crop in ((row or {}).get("area_by_crop") or {}):
+            _take(str(crop))
+    for firm_crops in (plan_data or {}).values():
+        for crop in firm_crops or {}:
+            _take(str(crop))
+    for firm_crops in (HARDCODED_PLAN.get(WORK_TYPE_NAME) or {}).values():
+        if isinstance(firm_crops, dict):
+            for crop in firm_crops:
+                _take(str(crop))
+    return sorted(names, key=lambda name: crop_sort_key_for_group(WORK_TYPE_NAME, name))
+
+
 def write_sheet1(wb: openpyxl.Workbook,
                  season_data: dict[str, dict[str, float]],
                  day_stats:   dict[str, dict],
@@ -3582,8 +3694,9 @@ def write_sheet1(wb: openpyxl.Workbook,
     season_data, day_stats, plan_data = _fold_report1_crop_inputs(
         season_data, day_stats, plan_data,
     )
+    extra_crops = _report1_firm_extra_crops(season_data, day_stats, plan_data)
     n_raps = _raps_cols()
-    total_cols = 1 + (_S1_COLS_PER_CROP * (len(SUMMARY_CROPS) - 1)) + n_raps + 2
+    total_cols = 1 + (_S1_COLS_PER_CROP * (len(SUMMARY_CROPS) - 1)) + n_raps + len(extra_crops) + 2
     ws = wb.create_sheet("Свод по агрофирмам", 1)
     hdr_row = 1
     _hdr = dict(bold=True, color="FFFFFF", bg=_COLOR_HDR, font_size=10)
@@ -3600,6 +3713,11 @@ def write_sheet1(wb: openpyxl.Workbook,
                        end_row=hdr_row, end_column=col + ncols - 1)
         _cell(ws, hdr_row, col, crop, halign="center", **crop_hdr)
         col += ncols
+
+    for crop in extra_crops:
+        ws.merge_cells(start_row=hdr_row, start_column=col, end_row=hdr_row + 1, end_column=col)
+        _cell(ws, hdr_row, col, f"{crop}\nФакт общий, га", halign="center", **_hdr)
+        col += 1
 
     ws.merge_cells(start_row=hdr_row, start_column=col, end_row=hdr_row + 1, end_column=col)
     _cell(ws, hdr_row, col, "Общая пл. за сутки,\nпо всем культ., га", halign="center", **_hdr)
@@ -3627,7 +3745,6 @@ def write_sheet1(wb: openpyxl.Workbook,
 
         crops_season = season_data.get(firm, {})
         crops_today  = day_stats.get(firm, {}).get("area_by_crop", {})
-        firm_plan    = plan_data.get(firm, {})
         area_today_total = 0.0
         other_fact_total = 0.0
 
@@ -3643,14 +3760,11 @@ def write_sheet1(wb: openpyxl.Workbook,
                     _sum_multi_year_grass(crops_today)
                     if is_multi else crops_today.get(crop, 0.0),
                 )
-            plan_val = (
-                _sum_multi_year_grass_plan(firm_plan)
-                if is_multi else firm_plan.get(crop, 0.0)
-            )
+            plan_val = _plan_ha_like_report2(firm, crop)
             pl = get_column_letter(col)
             fl = get_column_letter(col + 1)
 
-            _cell(ws, row, col,     int(plan_val) if plan_val else 0, number_format=NF_INT)
+            _cell(ws, row, col,     plan_val if plan_val else 0, number_format=NF_INT)
             _cell(ws, row, col + 1, fact_val if fact_val else 0,      number_format=NF_DEC2)
 
             if crop == "Рапс озимый":
@@ -3692,13 +3806,24 @@ def write_sheet1(wb: openpyxl.Workbook,
                 area_today_total += today_val
 
         for cn, fv in crops_season.items():
+            if _report1_other_kept_apart(cn):
+                continue
             if not _is_multi_year_grass_crop(cn) and cn.lower() not in summary_crops_lower \
                     and cn not in SKIP_CROPS:
                 other_fact_total += fv
         for cn, tv in crops_today.items():
-            if not _is_multi_year_grass_crop(cn) and cn.lower() not in summary_crops_lower \
-                    and cn not in SKIP_CROPS:
+            if cn.lower() in summary_crops_lower:
+                continue
+            if _report1_other_kept_apart(cn) or (
+                not _is_multi_year_grass_crop(cn) and cn not in SKIP_CROPS
+            ):
                 area_today_total += tv
+
+        for crop in extra_crops:
+            fact = float(crops_season.get(crop, 0.0))
+            _cell(ws, row, col, fact if fact else 0, number_format=NF_DEC2)
+            totals[f"extra_{crop}"] += fact
+            col += 1
 
         _cell(ws, row, col,     round(area_today_total, 2), number_format=NF_DEC2)
         _cell(ws, row, col + 1, float(other_fact_total), number_format=NF_DEC2)
@@ -3751,6 +3876,15 @@ def write_sheet1(wb: openpyxl.Workbook,
                   f"=SUM({tl}{data_start}:{tl}{last_data})",
                   bold=True, bg=_COLOR_TOTAL, number_format=NF_DEC2)
             col += _S1_COLS_PER_CROP
+
+    for _crop in extra_crops:
+        letter = get_column_letter(col)
+        _cell(
+            ws, tot_row, col,
+            f"=SUM({letter}{data_start}:{letter}{last_data})",
+            bold=True, bg=_COLOR_TOTAL, number_format=NF_DEC2,
+        )
+        col += 1
 
     _cell(ws, tot_row, col,
           round(_today_area_total_ha(day_stats), 2), bold=True, bg=_COLOR_TOTAL, number_format=NF_DEC2)
@@ -4001,13 +4135,11 @@ def write_firm_sheet(wb:          openpyxl.Workbook,
                      fert_data:   dict[str, dict[int, dict[str, float]]] | None = None) -> None:
     crops_season = season_data.get(firm_name, {})
     crops_today  = day_stats.get(firm_name, {}).get("area_by_crop", {})
-    firm_plan    = plan_data.get(firm_name, {})
     stats        = day_stats.get(firm_name, _empty_stats())
 
     has_data = any(
         get_fact_total(crop, crops_season, crops_today, crop == "Многолетние травы") or
-        (_sum_multi_year_grass_plan(firm_plan)
-         if crop == "Многолетние травы" else firm_plan.get(crop, 0.0))
+        _plan_ha_like_report2(firm_name, crop)
         for crop in SUMMARY_CROPS
     ) or bool(stats.get("detail_own") or stats.get("detail_hired"))
 
@@ -4061,10 +4193,7 @@ def write_firm_sheet(wb:          openpyxl.Workbook,
                 _sum_multi_year_grass(crops_today)
                 if is_multi else crops_today.get(crop, 0.0), 2,
             )
-        plan_val = (
-            _sum_multi_year_grass_plan(firm_plan)
-            if is_multi else firm_plan.get(crop, 0.0)
-        )
+        plan_val = _plan_ha_like_report2(firm_name, crop)
         rem   = round(plan_val - fact_val, 2)
         share = round(fact_val / plan_val * 100, 2) if plan_val > 0 else 0.0
         fcd   = compute_forecast_end_date(plan_val, fact_val, today_val)
@@ -4073,7 +4202,7 @@ def write_firm_sheet(wb:          openpyxl.Workbook,
 
         _cell(ws, row, 1, idx, bg=_COLOR_DATA)
         _cell(ws, row, col_crop,  crop,       halign="left", bg=row_bg)
-        _cell(ws, row, col_plan,  round(plan_val, 1) if plan_val else 0, bg=_COLOR_DATA, number_format=NF_DEC1)
+        _cell(ws, row, col_plan,  plan_val if plan_val else 0, bg=_COLOR_DATA, number_format=NF_DEC1)
         _cell(ws, row, col_fact,  fact_val,   bg=_COLOR_DATA, number_format=NF_DEC2)
 
         for i, (fid, _) in enumerate(raps_fert_order):
@@ -4514,11 +4643,7 @@ def write_fert_crop_table(
 
     row_payloads: list[dict] = []
     for firm in AGROFIRMS:
-        firm_plan = plan_data.get(firm, {})
-        if _is_multi_year_grass_crop(crop):
-            plan_val = _sum_multi_year_grass_plan(firm_plan)
-        else:
-            plan_val = firm_plan.get(crop, 0.0)
+        plan_val = _plan_ha_like_report2(firm, crop)
 
         # Факт (сезон) берём из season_data (machine_tasks/mtfmi) — эталонный
         # источник, согласован с diag_wheat_fert.py: фильтр available_field_ids
@@ -4633,7 +4758,7 @@ def write_fert_crop_table(
         fc_bg = r["fc_bg"]
 
         _cell(ws, start_row, c0,     firm,        halign="left",   bg=_COLOR_DATA)
-        _cell(ws, start_row, c0 + 1, round(plan_val, 1) if plan_val else 0,
+        _cell(ws, start_row, c0 + 1, plan_val if plan_val else 0,
               bg=_COLOR_DATA, number_format=NF_DEC1)
         _cell(ws, start_row, c0 + 2, nitrate_val if nitrate_val else 0,
               bg=_COLOR_DATA, number_format=NF_DEC2)

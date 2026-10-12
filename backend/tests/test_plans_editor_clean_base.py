@@ -81,3 +81,18 @@ def test_work_groups_ids_can_change_names_cannot(edits_file):
     sowing = next(g for g in saved["WORK_GROUPS"] if g["name"] == "4.0 Посев")
     assert 999 in sowing["ids"]
     assert any(g["name"] == "9.9 Своя группа" for g in saved["WORK_GROUPS"])
+
+
+def test_other_layout_keeps_saved_plan_numbers(edits_file):
+    pe.set_plan_value("HARDCODED_PLAN", [G, F, "Пшеница озимая"], 9876)
+    _reset_cache()
+    pe.set_plan_value("OTHER_CROPS_LAYOUT", [G], 1)
+
+    saved = json.loads(edits_file.read_text(encoding="utf-8"))
+    assert saved["HARDCODED_PLAN"][G][F]["Пшеница озимая"] == 9876
+    assert saved["OTHER_CROPS_LAYOUT"][G] == 1
+
+    pe.set_plan_value("OTHER_CROPS_LAYOUT", [G], 0)
+    saved = json.loads(edits_file.read_text(encoding="utf-8"))
+    assert saved["HARDCODED_PLAN"][G][F]["Пшеница озимая"] == 9876
+    assert G not in saved.get("OTHER_CROPS_LAYOUT", {})

@@ -1077,6 +1077,18 @@ def crop_report_mode(group_name: str, crop: str) -> int:
     return CROP_MODE_AS_IS
 
 
+def other_crops_as_rows(group_name: str) -> bool:
+    """True — культуры режима «Иные» отдельными строками, а не одной «Иные культуры».
+
+    Ключа нет или 0 — прежний вывод: одна строка по агрофирмам.
+    """
+    raw = OTHER_CROPS_LAYOUT.get(str(group_name), 0)
+    try:
+        return int(raw) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 def crop_code_for_report(group_name: str, crop: str) -> str | None:
     """Имя культуры в сводке. None — гектары этой культуры в группу не входят."""
     name = str(crop or "").strip()
@@ -1086,6 +1098,8 @@ def crop_code_for_report(group_name: str, crop: str) -> str | None:
     if mode == CROP_MODE_SKIP:
         return None
     if mode == CROP_MODE_OTHER:
+        if other_crops_as_rows(group_name):
+            return name
         return OTHER_CROP_CODE
     return name
 
@@ -1183,11 +1197,18 @@ def crop_filter_fingerprint() -> str:
     """Отпечаток настроек редактора, меняющих состав культур в сводках (для ключей кэша)."""
     import hashlib
 
+    layout_pairs: list[tuple[str, int]] = []
+    for group, raw in OTHER_CROPS_LAYOUT.items():
+        try:
+            layout_pairs.append((str(group), int(raw)))
+        except (TypeError, ValueError):
+            continue
     parts = (
         sorted(CROP_OTHER_SET),
         sorted(CROP_SKIP_REPORT_SET),
         sorted(CROP_RANK_HIDDEN_SET),
         sorted(CROP_FIRM_HIDDEN_SET),
+        sorted(layout_pairs),
         sorted(
             (str(g), sorted(str(c) for c in crops))
             for g, crops in _BASE_GROUP_CROPS.items()
@@ -1206,10 +1227,14 @@ def plan_ha_for_report(group_name: str, firm: str, crop: str) -> float:
         firm_plan = {}
     if name == OTHER_CROP_CODE:
         total = float(firm_plan.get(OTHER_CROP_CODE) or 0.0)
-        for src, raw in firm_plan.items():
-            if crop_report_mode(group_name, str(src)) == CROP_MODE_OTHER:
-                total += float(raw or 0.0)
+        if not other_crops_as_rows(group_name):
+            for src, raw in firm_plan.items():
+                if crop_report_mode(group_name, str(src)) == CROP_MODE_OTHER:
+                    total += float(raw or 0.0)
         return total
+    if crop_report_mode(group_name, name) == CROP_MODE_OTHER and other_crops_as_rows(group_name):
+        raw = firm_plan.get(name)
+        return float(raw) if raw is not None else 0.0
     if crop_report_mode(group_name, name) != CROP_MODE_AS_IS:
         return 0.0
     raw = firm_plan.get(name)
@@ -1332,6 +1357,9 @@ CROP_REPORT_MODE = _default_crop_report_mode()
 # Режимы, которые «Редактор планов» записал в этот файл поверх автоматических:
 # 0 — считать, 1 — иные культуры, 2 — не считать.
 CROP_REPORT_MODE_EDITOR: dict[str, dict[str, int]] = {}
+# Вывод культур режима «Иные» по группе работ. Пусто — как раньше, одной строкой.
+# 1 — эти культуры отдельными строками (агрофирма и культура). Площади здесь не хранятся.
+OTHER_CROPS_LAYOUT: dict[str, int] = {}
 for _mode_group, _mode_crops in CROP_REPORT_MODE_EDITOR.items():
     if not isinstance(_mode_crops, dict):
         continue

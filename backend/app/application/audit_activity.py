@@ -62,6 +62,7 @@ PLAN_SECTION_LABELS = {
     "CROP_DISPLAY_RANK": "порядок культур",
     "CROP_FIRM_HIDDEN": "скрытие культуры у фирмы",
     "CROP_REPORT_MODE": "учёт культуры в сводках",
+    "OTHER_CROPS_LAYOUT": "вывод иных культур",
 }
 
 

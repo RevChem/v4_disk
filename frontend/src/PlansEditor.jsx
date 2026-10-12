@@ -287,6 +287,7 @@ function downloadAgroOperationsJson(state, localSeasons) {
       CROP_DISPLAY_RANK: state?.effective?.CROP_DISPLAY_RANK?.[name] || {},
       CROP_REPORT_MODE: state?.effective?.CROP_REPORT_MODE?.[name] || {},
       CROP_FIRM_HIDDEN: state?.effective?.CROP_FIRM_HIDDEN?.[name] || {},
+      OTHER_CROPS_LAYOUT: Number(state?.effective?.OTHER_CROPS_LAYOUT?.[name] ?? 0) === 1 ? 1 : 0,
     };
   }
   const payload = {
@@ -363,6 +364,34 @@ export default function PlansEditor({ summaryDate = null }) {
       } finally {
         setSavingTracked(false);
         setDragCrop(null);
+      }
+    },
+    [workGroup, summaryDate, applyWriteState, setSavingTracked]
+  );
+
+  const saveOtherLayout = useCallback(
+    async (mode) => {
+      if (!workGroup || savingRef.current) return;
+      setSavingTracked(true);
+      setError("");
+      setSuccess("");
+      try {
+        const data = await updatePlansEditorValue({
+          section_key: "OTHER_CROPS_LAYOUT",
+          keys: [workGroup],
+          value: mode,
+          summaryDate
+        });
+        applyWriteState(data);
+        setSuccess(
+          mode === 1
+            ? "В сводках культуры из «Иные культуры» выводятся отдельно, по агрофирмам и культурам."
+            : "В сводках «Иные культуры» — одна строка, только по агрофирмам."
+        );
+      } catch (e) {
+        setError(formatError(e, "Не удалось сохранить вывод иных культур"));
+      } finally {
+        setSavingTracked(false);
       }
     },
     [workGroup, summaryDate, applyWriteState, setSavingTracked]
@@ -662,6 +691,8 @@ export default function PlansEditor({ summaryDate = null }) {
     return { countedCrops, otherCrops, skippedCrops };
   }, [state, sectionKey, workGroup, section, firmsForGroup]);
 
+  const otherLayout = Number(state?.effective?.OTHER_CROPS_LAYOUT?.[workGroup] ?? 0) === 1 ? 1 : 0;
+
   const flatRows = useMemo(() => {
     if (!state || section?.kind !== "flat") return [];
     const eff = state.effective?.[sectionKey] ?? {};
@@ -728,7 +759,11 @@ export default function PlansEditor({ summaryDate = null }) {
   const renderOtherCulturesRow = () => (
     <TableRow>
       <TableCell
-        title="Свой план, га. Культуры с режимом «Иные культуры» прибавляются к этому числу в сводке. Строку чисел можно вставить из таблицы."
+        title={
+          otherLayout
+            ? "Свой план, га. В сводках культуры этого блока идут отдельными строками. Строку чисел можно вставить из таблицы."
+            : "Свой план, га. Культуры с режимом «Иные культуры» прибавляются к этому числу в сводке. Строку чисел можно вставить из таблицы."
+        }
         sx={{
           fontWeight: 700,
           position: "sticky",
@@ -780,7 +815,11 @@ export default function PlansEditor({ summaryDate = null }) {
                 }
               }}
             />
-            {folded ? (
+            {otherLayout ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                в сводке отдельно
+              </Typography>
+            ) : folded ? (
               <Typography variant="caption" color="text.secondary" display="block">
                 в сводке {reportTotal.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
               </Typography>
@@ -1215,10 +1254,30 @@ export default function PlansEditor({ summaryDate = null }) {
             </Tabs>
           )}
           {section?.kind === "nested_3" && workGroup && countedCrops.length + otherCrops.length + skippedCrops.length > 0 && (
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
-              {skippedCrops.length}. Название можно перетащить через черту.
-            </Typography>
+            <Stack spacing={1} sx={{ mb: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Учитываются: {countedCrops.length}. Иные культуры: {otherCrops.length}. Не учитываются:{" "}
+                {skippedCrops.length}. Название можно перетащить через черту.
+              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary">
+                  Иные культуры в сводках
+                </Typography>
+                <Select
+                  size="small"
+                  value={otherLayout}
+                  disabled={saving}
+                  onChange={(event) => {
+                    saveOtherLayout(Number(event.target.value));
+                  }}
+                  MenuProps={{ disableScrollLock: true }}
+                  sx={{ minWidth: 280, fontSize: 13 }}
+                >
+                  <MenuItem value={0}>Одной строкой, по агрофирмам</MenuItem>
+                  <MenuItem value={1}>По культурам и агрофирмам</MenuItem>
+                </Select>
+              </Stack>
+            </Stack>
           )}
 
           {seasonMeta && (section?.kind === "nested_3" || section?.kind === "nested_2") && (
@@ -1406,7 +1465,7 @@ export default function PlansEditor({ summaryDate = null }) {
                     <TableCell
                       align="center"
                       sx={{ ...modeStickySx, top: 0, zIndex: 5, fontWeight: 700 }}
-                      title="Иные культуры — одна строка плана и факта. Не учитываются — гектары в сводки не входят."
+                      title="Одной строкой — в сводке только «Иные культуры» по агрофирмам. По культурам — отдельные строки. Не учитываются — гектары в сводки не входят."
                     >
                       Учёт в сводках
                     </TableCell>

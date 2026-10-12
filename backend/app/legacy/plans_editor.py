@@ -29,6 +29,7 @@ EDITABLE_KEYS: tuple[str, ...] = (
     "CROP_DISPLAY_RANK",
     "CROP_FIRM_HIDDEN",
     "CROP_REPORT_MODE",
+    "OTHER_CROPS_LAYOUT",
 )
 
 LIST_EDITABLE_KEYS: frozenset[str] = frozenset({"WORK_GROUPS"})
@@ -313,6 +314,8 @@ def merge_plans(base: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(b, dict):
             effective[key] = _deep_merge(deepcopy(b), e if isinstance(e, dict) else {})
+        elif isinstance(e, dict) and e:
+            effective[key] = deepcopy(e)
         elif b is not None:
             effective[key] = deepcopy(b)
     return effective
@@ -505,6 +508,23 @@ def set_plan_value(
             bucket.pop(crop, None)
         else:
             bucket[crop] = mode
+    elif section_key == "OTHER_CROPS_LAYOUT":
+        if len(keys) != 1 or not str(keys[0]).strip():
+            raise ValueError("Для вывода иных культур нужен keys: [группа работ]")
+        g = str(keys[0]).strip()
+        mode = int(round(float(value)))
+        if mode not in (0, 1):
+            raise ValueError("Вывод иных культур: 0 — одной строкой, 1 — по культурам")
+        base_bucket = base.get("OTHER_CROPS_LAYOUT") or {}
+        try:
+            base_mode = int(base_bucket.get(g) or 0)
+        except (TypeError, ValueError):
+            base_mode = 0
+        # 0 при пустой базе не пишем: площади и режимы культур не затрагиваются.
+        if mode == 0 and base_mode == 0:
+            sec_eff.pop(g, None)
+        else:
+            sec_eff[g] = mode
     elif section_key == "CROP_FIRM_HIDDEN":
         if len(keys) != 3:
             raise ValueError("Для CROP_FIRM_HIDDEN нужны keys: [группа, фирма, культура]")
@@ -902,6 +922,19 @@ def _queue_insert_before_close(
     edits.append((pos, pos, ","))
 
 
+def _render_layout_dict(source: str, var_name: str, data: dict[str, Any]) -> tuple[str, int]:
+    """Пишет плоский словарь. Если имени ещё нет в plans.py — дописывает его в конец, не трогая площади."""
+    tree = ast.parse(source)
+    try:
+        _find_hardcoded_plan(tree, var_name)
+    except ValueError:
+        literal = _format_mapping_literal({str(k): v for k, v in data.items()}, "    ")
+        text = source.rstrip() + f"\n\n{var_name}: dict[str, int] = {literal}\n"
+        ast.parse(text)
+        return text, _count_numbers(data)
+    return render_nested_number_dict(source, var_name, data)
+
+
 def render_nested_number_dict(source: str, var_name: str, data: dict[str, Any]) -> tuple[str, int]:
     """Обновляет словарь чисел любой вложенности. Комментарии рядом не трогает."""
     tree = ast.parse(source)
@@ -1117,7 +1150,12 @@ def _sync_hardcoded_plan_note(effective: dict[str, Any]) -> str:
     return "plans.py уже совпадает с редактором."
 
 
-_NUMBER_DICT_SECTIONS = ("AVAILABLE_OWN", "PLAN_RATE_PER_GROUP", "CROP_DISPLAY_RANK")
+_NUMBER_DICT_SECTIONS = (
+    "AVAILABLE_OWN",
+    "PLAN_RATE_PER_GROUP",
+    "CROP_DISPLAY_RANK",
+    "OTHER_CROPS_LAYOUT",
+)
 
 
 def _persist_editor_to_plans_py(effective: dict[str, Any]) -> str:
@@ -1137,7 +1175,10 @@ def _persist_editor_to_plans_py(effective: dict[str, Any]) -> str:
             data = effective.get(name)
             if not isinstance(data, dict) or not data:
                 continue
-            source, n = render_nested_number_dict(source, name, data)
+            if name == "OTHER_CROPS_LAYOUT":
+                source, n = _render_layout_dict(source, name, data)
+            else:
+                source, n = render_nested_number_dict(source, name, data)
             changed += n
             if not _source_contains_number_dict(source, name, data):
                 return f"Не удалось записать plans.py: секция {name} записана не полностью."

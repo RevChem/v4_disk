@@ -2460,8 +2460,16 @@ def _plow_counts_as_other(crop: str) -> bool:
         return False
     if name == PLOW_FIELD_OTHER_CROP:
         return True
-    if crop_code_for_report("2.4 Вспашка", name) == PLOW_FIELD_OTHER_CROP:
+    code = crop_code_for_report("2.4 Вспашка", name)
+    if code == PLOW_FIELD_OTHER_CROP:
         return True
+    # Режим «по культурам»: культуры блока «Иные» остаются своими строками.
+    if (
+        code == name
+        and _plans.other_crops_as_rows("2.4 Вспашка")
+        and _plans.crop_report_mode("2.4 Вспашка", name) == _plans.CROP_MODE_OTHER
+    ):
+        return False
     return _plow_is_perennial_grass(name)
 
 
@@ -2646,6 +2654,13 @@ def _deep_all_firms_rows(
         if crop == _DEEP_OTHER_CROP:
             other_fact += fact
             other_today += today
+            continue
+        if (
+            _plans.other_crops_as_rows("2.8 Глубокорыхление")
+            and _plans.crop_report_mode("2.8 Глубокорыхление", crop) == _plans.CROP_MODE_OTHER
+        ):
+            if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
+                main.append((crop, plan, fact, today))
             continue
         other_label = _deep_other_label(crop)
         fold = other_label is not None or abs(plan) < 0.005

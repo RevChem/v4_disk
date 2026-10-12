@@ -121,3 +121,28 @@ def test_missing_catalog_crop_is_skipped_until_marked_counted():
         if created_firm:
             plans.HARDCODED_PLAN[group].pop("АФ А", None)
         plans.sync_crop_report_sets()
+
+
+def test_split_layout_keeps_other_crops_as_their_own_rows():
+    _set_modes(other={"Нут", "Горох"})
+    plans.HARDCODED_PLAN.setdefault(GROUP, {}).setdefault("АФ А", {})
+    firm = plans.HARDCODED_PLAN[GROUP]["АФ А"]
+    saved = dict(firm)
+    firm["Нут"] = 10
+    firm["Горох"] = 5
+    firm["Иные культуры"] = 7
+    plans.OTHER_CROPS_LAYOUT[GROUP] = 1
+    try:
+        assert plans.other_crops_as_rows(GROUP) is True
+        assert plans.crop_code_for_report(GROUP, "Нут") == "Нут"
+        assert plans.crop_code_for_report(GROUP, "Горох") == "Горох"
+        assert plans.plan_ha_for_report(GROUP, "АФ А", "Нут") == 10
+        assert plans.plan_ha_for_report(GROUP, "АФ А", "Горох") == 5
+        assert plans.plan_ha_for_report(GROUP, "АФ А", "Иные культуры") == 7
+        folded = plans.collapse_crop_areas(GROUP, {"Нут": 3, "Горох": 1, "Иные культуры": 7})
+        assert folded == {"Нут": 3, "Горох": 1, "Иные культуры": 7}
+    finally:
+        firm.clear()
+        firm.update(saved)
+        plans.OTHER_CROPS_LAYOUT.pop(GROUP, None)
+        _set_modes()
