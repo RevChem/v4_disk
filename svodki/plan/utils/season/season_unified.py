@@ -688,16 +688,16 @@ def fact_season_years_for_group(group_name: str, report_date: date) -> list[int]
 
 
 def season_label_for_group(group_name: str, report_date: date) -> str:
-    cfg = resolve_group_season_config(group_name, report_date)
-    ty = cfg.get("task_season_years") or []
-    hy = cfg.get("history_years") or []
-    rule = cfg.get("season_rule") or "none"
-    if ty and len(ty) == 1 and rule in ("year_plus_one", "plow_year_plus_one"):
-        return str(ty[0])
-    if hy and len(hy) > 1:
-        return "+".join(str(y) for y in hy)
-    if hy:
-        return str(hy[0])
+    """Подпись «Сезон:» — те же годы, что чипы редактора и факт сводки.
+
+    Один сохранённый год (например только 2027 у «4.1 Посев (овощи)»)
+    не разворачивается обратно в пару правила year_plus_one.
+    """
+    years = fact_season_years_for_group(group_name, report_date)
+    if len(years) == 1:
+        return str(years[0])
+    if len(years) > 1:
+        return "+".join(str(y) for y in years)
     return str(season_year_for_date(report_date))
 
 
@@ -893,10 +893,14 @@ def inject_season_range_env(env: dict[str, str], report_date: date | None = None
     # попадал в 1_main_dop и сдвигал окно доп. таблиц сводки 5 на 01.01.2027.
     # У каждой группы свой SVODKI_GRP_*. Сводки 10, 11 и 13 получают дату
     # уборки отдельно, после этого вызова.
+    # SEASON_TASK_YEAR_STR тоже общий. Иначе один сохранённый год
+    # «4.1 Посев (овощи)» = 2027 становился сезоном вспашки, опрыскивания
+    # и «4.0 Посев», и их листы теряли 2026.
     for key in (
         "SEASON_YEAR",
         "SVODKI_SEASON_YEARS",
         "SVODKI_SEASON_START_DATE",
         "SEASON_START_DATE",
+        "SEASON_TASK_YEAR_STR",
     ):
         env.pop(key, None)

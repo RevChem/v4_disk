@@ -61,6 +61,23 @@ def test_rule_default_applies_without_editor_override() -> None:
     ) == [2027]
 
 
+def test_editor_single_year_is_the_sheet_season(tmp_path, monkeypatch) -> None:
+    """«4.1 Посев (овощи)» только 2027 в редакторе — не подпись 2026+2027."""
+    path = tmp_path / "season_ranges.json"
+    path.write_text(
+        '{"by_group":{"4.1 Посев (овощи)":{"season_years":[2027],"season_year":2027}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SVODKI_SEASON_RANGES_PATH", str(path))
+    su.clear_season_cache()
+    name = "4.1 Посев (овощи)"
+    try:
+        assert su.season_label_for_group(name, REPORT_DATE) == "2027"
+        assert su.fact_season_years_for_group(name, REPORT_DATE) == [2027]
+    finally:
+        su.clear_season_cache()
+
+
 def _sc():
     """season_cropwise без тяжёлых зависимостей сводок (plans, httpx)."""
     try:

@@ -540,6 +540,9 @@ export default function PlansEditor({ summaryDate = null }) {
     setDirtySeasonGroups((prev) => new Set(prev).add(workGroup));
     setLocalRangeYearsByGroup((prev) => ({ ...prev, [workGroup]: nextYears }));
     setLocalYearRangesByGroup((prev) => ({ ...prev, [workGroup]: nextRanges }));
+    // Числовые поля сохраняются сразу. Год сезона тоже: иначе сводка
+    // остаётся на паре по умолчанию (2026+2027), хотя чип уже один.
+    void saveSeasonRange({ years: nextYears, ranges: nextRanges });
   };
 
   const updateYearRange = (year, field, value) => {
@@ -578,16 +581,18 @@ export default function PlansEditor({ summaryDate = null }) {
     });
   };
 
-  const saveSeasonRange = async ({ clear = false } = {}) => {
+  const saveSeasonRange = async ({ clear = false, years = null, ranges = null } = {}) => {
     if (!workGroup) return;
+    const yearsToSave = years ?? rangeYears;
+    const rangesSource = ranges ?? yearRanges;
     setSavingTracked(true);
     setError("");
     setSuccess("");
     try {
       const rangesPayload = {};
       if (!clear) {
-        for (const y of rangeYears) {
-          const row = yearRanges[String(y)] || defaultYearRange(y, calendarSeasons);
+        for (const y of yearsToSave) {
+          const row = rangesSource[String(y)] || defaultYearRange(y, calendarSeasons);
           rangesPayload[String(y)] = {
             period_start: row.period_start,
             period_end: row.period_end,
@@ -597,7 +602,7 @@ export default function PlansEditor({ summaryDate = null }) {
       const data = await updatePlansEditorSeasonRange(
         {
           group_name: workGroup,
-          season_years: clear ? null : rangeYears,
+          season_years: clear ? null : yearsToSave,
           year_ranges: clear ? null : rangesPayload,
           clear,
         },
