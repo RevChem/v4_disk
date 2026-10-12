@@ -201,6 +201,58 @@ export function emptyHarvestGrossForm() {
   return { crops, vegetables };
 }
 
+const HARVEST_GROSS_FORM_STORAGE_KEY = "svodki.harvestGrossForm";
+
+function _harvestCellText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function _mergeHarvestGrossForm(base, saved) {
+  if (!saved || typeof saved !== "object") return base;
+  const next = {
+    crops: structuredClone(base.crops),
+    vegetables: structuredClone(base.vegetables),
+  };
+  for (const section of ["crops", "vegetables"]) {
+    const src = saved[section];
+    if (!src || typeof src !== "object") continue;
+    for (const crop of Object.keys(next[section])) {
+      const cropSrc = src[crop];
+      if (!cropSrc || typeof cropSrc !== "object") continue;
+      for (const firm of Object.keys(next[section][crop])) {
+        const row = cropSrc[firm];
+        if (!row || typeof row !== "object") continue;
+        next[section][crop][firm] = {
+          season_t: _harvestCellText(row.season_t),
+          day_t: _harvestCellText(row.day_t),
+        };
+      }
+    }
+  }
+  return next;
+}
+
+/** Последний ввод модалки «кукуруза на силос». Пустой кэш — пустая форма. */
+export function loadHarvestGrossForm() {
+  const base = emptyHarvestGrossForm();
+  try {
+    const raw = localStorage.getItem(HARVEST_GROSS_FORM_STORAGE_KEY);
+    if (!raw) return base;
+    return _mergeHarvestGrossForm(base, JSON.parse(raw));
+  } catch {
+    return base;
+  }
+}
+
+export function saveHarvestGrossForm(form) {
+  try {
+    localStorage.setItem(HARVEST_GROSS_FORM_STORAGE_KEY, JSON.stringify(form));
+  } catch {
+    /* localStorage недоступен — форма остаётся только в текущей сессии */
+  }
+}
+
 export function sumHarvestGrossCrop(form, section, cropName, field) {
   const byFirm = form?.[section]?.[cropName];
   if (!byFirm || typeof byFirm !== "object") return null;

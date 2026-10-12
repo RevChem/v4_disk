@@ -44,7 +44,8 @@ import HarvestGrossDialog from "../components/HarvestGrossDialog";
 import Report27CustomDialog from "../components/Report27CustomDialog";
 import {
   buildHarvestGrossPayload,
-  emptyHarvestGrossForm,
+  loadHarvestGrossForm,
+  saveHarvestGrossForm,
   fetchAvailableDates,
   fetchReportCatalog,
   generateReports,
@@ -114,7 +115,7 @@ export default function DashboardPage({
   const [commentsInitialSummaryId, setCommentsInitialSummaryId] = useState(null);
   const [harvestGrossOpen, setHarvestGrossOpen] = useState(false);
   const [harvestGrossPendingIds, setHarvestGrossPendingIds] = useState([]);
-  const [harvestGrossForm, setHarvestGrossForm] = useState(() => emptyHarvestGrossForm());
+  const [harvestGrossForm, setHarvestGrossForm] = useState(() => loadHarvestGrossForm());
   const [report27CustomOpen, setReport27CustomOpen] = useState(false);
   const [report27CustomDateFrom, setReport27CustomDateFrom] = useState("");
   const [report27CustomDateTo, setReport27CustomDateTo] = useState("");
@@ -365,7 +366,7 @@ export default function DashboardPage({
     if (!selectedIds.length) return;
     if (selectedIds.some((id) => id === "10" || id === "13" || id === "1")) {
       setHarvestGrossPendingIds([...selectedIds]);
-      setHarvestGrossForm(emptyHarvestGrossForm());
+      setHarvestGrossForm(loadHarvestGrossForm());
       setHarvestGrossOpen(true);
       return;
     }
@@ -373,23 +374,28 @@ export default function DashboardPage({
   }
 
   function updateHarvestGrossField(section, cropName, firmName, field, value) {
-    setHarvestGrossForm((prev) => ({
-      ...prev,
-      [section]: {
-        ...prev[section],
-        [cropName]: {
-          ...(prev[section]?.[cropName] || {}),
-          [firmName]: {
-            ...(prev[section]?.[cropName]?.[firmName] || { season_t: "", day_t: "" }),
-            [field]: value,
+    setHarvestGrossForm((prev) => {
+      const next = {
+        ...prev,
+        [section]: {
+          ...prev[section],
+          [cropName]: {
+            ...(prev[section]?.[cropName] || {}),
+            [firmName]: {
+              ...(prev[section]?.[cropName]?.[firmName] || { season_t: "", day_t: "" }),
+              [field]: value,
+            },
           },
         },
-      },
-    }));
+      };
+      saveHarvestGrossForm(next);
+      return next;
+    });
   }
 
   async function confirmHarvestGrossModal() {
     const ids = harvestGrossPendingIds.length ? harvestGrossPendingIds : selectedIds;
+    saveHarvestGrossForm(harvestGrossForm);
     const payload = buildHarvestGrossPayload(harvestGrossForm);
     setHarvestGrossOpen(false);
     await enqueueReports(ids, payload ? { reportHarvestGross: payload } : {});
