@@ -97,3 +97,51 @@ def test_regeneration_stamps_saved_comment_onto_fresh_pdf(tmp_path, monkeypatch)
     stored = load_comments_store()
     assert stored["7"]["comments"][0]["comment"] == "Приписка про дождь"
     assert load_cell_edits_store()["7"].get("cell_edit_pdf_base_path") in (None, "")
+
+
+def _write_table_pdf(path) -> None:
+    c = canvas.Canvas(str(path), pagesize=(420, 400))
+    c.drawString(40, 360, "HEADER")
+    for i, y in enumerate(range(320, 100, -16)):
+        c.drawString(40, y, f"row {i} value")
+        c.line(30, y - 4, 390, y - 4)
+    c.save()
+
+
+def test_regeneration_moves_comment_below_grown_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    fresh = tmp_path / "4. Боронование за 12.10.2026.pdf"
+    _write_table_pdf(fresh)
+    # 0.40 — внутри новой, более длинной таблицы. Раньше белая полоса резала строки.
+    row = {
+        "id": "c1",
+        "page": 1,
+        "x": 0.5,
+        "y": 0.3,
+        "comment_anchor_y": 0.40,
+        "cell_key": "1:10:20:12",
+        "cell_text": "12",
+        "comment": "Приписка про дождь",
+        "apply_to_future": True,
+        "starred": True,
+    }
+    save_comments_store(
+        {
+            "8": {
+                "report_id": "4",
+                "base_pdf_path": str(fresh),
+                "comments": [dict(row)],
+            }
+        }
+    )
+    item = SimpleNamespace(id=8, title="4. Боронование", file_path=str(fresh))
+    logs: list[str] = []
+    apply_comments_after_generation(created=[item], logs=logs)
+
+    stored = load_comments_store()
+    anchor = float(stored["8"]["comments"][0]["comment_anchor_y"])
+    assert anchor > 0.72
+    text = _text(fresh)
+    assert "row 0 value" in text
+    assert "Приписка про дождь" in text
+    assert any("сдвинуты под таблицу" in line for line in logs)

@@ -14,9 +14,11 @@ from app.legacy.cell_edits_store import (
 )
 from app.legacy.comments_store import (
     get_comment_pdf_base_path,
+    list_summary_comments,
     load_comments_store,
     save_comments_store,
 )
+from app.legacy.pdf_comments import relocate_comments_below_table
 from app.legacy.report_generation import _report_id_from_summary_title
 from app.models import Summary
 
@@ -50,6 +52,8 @@ def apply_comments_after_generation(*, created: list[Summary], logs: list[str]) 
                 continue
             _drop_stale_cell_edit_base(int(item.id))
             store = load_comments_store()
+            rows = list_summary_comments(store, int(item.id))
+            moved = relocate_comments_below_table(pdf_path, rows)
             get_comment_pdf_base_path(
                 store,
                 int(item.id),
@@ -60,5 +64,7 @@ def apply_comments_after_generation(*, created: list[Summary], logs: list[str]) 
             save_comments_store(store)
             rebuild_summary_pdf_layers(item)
             logs.append(f"Сводка {rid}: применены комментарии ({len(comments)}).")
+            if moved:
+                logs.append(f"Сводка {rid}: приписки сдвинуты под таблицу ({moved}).")
         except Exception as exc:
             logs.append(f"Сводка {rid}: ошибка комментариев — {exc}")

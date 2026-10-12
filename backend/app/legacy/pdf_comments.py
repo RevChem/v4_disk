@@ -5,6 +5,79 @@ from pathlib import Path
 from typing import Any
 
 
+def page_content_bottom_norm(pdf_path: Path) -> dict[int, float]:
+    """Низ содержимого страницы (таблица) как доля высоты, 0 — верх листа.
+
+    Ключ — номер страницы с 1. Пустые страницы в словарь не попадают.
+    """
+    try:
+        import pymupdf
+    except Exception:
+        return {}
+    try:
+        doc = pymupdf.open(str(pdf_path))
+    except Exception:
+        return {}
+    out: dict[int, float] = {}
+    try:
+        for index, page in enumerate(doc, start=1):
+            height = float(page.rect.height) or 1.0
+            width = float(page.rect.width) or 1.0
+            bottom = 0.0
+            for block in page.get_text("blocks") or []:
+                if len(block) < 4:
+                    continue
+                bottom = max(bottom, float(block[3]))
+            for drawing in page.get_drawings() or []:
+                rect = drawing.get("rect")
+                if rect is None:
+                    continue
+                if float(rect.width) >= width * 0.35 and float(rect.height) <= 2.5:
+                    bottom = max(bottom, float(rect.y1))
+            if bottom > 0:
+                out[index] = min(0.98, bottom / height)
+    finally:
+        doc.close()
+    return out
+
+
+def relocate_comments_below_table(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
+    """Сдвинуть приписку под таблицу, если старая точка теперь внутри строк.
+
+    Положение, которое и так ниже таблицы, не трогаем: его задал пользователь.
+    Возвращает число сдвинутых приписок.
+    """
+    bottoms = page_content_bottom_norm(pdf_path)
+    if not bottoms:
+        return 0
+    gap = 0.018
+    moved = 0
+    for row in comments:
+        if not isinstance(row, dict):
+            continue
+        try:
+            page = int(row.get("page", 1))
+        except (TypeError, ValueError):
+            page = 1
+        bottom = bottoms.get(page)
+        if bottom is None:
+            continue
+        raw = row.get("comment_anchor_y")
+        if raw is None or raw == "":
+            raw = row.get("y", 0.0)
+        try:
+            anchor = float(raw)
+        except (TypeError, ValueError):
+            anchor = 0.0
+        anchor = max(0.0, min(1.0, anchor))
+        # Белая полоса рисуется ниже якоря. Якорь внутри таблицы разрезает строки.
+        if anchor >= bottom + 0.008:
+            continue
+        row["comment_anchor_y"] = round(min(0.985, bottom + gap), 4)
+        moved += 1
+    return moved
+
+
 def _wrap_lines(text: str, *, max_width: float, font_name: str, font_size: float, canvas_obj: Any) -> list[str]:
     words = str(text or "").split()
     if not words:
