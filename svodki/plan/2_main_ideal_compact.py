@@ -873,15 +873,41 @@ def _harvest_grain_field_allowed(group_name: str, crop: str) -> bool:
     return True
 
 
+# Площадь «Выполнено, га»: комбайны и ещё трактора, которые ведут уборку.
+# Счётчик агрегатов — только комбайны (5/9/16) и наёмные (7).
+HARVEST_AREA_GROUP_IDS: frozenset[int] = HARVESTER_GROUP_IDS | frozenset({
+    4,   # Трактора
+    17,  # Трактора энергонасыщенные
+})
+
+
+def _machine_group_id(
+    machine_id: int | None,
+    machine_group: dict[int, int],
+) -> int:
+    if machine_id is None:
+        return 0
+    return int(machine_group.get(int(machine_id), 0) or 0)
+
+
 def _is_harvest_combine(
     machine_id: int | None,
     machine_group: dict[int, int],
 ) -> bool:
-    """Комбайны (5/9/16) или наёмные (7) — как machines_grain в 11/14."""
+    """Комбайны (5/9/16) или наёмные (7) — счётчик агрегатов, как 11/14."""
+    grp = _machine_group_id(machine_id, machine_group)
+    return grp in HARVESTER_GROUP_IDS or grp == HIRED_GROUP_ID
+
+
+def _is_harvest_area_machine(
+    machine_id: int | None,
+    machine_group: dict[int, int],
+) -> bool:
+    """Чья площадь входит в «Выполнено, га» уборки."""
     if machine_id is None:
         return False
-    grp = int(machine_group.get(int(machine_id), 0) or 0)
-    return grp in HARVESTER_GROUP_IDS or grp == HIRED_GROUP_ID
+    grp = _machine_group_id(machine_id, machine_group)
+    return grp in HARVEST_AREA_GROUP_IDS or grp == HIRED_GROUP_ID
 
 
 def _as_silage_if_corn_mowing(wt: int | None, crop: str) -> str:
@@ -2551,7 +2577,17 @@ def _prepare_group_selection(
         # Один сезон в редакторе (календарь до 01.07) не должен обнулять факт
         # после этой даты. Сводки 1 и 6 режут machine_task.season и считают
         # смены до даты отчёта. Иначе «только 2026» в сентябре даёт нули.
-        if not own_ranges:
+        # Уборка: сохранённый сезон 2026 — это 01.07.2025–01.07.2026. Жатва
+        # после 1 июля иначе выпадает, и «Выполнено» остаётся пара тысяч га.
+        if group_name == HARVEST_GROUP_NAME:
+            group_period_end = fact_window_end(group_period_end, TODAY)
+            calendar_start = date(TODAY.year - 1, 7, 1)
+            campaign_start = date(TODAY.year, 6, 10)
+            if TODAY < campaign_start:
+                campaign_start = date(TODAY.year - 1, 6, 10)
+            if group_period_start <= calendar_start:
+                group_period_start = campaign_start
+        elif not own_ranges:
             group_period_end = fact_window_end(group_period_end, TODAY)
         # Дискование — площадь как в сводках 1 и 7: без is_skip_crop, только поля с культурой в сезоне.
         use_report17_area_logic = group_name == DISK_GROUP_NAME
@@ -3217,7 +3253,7 @@ def collect_work_data(
                 # Как 10_main_harvest: задания без machine_id не учитываем.
                 if group_name == HARVEST_GROUP_NAME and mid is None:
                     continue
-                if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
+                if group_name == HARVEST_GROUP_NAME and not _is_harvest_area_machine(mid, machine_group):
                     continue
                 # Сезоны группы: редактор планов, иначе history_years по умолчанию (оба сезона).
                 # Только текущий сезон (season_year_for_date) используется для культуры поля, не для факта.
@@ -3587,6 +3623,7 @@ def collect_work_data(
                      and group_name not in _CROP_VIA_OP_EXCLUDED_GROUPS),
                 bool(_HISTORY_FIELD_ONLY),
                 "plow-close-shift",
+                "harvest-to-report-date+tractors",
             ],
             stamp_parts=_make_stamp_parts(
                 group_name=group_name, task_machine=task_machine, task_shift=task_shift,
@@ -3616,6 +3653,8 @@ def collect_work_data(
                     if _machine_min_ha > 0 and round(tc, 2) < _machine_min_ha:
                         continue
                     grp = machine_day_group[firm][t_date].get(mid, machine_group.get(mid, 0))
+                    if group_name == HARVEST_GROUP_NAME and not _is_harvest_combine(mid, machine_group):
+                        continue
                     key = "hired" if grp == HIRED_GROUP_ID else "own"
                     data[group_name]["machines"][firm][t_date][key].add(mid)
 
@@ -3653,6 +3692,10 @@ def collect_work_data(
 
         data[group_name]["machine_day_area"] = {
             firm: {dt: dict(by_mid) for dt, by_mid in machine_day_area[firm].items()}
+            for firm in FIRM_ORDER
+        }
+        data[group_name]["machine_day_group"] = {
+            firm: {dt: dict(by_mid) for dt, by_mid in machine_day_group[firm].items()}
             for firm in FIRM_ORDER
         }
 
@@ -4469,6 +4512,22 @@ def write_report_sheet(
         area_threshold = _detail_area_min_ha(group_name)
         season_count_threshold = count_threshold
         mda_all = gd.get("machine_day_area", {})
+        if group_name == HARVEST_GROUP_NAME:
+            # Выработка на агрегат — комбайны и наёмные. Гектары тракторов
+            # остаются в «Выполнено», в знаменатель выработки не входят.
+            mdg_all = gd.get("machine_day_group") or {}
+            mda_all = {
+                firm: {
+                    dt: {
+                        mid: ha
+                        for mid, ha in by_mid.items()
+                        if int(mdg_all.get(firm, {}).get(dt, {}).get(mid, 0) or 0) in HARVESTER_GROUP_IDS
+                        or int(mdg_all.get(firm, {}).get(dt, {}).get(mid, 0) or 0) == HIRED_GROUP_ID
+                    }
+                    for dt, by_mid in by_date.items()
+                }
+                for firm, by_date in mda_all.items()
+            }
         _firms_rate = [f for f in FIRM_ORDER
                        if group_name not in GROUP_FIRM_ONLY or f in GROUP_FIRM_ONLY[group_name]]
         for firm in _firms_rate:
