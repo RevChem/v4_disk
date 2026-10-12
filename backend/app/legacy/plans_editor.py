@@ -630,6 +630,275 @@ def _const_number(node: ast.AST) -> float | None:
     return None
 
 
+def _replace_assigned_literal(source: str, var_name: str, literal: str) -> str:
+    """Меняет правую часть присваивания целиком. Так из файла уходят числа, которых нет в json."""
+    tree = ast.parse(source)
+    value = _find_assigned(tree, var_name)
+    if value.end_lineno is None or value.end_col_offset is None:
+        raise ValueError(f"В plans.py нет позиции у {var_name}")
+    starts = _line_starts(source)
+    start = _abs_pos(source, starts, value.lineno, value.col_offset)
+    end = _abs_pos(source, starts, value.end_lineno, value.end_col_offset)
+    text = source[:start] + literal + source[end:]
+    ast.parse(text)
+    return text
+
+
+def _as_number(raw: Any, label: str) -> float:
+    if isinstance(raw, bool) or raw is None:
+        raise ValueError(f"{label}: нужно число.")
+    if isinstance(raw, str):
+        raw = raw.replace(",", ".").replace(" ", "").strip()
+    try:
+        num = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}: нужно число.") from exc
+    if num != num or num in (float("inf"), float("-inf")):
+        raise ValueError(f"{label}: нужно число.")
+    return num
+
+
+def _as_mode(raw: Any, label: str, allowed: tuple[int, ...]) -> int:
+    num = int(round(_as_number(raw, label)))
+    if num not in allowed:
+        raise ValueError(f"{label}: допустимо {', '.join(str(x) for x in allowed)}.")
+    return num
+
+
+def _replace_group_map(
+    current: dict[str, Any],
+    operations: dict[str, Any],
+    field: str,
+    convert,
+) -> dict[str, Any]:
+    out = deepcopy(current) if isinstance(current, dict) else {}
+    for name, op in operations.items():
+        if not isinstance(op, dict) or field not in op:
+            continue
+        raw = op.get(field)
+        if not isinstance(raw, dict):
+            raise ValueError(f"«{name}»: {field} должен быть объектом.")
+        out[str(name)] = convert(str(name), raw)
+    return out
+
+
+def _plan_group(group: str, raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+    firms: dict[str, dict[str, float]] = {}
+    for firm, crops in raw.items():
+        if not isinstance(crops, dict):
+            raise ValueError(f"«{group}» / «{firm}»: план культуры должен быть объектом.")
+        row: dict[str, float] = {}
+        for crop, val in crops.items():
+            row[str(crop)] = _as_number(val, f"«{group}» / «{firm}» / «{crop}»")
+        firms[str(firm)] = row
+    return firms
+
+
+def _firm_ints(group: str, raw: dict[str, Any]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for firm, val in raw.items():
+        out[str(firm)] = int(round(_as_number(val, f"«{group}» / «{firm}»")))
+    return out
+
+
+def _crop_ints(group: str, raw: dict[str, Any], *, allowed: tuple[int, ...] | None = None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for crop, val in raw.items():
+        label = f"«{group}» / «{crop}»"
+        out[str(crop)] = _as_mode(val, label, allowed) if allowed else int(round(_as_number(val, label)))
+    return out
+
+
+def _hidden_group(group: str, raw: dict[str, Any]) -> dict[str, dict[str, int]]:
+    firms: dict[str, dict[str, int]] = {}
+    for firm, crops in raw.items():
+        if not isinstance(crops, dict):
+            raise ValueError(f"«{group}» / «{firm}»: скрытие культур должно быть объектом.")
+        row: dict[str, int] = {}
+        for crop, val in crops.items():
+            row[str(crop)] = 1 if int(round(_as_number(val, f"«{group}» / «{firm}» / «{crop}»"))) > 0 else 0
+        firms[str(firm)] = row
+    return firms
+
+
+def _work_ids(raw: Any, group: str) -> list[int]:
+    if not isinstance(raw, list):
+        raise ValueError(f"«{group}»: work_type_ids должен быть списком.")
+    ids: list[int] = []
+    for item in raw:
+        ids.append(int(round(_as_number(item, f"«{group}»: work_type id"))))
+    return ids
+
+
+def effective_from_agro_operations(effective: dict[str, Any], operations: dict[str, Any]) -> dict[str, Any]:
+    """Подставляет в эффективные планы операции из agro_operations.json.
+
+    Группа из файла заменяет свои гектары целиком. Группы, которых в файле нет, остаются.
+    """
+    eff = deepcopy(effective) if isinstance(effective, dict) else {}
+    eff["HARDCODED_PLAN"] = _replace_group_map(eff.get("HARDCODED_PLAN") or {}, operations, "HARDCODED_PLAN", _plan_group)
+    eff["AVAILABLE_OWN"] = _replace_group_map(eff.get("AVAILABLE_OWN") or {}, operations, "AVAILABLE_OWN", _firm_ints)
+    eff["CROP_DISPLAY_RANK"] = _replace_group_map(
+        eff.get("CROP_DISPLAY_RANK") or {}, operations, "CROP_DISPLAY_RANK", _crop_ints
+    )
+    eff["CROP_REPORT_MODE"] = _replace_group_map(
+        eff.get("CROP_REPORT_MODE") or {},
+        operations,
+        "CROP_REPORT_MODE",
+        lambda group, raw: _crop_ints(group, raw, allowed=(0, 1, 2)),
+    )
+    eff["CROP_FIRM_HIDDEN"] = _replace_group_map(
+        eff.get("CROP_FIRM_HIDDEN") or {}, operations, "CROP_FIRM_HIDDEN", _hidden_group
+    )
+    layout = dict(eff.get("OTHER_CROPS_LAYOUT") or {})
+    rates = dict(eff.get("PLAN_RATE_PER_GROUP") or {})
+    groups = [dict(item) for item in (eff.get("WORK_GROUPS") or []) if isinstance(item, dict)]
+    by_name = {str(item.get("name")): item for item in groups}
+    for name, op in operations.items():
+        if not isinstance(op, dict):
+            raise ValueError(f"«{name}»: операция должна быть объектом.")
+        key = str(name).strip()
+        if not key:
+            continue
+        if "OTHER_CROPS_LAYOUT" in op:
+            layout[key] = _as_mode(op.get("OTHER_CROPS_LAYOUT"), f"«{key}»: вывод иных культур", (0, 1))
+        if "PLAN_RATE_PER_GROUP" in op and op.get("PLAN_RATE_PER_GROUP") is not None:
+            rates[key] = _as_number(op.get("PLAN_RATE_PER_GROUP"), f"«{key}»: плановая выработка")
+        if "work_type_ids" in op:
+            ids = _work_ids(op.get("work_type_ids"), key)
+            if key in by_name:
+                by_name[key]["ids"] = ids
+            else:
+                item = {"name": key, "ids": ids}
+                groups.append(item)
+                by_name[key] = item
+    eff["OTHER_CROPS_LAYOUT"] = layout
+    eff["PLAN_RATE_PER_GROUP"] = rates
+    eff["WORK_GROUPS"] = groups
+    return eff
+
+
+def _format_work_groups_literal(groups: list[Any]) -> str:
+    lines = ["["]
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        ids = _work_ids(item.get("ids") or [], name)
+        lines.append(f"    ({_py_string(name)}, [{', '.join(str(i) for i in ids)}]),")
+    lines.append("]")
+    return "\n".join(lines)
+
+
+def _write_imported_effective(effective: dict[str, Any]) -> str:
+    """Пишет снимок в plans.py и очищает JSON-разницу, чтобы она не вернула старые числа."""
+    path = _svodki_plan_dir() / "plans.py"
+    try:
+        source = path.read_text(encoding="utf-8")
+        original = source
+        sections = (
+            "HARDCODED_PLAN",
+            "AVAILABLE_OWN",
+            "PLAN_RATE_PER_GROUP",
+            "CROP_DISPLAY_RANK",
+            "CROP_FIRM_HIDDEN",
+            "OTHER_CROPS_LAYOUT",
+        )
+        for name in sections:
+            data = effective.get(name)
+            if not isinstance(data, dict):
+                continue
+            try:
+                _find_assigned(ast.parse(source), name)
+            except ValueError:
+                if name == "OTHER_CROPS_LAYOUT" and data:
+                    source, _n = _render_layout_dict(source, name, data)
+                continue
+            literal = _format_mapping_literal(data, "    ") if data else "{}"
+            source = _replace_assigned_literal(source, name, literal)
+        groups = effective.get("WORK_GROUPS")
+        if isinstance(groups, list) and groups:
+            source = _replace_assigned_literal(source, "WORK_GROUPS", _format_work_groups_literal(groups))
+        plan = effective.get("HARDCODED_PLAN")
+        if isinstance(plan, dict) and plan and not _source_contains_plan(source, plan):
+            return "Не удалось записать plans.py: не все площади из json попали в файл."
+        base_modes = (extract_base_plans().get("base") or {}).get("CROP_REPORT_MODE") or {}
+        eff_modes = effective.get("CROP_REPORT_MODE") or {}
+        if isinstance(base_modes, dict) and isinstance(eff_modes, dict):
+            mode_diff = _prune_nested_2(base_modes, eff_modes)
+            if mode_diff:
+                source, _n = render_crop_report_mode_editor(source, mode_diff)
+        if source != original:
+            atomic_write_text(path, source)
+        with _BASE_CACHE_LOCK:
+            _BASE_CACHE["key"] = None
+            _BASE_CACHE["value"] = None
+        save_edits_store({})
+    except OSError as exc:
+        return f"Не удалось записать plans.py: {exc}"
+    except (ValueError, SyntaxError) as exc:
+        return f"Не удалось записать plans.py: {exc}"
+    return "Планы записаны из json."
+
+
+def _import_season_snapshot(payload: dict[str, Any], report_date: date | None) -> str:
+    from .season_meta import set_calendar_seasons, set_season_range_override
+
+    notes: list[str] = []
+    calendar = payload.get("calendar_seasons")
+    if isinstance(calendar, dict) and calendar:
+        set_calendar_seasons(calendar, report_date=report_date)
+        notes.append("календарь сезонов")
+    operations = payload.get("operations") or {}
+    saved = 0
+    for name, op in operations.items():
+        if not isinstance(op, dict) or "season_years" not in op:
+            continue
+        years = op.get("season_years") or []
+        if not isinstance(years, list) or not years:
+            continue
+        ranges = op.get("year_ranges") if isinstance(op.get("year_ranges"), dict) else None
+        set_season_range_override(
+            str(name),
+            season_years=[int(y) for y in years],
+            year_ranges=ranges,
+        )
+        saved += 1
+    if saved:
+        notes.append(f"сезоны операций: {saved}")
+    if not notes:
+        return ""
+    return " Также обновлены " + ", ".join(notes) + "."
+
+
+@serialized_rmw(name="plans_edits")
+def import_agro_operations(payload: dict[str, Any], report_date: date | None = None) -> dict[str, Any]:
+    """Файл «Скачать json» становится текущими планами редактора и plans.py."""
+    if not isinstance(payload, dict):
+        raise ValueError("json должен быть объектом.")
+    operations = payload.get("operations")
+    if not isinstance(operations, dict) or not operations:
+        raise ValueError(
+            "В файле нет operations. Нужен agro_operations.json из кнопки «Скачать json»."
+        )
+    state = get_editor_state(report_date)
+    effective = effective_from_agro_operations(state.get("effective") or {}, operations)
+    note = _write_imported_effective(effective)
+    if note.startswith("Не удалось"):
+        state = get_editor_state(report_date)
+        state["plans_py_note"] = note
+        return state
+    try:
+        note += _import_season_snapshot(payload, report_date)
+    except ValueError as exc:
+        note += f" Планы записаны, сезоны нет: {exc}"
+    state = get_editor_state(report_date)
+    state["plans_py_note"] = note
+    return state
+
+
 def _find_assigned(tree: ast.AST, var_name: str) -> ast.AST:
     for node in tree.body:
         target = ""

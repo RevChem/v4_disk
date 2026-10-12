@@ -22,6 +22,7 @@ from app.legacy.plans_editor import (
     WorkTypesUnavailableError,
     fetch_work_types_catalog,
     get_editor_state,
+    import_agro_operations,
     set_plan_value,
     set_work_groups,
     sync_hardcoded_plan_to_file,
@@ -111,6 +112,28 @@ def get_plans_editor(
         return get_editor_state(summary_date)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/import-json", response_model=PlansEditorOut)
+def import_plans_json(
+    payload: dict[str, Any],
+    request: Request,
+    summary_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_plans_access),
+):
+    try:
+        state = import_agro_operations(payload, report_date=summary_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _audit(
+        db, request, user, "plans.import_json",
+        operations=len((payload or {}).get("operations") or {}),
+        note=state.get("plans_py_note"),
+    )
+    return state
 
 
 @router.post("/sync-py", response_model=PlansEditorOut)

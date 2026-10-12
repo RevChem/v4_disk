@@ -338,6 +338,10 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
         return f"{username} сбросил настройки AI"
     if action == "plans.sync_py":
         return f"{username} синхронизировал plans.py из редактора планов"
+    if action == "plans.import_json":
+        count = d.get("operations")
+        suffix = f" ({count} операций)" if count else ""
+        return f"{username} загрузил планы из json{suffix}"
     if action == "interface.updated":
         theme = f" (тема: {d['theme']})" if d.get("theme") else ""
         return f"{username} изменил настройки интерфейса{theme}"

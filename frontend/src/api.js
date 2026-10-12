@@ -500,6 +500,14 @@ export async function fetchPlansEditor(summaryDate = null) {
   return data;
 }
 
+export async function importPlansJson(payload, summaryDate = null) {
+  const { data } = await api.post("/plans-editor/import-json", payload, {
+    params: summaryDate ? { summary_date: summaryDate } : undefined,
+    timeout: 120_000,
+  });
+  return data;
+}
+
 export async function syncPlansPy(summaryDate = null) {
   const { data } = await api.post("/plans-editor/sync-py", null, {
     params: summaryDate ? { summary_date: summaryDate } : undefined,

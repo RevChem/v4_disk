@@ -37,6 +37,7 @@ import {
   heartbeatPlansPresence,
   releasePlansPresence,
   releasePlansPresenceKeepalive,
+  importPlansJson,
   syncPlansPy,
   updatePlansEditorSeasonRange,
   updatePlansEditorValue
@@ -334,6 +335,7 @@ export default function PlansEditor({ summaryDate = null }) {
   const pollInFlight = useRef(false);
   const savingRef = useRef(false);
   const firmsScrollRef = useRef(null);
+  const importJsonRef = useRef(null);
 
   const setSavingTracked = useCallback((value) => {
     const next = Boolean(value);
@@ -1215,6 +1217,54 @@ export default function PlansEditor({ summaryDate = null }) {
             >
               Синхронизация plans.py
             </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={loading || saving || !state}
+              onClick={() => importJsonRef.current?.click()}
+            >
+              Загрузить json
+            </Button>
+            <input
+              ref={importJsonRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                let payload;
+                try {
+                  payload = JSON.parse(await file.text());
+                } catch {
+                  setError("Файл не является json.");
+                  return;
+                }
+                if (!payload || typeof payload !== "object" || !payload.operations) {
+                  setError("Нужен файл agro_operations.json из кнопки «Скачать json».");
+                  return;
+                }
+                const count = Object.keys(payload.operations).length;
+                if (!window.confirm(`Записать планы из файла (${count} операций)? Текущие числа этих операций будут заменены.`)) {
+                  return;
+                }
+                setSavingTracked(true);
+                setError("");
+                setSuccess("");
+                try {
+                  const data = await importPlansJson(payload, summaryDate);
+                  applyWriteState(data);
+                  const note = data?.plans_py_note || "Планы записаны из json.";
+                  if (String(note).startsWith("Не удалось")) setError(note);
+                  else setSuccess(note);
+                } catch (e) {
+                  setError(formatError(e, "Не удалось загрузить json"));
+                } finally {
+                  setSavingTracked(false);
+                }
+              }}
+            />
             <Button
               variant="outlined"
               size="small"
