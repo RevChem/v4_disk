@@ -233,8 +233,8 @@ def _canonical_crop_from_namolot_text(crop_text: str | None) -> str | None:
     нормально. Сопоставление по тексту самой записи Namolot проверено
     вручную (см. диагностику по «Пшеница озимая» — сумма «за сутки»
     совпала с контрольным значением 1037 т), поэтому теперь оно в
-    приоритете. Если текст "crop" не удалось разобрать, запись остаётся
-    неопознанной: карта поля (field_to_crop_map) запасным источником не служит.
+    приоритете; field_to_crop_map остаётся только как запасной вариант,
+    если текст "crop" не удалось разобрать.
     """
     if not crop_text:
         return None
@@ -402,6 +402,7 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
 
     field_base_index = _build_field_base_code_index()
     field_to_firm_map = load_field_to_firm()
+    field_to_crop_map = get_field_to_crop()
 
     # Смена, соответствующая label_date: 06:00 label_date -> 06:00 (label_date+1).
     day_start, cutoff = compute_time_range(label_date + timedelta(days=1))
@@ -419,10 +420,10 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
             # Уточнение силос/зерно всё равно требует field_id (Cropwise) —
             # определяем по операции «Скашивание» на поле, как и раньше.
             crop = _resolve_corn_subtype("Кукуруза", fid) if fid is not None else None
-        # Карту поля (field_to_crop_map) как запасной источник культуры больше не
-        # используем: у записи намолота нет history_item_id, и подпись культурой поля
-        # в сезоне давала то, чего нет в строках площади. Запись с нераспознанным
-        # текстом культуры остаётся в unmatched_* и попадает в лог ниже.
+        if not crop:
+            # Картофель, лук и прочие овощи в тексте Namolot не из зернового
+            # списка: культура берётся с поля Cropwise, как в рабочей сводке.
+            crop = field_to_crop_map.get(fid) if fid is not None else None
         if not firm or not crop:
             agg.unmatched_fields.add(spp or "")
             if not crop:
