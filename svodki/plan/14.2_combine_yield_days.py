@@ -159,7 +159,7 @@ def _absorb(bucket: dict, df, day_idx: int, n_days: int) -> None:
 
 def _tasks_for_shift(tasks: list[dict], report_date: date) -> list[dict]:
     """Те же границы end_time, что fetch_machine_tasks сводки 14 за одну смену."""
-    day_start, cutoff = r14._shift_datetimes(report_date, report_days=1)
+    day_start, cutoff = r14._shift_datetimes(report_date)
     cutoff_ext = cutoff + timedelta(hours=r14.CUTOFF_BUFFER_HOURS)
     out = []
     for task in tasks:
@@ -343,7 +343,7 @@ def _build_day_tables(
     fmi = r14._normalize_fmi_for_shift(
         _fmi_for_tasks(raw_fmi, task_ids),
         report_date,
-        task_to_wt=task_to_wt or None,
+        task_wt=task_to_wt or None,
     )
     own_src = own_machines if own_machines is not None else harvesters
     own_id_src = own_ids if own_ids is not None else harvester_ids

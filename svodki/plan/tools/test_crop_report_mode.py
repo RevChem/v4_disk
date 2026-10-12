@@ -1,6 +1,8 @@
 """Учёт культур редактора планов: «Иные культуры» и «не считать»."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import plans
 from utils.season._apply_plans_edits import _rebuild_crop_report_mode
 
@@ -146,3 +148,25 @@ def test_split_layout_keeps_other_crops_as_their_own_rows():
         firm.update(saved)
         plans.OTHER_CROPS_LAYOUT.pop(GROUP, None)
         _set_modes()
+
+
+def test_other_detail_cache_roundtrip():
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as folder:
+        os.environ["SVODKI_OTHER_CROPS_DETAIL_PATH"] = str(Path(folder) / "detail.json")
+        try:
+            plans.save_other_crops_detail(
+                "2.4 Вспашка",
+                {
+                    "Многолетние травы 2026 года": {
+                        "АФ Чистопольская": {"plan": 1, "fact": 22.24, "today": 0}
+                    }
+                },
+            )
+            loaded = plans.load_other_crops_detail("2.4 Вспашка")
+            assert loaded["Многолетние травы 2026 года"]["АФ Чистопольская"]["fact"] == 22.24
+            assert plans.load_other_crops_detail("2.9 Дискование") == {}
+        finally:
+            os.environ.pop("SVODKI_OTHER_CROPS_DETAIL_PATH", None)

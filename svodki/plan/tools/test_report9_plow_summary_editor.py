@@ -105,3 +105,25 @@ def test_other_mode_folds_winter_wheat_into_other_row():
     other = next(row for row in field if row[0] == "Иные культуры")
     assert other[2] == 122.24
     assert other[1] > 0
+
+
+def test_split_layout_shows_cached_other_crops_once():
+    """Одна строка прячет культуры в «Иные». По культурам те же гектары — свои строки."""
+    grass = "Многолетние травы 2026 года"
+    edits = {
+        "CROP_REPORT_MODE": {PLOW: {WHEAT: 1}},
+        "OTHER_CROPS_LAYOUT": {PLOW: 1},
+    }
+    r9 = _report9(edits)
+    field, _veg, note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
+    names = _names(field)
+    assert WHEAT in names
+    assert grass in names
+    wheat = next(row for row in field if row[0] == WHEAT)
+    grass_row = next(row for row in field if row[0] == grass)
+    assert wheat[2] == 100.0
+    assert grass_row[2] == 22.24
+    folded = [row for row in field if row[0] == "Иные культуры"]
+    assert not folded or folded[0][2] == 0
+    assert "Многолетние" not in note
+    assert WHEAT not in note

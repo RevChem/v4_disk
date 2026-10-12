@@ -494,14 +494,20 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
     for extra in firm_stats:
         if extra not in names:
             names.append(extra)
+    split_other = _plans.other_crops_as_rows("2.4 Вспашка")
     for crop in names:
         if crop == "Иные культуры":
             continue
+        cached = _plow_cached_other_crop(crop)
+        # Одна строка: детализация в кэше, своей строкой культура не считается.
+        if cached and not split_other:
+            continue
         code = crop_code_for_report("2.4 Вспашка", crop)
         if code is None or code == PLOW_FIELD_OTHER_CROP:
-            continue
-        if is_crop_firm_hidden("2.4 Вспашка", firm, crop) or is_crop_user_excluded(
-            "2.4 Вспашка", firm, crop
+            if not (split_other and cached):
+                continue
+        if is_crop_firm_hidden("2.4 Вспашка", firm, crop) or (
+            is_crop_user_excluded("2.4 Вспашка", firm, crop) and not (split_other and cached)
         ):
             continue
         plan = _plow_plan_ha(firm, crop)
@@ -2373,6 +2379,50 @@ def write_crop_plow_sheet(
     ws.row_dimensions[2].height = max(hr, 66.0)
 
 
+def _plow_other_snapshot(by_firm_crop: dict[str, dict[str, dict]]) -> dict[str, dict[str, dict[str, float]]]:
+    """Разбивка блока «Иные» : культура → агрофирма → план/факт/сутки."""
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for firm, crops in (by_firm_crop or {}).items():
+        for crop, st in (crops or {}).items():
+            if not _plow_cached_other_crop(crop):
+                continue
+            fact = round(float((st or {}).get("season_plow") or 0.0), 2)
+            today = round(float((st or {}).get("plow_today") or 0.0), 2)
+            plan = round(_plow_plan_ha(str(firm), str(crop)), 2)
+            if abs(fact) < 0.005 and abs(today) < 0.005 and abs(plan) < 0.005:
+                continue
+            out.setdefault(str(crop), {})[str(firm)] = {
+                "plan": plan,
+                "fact": fact,
+                "today": today,
+            }
+    return out
+
+
+def _apply_plow_other_cache(
+    by_firm_crop: dict[str, dict[str, dict]],
+) -> dict[str, dict[str, dict]]:
+    """Сохранить разбивку. В режиме по культурам подставить её, если в расчёте дыра.
+
+    Пока выбрана одна строка, функция только пишет кэш и не добавляет строки.
+    """
+    group = "2.4 Вспашка"
+    merged = {firm: dict(crops) for firm, crops in (by_firm_crop or {}).items()}
+    if _plans.other_crops_as_rows(group):
+        for crop, firms in _plans.load_other_crops_detail(group).items():
+            for firm, nums in firms.items():
+                slot = merged.setdefault(firm, {}).setdefault(crop, _empty_crop_plow_stats())
+                if abs(float(slot.get("season_plow") or 0.0)) < 0.005:
+                    slot["season_plow"] = float(nums.get("fact") or 0.0)
+                if abs(float(slot.get("plow_today") or 0.0)) < 0.005:
+                    slot["plow_today"] = float(nums.get("today") or 0.0)
+    try:
+        _plans.save_other_crops_detail(group, _plow_other_snapshot(merged))
+    except OSError as exc:
+        print(f"  [вспашка] кэш иных культур не записан: {exc}")
+    return merged
+
+
 def write_all_crop_plow_sheets(
     wb: openpyxl.Workbook,
     by_firm_crop: dict[str, dict[str, dict]],
@@ -2450,27 +2500,39 @@ def _plow_is_perennial_grass(name: str) -> bool:
     return "многолетн" in n and "трав" in n
 
 
+def _plow_cached_other_crop(crop: str) -> bool:
+    """Культура, чьи гектары при одной строке лежат внутри «Иные» и не имеют своей строки.
+
+    «Учитываются» сюда не входят: у них своя строка в обоих режимах.
+    """
+    name = str(crop or "").strip()
+    if not name or name == PLOW_FIELD_OTHER_CROP:
+        return False
+    mode = _plans.crop_report_mode("2.4 Вспашка", name)
+    if mode == _plans.CROP_MODE_AS_IS:
+        return False
+    if mode == _plans.CROP_MODE_OTHER:
+        return True
+    return _plow_is_perennial_grass(name)
+
+
 def _plow_counts_as_other(crop: str) -> bool:
     """Факт строки «Иные культуры»: многолетние травы и культуры редактора.
 
     Озимые, пар и овраги в эту строку не входят — у них свой план в plans.py.
+    Режим «по культурам» достаёт ту же разбивку из кэша отдельными строками
+    и в одну строку её больше не складывает.
     """
     name = str(crop or "").strip()
     if not name:
         return False
     if name == PLOW_FIELD_OTHER_CROP:
         return True
-    code = crop_code_for_report("2.4 Вспашка", name)
-    if code == PLOW_FIELD_OTHER_CROP:
-        return True
-    # Режим «по культурам»: культуры блока «Иные» остаются своими строками.
-    if (
-        code == name
-        and _plans.other_crops_as_rows("2.4 Вспашка")
-        and _plans.crop_report_mode("2.4 Вспашка", name) == _plans.CROP_MODE_OTHER
-    ):
+    if not _plow_cached_other_crop(name):
         return False
-    return _plow_is_perennial_grass(name)
+    if _plans.other_crops_as_rows("2.4 Вспашка"):
+        return False
+    return True
 
 
 def _plow_footnote_crop(name: str) -> bool:
@@ -2655,9 +2717,14 @@ def _deep_all_firms_rows(
             other_fact += fact
             other_today += today
             continue
-        if (
-            _plans.other_crops_as_rows("2.8 Глубокорыхление")
-            and _plans.crop_report_mode("2.8 Глубокорыхление", crop) == _plans.CROP_MODE_OTHER
+        deep_mode = _plans.crop_report_mode("2.8 Глубокорыхление", crop)
+        deep_split = _plans.other_crops_as_rows("2.8 Глубокорыхление")
+        # По культурам: то, что при одной строке сидит в «Иных», снова свои строки.
+        # Пока одна строка — эти гектары только внутри «Иные культуры».
+        if deep_split and (
+            deep_mode == _plans.CROP_MODE_OTHER
+            or _deep_other_label(crop) is not None
+            or (abs(plan) < 0.005 and deep_mode != _plans.CROP_MODE_AS_IS)
         ):
             if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
                 main.append((crop, plan, fact, today))
@@ -3201,6 +3268,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         field_to_firm,
         field_to_crop_plow,
     )
+    plow_by_crop = _apply_plow_other_cache(plow_by_crop)
     crop_sheets = _plow_crops_for_report(plow_by_crop)
     print(f"  Листов по культурам вспашки: {len(crop_sheets)} — {', '.join(crop_sheets)}")
 

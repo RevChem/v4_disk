@@ -1089,6 +1089,79 @@ def other_crops_as_rows(group_name: str) -> bool:
         return False
 
 
+def other_crops_detail_path():
+    """Файл с разбивкой «Иные культуры» по культурам и агрофирмам.
+
+    Пока в редакторе выбрана одна строка, эти гектары лежат здесь и в сводке
+    отдельными строками не считаются. Планы в plans.py от этого не меняются.
+    """
+    import os
+    from pathlib import Path
+
+    override = os.environ.get("SVODKI_OTHER_CROPS_DETAIL_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    edits = os.environ.get("SVODKI_PLANS_EDITS_PATH", "").strip()
+    if edits:
+        return Path(edits).expanduser().parent / "other_crops_detail.json"
+    return Path(__file__).resolve().parents[2] / "data" / "other_crops_detail.json"
+
+
+def load_other_crops_detail(group_name: str) -> dict[str, dict[str, dict[str, float]]]:
+    """Культура → агрофирма → plan/fact/today. Пусто, если кэша ещё нет."""
+    path = other_crops_detail_path()
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    block = raw.get(str(group_name)) if isinstance(raw, dict) else None
+    if not isinstance(block, dict):
+        return {}
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for crop, firms in block.items():
+        if not isinstance(firms, dict):
+            continue
+        firm_out: dict[str, dict[str, float]] = {}
+        for firm, nums in firms.items():
+            if not isinstance(nums, dict):
+                continue
+            firm_out[str(firm)] = {
+                "plan": float(nums.get("plan") or 0.0),
+                "fact": float(nums.get("fact") or 0.0),
+                "today": float(nums.get("today") or 0.0),
+            }
+        if firm_out:
+            out[str(crop)] = firm_out
+    return out
+
+
+def save_other_crops_detail(
+    group_name: str,
+    crops: dict[str, dict[str, dict[str, float]]],
+) -> None:
+    """Записать разбивку группы, не трогая остальные группы и планы."""
+    import json
+
+    path = other_crops_detail_path()
+    raw: dict = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, ValueError, TypeError):
+            raw = {}
+    raw[str(group_name)] = crops
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 def crop_code_for_report(group_name: str, crop: str) -> str | None:
     """Имя культуры в сводке. None — гектары этой культуры в группу не входят."""
     name = str(crop or "").strip()

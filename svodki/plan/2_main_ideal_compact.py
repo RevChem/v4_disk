@@ -1308,6 +1308,10 @@ def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | No
     coded = crop_code_for_report(group_name, label)
     if coded is None:
         if keep_unlisted and not is_crop_user_excluded(group_name, firm, label):
+            # Одна строка складывает культуру в «Иные». По культурам та же
+            # площадь выходит своей строкой и в общую строку не входит.
+            if other_crops_as_rows(group_name):
+                return label or raw_name
             return OTHER_CROP_CODE
         return None
     return coded
@@ -3362,10 +3366,18 @@ def collect_work_data(
 
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         # Cropwise считает все гектары операции, в том числе культуры
-                        # вне плана. Их строка — «Иные культуры», из итога они не выпадают.
+                        # вне плана. Одной строкой они в «Иные культуры» и отдельно
+                        # не считаются. По культурам — своя строка, не внутри «Иных».
                         if crop:
                             coded = crop_code_for_report(group_name, crop)
-                            crop = coded or OTHER_CROP_CODE
+                            if (
+                                coded is None
+                                and other_crops_as_rows(group_name)
+                                and not is_crop_user_excluded(group_name, firm, crop)
+                            ):
+                                pass
+                            else:
+                                crop = coded or OTHER_CROP_CODE
                         else:
                             crop = OTHER_CROP_CODE
                     elif crop:
@@ -3502,7 +3514,14 @@ def collect_work_data(
                     if group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME):
                         if crop:
                             coded = crop_code_for_report(group_name, crop)
-                            crop = coded or OTHER_CROP_CODE
+                            if (
+                                coded is None
+                                and other_crops_as_rows(group_name)
+                                and not is_crop_user_excluded(group_name, firm, crop)
+                            ):
+                                pass
+                            else:
+                                crop = coded or OTHER_CROP_CODE
                         else:
                             crop = OTHER_CROP_CODE
                     elif crop:
@@ -4159,6 +4178,11 @@ def write_report_sheet(
                     if c in allowed
                     or c == OTHER_CROP_CODE
                     or crop_code_for_report(group_name, c) == c
+                    or (
+                        other_crops_as_rows(group_name)
+                        and not is_crop_user_excluded(group_name, firm, c)
+                        and crop_code_for_report(group_name, c) is None
+                    )
                 ]
             if group_name == HARVEST_GROUP_NAME:
                 # Только лист 5.0: овощи и «Иные» без строки не выводим.
@@ -4175,6 +4199,12 @@ def write_report_sheet(
                 or (
                     not is_crop_omitted(group_name, firm, c)
                     and crop_code_for_report(group_name, c) == c
+                )
+                or (
+                    other_crops_as_rows(group_name)
+                    and group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME)
+                    and not is_crop_user_excluded(group_name, firm, c)
+                    and crop_code_for_report(group_name, c) is None
                 )
             ]
             if (
