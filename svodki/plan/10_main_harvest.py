@@ -624,15 +624,7 @@ def resolve_combine_season_start(report_date: date) -> date:
 
 
 def resolve_veg_season_start(report_date: date) -> date:
-    """Сезон овощей 5.4 (1 июня ± SVODKI_WORK_SEASON_START_DATE)."""
-    try:
-        from season_unified import editor_period_bounds
-
-        saved = editor_period_bounds("5.4 Уборка картофеля, лука", report_date)
-        if saved:
-            return saved[0]
-    except Exception:
-        pass
+    """Сезон овощей 5.4 — как в рабочей 10_main_harvest.py (1 июня)."""
     veg_start = date(report_date.year, 6, 1)
     if report_date < veg_start:
         veg_start = date(report_date.year - 1, 6, 1)
@@ -834,7 +826,7 @@ VEGETABLE_CONFIG: dict[str, tuple[float, list[int], float, float, float, float]]
     )
 }
 
-# Сезон овощей (5.4) — с 1 июня (как сводка 2 HARVEST_SEASON_START).
+# Сезон овощей (5.4) — с 1 июня, как в рабочей 10_main_harvest.py.
 VEG_SEASON_START = resolve_veg_season_start(REPORT_DATE)
 
 _VEG_HARVEST_CROPS = frozenset(_VEG_DISPLAY_TO_PLAN_CROP.keys())
@@ -1474,9 +1466,8 @@ def build_field_to_folder() -> dict[int, int]:
     return result
 
 
-def load_field_to_firm() -> dict[int, str]:
-    """field_id → агрофирма (как в сводке 11)."""
-    all_fields = get_cached_fields()
+def _firms_from_fields(all_fields: list[dict]) -> dict[int, str]:
+    """field_id → агрофирма по уже загруженным полям (как в сводке 11)."""
     all_fgs = get_cached_field_groups()
     all_gfs = get_cached_group_folders()
     fgs_map = {fg["id"]: fg for fg in all_fgs}
@@ -1510,6 +1501,30 @@ def load_field_to_firm() -> dict[int, str]:
                 break
 
     return field_to_firm
+
+
+def load_field_to_firm() -> dict[int, str]:
+    """field_id → агрофирма (как в сводке 11)."""
+    return _firms_from_fields(get_cached_fields())
+
+
+def _field_to_firm_including(field_ids: set[int]) -> dict[int, str]:
+    """Карта фирм плюс поля, которых нет в зерновом кэше.
+
+    Рабочая 10_main_harvest.py берёт все поля. В плане кэш сужен до
+    зерновой уборки, и поле только с wt 75/76/77 (свекла) выпадало из листа.
+    """
+    base = load_field_to_firm()
+    missing = {int(fid) for fid in field_ids if int(fid) not in base}
+    if not missing:
+        return base
+    extra = _mass_request_sync("fields", missing)
+    if not extra:
+        return base
+    print(f"    [VEG] поля вне зернового кэша: {len(extra)}", flush=True)
+    merged = dict(base)
+    merged.update(_firms_from_fields(extra))
+    return merged
 
 
 def get_folder_fld_ids() -> dict[int, set[int]]:
@@ -1564,11 +1579,6 @@ def get_field_to_crop() -> dict[int, str]:
                      for c in get_all_from_id("crops")}
         print(f"    [API] history_items year={SEASON_YEAR}...", flush=True)
         his_all = get_all_from_id("history_items", {"year": SEASON_YEAR})
-        # Prefetch может содержать 2026+2027; для уборки — только год отчёта.
-        his_all = [
-            hi for hi in his_all
-            if int(hi.get("year") or SEASON_YEAR) == SEASON_YEAR
-        ]
         result: dict[int, str] = {}
         for hi in his_all:
             fid     = hi.get("field_id")
@@ -3697,8 +3707,14 @@ def build_vegetables_report(report_date: date) -> pd.DataFrame:
     mtfmi_map = run_report_async(_fetch_all_mtfmi())
     print(f"    [VEG] mtfmi загружено для {len(mtfmi_map)} заданий", flush=True)
 
+    veg_field_ids = {
+        int(item["field_id"])
+        for rows in mtfmi_map.values()
+        for item in rows
+        if item.get("field_id")
+    }
     field_to_crop_map = get_field_to_crop()
-    field_to_firm_map = load_field_to_firm()
+    field_to_firm_map = _field_to_firm_including(veg_field_ids)
     agg: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
     _note = None
     try:

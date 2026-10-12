@@ -249,6 +249,27 @@ def _seed_item_excluded(wt, firm: str, item: dict) -> bool:
     return is_crop_user_excluded(group, firm, raw)
 
 
+def _veg_sowing_crop_rows() -> tuple[str, ...]:
+    """Строки «Посев овощи» — культуры плана 4.1, как на листе сводки 2.
+
+    VEG_CROP_ROWS / VEG_CROP_PLAN_HA в plans.py отстали от редактора
+    (картофель 2007 вместо 2096, без лука и капусты).
+    """
+    firm_plan = HARDCODED_PLAN.get(_VEG_KEY, {}).get(VEG_REPORT_FIRMS[0], {})
+    if not isinstance(firm_plan, dict):
+        return ()
+    firm = VEG_REPORT_FIRMS[0]
+    return tuple(
+        str(crop)
+        for crop in firm_plan
+        if not is_crop_user_excluded(_VEG_KEY, firm, str(crop))
+    )
+
+
+def _veg_sowing_plan_ha(crop: str) -> float:
+    return float(plan_ha_for_report(_VEG_KEY, VEG_REPORT_FIRMS[0], crop) or 0.0)
+
+
 def _map_veg_crop_label(raw_name: str) -> str | None:
     n = _normalize_crop_name(raw_name)
     if not n:
@@ -260,7 +281,7 @@ def _map_veg_crop_label(raw_name: str) -> str | None:
     if "морков" in n:
         return "Морковь"
     if "свек" in n:
-        return "Свекла"
+        return "Свекла столовая"
     return None
 
 
@@ -1850,9 +1871,10 @@ def _write_veg_crop_compact_block(
     days_elapsed = max((report_date - season_start.date()).days, 1)
     fact_map = dict(firm_stats.get("veg_fact_by_crop") or {})
     today_map = dict(firm_stats.get("veg_today_by_crop") or {})
+    veg_rows = _veg_sowing_crop_rows()
 
-    for i, crop in enumerate(VEG_CROP_ROWS, start=1):
-        plan = float(VEG_CROP_PLAN_HA.get(crop, 0.0) or 0.0)
+    for i, crop in enumerate(veg_rows, start=1):
+        plan = _veg_sowing_plan_ha(crop)
         fact = float(fact_map.get(crop, 0.0) or 0.0)
         today = float(today_map.get(crop, 0.0) or 0.0)
         rem = max(plan - fact, 0.0)
@@ -1875,9 +1897,9 @@ def _write_veg_crop_compact_block(
                 c.number_format = "0.0%"
         start_row += 1
 
-    total_plan = sum(float(VEG_CROP_PLAN_HA.get(c, 0.0) or 0.0) for c in VEG_CROP_ROWS)
-    total_fact = sum(float(fact_map.get(c, 0.0) or 0.0) for c in VEG_CROP_ROWS)
-    total_today = sum(float(today_map.get(c, 0.0) or 0.0) for c in VEG_CROP_ROWS)
+    total_plan = sum(_veg_sowing_plan_ha(c) for c in veg_rows)
+    total_fact = sum(float(fact_map.get(c, 0.0) or 0.0) for c in veg_rows)
+    total_today = sum(float(today_map.get(c, 0.0) or 0.0) for c in veg_rows)
     total_rem = max(total_plan - total_fact, 0.0)
     total_pct = (total_fact / total_plan) if total_plan > 0 else 0.0
     total_vals = ["", "Итого", round(total_plan, 2), round(total_fact, 2), round(total_rem, 2), total_pct, round(total_today, 2), ""]
@@ -1917,7 +1939,11 @@ def write_main_summary_sheet(
     row = _write_summary_block(ws, row, "КУЛЬТУРЫ", seeding_rows, s)
 
     # Порядок на стр.1: КУЛЬТУРЫ → посев/посадка овощей → компактный блок культур.
-    veg_rows = _build_summary_rows(veg_firm_names, VEG_AGROFIRMS, veg_details)
+    # Суток без посева овощей быть не должно поводом прятать норму:
+    # плановая выработка — PLAN_RATE_PER_GROUP["4.1 Посев (овощи)"] из редактора.
+    veg_rows = _build_summary_rows(
+        veg_firm_names, VEG_AGROFIRMS, veg_details, include_inactive_firms=True,
+    )
     row = _write_summary_block(
         ws, row, "Посев / посадка овощных культур", veg_rows, s
     )
@@ -2194,7 +2220,9 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     print("\nПОСЕВ:")
     print(df.to_string(index=False))
 
-    veg_r = _build_summary_rows(veg_firm_names, VEG_AGROFIRMS, veg_details)
+    veg_r = _build_summary_rows(
+        veg_firm_names, VEG_AGROFIRMS, veg_details, include_inactive_firms=True,
+    )
     df2   = pd.DataFrame(veg_r)
     print("\nОВОЩИ:")
     print(df2.to_string(index=False))
