@@ -69,6 +69,7 @@ from plans import (
     FIRM_ORDER,
     FIELD_NAME_FORCE_RULES,
     WORK_GROUPS,
+    firm_from_namolot_organization,
     HIRED_GROUP_ID,
     plan_ha_for_report,
     is_crop_excluded_from_totals,
@@ -470,6 +471,10 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
         spp = r.get("spp")
         fid = field_base_index.get(_field_base_code(spp))
         firm = field_to_firm_map.get(fid) if fid is not None else None
+        # Код поля не совпал с Cropwise. «АГРОФИРМА 15 ООО» — это НурлатАгро
+        # (группа полей уже в папке 11), но без кода поля тонны выпадали.
+        if not firm:
+            firm = firm_from_namolot_organization(r.get("organization"))
 
         crop_raw = r.get("crop")
         crop = _canonical_crop_from_namolot_text(crop_raw)

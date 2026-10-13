@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 
 try:
@@ -76,6 +77,35 @@ FIELD_NAME_FORCE_RULES: list[tuple[str, str]] = [
     ("lp0115", "Лениногорская Птицефабрика"),
     ("пф0115", "Лениногорская Птицефабрика"),
 ]
+
+# Номер ООО «Агрофирма N» в 1С Намолот (поле organization) → агрофирма холдинга.
+# В Cropwise эти группы уже лежат в папке родителя (15 и 14 — в НурлатАгро,
+# folder 11). Если код поля из spp не совпал, организацию всё равно относим сюда.
+_NAMOLOT_AGROFIRM_NO_TO_FIRM: dict[int, str] = {
+    2: "АФ Чистопольская",
+    3: "АгроРаздолье",
+    4: "Аксу-Агро",
+    5: "Дрожжаное Рассвет Агро",
+    14: "НурлатАгро",
+    15: "НурлатАгро",
+}
+_NAMOLOT_ORG_NUM_RE = re.compile(
+    r"агрофирм\w*\s*[\"«]?\s*(\d+)|(?:^|[^0-9а-яa-z])аф\s*[- ]?\s*(\d+)",
+)
+
+
+def firm_from_namolot_organization(text: object) -> str | None:
+    """Агрофирма холдинга по строке organization из Намолота, если номер узнаваем."""
+    raw = str(text or "").casefold().replace("ё", "е")
+    if not raw:
+        return None
+    if "нурлат" in raw and "агро" in raw:
+        return "НурлатАгро"
+    match = _NAMOLOT_ORG_NUM_RE.search(raw)
+    if not match:
+        return None
+    number = int(next(g for g in match.groups() if g))
+    return _NAMOLOT_AGROFIRM_NO_TO_FIRM.get(number)
 
 WORK_GROUPS: list[tuple[str, list[int]]] = [
     ("1.1 Внесение минеральных удобрений", [55]),

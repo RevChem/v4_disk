@@ -37,6 +37,7 @@ from plans import (
     FIELD_NAME_FORCE_RULES,
     FIRM_TO_FOLDER,
     HIRED_GROUP_ID,
+    firm_from_namolot_organization,
     PLAN_RATE_PER_GROUP,
     PREFERRED_CROP_ORDER,
     SKIP_CROPS,
@@ -680,6 +681,11 @@ def _build_namolot_signature_index(
         # агрофирм, задваивалась бы в обеих (см. docstring функции).
         field_code = _norm_field_code(_namolot_field_code(r.get("spp")))
         firm_folder_id = field_name_to_firm_folder.get(field_code) if field_code else None
+        if firm_folder_id is None:
+            # «АГРОФИРМА 15 ООО» в 1С — та же НурлатАгро, код поля при этом
+            # часто не совпадает с названием в Cropwise.
+            org_firm = firm_from_namolot_organization(r.get("organization"))
+            firm_folder_id = FIRM_TO_FOLDER.get(org_firm) if org_firm else None
         if firm_folder_id is None:
             unmatched_field_codes.add(field_code or str(r.get("spp") or ""))
             continue
