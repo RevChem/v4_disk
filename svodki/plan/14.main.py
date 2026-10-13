@@ -802,6 +802,9 @@ YIELD_ZERO_COLOR = "FFC7CE"  # нулевая урожайность / выра�
 # Приписки под таблицей: серая ячейка — выше нормы, «0*» — нет массы в 1С,
 # «0**» — скашивание кукурузы на силос без массы.
 YIELD_GRAY_NOTE = "- Цветом выделены показатели выше нормы"
+YIELD_GREEN_NOTE = "- Верхняя треть урожайности в группе поля"
+YIELD_YELLOW_NOTE = "- Средняя треть урожайности в группе поля"
+YIELD_PINK_NOTE = "- Нижняя треть урожайности в группе поля"
 YIELD_ZERO_CROP_NOTE = "* - Данные по валовому сбору не внесены в систему 1С:Элеватор"
 YIELD_ZERO_FORAGE_NOTE = "** - Ведётся скашивание кукурузы на силос, масса валового сбора отсутствует"
 YIELD_ZERO_CROP_MARK = "0*"
@@ -2678,23 +2681,53 @@ def _write_table_block(ws, df: pd.DataFrame, header_row: int) -> None:
             ws.cell(row=r_idx, column=c_idx, value=val)
 
 
-def _table_yield_flags(df: pd.DataFrame | None) -> tuple[bool, bool]:
-    """Есть ли в таблице серая урожайность (выше нормы) и нулевая урожайность."""
+def _table_yield_flags(df: pd.DataFrame | None) -> tuple[set[str], bool]:
+    """Какие заливки урожайности есть в таблице и есть ли нулевая урожайность.
+
+    Серый — выше нормы. Зелёный / жёлтый / розовый — верхняя, средняя и нижняя
+    треть внутри группы поля и культуры. Ноль в терции не входит: он пишется
+    отдельной припиской «0*» / «0**».
+    """
+    kinds: set[str] = set()
     if df is None or df.empty or "Урожайность, т/га" not in df.columns:
-        return False, False
+        return kinds, False
     crops = df["Культура"] if "Культура" in df.columns else [""] * len(df)
-    has_gray = False
+    groups = (
+        df["Номер группы комбайнов на одном поле"]
+        if "Номер группы комбайнов на одном поле" in df.columns
+        else [""] * len(df)
+    )
     has_zero = False
-    for crop, raw in zip(crops, df["Урожайность, т/га"]):
+    buckets: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for crop, grp, raw in zip(crops, groups, df["Урожайность, т/га"]):
         yield_val = _parse_yield_cell(raw)
         if yield_val is None:
             continue
         if abs(yield_val) < 0.005:
             has_zero = True
             continue
-        if _is_yield_anomaly(str(crop or ""), yield_val):
-            has_gray = True
-    return has_gray, has_zero
+        crop_name = str(crop or "")
+        if _is_yield_anomaly(crop_name, yield_val):
+            kinds.add("gray")
+            continue
+        buckets[(str(grp or "").strip(), _normalize_crop_name(crop_name))].append(yield_val)
+    for yields in buckets.values():
+        min_y, max_y = min(yields), max(yields)
+        span = max_y - min_y
+        if span <= 0:
+            kinds.add("green")
+            continue
+        step = span / 3.0
+        upper = max_y - step
+        lower = max_y - 2.0 * step
+        for yield_val in yields:
+            if yield_val >= upper:
+                kinds.add("green")
+            elif yield_val >= lower:
+                kinds.add("yellow")
+            else:
+                kinds.add("pink")
+    return kinds, has_zero
 
 
 def _write_yield_footnotes(
@@ -2708,8 +2741,8 @@ def _write_yield_footnotes(
     """Приписки под таблицей, через пустую строку. Возвращает последнюю занятую строку."""
     from openpyxl.styles import Alignment, Border, Font, PatternFill
 
-    has_gray, has_zero = _table_yield_flags(df)
-    if not has_gray and not has_zero:
+    kinds, has_zero = _table_yield_flags(df)
+    if not kinds and not has_zero:
         return after_row
     note_font = Font(name="Calibri", size=9, color="000000")
     note_align = Alignment(horizontal="left", vertical="center", wrap_text=False)
@@ -2738,8 +2771,15 @@ def _write_yield_footnotes(
         cell.border = no_border
         ws.row_dimensions[row].height = 16
 
-    if has_gray:
-        _note_row(YIELD_GRAY_NOTE, swatch_color=YIELD_ANOMALY_COLOR)
+    swatches = (
+        ("gray", YIELD_GRAY_NOTE, YIELD_ANOMALY_COLOR),
+        ("green", YIELD_GREEN_NOTE, YIELD_TOP_TERTILE_COLOR),
+        ("yellow", YIELD_YELLOW_NOTE, YIELD_MID_TERTILE_COLOR),
+        ("pink", YIELD_PINK_NOTE, YIELD_BOTTOM_TERTILE_COLOR),
+    )
+    for kind, text, color in swatches:
+        if kind in kinds:
+            _note_row(text, swatch_color=color)
     if has_zero:
         _note_row(
             YIELD_ZERO_FORAGE_NOTE if forage else YIELD_ZERO_CROP_NOTE,
