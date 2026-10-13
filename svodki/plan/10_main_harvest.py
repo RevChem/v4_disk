@@ -276,45 +276,73 @@ def _canonical_crop_from_namolot_text(crop_text: str | None) -> str | None:
 _field_base_code_to_id: dict[str, int] | None = None
 
 
+def _fields_for_namolot() -> list[dict]:
+    """Полный справочник полей для привязки СПП, как в рабочей сводке.
+
+    get_cached_fields() после ensure_report_fields_loaded_* — только поля
+    зерновой уборки. Код СПП Намолота по подсолнечнику НурлатАгро часто
+    указывает на поле вне этого среза: фирма не находится, и обе колонки
+    «Валовый сбор» остаются 0, хотя гектары по заданиям уже есть.
+    """
+    global _namolot_fields_cache
+    if _namolot_fields_cache is not None:
+        return _namolot_fields_cache
+    ep = _prefetch_endpoints()
+    full = ep.get("fields") if ep else None
+    if full:
+        _namolot_fields_cache = list(full)
+        return _namolot_fields_cache
+    if _cached_fields is not None and not _cached_fields_is_subset:
+        _namolot_fields_cache = list(_cached_fields)
+        return _namolot_fields_cache
+    print("  [namolot] полная загрузка fields для привязки СПП", flush=True)
+    _namolot_fields_cache = get_all_from_id("fields")
+    return _namolot_fields_cache
+
+
 def _build_field_base_code_index() -> dict[str, int]:
     """base_code (нормализованное начало названия поля Cropwise) -> field_id.
 
-    При дублях кода берём первое поле, как в рабочей сводке. Если у первого
-    нет агрофирмы, берём первое следующее с фирмой: иначе намолот по коду
-    выпадает из «Валового сбора» (так терялся подсолнечник НурлатАгро).
+    Первое поле в полном справочнике, как в рабочей 10_main_harvest.py.
+    Индекс по урезанному кэшу зерновой уборки отправляет тонны подсолнечника
+    НурлатАгро в unmatched.
     """
     global _field_base_code_to_id
     if _field_base_code_to_id is not None:
         return _field_base_code_to_id
-    candidates: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    for f in get_cached_fields():
+    fields = _fields_for_namolot()
+    firm_map = _firms_from_fields(fields)
+    index: dict[str, int] = {}
+    names: dict[str, list[str]] = defaultdict(list)
+    for f in fields:
         fid = f.get("id")
         name = f.get("name") or f.get("title") or ""
         code = _field_base_code(name)
         if not code or fid is None:
             continue
-        if all(int(fid) != c[0] for c in candidates[code]):
-            candidates[code].append((int(fid), name))
-
-    firm_map = load_field_to_firm()
-
-    index: dict[str, int] = {}
+        if code in index and index[code] != int(fid):
+            names[code].append(name)
+            continue
+        index[code] = int(fid)
+        names[code].append(name)
     dupes: dict[str, list[str]] = {}
-    for code, items in candidates.items():
-        # Как в рабочей сводке: первое поле в списке Cropwise. Если у него нет
-        # агрофирмы, берём первое следующее, у которого фирма есть — иначе
-        # намолот по коду выпадает (подсолнечник НурлатАгро). Поле с фирмой
-        # не подменяем более поздним дублем только из‑за культуры сезона.
-        with_firm = [it for it in items if it[0] in firm_map]
-        best = with_firm[0] if with_firm else items[0]
-        index[code] = best[0]
-        firms = {firm_map.get(fid) for fid, _ in items if fid in firm_map}
-        if len(items) > 1 and len(firms) > 1:
-            dupes[code] = [name for _, name in items]
+    for code, listed in names.items():
+        if len(listed) < 2:
+            continue
+        firms = set()
+        for f in fields:
+            name = f.get("name") or f.get("title") or ""
+            if _field_base_code(name) != code:
+                continue
+            firm = firm_map.get(int(f["id"])) if f.get("id") is not None else None
+            if firm:
+                firms.add(firm)
+        if len(firms) > 1:
+            dupes[code] = listed
     if dupes:
         print(
             f"  [namolot] ВНИМАНИЕ: базовый код поля у полей разных агрофирм "
-            f"(взято первое поле с агрофирмой): {dupes}",
+            f"(взято первое поле справочника): {dupes}",
             flush=True,
         )
     _field_base_code_to_id = index
@@ -428,8 +456,9 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
     period_start = min(SEASON_START, VEG_SEASON_START)
     records = fetch_namolot_records(period_start, REPORT_DATE)
 
+    namolot_fields = _fields_for_namolot()
     field_base_index = _build_field_base_code_index()
-    field_to_firm_map = load_field_to_firm()
+    field_to_firm_map = _firms_from_fields(namolot_fields)
     field_to_crop_map = get_field_to_crop()
 
     # Смена, соответствующая label_date: 06:00 label_date -> 06:00 (label_date+1).
@@ -1078,6 +1107,8 @@ REQUEST_TIMEOUT = 120
 # Кэши
 _agro_ops_cache:       dict[tuple[int, int], list[dict]] = {}
 _cached_fields:        list[dict] | None = None
+_cached_fields_is_subset = False
+_namolot_fields_cache: list[dict] | None = None
 _cached_field_groups:  list[dict] | None = None
 _folder_fld_ids_cache: dict[int, set[int]] | None = None
 _field_to_crop_cache:  dict[int, str] | None = None
@@ -1222,21 +1253,24 @@ def _fields_from_prefetch_subset(field_ids: set[int]) -> list[dict] | None:
 
 def ensure_report_fields_loaded_sync(field_ids: set[int]) -> None:
     """Точечная загрузка fields (mass_request) — sync-путь (--fast и fallback)."""
-    global _cached_fields, _field_base_code_to_id
+    global _cached_fields, _field_base_code_to_id, _cached_fields_is_subset
     if _cached_fields is not None:
         return
     pref = _fields_from_prefetch_subset(field_ids)
     if pref is not None:
         _cached_fields = pref
+        _cached_fields_is_subset = bool(field_ids)
         print(f"  Поля из prefetch JSON: {len(_cached_fields)}", flush=True)
         _field_base_code_to_id = None
         return
     if field_ids:
         print(f"  Загружаем {len(field_ids)} полей через mass_request...", flush=True)
         _cached_fields = _mass_request_sync("fields", field_ids)
+        _cached_fields_is_subset = True
     else:
         print("  [WARN] field_ids пуст — полная загрузка fields", flush=True)
         _cached_fields = get_all_from_id("fields")
+        _cached_fields_is_subset = False
     print(f"  Поля для отчёта: {len(_cached_fields)}", flush=True)
     _field_base_code_to_id = None
 
@@ -1247,12 +1281,13 @@ async def ensure_report_fields_loaded_async(
     field_ids: set[int],
 ) -> None:
     """Точечная загрузка fields (mass_request) — async-путь prepare_harvest_cache."""
-    global _cached_fields, _field_base_code_to_id
+    global _cached_fields, _field_base_code_to_id, _cached_fields_is_subset
     if _cached_fields is not None:
         return
     pref = _fields_from_prefetch_subset(field_ids)
     if pref is not None:
         _cached_fields = pref
+        _cached_fields_is_subset = bool(field_ids)
         print(f"  Поля из prefetch JSON: {len(_cached_fields)}", flush=True)
         _field_base_code_to_id = None
         return
@@ -1262,9 +1297,11 @@ async def ensure_report_fields_loaded_async(
         _cached_fields = await load_fields_list_async(
             client, BASE_URL, field_ids, semaphore,
         )
+        _cached_fields_is_subset = True
     else:
         print("  [WARN] field_ids пуст — полная загрузка fields", flush=True)
         _cached_fields = get_all_from_id("fields")
+        _cached_fields_is_subset = False
     print(f"  Поля для отчёта: {len(_cached_fields)}", flush=True)
     _field_base_code_to_id = None
 
