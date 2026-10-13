@@ -55,7 +55,7 @@ def teardown_module(_m):
 
 def test_counted_winter_wheat_is_its_own_row():
     r9 = _report9({})
-    field, _veg, note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
+    field, _veg = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
     names = _names(field)
     assert WHEAT in names
     assert "Рапс яровой" in names
@@ -65,18 +65,15 @@ def test_counted_winter_wheat_is_its_own_row():
     assert wheat[3] == 5.0
     assert names.index("Рапс яровой") < names.index(WHEAT)
     assert names.index(WHEAT) < names.index("Иные культуры")
-    assert "Пшеница" not in note
-    assert "Многолетние травы" in note
 
 
 def test_skip_winter_wheat_drops_row_and_hectares():
     r9 = _report9({"CROP_REPORT_MODE": {PLOW: {WHEAT: 2}}})
-    field, veg, note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
+    field, veg = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
     names = _names(field) + _names(veg)
     assert WHEAT not in names
     other = next(row for row in field if row[0] == "Иные культуры")
     assert other[2] == 22.24
-    assert "Пшеница" not in note
 
 
 def test_potato_is_in_the_same_total_as_field_crops():
@@ -88,7 +85,7 @@ def test_potato_is_in_the_same_total_as_field_crops():
         "engine_plow": 0.0,
         "plow_machines_today": 0,
     }
-    field, veg, _note = r9._plow_all_firms_rows_field_and_veg(by)
+    field, veg = r9._plow_all_firms_rows_field_and_veg(by)
     assert veg == []
     names = _names(field)
     assert "Картофель" in names
@@ -100,7 +97,7 @@ def test_potato_is_in_the_same_total_as_field_crops():
 
 def test_other_mode_folds_winter_wheat_into_other_row():
     r9 = _report9({"CROP_REPORT_MODE": {PLOW: {WHEAT: 1}}})
-    field, _veg, _note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
+    field, _veg = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
     assert WHEAT not in _names(field)
     other = next(row for row in field if row[0] == "Иные культуры")
     assert other[2] == 122.24
@@ -115,7 +112,7 @@ def test_split_layout_shows_cached_other_crops_once():
         "OTHER_CROPS_LAYOUT": {PLOW: 1},
     }
     r9 = _report9(edits)
-    field, _veg, note = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
+    field, _veg = r9._plow_all_firms_rows_field_and_veg(_by_crop(r9))
     names = _names(field)
     assert WHEAT in names
     assert grass in names
@@ -125,5 +122,3 @@ def test_split_layout_shows_cached_other_crops_once():
     assert grass_row[2] == 22.24
     folded = [row for row in field if row[0] == "Иные культуры"]
     assert not folded or folded[0][2] == 0
-    assert "Многолетние" not in note
-    assert WHEAT not in note
