@@ -489,6 +489,76 @@ def refresh_namolot_cache(
     }
 
 
+# Сколько дней до отчётной даты перечитывать живьём. 1С проводит намолот
+# задним числом: инкремент от последней записи эти дни уже не запрашивает,
+# и тонны не попадают в сводку (НурлатАгро / подсолнечник 29–30.09.2026).
+_LATE_ENTRY_LOOKBACK_DAYS = 45
+_LATE_ENTRY_CHUNK_DAYS = 10
+
+
+def _stored_date_begin(meta: dict, fallback: date) -> date:
+    raw = str((meta or {}).get("date_begin") or "")[:10]
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return fallback
+
+
+def _backfill_late_entries(
+    records: list[dict],
+    meta: dict,
+    cache_path: Path | None,
+    date_end: date,
+) -> list[dict]:
+    """Раз в отчётную дату дочитывает хвост сезона и доливает кэш.
+
+    Смена может уже быть закрыта свежей записью 12.10, а намолот за 29–30.09
+    появляется в 1С позже. Без этого прохода кэш его никогда не увидит.
+    """
+    if not records or cache_path is None:
+        return records
+    marker = str((meta or {}).get("late_entry_resync_on") or "")
+    if marker == date_end.isoformat():
+        return records
+    begin = date_end - timedelta(days=_LATE_ENTRY_LOOKBACK_DAYS)
+    merged = list(records)
+    failed = False
+    cursor = begin
+    while cursor <= date_end:
+        chunk_end = min(cursor + timedelta(days=_LATE_ENTRY_CHUNK_DAYS - 1), date_end)
+        live = _fetch_live(cursor, chunk_end, supplement=True)
+        if not live:
+            failed = True
+            print(
+                f"  [namolot] догрузка задним числом пустая {cursor}..{chunk_end}",
+                flush=True,
+            )
+        else:
+            merged = _merge_records(merged, live)
+        cursor = chunk_end + timedelta(days=1)
+    added = len(merged) - len(records)
+    if added == 0 and failed:
+        return records
+    new_meta = dict(meta or {})
+    if not failed:
+        new_meta["late_entry_resync_on"] = date_end.isoformat()
+    if added or not failed:
+        _persist_cache(
+            cache_path,
+            merged,
+            date_begin=_stored_date_begin(new_meta, begin),
+            date_end=date_end,
+            meta=new_meta,
+        )
+        if added:
+            print(
+                f"  [namolot] задним числом добавлено {added} записей "
+                f"за {begin}..{date_end}",
+                flush=True,
+            )
+    return merged
+
+
 def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
     """Сырые записи «Намolot»: свежий кэш (быстро) или догрузка через live API."""
     cached, meta, cache_path = _load_cache_payload()
@@ -496,6 +566,7 @@ def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
     if cached and (_prefer_cache() or cache_path is not None):
         records = _ensure_fresh_records(cached, meta, cache_path, date_begin, date_end)
         if records:
+            records = _backfill_late_entries(records, meta, cache_path, date_end)
             return _filter_records_by_period(records, date_begin, date_end)
 
     live = _fetch_live(date_begin, date_end)
