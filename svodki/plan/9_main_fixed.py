@@ -379,9 +379,9 @@ def _build_field_to_crop_plow(
     return result
 
 
-def _crop_sort_key(name: str) -> tuple[int, int, str]:
+def _crop_sort_key(name: str, group: str = "2.4 Вспашка") -> tuple[int, int, str]:
     try:
-        return crop_sort_key_for_group("2.4 Вспашка", name)
+        return crop_sort_key_for_group(group, name)
     except Exception:
         low = (name or "").strip().lower()
         if low in _PREFERRED_CROP_INDEX:
@@ -2597,9 +2597,14 @@ def _plow_all_firms_rows_field_and_veg(
     named_pos = {name: i for i, name in enumerate(PLOW_FIELD_SUMMARY_NAMED)}
 
     def _field_key(crop: str) -> tuple:
+        # Ранг из редактора планов приоритетнее; фиксированный список — только
+        # для культур без ранга в группе «2.4 Вспашка».
+        k = _crop_sort_key(crop)
+        if k[0] == 0:
+            return (0, k[1], k[2])
         if crop in named_pos:
-            return (0, named_pos[crop], "")
-        return (1, *_crop_sort_key(crop))
+            return (1, named_pos[crop], "")
+        return (2, *k)
 
     field_names = sorted(own, key=_field_key)
     field_rows = [_plow_summary_row(crop, fact_by, today_by) for crop in field_names]
@@ -2607,7 +2612,15 @@ def _plow_all_firms_rows_field_and_veg(
     # Овощи — всегда три строки в фиксированном порядке, даже с нулями.
     # Строку убирает только «Не учитывать» во всех фирмах.
     veg_rows: list[tuple[str, float, float, float]] = []
-    for crop in PLOW_VEGETABLE_SUMMARY:
+    veg_pos = {name: i for i, name in enumerate(PLOW_VEGETABLE_SUMMARY)}
+
+    def _veg_key(crop: str) -> tuple:
+        k = _crop_sort_key(crop)
+        if k[0] == 0:
+            return (0, k[1], k[2])
+        return (1, veg_pos[crop], "")
+
+    for crop in sorted(PLOW_VEGETABLE_SUMMARY, key=_veg_key):
         if all(
             _plans.is_crop_user_excluded("2.4 Вспашка", firm, crop)
             for firm in FIRM_ORDER
@@ -2691,7 +2704,7 @@ def _deep_all_firms_rows(
     main: list[tuple[str, float, float, float]] = []
     other_plan = other_fact = other_today = 0.0
     other_labels: set[str] = set()
-    for crop in sorted(crops, key=_crop_sort_key):
+    for crop in sorted(crops, key=lambda c: _crop_sort_key(c, "2.8 Глубокорыхление")):
         plan = fact = today = 0.0
         for firm in FIRM_ORDER:
             plan += _deep_plan_ha(firm, crop)
