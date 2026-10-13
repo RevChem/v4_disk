@@ -1477,6 +1477,27 @@ DETAIL_COL_HEADERS = [
 GRAIN_DETAIL_COLS = list(DETAIL_COLS)
 GRAIN_DETAIL_COL_HEADERS = list(DETAIL_COL_HEADERS)
 
+# Условное форматирование площади комбайна за смену (как YIELD_* в 14.main.py).
+DETAIL_AREA_COL_IDX = DETAIL_COLS.index("Площадь, га") + 1
+COMBINE_AREA_GREEN_COLOR = "C6EFCE"   # > 10 га
+COMBINE_AREA_YELLOW_COLOR = "FFC000"  # 5–10 га включительно
+COMBINE_AREA_RED_COLOR = "FFC7CE"     # < 5 га и время < 5 ч
+COMBINE_AREA_GREEN_MIN_HA = 10.0
+COMBINE_AREA_YELLOW_MIN_HA = 5.0
+COMBINE_WORK_HOURS_RED_MAX = 5.0
+
+
+def _combine_area_fill(area: float, work_secs: float) -> PatternFill | None:
+    """Заливка ячейки «Площадь, га» по правилам смены комбайна."""
+    if area > COMBINE_AREA_GREEN_MIN_HA:
+        return PatternFill("solid", fgColor=COMBINE_AREA_GREEN_COLOR)
+    if COMBINE_AREA_YELLOW_MIN_HA <= area <= COMBINE_AREA_GREEN_MIN_HA:
+        return PatternFill("solid", fgColor=COMBINE_AREA_YELLOW_COLOR)
+    if area < COMBINE_AREA_YELLOW_MIN_HA and work_secs < COMBINE_WORK_HOURS_RED_MAX * 3600:
+        return PatternFill("solid", fgColor=COMBINE_AREA_RED_COLOR)
+    return None
+
+
 # =============================================================================
 # СВОДНЫЕ КОЛОНКИ
 # =============================================================================
@@ -1544,6 +1565,9 @@ def _write_detail_section(
 
     for i, rd in enumerate(rows, start=1):
         r = nr()
+        area = float(rd["Площадь, га"])
+        work_secs = float(rd["Время (сек)"])
+        area_fill = _combine_area_fill(area, work_secs)
         vals = [
             i,
             rd["Машина"],
@@ -1556,7 +1580,8 @@ def _write_detail_section(
             vals.append(rd.get(DETAIL_COEF_COL, 0))
         for ci, val in enumerate(vals, start=1):
             c = ws.cell(row=r, column=ci, value=val)
-            _sc(c, s, fill=row_fill,
+            cell_fill = area_fill if (ci == DETAIL_AREA_COL_IDX and area_fill) else row_fill
+            _sc(c, s, fill=cell_fill,
                 align=s["align_l"] if ci == 2 else s["align_c"])
         mname = str(rd["Машина"] or "")
         ws.row_dimensions[r].height = 36.0 if len(mname) > 42 else 28.0

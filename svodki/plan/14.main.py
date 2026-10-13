@@ -216,6 +216,18 @@ FORAGE_CROPS: frozenset[str] = frozenset({
     "Люцерна",
     "Луговые травы",
 })
+# Кормозаготовка на листе агрофирмы (сводка 14) — отдельная секция после НАЕМНЫЕ.
+# Эти культуры не остаются в СОБСТВЕННЫЕ / НАЕМНЫЕ; в самой секции собственные и
+# наёмные комбайны не разделяются. FORAGE_CROPS выше остаётся для 14.2 (зерно без кормовых).
+FORAGE_SECTION_TITLE = "КОРМОЗАГОТОВКА"
+FORAGE_SECTION_CROPS: frozenset[str] = frozenset({
+    "Кукуруза на силос",
+    "Тритикале озимая",
+})
+# Задания скашивания кукурузы на силос (wt 74/83/84/147/149, в т.ч. «6.3 Скашивание с
+# измельчением кукурузы» = 84) в текущем прогоне: кукуруза в них всегда «на силос».
+_SILAGE_TASK_IDS: set[int] = set()
+
 # Овощной блок 14.2: только культуры группы «5.4 Уборка картофеля, лука».
 VEG_CROPS_ALLOWED: frozenset[str] = frozenset({
     "Картофель",
@@ -787,6 +799,13 @@ YIELD_MID_TERTILE_COLOR = "FFC000"  # 66,6–33,4%
 YIELD_BOTTOM_TERTILE_COLOR = "FFC7CE"  # 33,3–0%
 YIELD_ANOMALY_COLOR = "D9D9D9"  # аномалия — серый
 YIELD_ZERO_COLOR = "FFC7CE"  # нулевая урожайность / выработка — красный
+# Приписки под таблицей: серая ячейка — выше нормы, «0*» — нет массы в 1С,
+# «0**» — скашивание кукурузы на силос без массы.
+YIELD_GRAY_NOTE = "- цветом выделены показатели выше нормы"
+YIELD_ZERO_CROP_NOTE = "* - данные по валовому сбору не внесены в систему 1С:Элеватор."
+YIELD_ZERO_FORAGE_NOTE = "** - ведётся скашивание кукурузы на силос, масса валового сбора отсутствует"
+YIELD_ZERO_CROP_MARK = "0*"
+YIELD_ZERO_FORAGE_MARK = "0**"
 YIELD_ANOMALY_THRESHOLDS: dict[str, float] = {
     "Рапс озимый": 4.4,
     "Пшеница озимая": 7.2,
@@ -1101,6 +1120,31 @@ def _apply_yield_tertile_colors(
             )
 
 
+def _mark_zero_yield_cells(
+    ws,
+    header_row: int,
+    n_data_rows: int,
+    marker: str,
+    *,
+    start_col: int = 1,
+    yield_col: int = YIELD_COL_IDX,
+) -> None:
+    """Нулевая урожайность: «0*» у культур и «0**» у кормозаготовки. Заливка уже стоит."""
+    from openpyxl.styles import Alignment
+
+    if not marker or n_data_rows <= 0:
+        return
+    col = start_col + yield_col - 1
+    align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    for r in range(header_row + 1, header_row + n_data_rows + 1):
+        cell = ws.cell(row=r, column=col)
+        yield_val = _parse_yield_cell(cell.value)
+        if yield_val is None or abs(yield_val) >= 0.005:
+            continue
+        cell.value = marker
+        cell.alignment = align
+
+
 def style_report14_summary_sheet(ws, start_row: int, n_data_rows: int, n_cols: int) -> None:
     from excel_style import finish_harvest_table
     from openpyxl.styles import Alignment
@@ -1138,6 +1182,7 @@ def style_report14_firm_table(
     group_list: list[int] | None = None,
     group_col: int | None = None,
     wrap_cols: tuple[int, ...] = (),
+    zero_yield_mark: str = "",
 ) -> None:
     from excel_style import style_report_range
     n_rows = 1 + max(n_data_rows, 0)
@@ -1172,6 +1217,9 @@ def style_report14_firm_table(
         start_col=start_col, crop_col=CROP_COL_IDX, yield_col=YIELD_COL_IDX,
         group_col=GROUP_COL_IDX, output_col=OUTPUT_COL_IDX,
     )
+    _mark_zero_yield_cells(
+        ws, header_row, n_data_rows, zero_yield_mark, start_col=start_col,
+    )
 
 
 def style_report14_firm_sheet(
@@ -1185,9 +1233,14 @@ def style_report14_firm_sheet(
     own_n_cols: int | None = None,
     hired_n_cols: int | None = None,
     hired_group_list: list[int] | None = None,
+    row_forage_header: int | None = None,
+    forage_n_data: int = 0,
+    forage_n_cols: int | None = None,
+    forage_group_list: list[int] | None = None,
 ) -> None:
     from openpyxl.styles import Alignment, Font, PatternFill
 
+    forage_cols = forage_n_cols if forage_n_cols is not None else len(OWN_COLUMNS)
     own_cols = own_n_cols if own_n_cols is not None else len(OWN_COLUMNS)
     hired_cols = hired_n_cols if hired_n_cols is not None else len(HIRED_COLUMNS)
 
@@ -1198,6 +1251,7 @@ def style_report14_firm_sheet(
         start_col=1, col_widths=_OWN_WIDTHS_14,
         group_list=group_list, group_col=GROUP_COL_IDX,
         wrap_cols=(2, 3),
+        zero_yield_mark=YIELD_ZERO_CROP_MARK,
     )
     if row_hired_header is not None and hired_n_data > 0:
         style_report14_firm_table(
@@ -1205,6 +1259,16 @@ def style_report14_firm_sheet(
             start_col=HIRED_START_COL, col_widths=_HIRED_WIDTHS_14,
             group_list=hired_group_list, group_col=GROUP_COL_IDX,
             wrap_cols=(2, 3),
+            zero_yield_mark=YIELD_ZERO_CROP_MARK,
+        )
+
+    if row_forage_header is not None and forage_n_data > 0:
+        style_report14_firm_table(
+            ws, row_forage_header, forage_n_data, forage_cols,
+            start_col=1, col_widths=_OWN_WIDTHS_14,
+            group_list=forage_group_list, group_col=GROUP_COL_IDX,
+            wrap_cols=(2, 3),
+            zero_yield_mark=YIELD_ZERO_FORAGE_MARK,
         )
 
     sec_font = Font(bold=True, size=11)
@@ -1214,6 +1278,8 @@ def style_report14_firm_sheet(
     ]
     if row_hired_header is not None and hired_n_data > 0:
         sections.append((row_hired_header, hired_cols, "НАЕМНЫЕ"))
+    if row_forage_header is not None and forage_n_data > 0:
+        sections.append((row_forage_header, forage_cols, FORAGE_SECTION_TITLE))
     for header_row, n_cols, title in sections:
         sec_row = header_row - 1
         ws.merge_cells(
@@ -2393,6 +2459,21 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
         firm_fmi = firm_fmi.copy()
         firm_fmi["crop"] = "—"
 
+    # Скашивание кукурузы (wt 84 «6.3 Скашивание с измельчением кукурузы» и др.) —
+    # однозначно кукуруза на силос, даже если по полю/history_item она «на зерно».
+    if _SILAGE_TASK_IDS:
+        def _is_silage_task(tid) -> bool:
+            try:
+                return int(tid) in _SILAGE_TASK_IDS
+            except (TypeError, ValueError):
+                return False
+
+        _silage_mask = firm_fmi["machine_task_id"].map(_is_silage_task)
+        _corn_or_unknown = firm_fmi["crop"].map(
+            lambda c: "кукуруз" in str(c).casefold() or str(c).strip() in ("", "—")
+        )
+        firm_fmi.loc[_silage_mask & _corn_or_unknown, "crop"] = CORN_SILAGE_CROP
+
     if allowed_crops is not None or excluded_crops is not None:
         def _keep_crop(crop: str) -> bool:
             if allowed_crops is not None and not _crop_listed(crop, allowed_crops):
@@ -2590,37 +2671,124 @@ def get_firm_display_name(firm_name: str, folder_id: int, folder_to_name: dict[i
     return _clean_firm_display_name(raw)
 
 
+def _write_table_block(ws, df: pd.DataFrame, header_row: int) -> None:
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), header_row):
+        for c_idx, val in enumerate(row, 1):
+            ws.cell(row=r_idx, column=c_idx, value=val)
+
+
+def _table_yield_flags(df: pd.DataFrame | None) -> tuple[bool, bool]:
+    """Есть ли в таблице серая урожайность (выше нормы) и нулевая урожайность."""
+    if df is None or df.empty or "Урожайность, т/га" not in df.columns:
+        return False, False
+    crops = df["Культура"] if "Культура" in df.columns else [""] * len(df)
+    has_gray = False
+    has_zero = False
+    for crop, raw in zip(crops, df["Урожайность, т/га"]):
+        yield_val = _parse_yield_cell(raw)
+        if yield_val is None:
+            continue
+        if abs(yield_val) < 0.005:
+            has_zero = True
+            continue
+        if _is_yield_anomaly(str(crop or ""), yield_val):
+            has_gray = True
+    return has_gray, has_zero
+
+
+def _write_yield_footnotes(
+    ws,
+    after_row: int,
+    df: pd.DataFrame | None,
+    *,
+    forage: bool,
+    n_cols: int,
+) -> int:
+    """Приписки сразу под таблицей. Возвращает последнюю занятую строку."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill
+
+    has_gray, has_zero = _table_yield_flags(df)
+    if not has_gray and not has_zero:
+        return after_row
+    note_font = Font(name="Calibri", size=9, color="000000")
+    note_align = Alignment(horizontal="left", vertical="center", wrap_text=False)
+    no_border = Border()
+    row = after_row
+    width = max(int(n_cols or 1), 1)
+
+    def _note_row(text: str, *, swatch: bool) -> None:
+        nonlocal row
+        row += 1
+        if swatch and width >= 2:
+            mark = ws.cell(row=row, column=1, value=None)
+            mark.fill = PatternFill("solid", fgColor=YIELD_ANOMALY_COLOR)
+            mark.border = no_border
+            mark.font = note_font
+            ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=width)
+            cell = ws.cell(row=row, column=2, value=text)
+        else:
+            if width >= 2:
+                ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=width)
+            cell = ws.cell(row=row, column=1, value=text)
+        cell.font = note_font
+        cell.alignment = note_align
+        cell.border = no_border
+        ws.row_dimensions[row].height = 16
+
+    if has_gray:
+        _note_row(YIELD_GRAY_NOTE, swatch=True)
+    if has_zero:
+        _note_row(YIELD_ZERO_FORAGE_NOTE if forage else YIELD_ZERO_CROP_NOTE, swatch=False)
+    return row
+
+
 def write_firm_sheet(writer, firm_name: str, folder_id: int, folder_to_name: dict[int, str],
                     own_df: pd.DataFrame, hired_df: pd.DataFrame,
                     report_date: date, start_row: int,
-                    group_list: list[int] | None = None) -> tuple[int, int | None]:
+                    group_list: list[int] | None = None,
+                    forage_df: pd.DataFrame | None = None,
+                    ) -> tuple[int, int | None, int | None]:
     """
-    Записывает лист фирмы: заголовок, СОБСТВЕННЫЕ, при наличии данных — НАЕМНЫЕ.
+    Записывает лист фирмы: СОБСТВЕННЫЕ, при наличии данных — НАЕМНЫЕ,
+    затем КОРМОЗАГОТОВКА (если есть строки).
     start_row — Excel row (1-based) для первой таблицы.
     group_list — номера групп для подсветки колонки «Номер группы» (одна группа — один цвет).
-    Возвращает (row_own_header, row_hired_header); row_hired_header=None, если наёмных нет.
+    Возвращает (row_own_header, row_hired_header, row_forage_header).
+    Заголовок секции = None, если соответствующих строк нет.
     """
-    from openpyxl.utils.dataframe import dataframe_to_rows
     sheet_name = firm_name[:31]  # Excel limit
     ws = writer.book[sheet_name]
 
     # start_row — строка секции «СОБСТВЕННЫЕ»; заголовок таблицы — на следующей строке.
     row_own_header = start_row + 1
-    for r_idx, row in enumerate(dataframe_to_rows(own_df, index=False, header=True), row_own_header):
-        for c_idx, val in enumerate(row, 1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+    _write_table_block(ws, own_df, row_own_header)
+    last_row = row_own_header + len(own_df)
+    last_row = _write_yield_footnotes(
+        ws, last_row, own_df, forage=False, n_cols=len(own_df.columns),
+    )
 
     # НАЕМНЫЕ — только если есть фактические строки (без пустых заглушек).
-    if hired_df is None or hired_df.empty:
-        return row_own_header, None
+    row_hired_header = None
+    if hired_df is not None and not hired_df.empty:
+        row_hired_header = last_row + TABLE_GAP_ROWS + 1
+        _write_table_block(ws, hired_df, row_hired_header)
+        last_row = row_hired_header + len(hired_df)
+        last_row = _write_yield_footnotes(
+            ws, last_row, hired_df, forage=False, n_cols=len(hired_df.columns),
+        )
 
-    row_own_last = row_own_header + len(own_df)
-    row_hired_header = row_own_last + TABLE_GAP_ROWS + 1
-    for r_idx, row in enumerate(dataframe_to_rows(hired_df, index=False, header=True), row_hired_header):
-        for c_idx, val in enumerate(row, 1):
-            ws.cell(row=r_idx, column=c_idx, value=val)
+    # КОРМОЗАГОТОВКА — после наёмных (или сразу после собственных, если наёмных нет).
+    row_forage_header = None
+    if forage_df is not None and not forage_df.empty:
+        row_forage_header = last_row + TABLE_GAP_ROWS + 1
+        _write_table_block(ws, forage_df, row_forage_header)
+        last_row = row_forage_header + len(forage_df)
+        _write_yield_footnotes(
+            ws, last_row, forage_df, forage=True, n_cols=len(forage_df.columns),
+        )
 
-    return row_own_header, row_hired_header
+    return row_own_header, row_hired_header, row_forage_header
 
 
 # =============================================================================
@@ -2692,6 +2860,10 @@ def main():
     with stage("зерновые: fmi"):
         fmi_list = fetch_fmi(task_ids, report_date)
     task_to_wt = {int(t["id"]): int(t["work_type_id"]) for t in tasks if t.get("work_type_id") is not None}
+    _SILAGE_TASK_IDS.clear()
+    _SILAGE_TASK_IDS.update(
+        tid for tid, wt in task_to_wt.items() if wt in SILAGE_CORN_MOWING_WT_IDS
+    )
     task_end = {
         int(t["id"]): end
         for t in tasks
@@ -2833,6 +3005,7 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                excluded_crops=FORAGE_SECTION_CROPS,
             )
             hired_df, hired_group_list = build_own_table(
                 folder_id, report_date, hired_machines, hired_ids,
@@ -2843,13 +3016,28 @@ def main():
                 field_to_group=field_to_group,
                 field_to_firm_folder=field_to_firm_folder,
                 field_name_to_firm_folder=field_name_to_firm_folder,
+                excluded_crops=FORAGE_SECTION_CROPS,
+            )
+            # КОРМОЗАГОТОВКА: силос и озимое тритикале, собственные и наёмные вместе.
+            forage_df, forage_group_list = build_own_table(
+                folder_id, report_date, harvesters + hired_machines,
+                harvester_ids | hired_ids,
+                task_to_machine, fmi_list, field_to_fg, fg_to_folder,
+                task_to_implement, implements_dict,
+                task_crop_via_operation=task_crop_via_operation,
+                field_to_crop_general=field_to_crop_general,
+                field_to_group=field_to_group,
+                field_to_firm_folder=field_to_firm_folder,
+                field_name_to_firm_folder=field_name_to_firm_folder,
+                allowed_crops=FORAGE_SECTION_CROPS,
             )
             sheet_name = firm_name[:31]
             writer.book.create_sheet(sheet_name)
-            row_own, row_hired = write_firm_sheet(
+            row_own, row_hired, row_forage = write_firm_sheet(
                 writer, firm_name, folder_id, folder_to_name,
                 own_df, hired_df, report_date, start_row=1,
                 group_list=group_list,
+                forage_df=forage_df,
             )
             style_report14_firm_sheet(
                 writer.book[sheet_name],
@@ -2859,10 +3047,15 @@ def main():
                 own_n_cols=len(own_df.columns),
                 hired_n_cols=len(hired_df.columns) if not hired_df.empty else None,
                 hired_group_list=hired_group_list,
+                row_forage_header=row_forage,
+                forage_n_data=len(forage_df),
+                forage_n_cols=len(forage_df.columns) if not forage_df.empty else None,
+                forage_group_list=forage_group_list,
             )
             print(
                 f"  Лист: {sheet_name} "
-                f"(собств. {len(own_df)}, наёмн. {len(hired_df)})"
+                f"(собств. {len(own_df)}, наёмн. {len(hired_df)}, "
+                f"кормозаготовка {len(forage_df)})"
             )
 
         # ------------------------------------------------------------
@@ -2911,7 +3104,7 @@ def main():
             veg_hired_df = veg_hired_df.rename(columns=_veg_rename)
             veg_sheet_name = VEG_DETAIL_SHEET_NAME
             writer.book.create_sheet(veg_sheet_name)
-            veg_row_own, veg_row_hired = write_firm_sheet(
+            veg_row_own, veg_row_hired, _ = write_firm_sheet(
                 writer, veg_sheet_name, veg_folder_id, folder_to_name,
                 veg_own_df, veg_hired_df, report_date, start_row=1,
                 group_list=veg_group_list,

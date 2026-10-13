@@ -27,6 +27,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -256,11 +257,12 @@ PLOW_SEASON_CROPS: frozenset[str] = frozenset({
 })
 
 # Сводно по вспашке: полевые и овощи — два блока на одном листе, как в 9_main_fixed_new.
-PLOW_VEGETABLE_CROPS: frozenset[str] = frozenset({
+PLOW_VEGETABLE_SUMMARY: tuple[str, ...] = (
     "Картофель",
     "Морковь",
     "Свекла столовая",
-})
+)
+PLOW_VEGETABLE_CROPS: frozenset[str] = frozenset(PLOW_VEGETABLE_SUMMARY)
 PLOW_FIELD_SUMMARY_NAMED: tuple[str, ...] = (
     "Рапс яровой",
     "Соя",
@@ -2541,18 +2543,43 @@ def _plow_summary_row(
     )
 
 
+def _fmt_ha_note(ha: float) -> str:
+    """20.02 → «20,02», 1234.5 → «1 234,50»."""
+    return f"{ha:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def _plow_other_footnote(parts: list[tuple[str, float]]) -> str:
+    """Серая сноска под полевым блоком: что вошло в «Иные культуры» и сколько обработано."""
+    merged: dict[str, float] = {}
+    for name, ha in parts:
+        # «Многолетние травы 2026 года» → «Многолетние травы»
+        label = re.sub(r"\s+\d{4}\s*(?:года|г\.?)?\s*$", "", str(name or "").strip()) or str(name)
+        merged[label] = merged.get(label, 0.0) + float(ha or 0.0)
+    nonzero = [(name, ha) for name, ha in merged.items() if abs(ha) >= 0.005]
+    if not nonzero:
+        return ""
+    nonzero.sort(key=lambda item: _crop_sort_key(item[0]))
+    bits = [f"{name} {_fmt_ha_note(ha)} га" for name, ha in nonzero]
+    return "* Иные культуры: " + ", ".join(bits)
+
+
 def _plow_all_firms_rows_field_and_veg(
     by_firm_crop: dict[str, dict[str, dict]],
-) -> tuple[list[tuple[str, float, float, float]], list[tuple[str, float, float, float]]]:
-    """Одна таблица сводной вспашки: полевые культуры, овощи и «Иные».
+) -> tuple[
+    list[tuple[str, float, float, float]],
+    list[tuple[str, float, float, float]],
+    str,
+]:
+    """Сводная вспашка: полевые культуры (+ «Иные») и отдельная малая таблица овощей.
 
-    Свои строки — те же культуры, что листы «Вспашка …»: режим «Учитывать»
-    в редакторе планов, с планом или фактом. «Не учитывать» строку убирает.
-    Картофель и прочие овощи стоят в этой же таблице: отдельный блок не
-    вычитается из итога, и «Факт за сутки» сходится с первой страницей.
+    Полевой блок — те же культуры, что листы «Вспашка …»: режим «Учитывать»
+    в редакторе планов, с планом или фактом. Овощи (картофель, морковь,
+    свекла столовая) выводятся вторым блоком со своим «Итого».
 
     План «Иные культуры» — ячейка редактора и культуры режима «Иные».
     Факт строки — многолетние травы и те же отмеченные культуры.
+    Третий элемент — сноска под полевым блоком: состав «Иных культур»
+    с гектарами только по культурам с ненулевой обработкой.
     """
     fact_by: dict[str, float] = {}
     today_by: dict[str, float] = {}
@@ -2565,7 +2592,7 @@ def _plow_all_firms_rows_field_and_veg(
     own = [
         crop
         for crop in _plow_crops_for_report(by_firm_crop)
-        if crop != PLOW_FIELD_OTHER_CROP
+        if crop != PLOW_FIELD_OTHER_CROP and crop not in PLOW_VEGETABLE_CROPS
     ]
     named_pos = {name: i for i, name in enumerate(PLOW_FIELD_SUMMARY_NAMED)}
 
@@ -2574,20 +2601,30 @@ def _plow_all_firms_rows_field_and_veg(
             return (0, named_pos[crop], "")
         return (1, *_crop_sort_key(crop))
 
-    # Овощи в той же таблице: иначе итог «Факт за сутки» меньше первой страницы
-    # на картофель (за 08.10.2026 это 7,82 га).
     field_names = sorted(own, key=_field_key)
     field_rows = [_plow_summary_row(crop, fact_by, today_by) for crop in field_names]
-    veg: list[tuple[str, float, float, float]] = []
+
+    # Овощи — всегда три строки в фиксированном порядке, даже с нулями.
+    # Строку убирает только «Не учитывать» во всех фирмах.
+    veg_rows: list[tuple[str, float, float, float]] = []
+    for crop in PLOW_VEGETABLE_SUMMARY:
+        if all(
+            _plans.is_crop_user_excluded("2.4 Вспашка", firm, crop)
+            for firm in FIRM_ORDER
+        ):
+            continue
+        veg_rows.append(_plow_summary_row(crop, fact_by, today_by))
 
     other_fact = 0.0
     other_today = 0.0
-    keep = set(field_names)
+    other_parts: list[tuple[str, float]] = []
+    keep = set(field_names) | set(PLOW_VEGETABLE_CROPS)
     for crop in set(fact_by) | set(today_by):
         if crop in keep or not _plow_counts_as_other(crop):
             continue
         other_fact += fact_by.get(crop, 0.0)
         other_today += today_by.get(crop, 0.0)
+        other_parts.append((crop, fact_by.get(crop, 0.0)))
     # План «Иных» — ячейка редактора и культуры режима «Иные» по всем фирмам.
     other_plan = sum(_plow_plan_ha(firm, PLOW_FIELD_OTHER_CROP) for firm in FIRM_ORDER)
     if abs(other_plan) >= 0.005 or abs(other_fact) >= 0.005 or abs(other_today) >= 0.005:
@@ -2597,7 +2634,7 @@ def _plow_all_firms_rows_field_and_veg(
             round(other_fact, 2),
             round(other_today, 2),
         ))
-    return field_rows, veg
+    return field_rows, veg_rows, _plow_other_footnote(other_parts)
 
 
 _DEEP_OTHER_CROP = "Иные культуры"
@@ -2876,7 +2913,7 @@ def write_plow_all_firms_summary_sheet(
     *,
     sheet_index: int = 1,
 ) -> None:
-    """Вспашка сводно по всем агрофирмам: одна таблица, овощи в общем итоге."""
+    """Вспашка сводно: полевые культуры и малая таблица овощей на одном листе."""
     styles = _make_styles()
     n = len(PLOW_ALL_FIRMS_COLS)
     title = PLOW_ALL_FIRMS_SHEET
@@ -2888,7 +2925,7 @@ def write_plow_all_firms_summary_sheet(
     header_rows: list[int] = []
     data_rows: list[int] = []
     note_rows: list[int] = []
-    field_rows, veg_rows = _plow_all_firms_rows_field_and_veg(by_firm_crop)
+    field_rows, veg_rows, other_note = _plow_all_firms_rows_field_and_veg(by_firm_crop)
     row = _write_all_firms_block(
         ws, styles, 1,
         "Вспашка — Сводно по всем агрофирмам",
@@ -2897,6 +2934,8 @@ def write_plow_all_firms_summary_sheet(
         title_rows,
         header_rows,
         data_rows,
+        footnote=other_note,
+        note_rows=note_rows,
     )
     gap_rows: list[int] = []
     if veg_rows:
@@ -2950,9 +2989,8 @@ def write_deep_all_firms_summary_sheet(
         title_rows,
         header_rows,
         data_rows,
-        footnote=deep_note,
-        note_rows=note_rows,
     )
+    # Сноска «* Иные культуры: …» в таблице глубокорыхления не выводится.
     _finalize_all_firms_sheet(ws, n, title_rows, header_rows, data_rows, note_rows)
     return True
 

@@ -157,16 +157,27 @@ except ValueError:
 _FIELD_BASE_CODE_RE = re.compile(r"^[^\s(]+")
 
 
+# Латиница, внешне неотличимая от кириллицы, и «длинные» тире: в Namolot (1С) и в
+# Cropwise код поля набирают по-разному, и тогда «АИ-02-66» не равен «AИ–02–66».
+_FIELD_CODE_TRANSLATE = str.maketrans({
+    "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "K": "К", "M": "М",
+    "O": "О", "P": "Р", "T": "Т", "X": "Х", "Y": "У",
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2212": "-", "\u00a0": " ",
+})
+
+
 def _field_base_code(name: str | None) -> str:
     """Базовый код поля — всё до первого пробела или '(' , в верхнем регистре."""
     if not name:
         return ""
-    m = _FIELD_BASE_CODE_RE.match(name.strip())
+    m = _FIELD_BASE_CODE_RE.match(name.strip().lstrip("*").strip())
     if not m:
         return ""
     # Namolot иногда помечает поле префиксом «*» (напр. «*АИ-04-56(АФ15) …»),
     # в Cropwise то же поле без звёздочки — иначе тонны не попадают в сумму.
-    return m.group(0).upper().lstrip("*")
+    code = m.group(0).upper().lstrip("*").replace("Ё", "Е")
+    return code.translate(_FIELD_CODE_TRANSLATE)
 
 
 # Канонические названия культур отчёта — сюда сопоставляем текстовое поле
@@ -267,26 +278,49 @@ _field_base_code_to_id: dict[str, int] | None = None
 
 
 def _build_field_base_code_index() -> dict[str, int]:
-    """base_code (нормализованное начало названия поля Cropwise) -> field_id."""
+    """base_code (нормализованное начало названия поля Cropwise) -> field_id.
+
+    Если один базовый код у нескольких полей Cropwise (архивные поля, дубли в
+    других папках), берём поле, у которого известна агрофирма и есть культура
+    текущего сезона. Раньше побеждало первое попавшееся поле — оно могло не
+    иметь агрофирмы, и весь намолот по коду выпадал из «Валового сбора» (так
+    терялся подсолнечник НурлатАгро).
+    """
     global _field_base_code_to_id
     if _field_base_code_to_id is not None:
         return _field_base_code_to_id
-    index: dict[str, int] = {}
-    dupes: dict[str, list[str]] = defaultdict(list)
+    candidates: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for f in get_cached_fields():
         fid = f.get("id")
         name = f.get("name") or f.get("title") or ""
         code = _field_base_code(name)
         if not code or fid is None:
             continue
-        if code in index and index[code] != int(fid):
-            dupes[code].append(name)
+        if all(int(fid) != c[0] for c in candidates[code]):
+            candidates[code].append((int(fid), name))
+
+    firm_map = load_field_to_firm()
+    crop_map = get_field_to_crop()
+
+    def _rank(fid: int) -> tuple[int, int]:
+        # меньше — лучше: сначала поле с агрофирмой, затем с культурой сезона
+        return (0 if fid in firm_map else 1, 0 if fid in crop_map else 1)
+
+    index: dict[str, int] = {}
+    dupes: dict[str, list[str]] = {}
+    for code, items in candidates.items():
+        if len(items) == 1:
+            index[code] = items[0][0]
             continue
-        index[code] = int(fid)
+        best = min(items, key=lambda it: (_rank(it[0]), it[0]))
+        index[code] = best[0]
+        firms = {firm_map.get(fid) for fid, _ in items if fid in firm_map}
+        if len(firms) > 1:
+            dupes[code] = [name for _, name in items]
     if dupes:
         print(
-            f"  [namolot] ВНИМАНИЕ: неоднозначный базовый код поля "
-            f"(несколько полей Cropwise дают один и тот же код): {dict(dupes)}",
+            f"  [namolot] ВНИМАНИЕ: базовый код поля у полей разных агрофирм "
+            f"(выбрано поле с культурой сезона): {dupes}",
             flush=True,
         )
     _field_base_code_to_id = index
