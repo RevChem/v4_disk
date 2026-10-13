@@ -2925,7 +2925,7 @@ def write_plow_all_firms_summary_sheet(
     header_rows: list[int] = []
     data_rows: list[int] = []
     note_rows: list[int] = []
-    field_rows, veg_rows, other_note = _plow_all_firms_rows_field_and_veg(by_firm_crop)
+    field_rows, veg_rows, _other_note = _plow_all_firms_rows_field_and_veg(by_firm_crop)
     row = _write_all_firms_block(
         ws, styles, 1,
         "Вспашка — Сводно по всем агрофирмам",
@@ -2934,8 +2934,6 @@ def write_plow_all_firms_summary_sheet(
         title_rows,
         header_rows,
         data_rows,
-        footnote=other_note,
-        note_rows=note_rows,
     )
     gap_rows: list[int] = []
     if veg_rows:

@@ -56,7 +56,6 @@ from task_area_shared import (
     SILAGE_CORN_MOWING_WT_IDS,
     collect_silage_corn_field_ids,
     area_ha_by_shift_date,
-    crop_key_for_harvest_area,
     harvest_area_booked_on_close,
     harvest_item_area_for_shift,
     resolve_corn_subtype,
@@ -280,11 +279,9 @@ _field_base_code_to_id: dict[str, int] | None = None
 def _build_field_base_code_index() -> dict[str, int]:
     """base_code (нормализованное начало названия поля Cropwise) -> field_id.
 
-    Если один базовый код у нескольких полей Cropwise (архивные поля, дубли в
-    других папках), берём поле, у которого известна агрофирма и есть культура
-    текущего сезона. Раньше побеждало первое попавшееся поле — оно могло не
-    иметь агрофирмы, и весь намолот по коду выпадал из «Валового сбора» (так
-    терялся подсолнечник НурлатАгро).
+    При дублях кода берём первое поле, как в рабочей сводке. Если у первого
+    нет агрофирмы, берём первое следующее с фирмой: иначе намолот по коду
+    выпадает из «Валового сбора» (так терялся подсолнечник НурлатАгро).
     """
     global _field_base_code_to_id
     if _field_base_code_to_id is not None:
@@ -300,27 +297,24 @@ def _build_field_base_code_index() -> dict[str, int]:
             candidates[code].append((int(fid), name))
 
     firm_map = load_field_to_firm()
-    crop_map = get_field_to_crop()
-
-    def _rank(fid: int) -> tuple[int, int]:
-        # меньше — лучше: сначала поле с агрофирмой, затем с культурой сезона
-        return (0 if fid in firm_map else 1, 0 if fid in crop_map else 1)
 
     index: dict[str, int] = {}
     dupes: dict[str, list[str]] = {}
     for code, items in candidates.items():
-        if len(items) == 1:
-            index[code] = items[0][0]
-            continue
-        best = min(items, key=lambda it: (_rank(it[0]), it[0]))
+        # Как в рабочей сводке: первое поле в списке Cropwise. Если у него нет
+        # агрофирмы, берём первое следующее, у которого фирма есть — иначе
+        # намолот по коду выпадает (подсолнечник НурлатАгро). Поле с фирмой
+        # не подменяем более поздним дублем только из‑за культуры сезона.
+        with_firm = [it for it in items if it[0] in firm_map]
+        best = with_firm[0] if with_firm else items[0]
         index[code] = best[0]
         firms = {firm_map.get(fid) for fid, _ in items if fid in firm_map}
-        if len(firms) > 1:
+        if len(items) > 1 and len(firms) > 1:
             dupes[code] = [name for _, name in items]
     if dupes:
         print(
             f"  [namolot] ВНИМАНИЕ: базовый код поля у полей разных агрофирм "
-            f"(выбрано поле с культурой сезона): {dupes}",
+            f"(взято первое поле с агрофирмой): {dupes}",
             flush=True,
         )
     _field_base_code_to_id = index
@@ -2007,9 +2001,10 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 firm = cache.field_to_firm.get(fid_i)
                 if not firm:
                     continue
-                from task_area_shared import history_crop_name
-
-                crop = history_crop_name(item, "", mowing=is_mowing)
+                # Культура — с поля текущего сезона, как в рабочей 10_main_harvest.
+                # История задания часто пустая или чужая, и тогда подсолнечник
+                # НурлатАгро не попадал в лист «Уборка подсолнечника».
+                crop = field_to_crop.get(fid_i)
                 if is_mowing and crop != CORN_SILAGE_CROP:
                     continue
                 # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
@@ -2037,9 +2032,10 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 firm_tot[firm] += cov
                 if crop in VEGETABLE_FIELD_CROPS:
                     continue
-                crop_key = crop_key_for_harvest_area(
-                    wt_i, crop, general_set, OTHER_CROP_KEY,
-                )
+                if is_mowing:
+                    crop_key = CORN_SILAGE_CROP
+                else:
+                    crop_key = crop if crop in general_set else OTHER_CROP_KEY
                 fc[(firm, crop_key)] += cov
                 if _note is not None and count_machines:
                     _note(
