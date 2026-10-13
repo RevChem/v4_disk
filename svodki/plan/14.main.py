@@ -801,9 +801,9 @@ YIELD_ANOMALY_COLOR = "D9D9D9"  # аномалия — серый
 YIELD_ZERO_COLOR = "FFC7CE"  # нулевая урожайность / выработка — красный
 # Приписки под таблицей: серая ячейка — выше нормы, «0*» — нет массы в 1С,
 # «0**» — скашивание кукурузы на силос без массы.
-YIELD_GRAY_NOTE = "- цветом выделены показатели выше нормы"
-YIELD_ZERO_CROP_NOTE = "* - данные по валовому сбору не внесены в систему 1С:Элеватор."
-YIELD_ZERO_FORAGE_NOTE = "** - ведётся скашивание кукурузы на силос, масса валового сбора отсутствует"
+YIELD_GRAY_NOTE = "- Цветом выделены показатели выше нормы"
+YIELD_ZERO_CROP_NOTE = "* - Данные по валовому сбору не внесены в систему 1С:Элеватор"
+YIELD_ZERO_FORAGE_NOTE = "** - Ведётся скашивание кукурузы на силос, масса валового сбора отсутствует"
 YIELD_ZERO_CROP_MARK = "0*"
 YIELD_ZERO_FORAGE_MARK = "0**"
 YIELD_ANOMALY_THRESHOLDS: dict[str, float] = {
@@ -2705,7 +2705,7 @@ def _write_yield_footnotes(
     forage: bool,
     n_cols: int,
 ) -> int:
-    """Приписки сразу под таблицей. Возвращает последнюю занятую строку."""
+    """Приписки под таблицей, через пустую строку. Возвращает последнюю занятую строку."""
     from openpyxl.styles import Alignment, Border, Font, PatternFill
 
     has_gray, has_zero = _table_yield_flags(df)
@@ -2714,15 +2714,17 @@ def _write_yield_footnotes(
     note_font = Font(name="Calibri", size=9, color="000000")
     note_align = Alignment(horizontal="left", vertical="center", wrap_text=False)
     no_border = Border()
-    row = after_row
     width = max(int(n_cols or 1), 1)
+    # Абзац между нижней границей таблицы и легендой.
+    row = after_row + 1
+    ws.row_dimensions[row].height = 12
 
-    def _note_row(text: str, *, swatch: bool) -> None:
+    def _note_row(text: str, *, swatch_color: str | None) -> None:
         nonlocal row
         row += 1
-        if swatch and width >= 2:
+        if swatch_color and width >= 2:
             mark = ws.cell(row=row, column=1, value=None)
-            mark.fill = PatternFill("solid", fgColor=YIELD_ANOMALY_COLOR)
+            mark.fill = PatternFill("solid", fgColor=swatch_color)
             mark.border = no_border
             mark.font = note_font
             ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=width)
@@ -2737,9 +2739,12 @@ def _write_yield_footnotes(
         ws.row_dimensions[row].height = 16
 
     if has_gray:
-        _note_row(YIELD_GRAY_NOTE, swatch=True)
+        _note_row(YIELD_GRAY_NOTE, swatch_color=YIELD_ANOMALY_COLOR)
     if has_zero:
-        _note_row(YIELD_ZERO_FORAGE_NOTE if forage else YIELD_ZERO_CROP_NOTE, swatch=False)
+        _note_row(
+            YIELD_ZERO_FORAGE_NOTE if forage else YIELD_ZERO_CROP_NOTE,
+            swatch_color=None,
+        )
     return row
 
 
