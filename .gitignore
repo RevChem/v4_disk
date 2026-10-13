@@ -10,6 +10,8 @@ uploads/
 backend/uploads/
 # Ручные правки редактора планов (каталог data/ смонтирован в контейнеры)
 data/*.json
+# Проверки генерации пишет контейнер в data/<дата>/.data_check/
+.data_check/
 .venv/
 venv/
 .cache/
