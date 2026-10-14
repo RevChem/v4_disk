@@ -818,11 +818,34 @@ def compare(reference: Path, produced: Path) -> int:
     return mismatches
 
 
+def _period(date_from: str, date_to: str) -> tuple[str, str]:
+    """Без дат в аргументах — месяц REPORT_DATE (так панель передаёт день сводки)."""
+    if date_from and date_to:
+        return date_from, date_to
+    raw = (os.environ.get("REPORT_DATE") or "").strip()
+    if raw:
+        day = datetime.fromisoformat(raw).date().replace(day=1)
+        if day.month == 12:
+            end = day.replace(year=day.year + 1, month=1)
+        else:
+            end = day.replace(month=day.month + 1)
+        return date_from or day.isoformat(), date_to or end.isoformat()
+    return date_from or "2025-11-01", date_to or "2025-12-01"
+
+
+def _default_output_path(date_from: str, date_to: str) -> Path:
+    """Каталог кода в контейнере только для чтения. Пишем в SVODKI_OUTPUT_DIR или в cwd запуска."""
+    name = f"report_fuel_{date_from}_{date_to}.xlsx"
+    custom = (os.environ.get("SVODKI_OUTPUT_DIR") or "").strip()
+    base = Path(custom).expanduser() if custom else Path.cwd()
+    return base / name
+
+
 def main() -> None:
     _load_env()
     parser = argparse.ArgumentParser(description="Сводка по топливу")
-    parser.add_argument("--from", dest="date_from", default="2025-11-01")
-    parser.add_argument("--to", dest="date_to", default="2025-12-01")
+    parser.add_argument("--from", dest="date_from", default="")
+    parser.add_argument("--to", dest="date_to", default="")
     parser.add_argument("--output", default="")
     parser.add_argument("--reference", default="/home/ren/Загрузки/Сводка по топливу.xlsx")
     parser.add_argument("--all-agri", action="store_true")
@@ -831,12 +854,13 @@ def main() -> None:
 
     import requests
 
-    win_lo = datetime.fromisoformat(args.date_from).replace(hour=SHIFT_HOUR, tzinfo=TZ)
-    win_hi = datetime.fromisoformat(args.date_to).replace(hour=SHIFT_HOUR, tzinfo=TZ)
+    date_from, date_to = _period(args.date_from, args.date_to)
+    win_lo = datetime.fromisoformat(date_from).replace(hour=SHIFT_HOUR, tzinfo=TZ)
+    win_hi = datetime.fromisoformat(date_to).replace(hour=SHIFT_HOUR, tzinfo=TZ)
     if win_hi <= win_lo:
         raise SystemExit("Дата «по» должна быть позже даты «с»")
 
-    cache_dir = Path(os.environ.get("FUEL_CACHE_DIR") or f"/tmp/fuel_svodka_{args.date_from}_{args.date_to}")
+    cache_dir = Path(os.environ.get("FUEL_CACHE_DIR") or f"/tmp/fuel_svodka_{date_from}_{date_to}")
     cache_dir.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     session.headers["X-User-Api-Token"] = _token()
@@ -883,8 +907,9 @@ def main() -> None:
         f"наёмных {sum(t.hired for t in records)}",
         flush=True,
     )
-    output = Path(args.output) if args.output else Path(__file__).resolve().parent / f"report_fuel_{args.date_from}_{args.date_to}.xlsx"
+    output = Path(args.output) if args.output else _default_output_path(date_from, date_to)
     write_workbook(output, records, win_lo, win_hi)
+    print(f"Сохранено: {output.resolve()}", flush=True)
     reference = Path(args.reference)
     if not args.no_compare and reference.is_file():
         compare(reference, output)
