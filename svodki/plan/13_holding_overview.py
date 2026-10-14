@@ -374,7 +374,7 @@ def build_general_harvest_by_firms(main10, report_date: date, cache=None) -> pd.
     return result
 
 
-SVODKA13_ZERO_PLAN_FIX = "2026-07-16a"
+SVODKA13_ZERO_PLAN_FIX = "2026-10-14a"
 
 
 def _append_firm_total_row(result: pd.DataFrame, cache, main10, firm_name: str) -> pd.DataFrame:
@@ -408,6 +408,36 @@ def _append_firm_total_row(result: pd.DataFrame, cache, main10, firm_name: str) 
     return pd.concat([result, pd.DataFrame([totals])], ignore_index=True)
 
 
+_HARVEST_PLAN_GROUP = "5.0 Уборка"
+_HARVEST_DATA_COLS = (
+    "Факт общий, га", "Валовый сбор общий, т",
+    "Факт за сутки, га", "Валовый сбор за сутки, т",
+)
+
+
+def _harvest_crop_excluded(main10, firm_name: str, crop_name: str) -> bool:
+    """Культура исключена для фирмы в «Редакторе планов» (скрытие, «не считать», ранг 0)."""
+    check = getattr(main10, "is_crop_excluded_from_totals", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check(_HARVEST_PLAN_GROUP, firm_name, crop_name))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _row_has_harvest_data(row) -> bool:
+    """Есть ли по строке фактическая уборка (га или тонны) — тогда она нужна и без плана."""
+    for col in _HARVEST_DATA_COLS:
+        try:
+            if float(row[col] or 0) > 0:
+                return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
+
 def build_firm_report(main10, firm_name: str, report_date: date,
                       cache=None) -> pd.DataFrame:
     """
@@ -434,13 +464,18 @@ def build_firm_report(main10, firm_name: str, report_date: date,
         if firm_name not in agrofirms:
             continue
         plan_ha, _plan_ids = agrofirms[firm_name]
-        if not plan_ha:
+        # Культура скрыта / «не считать» / ранг 0 в «Редакторе планов» — строки нет.
+        if _harvest_crop_excluded(main10, firm_name, crop_name):
             continue
-        row_num += 1
         if use_cache:
             row = main10.firm_crop_row_from_cache(
-                cache, firm_name, crop_name, work_type_id, plan_ha, row_num, label_date,
+                cache, firm_name, crop_name, work_type_id, plan_ha, row_num + 1, label_date,
             )
+            # Как в сводке 10: без плана строка остаётся, если есть факт/сбор
+            # (например, кукуруза на силос — плана уборки у неё обычно нет).
+            if not plan_ha and not _row_has_harvest_data(row):
+                continue
+            row_num += 1
             rows.append({
                 "№ п/п": row_num,
                 "Культура": crop_name,
@@ -468,8 +503,9 @@ def build_firm_report(main10, firm_name: str, report_date: date,
             continue
         r = firm_row.iloc[0]
         plan = r["План, га"]
-        if not plan:
+        if not plan and not _row_has_harvest_data(r):
             continue
+        row_num += 1
         fact = r["Факт общий, га"]
         share = r["Доля убранной площади в %"]
         yield_today = r["Урожайность за сутки (по валовому сбору), т/га"]

@@ -1368,6 +1368,36 @@ def crop_sort_key_for_group(group_name: str, crop: str) -> tuple[int, int, str]:
     return (2, 10_000, low)
 
 
+_CROP_RANK_ALIASES: dict[str, str] = {"свекла": "свекла столовая"}
+
+
+def order_crops_by_group_rank(group_name: str, crops) -> list[str]:
+    """Порядок культур для таблицы с фиксированным списком строк.
+
+    Культуры с рангом в группе (редактор планов) идут первыми по рангу;
+    остальные сохраняют исходный порядок списка. Без рангов — список как есть.
+    Читает CROP_GROUP_RANK_INDEX в момент вызова.
+    """
+    seq = [str(c) for c in crops]
+    idx = CROP_GROUP_RANK_INDEX.get(str(group_name)) or {}
+    if not idx:
+        return seq
+    pos = {c: i for i, c in enumerate(seq)}
+
+    def _rank(c: str):
+        low = c.strip().lower()
+        for key in (low, _CROP_RANK_ALIASES.get(low, "")):
+            if key and key in idx:
+                return int(idx[key])
+        return None
+
+    def _key(c: str):
+        r = _rank(c)
+        return (0, r, pos[c]) if r is not None else (1, pos[c], 0)
+
+    return sorted(seq, key=_key)
+
+
 # Алиас для обратной совместимости (один агрегат — 1.1 Внесение)
 OWN_AGGREGATES: dict[str, int] = AVAILABLE_OWN["1.1 Внесение минеральных удобрений"]
 
