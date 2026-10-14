@@ -60,6 +60,7 @@ from excel_style import (
     write_detail_machines_min_area_note,
 )
 from plans import (
+    order_crops_by_group_rank as _plans_order_crops,
     API_TOKEN,
     BASE_URL,
     TZ_MSK,
@@ -1891,7 +1892,7 @@ def _write_veg_spray_crop_compact_block(
 
     days_elapsed = max((report_date - season_start).days, 1)
     shown = 0
-    for crop in VEG_CROP_ROWS:
+    for crop in _plans_order_crops(_VEG_SPRAY_KEY, VEG_CROP_ROWS):
         crop_label = crop_labels.get(crop, crop)
         if _veg_crop_excluded(firm_name, crop) or _veg_crop_excluded(firm_name, crop_label):
             continue
@@ -2024,7 +2025,10 @@ def write_veggie_spray_sheet(
     ws.row_dimensions[2].height = 56
 
     data_row = 3
-    shown_crops = [c for c in VEGGIE_CROP_ORDER if not _veg_crop_excluded(VEGGIE_FIRM, c)]
+    shown_crops = [
+        c for c in _plans_order_crops(_VEG_SPRAY_KEY, VEGGIE_CROP_ORDER)
+        if not _veg_crop_excluded(VEGGIE_FIRM, c)
+    ]
     for crop in shown_crops:
         plan  = float(veggie_plans.get(crop, 0.0) or 0.0)
         if crop == "Свекла столовая":

@@ -46,6 +46,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 import requests
 from plans import (
+    order_crops_by_group_rank as _plans_order_crops,
     API_TOKEN,
     BASE_URL,
     TZ_MSK,
@@ -1619,7 +1620,7 @@ def write_veg_summary_sheet(
     today_map = veg_stats.get("today_by_crop", {})
 
     total_plan = total_fact = total_today = total_rem_pos = 0.0
-    for i, crop in enumerate(VEG_CROP_ROWS, start=1):
+    for i, crop in enumerate(_plans_order_crops(_VEG_KEY, VEG_CROP_ROWS), start=1):
         plan  = float(VEG_CROP_PLAN_HA.get(crop, 0.0) or 0.0)
         fact  = float(fact_map.get(crop, 0.0) or 0.0)
         today = float(today_map.get(crop, 0.0) or 0.0)

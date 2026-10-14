@@ -102,6 +102,7 @@ from plans import (
     other_crops_as_rows,
     crop_report_mode,
     crop_sort_key_for_group,
+    order_crops_by_group_rank,
     CROP_MODE_OTHER,
     PREFERRED_CROP_ORDER,
     PLAN_RATE_PER_GROUP,
@@ -3431,6 +3432,12 @@ def _raps_fact_from_visible_ferts(fd: dict[int, dict[str, float]]) -> float:
 # ЛИСТ 1: СВОДКА ПО КУЛЬТУРАМ (агрегат по холдингу, только WORK_TYPE_ID=55)
 # =============================================================================
 
+
+def _summary_crops_ordered_list() -> list[str]:
+    """CROP_SUMMARY_CROPS с учётом рангов группы 1.1 из редактора планов."""
+    return order_crops_by_group_rank(WORK_TYPE_NAME, CROP_SUMMARY_CROPS)
+
+
 def write_crop_summary_sheet(
     wb:          openpyxl.Workbook,
     season_data: dict[str, dict[str, float]],
@@ -3467,7 +3474,7 @@ def write_crop_summary_sheet(
     for firm in AGROFIRMS:
         crops_fact = season_data.get(firm, {})
         crops_today = day_stats.get(firm, {}).get("area_by_crop", {})
-        for crop in CROP_SUMMARY_CROPS:
+        for crop in _summary_crops_ordered_list():
             plan_val = _plan_ha_like_report2(firm, crop)
             fact_val = _mu_season_fact(
                 crop, firm, crops_fact, crops_today,
@@ -3479,7 +3486,7 @@ def write_crop_summary_sheet(
 
     data_row = hdr + 1
     total_plan = total_fact = total_today = total_rem = 0.0
-    for idx, crop in enumerate(CROP_SUMMARY_CROPS, start=1):
+    for idx, crop in enumerate(_summary_crops_ordered_list(), start=1):
         plan_val = round(agg_plan.get(crop, 0.0), 2)
         fact_val = round(float(agg_fact.get(crop, 0.0)), 2)
         today_val = round(agg_today.get(crop, 0.0), 2)

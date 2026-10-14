@@ -61,6 +61,7 @@ from task_area_shared import (
     resolve_corn_subtype,
 )
 from plans import (
+    order_crops_by_group_rank as _plans_order_crops,
     API_TOKEN as _PLANS_API_TOKEN,
     BASE_URL as _PLANS_BASE_URL,
     TZ_MSK,
@@ -789,28 +790,29 @@ GRAIN_HARVEST_WT_IDS: frozenset[int] = frozenset(
 
 # Порядок культур в «Общий намолот» / уборке (сводки 1, 10, 13).
 # 1–6 зерновые/масличные; 7 — «Кукуруза, из них»; 7.1/7.2 — зерно/силос.
-GENERAL_CROP_ORDER = [
-    "Рапс озимый",
-    "Пшеница озимая",
-    "Тритикале озимая",
-    "Рапс яровой",
-    "Соя",
-    "Подсолнечник",
-    "Кукуруза на зерно",
-    "Кукуруза на силос",
-]
+# Порядок задаётся рангами группы «5.0 Уборка» из редактора планов
+# (культуры без ранга — в прежнем порядке после ранжированных).
+GENERAL_CROP_ORDER = _plans_order_crops(
+    "5.0 Уборка",
+    [
+        "Рапс озимый",
+        "Пшеница озимая",
+        "Тритикале озимая",
+        "Рапс яровой",
+        "Соя",
+        "Подсолнечник",
+        "Кукуруза на зерно",
+        "Кукуруза на силос",
+    ],
+)
 
 CORN_SUMMARY_LABEL = "Кукуруза, из них"
 _CORN_CROPS = frozenset({CORN_GRAIN_CROP, CORN_SILAGE_CROP})
 _GENERAL_CROP_ORDER_NON_CORN = [c for c in GENERAL_CROP_ORDER if c not in _CORN_CROPS]
 
+# Номер строки — позиция культуры в порядке отчёта (без рангов: 1–6, как раньше).
 _GENERAL_HARVEST_ROW_NUM: dict[str, int] = {
-    "Рапс озимый": 1,
-    "Пшеница озимая": 2,
-    "Тритикале озимая": 3,
-    "Рапс яровой": 4,
-    "Соя": 5,
-    "Подсолнечник": 6,
+    c: i for i, c in enumerate(_GENERAL_CROP_ORDER_NON_CORN, start=1)
 }
 CORN_SUMMARY_ROW_NUM = 7
 CORN_GRAIN_ROW_NUM = "7.1"
@@ -2047,8 +2049,14 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 # История задания часто пустая или чужая, и тогда подсолнечник
                 # НурлатАгро не попадал в лист «Уборка подсолнечника».
                 crop = field_to_crop.get(fid_i)
-                if is_mowing and crop != CORN_SILAGE_CROP:
-                    continue
+                if is_mowing:
+                    # «Скашивание с измельчением кукурузы» на поле с кукурузой — это
+                    # однозначно «Кукуруза на силос», как бы культура поля ни называлась
+                    # («на зерно», «Кукуруза»): метка поля по agro_operations может
+                    # отставать от заданий. Скашивание на не-кукурузе в строку не идёт.
+                    if not crop or "кукуруза" not in str(crop).casefold():
+                        continue
+                    crop = CORN_SILAGE_CROP
                 # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
                 if (
                     crop

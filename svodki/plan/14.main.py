@@ -32,6 +32,7 @@ import pandas as pd
 import requests
 
 from plans import (
+    order_crops_by_group_rank as _plans_order_crops,
     AGROFIRMS_META,
     AVAILABLE_OWN,
     FIELD_NAME_FORCE_RULES,
@@ -793,9 +794,12 @@ _HARVEST_TECH_CROP_ORDER_HEAD: tuple[str, ...] = (
     "Кукуруза на зерно",
     "Кукуруза",
 )
-HARVEST_TECH_CROP_ORDER: tuple[str, ...] = _HARVEST_TECH_CROP_ORDER_HEAD + tuple(
-    c for c in PREFERRED_CROP_ORDER if c not in _HARVEST_TECH_CROP_ORDER_HEAD
-)
+# Ранги группы «5.0 Уборка» из редактора планов главнее фиксированного начала списка.
+HARVEST_TECH_CROP_ORDER: tuple[str, ...] = tuple(_plans_order_crops(
+    "5.0 Уборка",
+    _HARVEST_TECH_CROP_ORDER_HEAD
+    + tuple(c for c in PREFERRED_CROP_ORDER if c not in _HARVEST_TECH_CROP_ORDER_HEAD),
+))
 _HARVEST_TECH_CROP_INDEX = {name.lower(): i for i, name in enumerate(HARVEST_TECH_CROP_ORDER)}
 
 # Урожайность, т/га внутри группы поля: отрезок [Ур.мин, Ур.мах] без аномалий,
