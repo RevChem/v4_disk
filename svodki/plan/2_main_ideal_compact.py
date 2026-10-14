@@ -1289,12 +1289,31 @@ def field_crops_per_season(
     return out
 
 
+# Боронование, культивация, глубокорыхление: учётная площадь — сумма сезонов.
+# Поле сезона 2026 и то же поле сезона 2027 входят оба раза.
+_SUM_SEASON_AREA_GROUPS = frozenset({
+    BORON_GROUP_NAME,
+    CULTIVATION_GROUP_NAME,
+    DEEP_GROUP_NAME,
+})
+# Культура вне плана остаётся в итоге (строка «Иные культуры»).
+# «Не учитывать» в редакторе по-прежнему выбрасывает гектары.
+_KEEP_UNLISTED_ACCOUNTED = frozenset({
+    PLOW_GROUP_NAME,
+    DISK_GROUP_NAME,
+    BORON_GROUP_NAME,
+    CULTIVATION_GROUP_NAME,
+    DEEP_GROUP_NAME,
+})
+
+
 def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | None:
     """Учётная площадь под тем же именем, что и строка сводки.
 
     Режим «Иные культуры» из редактора планов складывается в одну строку
-    «Иные культуры». На вспашке и дисковании культура вне плана тоже остаётся
-    в этой строке, если её явно не убрали в «Не учитывать».
+    «Иные культуры». На вспашке, дисковании, бороновании, культивации и
+    глубокорыхлении культура вне плана тоже остаётся в этой строке, если её
+    явно не убрали в «Не учитывать».
     """
     raw_name = str(raw or "").strip()
     if not raw_name or is_skip_crop(raw_name):
@@ -1305,7 +1324,7 @@ def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | No
         label = _map_harvest_veg_crop(raw_name)
     else:
         label = raw_name
-    keep_unlisted = group_name in (PLOW_GROUP_NAME, DISK_GROUP_NAME)
+    keep_unlisted = group_name in _KEEP_UNLISTED_ACCOUNTED
     if not label:
         if keep_unlisted and not is_crop_user_excluded(group_name, firm, raw_name):
             return OTHER_CROP_CODE
@@ -1324,6 +1343,39 @@ def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | No
     return coded
 
 
+def accounted_field_passes(
+    group_name: str,
+    history_by_year: dict[int, list[dict]],
+    years: list[int],
+    crop_map: dict,
+) -> list[dict[int, list[str]]]:
+    """Проходы учётной площади. Каждый проход прибавляет гектары полей.
+
+    Боронование, культивация и глубокорыхление: отдельный проход на каждый
+    сезон, чтобы 2026 и 2027 сложились. Озимые считаются в своём сезоне, а не
+    только в более новом. Остальные операции — один проход на все сезоны.
+    Внесение удобрений — одна, более новая культура.
+    """
+    selected: list[int] = []
+    for year in years or []:
+        try:
+            selected.append(int(year))
+        except (TypeError, ValueError):
+            continue
+    selected = sorted(set(selected))
+    if group_name in _SUM_SEASON_AREA_GROUPS:
+        return [
+            field_crops_per_season(history_by_year, [year], crop_map)
+            for year in selected
+        ]
+    if group_name == FERT_GROUP_NAME:
+        chosen = field_crops_for_operation_years(
+            history_by_year, selected, crop_map, newest_year_wins=True,
+        )
+        return [{fid: [raw] for fid, raw in chosen.items()}]
+    return [field_crops_per_season(history_by_year, selected, crop_map)]
+
+
 def build_accounted_area_by_group(
     history_by_year: dict[int, list[dict]],
     crop_map: dict,
@@ -1334,43 +1386,40 @@ def build_accounted_area_by_group(
 ) -> dict[str, dict[str, dict[str, float]]]:
     """Учётная площадь: фирма → культура → га, отдельно для каждой операции.
 
-    Годы — сезоны операции в редакторе. Площадь считается отдельно по каждому сезону:
-    поле входит в культуру каждого сезона один раз (одна культура в двух годах не
-    удваивается). Исключение — внесение удобрений и культивация: одна, более новая культура.
+    Годы — сезоны операции в редакторе. У боронования, культивации и
+    глубокорыхления площадь сезонов складывается. У остальных одна и та же
+    культура в двух годах поле не удваивает. Внесение удобрений — одна,
+    более новая культура.
     """
     from season_unified import fact_season_years_for_group
 
-    newest_groups = {FERT_GROUP_NAME, CULTIVATION_GROUP_NAME}
     out: dict[str, dict[str, dict[str, float]]] = {}
     for group_name, _wt in WORK_GROUPS:
         try:
             years = list(fact_season_years_for_group(group_name, report_date) or [])
         except Exception:
             years = [report_date.year]
-        if group_name in newest_groups:
-            # Внесение и культивация идут под культуру следующего сезона — одна, более новая.
-            per_field = {
-                fid: [raw]
-                for fid, raw in field_crops_for_operation_years(
-                    history_by_year, years, crop_map, newest_year_wins=True,
-                ).items()
-            }
-        else:
-            per_field = field_crops_per_season(history_by_year, years, crop_map)
+        # Эти три операции считают поля сезона, даже если на дату отчёта
+        # поле уже не available: иначе старший сезон теряет гектары.
+        require_available = group_name not in _SUM_SEASON_AREA_GROUPS
         by_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        for fid, raws in per_field.items():
-            if fid not in available_ids:
-                continue
-            firm = field_to_firm.get(fid)
-            if not firm:
-                continue
-            labels: list[str] = []
-            for raw in raws:
-                label = _accounted_crop_label(group_name, raw, firm)
-                if label and label not in labels:
-                    labels.append(label)
-            for label in labels:
-                by_firm[firm][label] += float(field_area.get(fid, 0.0) or 0.0)
+        for per_field in accounted_field_passes(
+            group_name, history_by_year, years, crop_map,
+        ):
+            for fid, raws in per_field.items():
+                if require_available and fid not in available_ids:
+                    continue
+                firm = field_to_firm.get(fid)
+                if not firm:
+                    continue
+                labels: list[str] = []
+                for raw in raws:
+                    label = _accounted_crop_label(group_name, raw, firm)
+                    if label and label not in labels:
+                        labels.append(label)
+                area = float(field_area.get(fid, 0.0) or 0.0)
+                for label in labels:
+                    by_firm[firm][label] += area
         out[group_name] = {firm: dict(crops_ha) for firm, crops_ha in by_firm.items()}
     return out
 

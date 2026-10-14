@@ -120,6 +120,70 @@ def test_other_year_is_not_this_operation() -> None:
     assert chosen == {1: "Пшеница яровая"}
 
 
+def test_harrow_cultivation_and_deep_add_both_seasons() -> None:
+    """Боронование, культивация и глубокорыхление складывают сезоны.
+
+    Одно поле с соей в двух годах даёт две площади. Озимая культура старшего
+    сезона не выбрасывается. Поле вне available на дату отчёта остаётся.
+    """
+    from importlib import import_module
+    from unittest.mock import patch
+
+    m = import_module("2_main_ideal_compact")
+    history = {
+        2026: [
+            {"field_id": 1, "year": 2026, "crop_id": 10, "active": True},
+            {"field_id": 3, "year": 2026, "crop_id": 1, "active": True},
+        ],
+        2027: [
+            {"field_id": 1, "year": 2027, "crop_id": 10, "active": True},
+            {"field_id": 2, "year": 2027, "crop_id": 10, "active": True},
+        ],
+    }
+    crops = {1: "Пшеница озимая", 10: "Соя"}
+    field_area = {1: 100.0, 2: 40.0, 3: 25.0}
+    firms = {1: "АФ Чистопольская", 2: "АФ Чистопольская", 3: "АФ Чистопольская"}
+
+    with patch("season_unified.fact_season_years_for_group", lambda *_a, **_k: [2026, 2027]):
+        built = m.build_accounted_area_by_group(
+            history, crops, field_area, firms, set(), m.TODAY,
+        )
+
+    for group in (
+        "2.1 Боронование",
+        "2.11 Культивация",
+        "2.8 Глубокорыхление",
+    ):
+        rows = built[group]["АФ Чистопольская"]
+        assert rows["Соя"] == 240.0, group
+        assert rows["Иные культуры"] == 25.0, group
+        assert sum(rows.values()) == 265.0, group
+
+
+def test_fertilizer_still_keeps_one_newer_crop() -> None:
+    from importlib import import_module
+    from unittest.mock import patch
+
+    m = import_module("2_main_ideal_compact")
+    history = {
+        2026: [{"field_id": 1, "year": 2026, "crop_id": 10, "active": True}],
+        2027: [{"field_id": 1, "year": 2027, "crop_id": 20, "active": True}],
+    }
+    crops = {10: "Соя", 20: "Рапс яровой"}
+    with patch("season_unified.fact_season_years_for_group", lambda *_a, **_k: [2026, 2027]):
+        built = m.build_accounted_area_by_group(
+            history,
+            crops,
+            {1: 100.0},
+            {1: "АФ Чистопольская"},
+            {1},
+            m.TODAY,
+        )
+    rows = built["1.1 Внесение минеральных удобрений"]["АФ Чистопольская"]
+    assert rows == {"Рапс яровой": 100.0}
+    assert sum(rows.values()) == 100.0
+
+
 def test_winter_crop_comes_from_the_later_season() -> None:
     from importlib import import_module
 
@@ -141,4 +205,6 @@ if __name__ == "__main__":
     test_same_crop_in_two_seasons_is_not_doubled()
     test_other_year_is_not_this_operation()
     test_winter_crop_comes_from_the_later_season()
+    test_harrow_cultivation_and_deep_add_both_seasons()
+    test_fertilizer_still_keeps_one_newer_crop()
     print("ok")

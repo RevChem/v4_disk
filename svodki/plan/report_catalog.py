@@ -194,6 +194,12 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         picker_visible=False,
         explicit_only=True,
     ),
+    ReportCatalogEntry(
+        "28",
+        "28_fuel_summary.py",
+        "28. Сводка по топливу",
+        explicit_only=True,
+    ),
 )
 
 # Имена файлов / записей Summary при генерации (панель выбора — поле title выше).
@@ -215,6 +221,7 @@ REPORT_ARTIFACT_TITLES: dict[str, str] = {
     "14.2": "14.2. Аналитика урожайности комбайнов",
     "22": "22. Дневная",
     "24": "24. Менее 0.5",
+    "28": "28. Сводка по топливу",
 }
 
 
