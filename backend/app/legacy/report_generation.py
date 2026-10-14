@@ -2210,10 +2210,11 @@ def _execute_resolved_report(
         publish_immediately = cfg_id not in {"1"}
         report2_excel_only = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
         report27_excel_only = _is_report27_family(cfg_id)
-        if report2_excel_only or report27_excel_only:
+        report28_excel_only = cfg_id == "28"
+        if report2_excel_only or report27_excel_only or report28_excel_only:
             if " (Excel)" not in storage_title:
                 storage_title = f"{storage_title} (Excel)"
-            logs.append(f"[{cfg.title}] Произвольный период: сохраняем только Excel, без PDF.")
+            logs.append(f"[{cfg.title}] Сохраняем Excel, без PDF.")
             created_item = _store_generated_xlsx(
                 db=db,
                 xlsx_path=xlsx_path,
@@ -3529,7 +3530,8 @@ def _resolve_storage_title(
     storage_title = _title_with_report_day(storage_title, summary_date)
     report2_excel_only = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
     report27_excel_only = _is_report27_family(cfg_id)
-    if report2_excel_only or report27_excel_only:
+    report28_excel_only = cfg_id == "28"
+    if report2_excel_only or report27_excel_only or report28_excel_only:
         if " (Excel)" not in storage_title:
             storage_title = f"{storage_title} (Excel)"
     return storage_title
