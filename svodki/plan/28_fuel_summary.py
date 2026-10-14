@@ -180,8 +180,9 @@ def _slim_task(task: dict) -> dict:
 
 def _slim_mtfmi(item: dict) -> dict:
     keys = (
-        "id", "machine_task_id", "field_id", "covered_area", "covered_area_hourly",
+        "id", "machine_task_id", "field_id", "covered_area",
         "work_distance", "work_duration", "covered_area_by_track",
+        "fuel_consumption", "fuel_consumption_per_ha",
     )
     return {key: item.get(key) for key in keys}
 
@@ -238,12 +239,16 @@ def fetch_mtfmi(session, task_ids: list[int]) -> list[dict]:
     return out
 
 
+def _norm(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
 def _person_name(user: dict) -> str:
+    username = _norm(user.get("username"))
+    if username:
+        return username
     parts = [user.get("last_name"), user.get("first_name"), user.get("middle_name")]
-    fio = " ".join(str(p).strip() for p in parts if p and str(p).strip())
-    if fio:
-        return fio
-    return str(user.get("username") or user.get("name") or "").strip()
+    return _norm(" ".join(str(p) for p in parts if p and str(p).strip()))
 
 
 def _mass(session, endpoint: str, ids: list[int]) -> list[dict]:
@@ -318,39 +323,25 @@ def build_firms(fields: list[dict], field_groups: list[dict], folders: list[dict
 
 
 @dataclass
-class FieldPart:
-    field: str
+class Unit:
+    """Одна строка площади (mtfmi) с выработкой. В образце это «задание»."""
     firm: str
-    area: float
-    liters: float
-    distance_m: float
-    track_ha: float
-    duration_s: float
-
-
-@dataclass
-class TaskRec:
-    task_id: int
     work: str
     driver: str
     machine: str
+    field: str
     hired: bool
     area: float
-    liters: float
-    distance_m: float
-    duration_s: float
-    width_m: float
-    l_ha: float | None
+    l_ha: float
     l_km: float | None
-    width_coef: float | None
-    parts: list[FieldPart] = field(default_factory=list)
+    width: float | None
+    duration_s: float
 
 
 def _coef(track_ha: float, distance_m: float, width_m: float) -> float | None:
     if track_ha <= 0 or distance_m <= 0 or width_m <= 0:
         return None
-    km = distance_m / 1000.0
-    return track_ha / km / width_m * 10 * 100
+    return track_ha / (distance_m / 1000.0) / width_m * 10 * 100
 
 
 def _mean(values: list[float]) -> float | None:
@@ -359,7 +350,7 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values)
 
 
-def build_tasks(
+def build_units(
     raw_tasks: list[dict],
     mtfmi: list[dict],
     *,
@@ -371,107 +362,60 @@ def build_tasks(
     implements: dict[int, dict],
     field_names: dict[int, str],
     field_firms: dict[int, str],
-) -> list[TaskRec]:
+) -> list[Unit]:
     by_task: dict[int, list[dict]] = defaultdict(list)
     for item in mtfmi:
         if item.get("machine_task_id") is not None:
             by_task[int(item["machine_task_id"])].append(item)
 
-    records: list[TaskRec] = []
+    units: list[Unit] = []
     for task in raw_tasks:
+        start = _parse_api_dt(task.get("start_time"))
+        if start is None or not (win_lo <= start < win_hi):
+            continue
         try:
-            wid = int(task.get("work_type_id"))
-        except (TypeError, ValueError):
+            work = work_names[int(task.get("work_type_id"))]
+        except (KeyError, TypeError, ValueError):
             continue
-        work = work_names.get(wid)
-        if not work:
-            continue
-        area_total = _num(task.get("covered_area"))
-        area_window = _series_sum(task.get("covered_area_hourly"), win_lo, win_hi)
-        if area_window is None:
-            start = _parse_api_dt(task.get("start_time"))
-            area_window = area_total if start is not None and win_lo <= start < win_hi else 0.0
-        if area_window <= 0.005:
-            continue
-        ratio = (area_window / area_total) if area_total > 0 else 1.0
-        ratio = min(max(ratio, 0.0), 1.0)
-
-        fuel_total = _num(task.get("fuel_consumption"))
-        fuel_road = _num(task.get("fuel_consumption_on_road"))
-        liters_total = max(0.0, fuel_total - fuel_road)
-        liters = liters_total * ratio
-
-        dist_window = _series_sum(task.get("work_distance_hourly"), win_lo, win_hi)
-        if dist_window is None:
-            dist_window = _num(task.get("work_distance")) * ratio
-        dur_window = _series_sum(task.get("work_duration_hourly"), win_lo, win_hi)
-        if dur_window is None:
-            dur_window = _num(task.get("work_duration")) * ratio
-
         machine = machines.get(int(task.get("machine_id") or 0), {})
         hired = int(machine.get("machine_group_id") or 0) == HIRED_GROUP_ID
-        machine_name = str(machine.get("name") or f"машина {task.get('machine_id')}")
-        driver = users.get(int(task.get("driver_id") or 0), {})
-        driver_name = _person_name(driver) or "—"
+        machine_name = _norm(machine.get("name") or f"машина {task.get('machine_id')}")
+        driver_name = _person_name(users.get(int(task.get("driver_id") or 0), {}))
         implement = implements.get(int(task.get("implement_id") or 0))
-        width = 0.0
+        width_m = 0.0
         if implement:
-            width = _num(implement.get("width") or implement.get("official_width"))
-        if width <= 0:
-            width = _num(task.get("real_implement_width"))
-
-        items = by_task.get(int(task["id"]), [])
-        item_area = sum(_num(it.get("covered_area")) for it in items) or area_total or 1.0
-        parts: list[FieldPart] = []
-        track_sum = 0.0
-        for item in items:
+            width_m = _num(implement.get("width") or implement.get("official_width"))
+        if width_m <= 0:
+            width_m = _num(task.get("real_implement_width"))
+        for item in by_task.get(int(task["id"]), []):
+            area = _num(item.get("covered_area"))
+            if area <= 0:
+                continue
             try:
                 fid = int(item.get("field_id"))
             except (TypeError, ValueError):
                 continue
-            share = _num(item.get("covered_area")) / item_area if item_area else 0.0
-            part_area = area_window * share
-            if part_area <= 0.005:
-                continue
             firm = field_firms.get(fid, "")
             if not firm:
                 continue
-            part_dist = _num(item.get("work_distance")) * ratio
-            part_track = _num(item.get("covered_area_by_track")) * ratio
-            part_dur = _num(item.get("work_duration")) * ratio
-            track_sum += part_track
-            parts.append(FieldPart(
-                field=field_names.get(fid, str(fid)),
+            dist = _num(item.get("work_distance"))
+            fuel = _num(item.get("fuel_consumption"))
+            track = _num(item.get("covered_area_by_track"))
+            l_km = (fuel / (dist / 1000.0)) if dist > 0 else None
+            units.append(Unit(
                 firm=firm,
-                area=part_area,
-                liters=liters * share,
-                distance_m=part_dist,
-                track_ha=part_track,
-                duration_s=part_dur or dur_window * share,
+                work=work,
+                driver=driver_name,
+                machine=machine_name,
+                field=field_names.get(fid, str(fid)),
+                hired=hired,
+                area=area,
+                l_ha=_num(item.get("fuel_consumption_per_ha")),
+                l_km=l_km,
+                width=_coef(track, dist, width_m),
+                duration_s=_num(item.get("work_duration")),
             ))
-        if not parts:
-            continue
-
-        l_ha = (liters / area_window) if area_window else None
-        l_km = (liters / (dist_window / 1000.0)) if dist_window > 0 else None
-        width_coef = _coef(track_sum, dist_window, width)
-        records.append(TaskRec(
-            task_id=int(task["id"]),
-            work=work,
-            driver=driver_name,
-            machine=machine_name,
-            hired=hired,
-            area=area_window,
-            liters=liters,
-            distance_m=dist_window,
-            duration_s=dur_window,
-            width_m=width,
-            l_ha=l_ha,
-            l_km=l_km,
-            width_coef=width_coef,
-            parts=parts,
-        ))
-    return records
+    return units
 
 
 @dataclass
@@ -489,150 +433,73 @@ class AggRow:
     dur_max: float
     dur_sum: float
     output: float | None
-    kind: str = "data"  # data | work | firm | grand
+    kind: str = "data"
 
 
-def _accumulate(tasks: list[TaskRec], *, with_field: bool, name_of) -> list[AggRow]:
-    groups: dict[tuple, list[TaskRec]] = defaultdict(list)
-    for task in tasks:
-        if with_field:
-            seen = set()
-            for part in task.parts:
-                key = (part.firm, task.work, name_of(task), part.field)
-                if key in seen:
-                    continue
-                seen.add(key)
-                groups[key].append(task)
-        else:
-            firms = {part.firm for part in task.parts}
-            for firm in firms:
-                groups[(firm, task.work, name_of(task), "")].append(task)
+def _row_from_units(units: list[Unit], *, firm: str, work: str, name: str, field_name: str, kind: str = "data") -> AggRow:
+    durations = [u.duration_s for u in units]
+    area = sum(u.area for u in units)
+    return AggRow(
+        firm=firm,
+        work=work,
+        name=name,
+        field=field_name,
+        tasks=len(units),
+        area=area,
+        l_ha=_mean([u.l_ha for u in units]),
+        l_km=_mean([u.l_km for u in units if u.l_km is not None]),
+        width=_mean([u.width for u in units if u.width is not None]),
+        dur_min=min(durations) if durations else 0.0,
+        dur_max=max(durations) if durations else 0.0,
+        dur_sum=sum(durations),
+        output=(area / len(units)) if units else None,
+        kind=kind,
+    )
 
-    rows: list[AggRow] = []
-    for key, group in groups.items():
-        firm, work, name, field_name = key
-        uniq: dict[int, TaskRec] = {t.task_id: t for t in group}
-        members = list(uniq.values())
-        if with_field:
-            area = 0.0
-            durations = []
-            l_ha_vals = []
-            l_km_vals = []
-            width_vals = []
-            for task in members:
-                parts = [p for p in task.parts if p.firm == firm and p.field == field_name]
-                area += sum(p.area for p in parts)
-                dist = sum(p.distance_m for p in parts)
-                liters = sum(p.liters for p in parts)
-                track = sum(p.track_ha for p in parts)
-                durations.append(task.duration_s)
-                if task.l_ha is not None:
-                    l_ha_vals.append(task.l_ha)
-                if dist > 0:
-                    l_km_vals.append(liters / (dist / 1000.0))
-                coef = _coef(track, dist, task.width_m)
-                if coef is not None:
-                    width_vals.append(coef)
-        else:
-            area = 0.0
-            for task in members:
-                area += sum(p.area for p in task.parts if p.firm == firm)
-            durations = [t.duration_s for t in members]
-            l_ha_vals = [t.l_ha for t in members if t.l_ha is not None]
-            l_km_vals = [t.l_km for t in members if t.l_km is not None]
-            width_vals = [t.width_coef for t in members if t.width_coef is not None]
-        if area <= 0.005:
+
+def _accumulate(units: list[Unit], *, with_field: bool, attr: str) -> list[AggRow]:
+    groups: dict[tuple, list[Unit]] = defaultdict(list)
+    for unit in units:
+        name = getattr(unit, attr)
+        if attr == "driver" and not name:
             continue
-        dur_min = min(durations) if durations else 0.0
-        dur_max = max(durations) if durations else 0.0
-        dur_sum = sum(durations)
-        rows.append(AggRow(
-            firm=firm,
-            work=work,
-            name=name,
-            field=field_name,
-            tasks=len(members),
-            area=area,
-            l_ha=_mean(l_ha_vals),
-            l_km=_mean(l_km_vals),
-            width=_mean(width_vals),
-            dur_min=dur_min,
-            dur_max=dur_max,
-            dur_sum=dur_sum,
-            output=(area / len(members)) if members else None,
-        ))
+        key = (unit.firm, unit.work, name, unit.field if with_field else "")
+        groups[key].append(unit)
+    rows = [
+        _row_from_units(group, firm=key[0], work=key[1], name=key[2], field_name=key[3])
+        for key, group in groups.items()
+    ]
     return rows
 
 
-def _with_totals(rows: list[AggRow], tasks: list[TaskRec], *, with_field: bool, name_of) -> list[AggRow]:
-    """Итоги считаются по заданиям, каждое задание — один вес, как в образце."""
+def _with_totals(rows: list[AggRow], units: list[Unit], *, attr: str) -> list[AggRow]:
+    """Итог — среднее по строкам площади, каждая строка один вес."""
+    usable = [u for u in units if attr != "driver" or u.driver]
     data = sorted(rows, key=lambda r: (r.firm, r.work, r.name, r.field))
     by_firm_work: dict[tuple[str, str], list[AggRow]] = defaultdict(list)
     for row in data:
         by_firm_work[(row.firm, row.work)].append(row)
 
-    def task_pool(firm: str, work: str | None) -> list[TaskRec]:
-        found: dict[int, TaskRec] = {}
-        for task in tasks:
-            if work is not None and task.work != work:
-                continue
-            if any(p.firm == firm for p in task.parts):
-                found[task.task_id] = task
-        return list(found.values())
-
-    def total_row(firm: str, work: str, pool: list[TaskRec], kind: str, label_firm: str, label_work: str) -> AggRow:
-        if with_field:
-            area = sum(p.area for t in pool for p in t.parts if p.firm == firm and (work == "" or t.work == work))
-        else:
-            area = sum(p.area for t in pool for p in t.parts if p.firm == firm)
-        durations = [t.duration_s for t in pool]
-        return AggRow(
-            firm=label_firm,
-            work=label_work,
-            name="",
-            field="",
-            tasks=len(pool),
-            area=area,
-            l_ha=_mean([t.l_ha for t in pool if t.l_ha is not None]),
-            l_km=_mean([t.l_km for t in pool if t.l_km is not None]),
-            width=_mean([t.width_coef for t in pool if t.width_coef is not None]),
-            dur_min=min(durations) if durations else 0.0,
-            dur_max=max(durations) if durations else 0.0,
-            dur_sum=sum(durations),
-            output=(area / len(pool)) if pool else None,
-            kind=kind,
-        )
+    def pool(firm: str, work: str | None) -> list[Unit]:
+        return [
+            u for u in usable
+            if u.firm == firm and (work is None or u.work == work)
+        ]
 
     firms = sorted({r.firm for r in data})
     out: list[AggRow] = []
-    grand_pool: dict[int, TaskRec] = {}
     for firm in firms:
         works = sorted({w for f, w in by_firm_work if f == firm})
-        firm_pool = task_pool(firm, None)
-        for task in firm_pool:
-            grand_pool[task.task_id] = task
         for work in works:
             out.extend(by_firm_work[(firm, work)])
-            out.append(total_row(firm, work, task_pool(firm, work), "work", "", f"Всего ({work})"))
-        out.append(total_row(firm, "", firm_pool, "firm", f"Всего ({firm})", ""))
-    all_tasks = list(grand_pool.values())
-    area = sum(t.area for t in all_tasks)
-    durations = [t.duration_s for t in all_tasks]
-    out.append(AggRow(
-        firm="Итого",
-        work="",
-        name="",
-        field="",
-        tasks=len(all_tasks),
-        area=area,
-        l_ha=_mean([t.l_ha for t in all_tasks if t.l_ha is not None]),
-        l_km=_mean([t.l_km for t in all_tasks if t.l_km is not None]),
-        width=_mean([t.width_coef for t in all_tasks if t.width_coef is not None]),
-        dur_min=min(durations) if durations else 0.0,
-        dur_max=max(durations) if durations else 0.0,
-        dur_sum=sum(durations),
-        output=(area / len(all_tasks)) if all_tasks else None,
-        kind="grand",
+            out.append(_row_from_units(
+                pool(firm, work), firm="", work=f"Всего ({work})", name="", field_name="", kind="work",
+            ))
+        out.append(_row_from_units(
+            pool(firm, None), firm=f"Всего ({firm})", work="", name="", field_name="", kind="firm",
+        ))
+    out.append(_row_from_units(
+        usable, firm="Итого", work="", name="", field_name="", kind="grand",
     ))
     return out
 
@@ -788,16 +655,16 @@ MACHINE_HEADERS = [
 MACHINE_HEADERS_HIRED = [h for h in MACHINE_HEADERS if "л/км" not in h]
 
 
-def write_workbook(path: Path, tasks: list[TaskRec], win_lo: datetime, win_hi: datetime) -> None:
+def write_workbook(path: Path, units: list[Unit], win_lo: datetime, win_hi: datetime) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    own = [t for t in tasks if not t.hired]
-    hired = [t for t in tasks if t.hired]
+    own = [t for t in units if not t.hired]
+    hired = [t for t in units if t.hired]
 
-    def pack(subset: list[TaskRec], *, with_field: bool, name_of) -> list[AggRow]:
-        rows = _accumulate(subset, with_field=with_field, name_of=name_of)
-        return _with_totals(rows, subset, with_field=with_field, name_of=name_of)
+    def pack(subset: list[Unit], *, with_field: bool, attr: str) -> list[AggRow]:
+        rows = _accumulate(subset, with_field=with_field, attr=attr)
+        return _with_totals(rows, subset, attr=attr)
 
     wb = Workbook()
     intro = wb.active
@@ -810,28 +677,27 @@ def write_workbook(path: Path, tasks: list[TaskRec], win_lo: datetime, win_hi: d
         f"{(win_hi - timedelta(minutes=1)).strftime('%d.%m.%Y %-H:%M')}"
     )
     intro["A4"] = (
-        "л/га и л/км — литры в поле (fuel_consumption − fuel_consumption_on_road) "
-        "на гектар covered_area и на километр work_distance. "
-        "Итог по группе — среднее этих коэффициентов по заданиям. "
-        "Выработка за смену — площадь / число заданий. "
+        "Одна строка площади machine_task_field_mapping_items — одно «задание». "
+        "л/га — fuel_consumption_per_ha этой строки, л/км — её fuel_consumption / work_distance. "
+        "Итог группы — среднее по строкам. Выработка за смену — площадь / число строк. "
         "Наёмные: machine_group_id = 7, колонки л/км нет."
     )
     intro.column_dimensions["A"].width = 28
     intro.column_dimensions["B"].width = 80
 
     ws1 = wb.create_sheet("1")
-    _write_block(ws1, 2, "Собственные машины", DRIVER_HEADERS_OWN, pack(own, with_field=False, name_of=lambda t: t.driver), with_field=False, with_lkm=True, with_output=False)
-    _write_block(ws1, 14, "Наёмные машины", DRIVER_HEADERS_HIRED, pack(hired, with_field=False, name_of=lambda t: t.driver), with_field=False, with_lkm=False, with_output=False)
+    _write_block(ws1, 2, "Собственные машины", DRIVER_HEADERS_OWN, pack(own, with_field=False, attr="driver"), with_field=False, with_lkm=True, with_output=False)
+    _write_block(ws1, 14, "Наёмные машины", DRIVER_HEADERS_HIRED, pack(hired, with_field=False, attr="driver"), with_field=False, with_lkm=False, with_output=False)
 
     ws2 = wb.create_sheet("2")
-    _write_block(ws2, 2, "Машины всего в разрезе полей", MACHINE_FIELD_HEADERS, pack(tasks, with_field=True, name_of=lambda t: t.machine), with_field=True, with_lkm=True, with_output=True)
-    _write_block(ws2, 16, "Собственные машины в разрезе полей", MACHINE_FIELD_HEADERS, pack(own, with_field=True, name_of=lambda t: t.machine), with_field=True, with_lkm=True, with_output=True)
-    _write_block(ws2, 30, "Наёмные машины в разрезе полей", MACHINE_FIELD_HEADERS_HIRED, pack(hired, with_field=True, name_of=lambda t: t.machine), with_field=True, with_lkm=False, with_output=True)
+    _write_block(ws2, 2, "Машины всего в разрезе полей", MACHINE_FIELD_HEADERS, pack(units, with_field=True, attr="machine"), with_field=True, with_lkm=True, with_output=True)
+    _write_block(ws2, 16, "Собственные машины в разрезе полей", MACHINE_FIELD_HEADERS, pack(own, with_field=True, attr="machine"), with_field=True, with_lkm=True, with_output=True)
+    _write_block(ws2, 30, "Наёмные машины в разрезе полей", MACHINE_FIELD_HEADERS_HIRED, pack(hired, with_field=True, attr="machine"), with_field=True, with_lkm=False, with_output=True)
 
     ws3 = wb.create_sheet("3")
-    _write_block(ws3, 2, "Машины всего без полей", MACHINE_HEADERS, pack(tasks, with_field=False, name_of=lambda t: t.machine), with_field=False, with_lkm=True, with_output=True)
-    _write_block(ws3, 15, "Собственные машины без полей", MACHINE_HEADERS, pack(own, with_field=False, name_of=lambda t: t.machine), with_field=False, with_lkm=True, with_output=True)
-    _write_block(ws3, 28, "Наёмные машины без полей", MACHINE_HEADERS_HIRED, pack(hired, with_field=False, name_of=lambda t: t.machine), with_field=False, with_lkm=False, with_output=True)
+    _write_block(ws3, 2, "Машины всего без полей", MACHINE_HEADERS, pack(units, with_field=False, attr="machine"), with_field=False, with_lkm=True, with_output=True)
+    _write_block(ws3, 15, "Собственные машины без полей", MACHINE_HEADERS, pack(own, with_field=False, attr="machine"), with_field=False, with_lkm=True, with_output=True)
+    _write_block(ws3, 28, "Наёмные машины без полей", MACHINE_HEADERS_HIRED, pack(hired, with_field=False, attr="machine"), with_field=False, with_lkm=False, with_output=True)
 
     for ws in (ws1, ws2, ws3):
         ws.auto_filter.ref = None
@@ -1006,14 +872,14 @@ def main() -> None:
     field_firms = build_firms(fields, field_groups, folders)
     print(f"полей с агрофирмой: {len(field_firms)} из {len(field_names)}", flush=True)
 
-    records = build_tasks(
+    records = build_units(
         tasks_raw, mtfmi,
         win_lo=win_lo, win_hi=win_hi, work_names=work_map,
         machines=machines, users=users, implements=implements,
         field_names=field_names, field_firms=field_firms,
     )
     print(
-        f"заданий в сводке: {len(records)}, своих {sum(not t.hired for t in records)}, "
+        f"строк площади в сводке: {len(records)}, своих {sum(not t.hired for t in records)}, "
         f"наёмных {sum(t.hired for t in records)}",
         flush=True,
     )

@@ -184,6 +184,30 @@ def test_fertilizer_still_keeps_one_newer_crop() -> None:
     assert sum(rows.values()) == 100.0
 
 
+def test_fact_keeps_crops_outside_the_plan_for_three_operations() -> None:
+    from importlib import import_module
+    from unittest.mock import patch
+
+    m = import_module("2_main_ideal_compact")
+
+    def only_planned(_group: str, crop: str):
+        if crop == "Рапс озимый":
+            return None
+        return crop
+
+    with patch.object(m, "crop_code_for_report", only_planned):
+        for group in (
+            "2.1 Боронование",
+            "2.11 Культивация",
+            "2.8 Глубокорыхление",
+        ):
+            assert m.fact_crop_code(group, "Аксу-Агро", "Рапс озимый") == "Иные культуры"
+            assert m.fact_crop_code(group, "Аксу-Агро", "Соя") == "Соя"
+        assert m.fact_crop_code("3.1 Опрыскивание", "Аксу-Агро", "Рапс озимый") is None
+        with patch.object(m, "is_crop_user_excluded", lambda *_a, **_k: True):
+            assert m.fact_crop_code("2.11 Культивация", "Аксу-Агро", "Рапс озимый") is None
+
+
 def test_winter_crop_comes_from_the_later_season() -> None:
     from importlib import import_module
 
@@ -206,5 +230,6 @@ if __name__ == "__main__":
     test_other_year_is_not_this_operation()
     test_winter_crop_comes_from_the_later_season()
     test_harrow_cultivation_and_deep_add_both_seasons()
+    test_fact_keeps_crops_outside_the_plan_for_three_operations()
     test_fertilizer_still_keeps_one_newer_crop()
     print("ok")

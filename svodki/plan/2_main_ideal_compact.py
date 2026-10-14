@@ -254,6 +254,7 @@ HARVEST_VEG_CROP_ORDER = ("Картофель", "Морковь", "Свекла 
 # (поле может выпасть из field_to_crop, напр. озимая пшеница 2027 без sowing_date).
 FACT_BY_ALL_FIELDS_GROUPS = frozenset({
     BORON_GROUP_NAME,
+    CULTIVATION_GROUP_NAME,
     ROLLING_GROUP_NAME,
     SEEDING_GROUP_NAME,
 })
@@ -659,6 +660,7 @@ def _widest_machine_tasks_window() -> tuple[str, str]:
         DEEP_GROUP_NAME,
         DISK_GROUP_NAME,
         CULTIVATION_GROUP_NAME,
+        BORON_GROUP_NAME,
     ):
         group_start = _editor_period_for_group(group_name, START_DATE)[0]
         if group_start < start_d:
@@ -1305,6 +1307,25 @@ _KEEP_UNLISTED_ACCOUNTED = frozenset({
     CULTIVATION_GROUP_NAME,
     DEEP_GROUP_NAME,
 })
+
+
+def fact_crop_code(group_name: str, firm: str, crop: str) -> str | None:
+    """Культура в колонке «Выполнено». None — гектары этой строки не входят.
+
+    Боронование, культивация и глубокорыхление сходятся с полной площадью
+    операции за выбранные сезоны: культура вне плана остаётся в итоге.
+    Явное «Не учитывать» в редакторе по-прежнему выбрасывает гектары.
+    """
+    coded = crop_code_for_report(group_name, crop)
+    if coded is not None:
+        return coded
+    if group_name not in _KEEP_UNLISTED_ACCOUNTED:
+        return None
+    if is_crop_user_excluded(group_name, firm, crop):
+        return None
+    if other_crops_as_rows(group_name):
+        return crop
+    return OTHER_CROP_CODE
 
 
 def _accounted_crop_label(group_name: str, raw: str, firm: str = "") -> str | None:
@@ -2598,11 +2619,13 @@ def _prepare_group_selection(
             active_firm_map = "field_to_firm"
             active_available_ids = "period_available_ids"
             group_period_start, group_period_end = _merged_period_for_group(group_name, START_DATE)
-        # Боронование — как new/4.main.py (не hourly, сезон с 01.01, только задания с covered_area>0).
+        # Боронование считает covered_area, как отчёт 4. Старт не позже 01.01
+        # года отчёта, но выбранные сезоны (например 2026+2027 с 01.07.2025)
+        # окно не обрезают: иначе осенние гектары сезона выпадают из «Выполнено».
         use_report4_boron_logic = group_name == BORON_GROUP_NAME
         own_ranges = bool(resolve_group_season_config(group_name, TODAY).get("has_own_ranges"))
         if use_report4_boron_logic and not own_ranges:
-            group_period_start = date(TODAY.year, 1, 1)
+            group_period_start = min(group_period_start, date(TODAY.year, 1, 1))
             group_period_end = TODAY
         # Один сезон в редакторе (календарь до 01.07) не должен обнулять факт
         # после этой даты. Сводки 1 и 6 режут machine_task.season и считают
@@ -3437,7 +3460,7 @@ def collect_work_data(
                         else:
                             crop = OTHER_CROP_CODE
                     elif crop:
-                        coded = crop_code_for_report(group_name, crop)
+                        coded = fact_crop_code(group_name, firm, crop)
                         if coded is None:
                             continue
                         crop = coded
@@ -3581,7 +3604,7 @@ def collect_work_data(
                         else:
                             crop = OTHER_CROP_CODE
                     elif crop:
-                        coded = crop_code_for_report(group_name, crop)
+                        coded = fact_crop_code(group_name, firm, crop)
                         if coded is None:
                             continue
                         crop = coded
