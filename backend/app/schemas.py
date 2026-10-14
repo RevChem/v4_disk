@@ -357,6 +357,34 @@ class PlansEditorCalendarSeasonsUpdateIn(BaseModel):
     calendar_seasons: dict[str, PlansEditorCalendarSeasonEntryIn] = Field(default_factory=dict)
 
 
+class CropwiseSeasonHaIn(BaseModel):
+    group_name: str = Field(min_length=1, max_length=300)
+
+
+class CropwiseSeasonFirmOut(BaseModel):
+    firm: str
+    ha: float
+
+
+class CropwiseSeasonYearOut(BaseModel):
+    year: int
+    status: str
+    total_ha: float | None = None
+    column: str | None = None
+    by_firm: list[CropwiseSeasonFirmOut] = Field(default_factory=list)
+    note: str = ""
+
+
+class CropwiseSeasonHaOut(BaseModel):
+    group_name: str
+    years: list[int]
+    period_start: str
+    period_end: str
+    window_from: str
+    window_to: str
+    seasons: list[CropwiseSeasonYearOut]
+
+
 class PlansEditorOut(BaseModel):
     sections: list[PlansEditorSectionOut]
     work_groups: list[str]

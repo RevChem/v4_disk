@@ -28,7 +28,10 @@ from app.legacy.plans_editor import (
     sync_hardcoded_plan_to_file,
 )
 from app.legacy.season_meta import set_calendar_seasons, set_season_range_override
+from app.application.cropwise_season_ha import cropwise_season_hectares
 from app.schemas import (
+    CropwiseSeasonHaIn,
+    CropwiseSeasonHaOut,
     PlansEditPresenceIn,
     PlansEditPresenceOut,
     PlansEditorCalendarSeasonsUpdateIn,
@@ -261,3 +264,17 @@ def update_plans_editor_season_range(
         clear=bool(payload.clear),
     )
     return get_editor_state(summary_date)
+
+
+@router.post("/cropwise-season", response_model=CropwiseSeasonHaOut)
+def post_cropwise_season_hectares(
+    payload: CropwiseSeasonHaIn,
+    summary_date: date | None = Query(default=None),
+    _: object = Depends(require_plans_access),
+):
+    """Гектары операции за сезоны редактора планов. work.json запрашивается заново."""
+    report_date = summary_date or date.today()
+    try:
+        return cropwise_season_hectares(payload.group_name, report_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

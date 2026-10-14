@@ -564,6 +564,15 @@ export async function updatePlansEditorSeasonRange(
   return data;
 }
 
+export async function fetchPlansCropwiseSeason(groupName, summaryDate = null) {
+  const { data } = await api.post(
+    "/plans-editor/cropwise-season",
+    { group_name: groupName },
+    { params: summaryDate ? { summary_date: summaryDate } : undefined, timeout: 180_000 }
+  );
+  return data;
+}
+
 export async function updatePlansEditorCalendarSeasons({ calendar_seasons }, summaryDate = null) {
   const { data } = await api.put(
     "/plans-editor/calendar-seasons",
