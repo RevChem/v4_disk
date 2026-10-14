@@ -171,6 +171,37 @@ def list_summary_cell_edits(store: dict[str, Any], summary_id: int) -> list[dict
     return [row for row in edits if isinstance(row, dict)]
 
 
+def _find_overlapping_edit(
+    edits: list[dict[str, Any]],
+    *,
+    page: int,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+) -> dict[str, Any] | None:
+    """Правка на той же странице, внутрь которой попадает центр новой ячейки."""
+    cx = left + width / 2.0
+    cy = top + height / 2.0
+    best: dict[str, Any] | None = None
+    best_dist = None
+    for row in edits:
+        if _int_or_default(row.get("page"), 1) != page:
+            continue
+        rl = _float_or_default(row.get("left"), 0.0)
+        rt = _float_or_default(row.get("top"), 0.0)
+        rw = _float_or_default(row.get("width"), 0.01)
+        rh = _float_or_default(row.get("height"), 0.02)
+        tol_x = max(0.003, rw * 0.5)
+        tol_y = max(0.002, rh * 0.5)
+        if not (rl - tol_x <= cx <= rl + rw + tol_x and rt - tol_y <= cy <= rt + rh + tol_y):
+            continue
+        dist = abs(cx - (rl + rw / 2.0)) + abs(cy - (rt + rh / 2.0))
+        if best is None or dist < best_dist:
+            best, best_dist = row, dist
+    return best
+
+
 def upsert_summary_cell_edit(
     store: dict[str, Any],
     summary_id: int,
@@ -204,6 +235,26 @@ def upsert_summary_cell_edit(
         if str(row.get("cell_key", "")) == key:
             existing = row
             break
+    if existing is None:
+        # Повторная правка по уже заменённому значению: PDF в редакторе показывает новый текст,
+        # у него другой cell_key. Это та же ячейка — перезаписываем старую правку, а не
+        # добавляем вторую поверх. Исходный текст и координаты берём из первой правки.
+        existing = _find_overlapping_edit(
+            edits,
+            page=max(1, _int_or_default(page, 1)),
+            left=_float_or_default(left, 0.0),
+            top=_float_or_default(top, 0.0),
+            width=_float_or_default(width, 0.01),
+            height=_float_or_default(height, 0.02),
+        )
+        if existing is not None:
+            key = str(existing.get("cell_key") or key)
+            page = existing.get("page", page)
+            left = existing.get("left", left)
+            top = existing.get("top", top)
+            width = existing.get("width", width)
+            height = existing.get("height", height)
+            cell_text = str(existing.get("cell_text") or cell_text)
     fill = str(fill_color or "").strip() or str((existing or {}).get("fill_color") or "").strip()
     tcolor = str(text_color or "").strip() or str((existing or {}).get("text_color") or "").strip()
     payload = {

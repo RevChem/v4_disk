@@ -337,6 +337,110 @@ def _fit_font_size(
     return min_size
 
 
+def _edit_rect_pdf_top_left(row: dict[str, Any], page_w: float, page_h: float) -> tuple[float, float, float, float]:
+    """Прямоугольник правки в координатах PyMuPDF (origin сверху), пункты."""
+    left = _clamp01(float(row.get("left", 0.0)))
+    top = _clamp01(float(row.get("top", 0.0)))
+    width = max(0.001, float(row.get("width", 0.01)))
+    height = max(0.001, float(row.get("height", 0.02)))
+    return left * page_w, top * page_h, (left + width) * page_w, (top + height) * page_h
+
+
+def _superseded_edit_ids(rows: list[dict[str, Any]], page_w: float, page_h: float) -> set[int]:
+    """Индексы правок, чей текст перекрыт более новой правкой того же места.
+
+    Раньше повторная правка ячейки (по уже заменённому тексту) сохранялась отдельной строкой,
+    и обе замены рисовались друг на друге. Рисуем только самую новую.
+    """
+    order = sorted(range(len(rows)), key=lambda i: str(rows[i].get("updated_at") or ""))
+    dead: set[int] = set()
+    for pos, i in enumerate(order):
+        ax0, ay0, ax1, ay1 = _edit_rect_pdf_top_left(rows[i], page_w, page_h)
+        for j in order[pos + 1 :]:
+            bx0, by0, bx1, by1 = _edit_rect_pdf_top_left(rows[j], page_w, page_h)
+            cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+            tol_x = max(2.0, (ax1 - ax0) * 0.5)
+            tol_y = max(1.5, (ay1 - ay0) * 0.5)
+            if ax0 - tol_x <= cx <= ax1 + tol_x and ay0 - tol_y <= cy <= ay1 + tol_y:
+                dead.add(i)
+                break
+    return dead
+
+
+def _strip_original_text(base_pdf_path: Path, page_map: dict[int, list[dict[str, Any]]]) -> Path | None:
+    """Физически удалить исходный текст редактируемых ячеек из копии PDF.
+
+    Раньше исходное значение только закрашивалось прямоугольником и оставалось в файле
+    под новым («1», поверх которой «0»). Здесь глифы вырезаются из потока содержимого
+    страницы (redaction без заливки), линии сетки и картинки не трогаем.
+    Возвращает путь к временной копии или None, если удалить не удалось.
+    """
+    try:
+        import fitz
+    except Exception:
+        return None
+    out = base_pdf_path.with_suffix(".stripped.tmp.pdf")
+    doc = None
+    try:
+        doc = fitz.open(str(base_pdf_path))
+        touched = False
+        for page_no, rows in page_map.items():
+            if not (1 <= page_no <= doc.page_count):
+                continue
+            page = doc[page_no - 1]
+            pw, ph = float(page.rect.width), float(page.rect.height)
+            for row in rows:
+                x0, y0, x1, y1 = _edit_rect_pdf_top_left(row, pw, ph)
+                # pdf.js отдаёт рамку по базовой линии; даём запас по краям.
+                probe = fitz.Rect(x0 - 1.5, y0 - 2.0, x1 + 1.5, y1 + 2.5) & page.rect
+                if probe.is_empty:
+                    continue
+                found = False
+                raw = page.get_text("rawdict", clip=probe)
+                for block in raw.get("blocks", []) or []:
+                    if int(block.get("type", 0) or 0) != 0:
+                        continue
+                    for line in block.get("lines", []) or []:
+                        for span in line.get("spans", []) or []:
+                            for ch in span.get("chars", []) or []:
+                                if not str(ch.get("c") or "").strip():
+                                    continue
+                                bb = fitz.Rect(ch.get("bbox") or (0, 0, 0, 0))
+                                cx, cy = (bb.x0 + bb.x1) / 2.0, (bb.y0 + bb.y1) / 2.0
+                                if not (probe.x0 <= cx <= probe.x1 and probe.y0 <= cy <= probe.y1):
+                                    continue
+                                # Чуть сжимаем бокс символа, чтобы не задеть соседей.
+                                shrink_x, shrink_y = bb.width * 0.2, bb.height * 0.2
+                                tight = fitz.Rect(
+                                    bb.x0 + shrink_x, bb.y0 + shrink_y, bb.x1 - shrink_x, bb.y1 - shrink_y
+                                )
+                                page.add_redact_annot(tight, fill=False)
+                                found = True
+                if not found:
+                    # Символы не нашлись (текст — картинка/контуры): режем по центру рамки.
+                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                    page.add_redact_annot(fitz.Rect(cx - 0.5, cy - 0.5, cx + 0.5, cy + 0.5), fill=False)
+            page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_NONE,
+                graphics=getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0),
+                text=getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0),
+            )
+            touched = True
+        if not touched:
+            return None
+        doc.save(str(out), garbage=3, deflate=True)
+        return out
+    except Exception:
+        out.unlink(missing_ok=True)
+        return None
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+
+
 def apply_cell_edits_to_pdf(
     *,
     target_pdf_path: Path,
@@ -371,8 +475,12 @@ def apply_cell_edits_to_pdf(
         if page < 1:
             page = 1
         page_map[page].append(row)
+    for rows_on_page in page_map.values():
+        # Новые правки рисуем последними — они должны лежать сверху.
+        rows_on_page.sort(key=lambda r: str(r.get("updated_at") or ""))
 
-    reader = PdfReader(str(base_pdf_path))
+    stripped_pdf = _strip_original_text(base_pdf_path, page_map)
+    reader = PdfReader(str(stripped_pdf or base_pdf_path))
     writer = PdfWriter()
 
     fitz_doc = None
@@ -397,7 +505,8 @@ def apply_cell_edits_to_pdf(
             if fitz_doc is not None and 0 <= idx - 1 < fitz_doc.page_count:
                 fitz_page = fitz_doc[idx - 1]
 
-            for row in rows:
+            dead_rows = _superseded_edit_ids(rows, w, h)
+            for row_idx, row in enumerate(rows):
                 left = _clamp01(float(row.get("left", 0.0)))
                 top = _clamp01(float(row.get("top", 0.0)))
                 width = max(0.001, float(row.get("width", 0.01)))
@@ -524,7 +633,7 @@ def apply_cell_edits_to_pdf(
                     c.setFillColor(white)
                 c.rect(x0, y0, box_w, box_h, stroke=0, fill=1)
 
-                if not text:
+                if not text or row_idx in dead_rows:
                     continue
 
                 max_size = max(5.0, min(14.0, target_font + 0.5))
@@ -565,6 +674,8 @@ def apply_cell_edits_to_pdf(
             writer.write(fh)
         tmp.replace(target_pdf_path)
     finally:
+        if stripped_pdf is not None:
+            stripped_pdf.unlink(missing_ok=True)
         if fitz_doc is not None:
             try:
                 fitz_doc.close()

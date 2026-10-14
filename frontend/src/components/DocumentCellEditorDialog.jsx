@@ -13,7 +13,6 @@ import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
@@ -25,6 +24,28 @@ import {
   summaryIsExcel
 } from "../api";
 import { parsePdfCellsFromUrl } from "../utils/pdfCellParser";
+
+/** Правка, относящаяся к этой ячейке: по ключу или по тому же месту на странице
+ * (после замены в PDF у ячейки уже другой текст и другой ключ). */
+function findEditForCell(edits, cell) {
+  if (!cell) return null;
+  const byKey = edits.find((row) => String(row.cell_key) === String(cell.cellKey));
+  if (byKey) return byKey;
+  const cx = Number(cell.leftPct) + Number(cell.widthPct) / 2;
+  const cy = Number(cell.topPct) + Number(cell.heightPct) / 2;
+  return (
+    edits.find((row) => {
+      if (Number(row.page) !== Number(cell.page)) return false;
+      const l = Number(row.left);
+      const t = Number(row.top);
+      const w = Number(row.width);
+      const h = Number(row.height);
+      const tx = Math.max(0.003, w * 0.5);
+      const ty = Math.max(0.002, h * 0.5);
+      return cx >= l - tx && cx <= l + w + tx && cy >= t - ty && cy <= t + h + ty;
+    }) || null
+  );
+}
 
 export default function DocumentCellEditorDialog({
   open,
@@ -44,10 +65,12 @@ export default function DocumentCellEditorDialog({
   const [inputOpen, setInputOpen] = useState(false);
   const [replacementText, setReplacementText] = useState("");
   const loadTokenRef = useRef(0);
+  const editingKeyRef = useRef("");
+  const suppressBlurRef = useRef(false);
 
   const title = summaryItem?.title || "Сводка";
 
-  const loadEditor = useCallback(async () => {
+  const loadEditor = useCallback(async (silent = false) => {
     if (!summaryItem?.id) return;
     if (summaryIsExcel(summaryItem)) {
       setError("Правки ячеек доступны только для PDF.");
@@ -59,9 +82,11 @@ export default function DocumentCellEditorDialog({
     loadTokenRef.current = loadToken;
     const isStale = () => loadTokenRef.current !== loadToken;
 
-    setLoading(true);
-    setError("");
-    setSuccess("");
+    if (!silent) {
+      setLoading(true);
+      setError("");
+      setSuccess("");
+    }
     try {
       const baseUrl = getPreviewUrl(summaryItem, accessToken);
       const previewUrl =
@@ -85,7 +110,7 @@ export default function DocumentCellEditorDialog({
         setEdits([]);
       }
     } finally {
-      if (!isStale()) setLoading(false);
+      if (!isStale() && !silent) setLoading(false);
     }
   }, [summaryItem, accessToken]);
 
@@ -100,13 +125,29 @@ export default function DocumentCellEditorDialog({
     };
   }, [open, loadEditor]);
 
-  function onCellClick(cell) {
-    setSelectedCell(cell);
-    const existing = edits.find((row) => String(row.cell_key) === String(cell.cellKey));
+  function startEdit(cell, editsList = edits) {
+    const existing = findEditForCell(editsList, cell);
+    // Для уже изменённой ячейки исходное значение берём из правки, а не из текущего PDF.
+    const normalized = existing ? { ...cell, cellText: existing.cell_text || cell.cellText } : cell;
+    editingKeyRef.current = String(cell.cellKey);
+    suppressBlurRef.current = false;
+    setSelectedCell(normalized);
     setReplacementText(existing?.replacement || cell.cellText || "");
     setInputOpen(true);
     setError("");
     setSuccess("");
+  }
+
+  function closeEdit() {
+    editingKeyRef.current = "";
+    setInputOpen(false);
+    setSelectedCell(null);
+  }
+
+  function onCellClick(cell) {
+    if (saving) return;
+    if (inputOpen && selectedCell && String(selectedCell.cellKey) === String(cell.cellKey)) return;
+    startEdit(cell);
   }
 
   function openEditFromRow(row) {
@@ -131,16 +172,39 @@ export default function DocumentCellEditorDialog({
           textColor: matched.textColor || String(row.text_color || "")
         }
       : fallback;
-    setSelectedCell(cell);
-    setReplacementText(String(row.replacement || cell.cellText || ""));
-    setInputOpen(true);
+    startEdit(cell);
   }
 
-  async function handleSave() {
-    if (!summaryItem?.id || !selectedCell) return;
+  /** Соседняя ячейка в порядке чтения (по строкам, слева направо), в т.ч. на следующей странице. */
+  function neighborCell(cell, dir) {
+    const flat = [];
+    for (const page of pdfPages) {
+      const sorted = [...(page.cells || [])].sort(
+        (a, b) =>
+          Math.round(a.topPct * 250) - Math.round(b.topPct * 250) || a.leftPct - b.leftPct
+      );
+      flat.push(...sorted);
+    }
+    const idx = flat.findIndex((c) => String(c.cellKey) === String(cell.cellKey));
+    if (idx < 0) return null;
+    return flat[idx + dir] || null;
+  }
+
+  /** Сохранить значение из поля. dir: 0 — закрыть, 1/-1 — перейти к следующей/предыдущей ячейке. */
+  async function commitEdit(dir = 0) {
+    if (!summaryItem?.id || !selectedCell || saving) return;
+    const cell = selectedCell;
     const text = String(replacementText || "").trim();
+    const existing = findEditForCell(edits, cell);
+    const current = String(existing ? existing.replacement : cell.cellText || "").trim();
+    const next = dir ? neighborCell(cell, dir) : null;
     if (!text) {
-      setError("Введите новое значение для ячейки.");
+      setError("Значение не может быть пустым.");
+      return;
+    }
+    if (text === current) {
+      if (next) startEdit(next);
+      else if (editingKeyRef.current === String(cell.cellKey)) closeEdit();
       return;
     }
     setSaving(true);
@@ -149,27 +213,45 @@ export default function DocumentCellEditorDialog({
     try {
       const result = await saveSummaryCellEdit({
         summaryId: Number(summaryItem.id),
-        page: selectedCell.page,
-        left: selectedCell.leftPct,
-        top: selectedCell.topPct,
-        width: selectedCell.widthPct,
-        height: selectedCell.heightPct,
-        cellKey: selectedCell.cellKey,
-        cellText: selectedCell.cellText,
+        page: cell.page,
+        left: cell.leftPct,
+        top: cell.topPct,
+        width: cell.widthPct,
+        height: cell.heightPct,
+        cellKey: cell.cellKey,
+        cellText: cell.cellText,
         replacement: text,
-        fillColor: selectedCell.fillColor || "",
-        textColor: selectedCell.textColor || ""
+        fillColor: cell.fillColor || "",
+        textColor: cell.textColor || ""
       });
-      setEdits(Array.isArray(result?.edits) ? result.edits : []);
-      setSuccess("Правка сохранена, PDF обновлён.");
-      setInputOpen(false);
-      setSelectedCell(null);
-      await loadEditor();
+      const newEdits = Array.isArray(result?.edits) ? result.edits : [];
+      setEdits(newEdits);
+      setSuccess("Сохранено, PDF обновлён.");
+      if (next) startEdit(next, newEdits);
+      else if (editingKeyRef.current === String(cell.cellKey)) closeEdit();
+      await loadEditor(true);
       onSaved?.();
     } catch (e) {
       setError(String(e?.response?.data?.detail || e?.message || "Не удалось сохранить правку."));
     } finally {
       setSaving(false);
+    }
+  }
+
+  function onInputKeyDown(event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      suppressBlurRef.current = true;
+      commitEdit(0);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      suppressBlurRef.current = true;
+      commitEdit(event.shiftKey ? -1 : 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressBlurRef.current = true;
+      closeEdit();
     }
   }
 
@@ -186,15 +268,13 @@ export default function DocumentCellEditorDialog({
       setEdits(Array.isArray(result?.edits) ? result.edits : []);
       setSuccess("Правка удалена, PDF пересобран.");
       if (selectedCell) {
-        const still = (result?.edits || []).some(
-          (row) => String(row.cell_key) === String(selectedCell.cellKey)
-        );
+        const still = Boolean(findEditForCell(result?.edits || [], selectedCell));
         if (!still) {
           setInputOpen(false);
           setSelectedCell(null);
         }
       }
-      await loadEditor();
+      await loadEditor(true);
       onSaved?.();
     } catch (e) {
       setError(String(e?.response?.data?.detail || e?.message || "Не удалось удалить правку."));
@@ -232,20 +312,17 @@ export default function DocumentCellEditorDialog({
           <Stack spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
               <Typography variant="body2" color="text.secondary">
-                Кликните по значению на странице и введите замену — исходный текст будет перекрыт новым.
+                Кликните по значению и введите новое. Enter — сохранить, Tab — к следующей ячейке, Esc — отмена. Старое значение удаляется из PDF.
               </Typography>
               <Button
                 size="small"
                 startIcon={<RefreshRoundedIcon />}
-                onClick={loadEditor}
+                onClick={() => loadEditor()}
                 disabled={loading || saving}
               >
                 Обновить
               </Button>
             </Stack>
-
-            {error ? <Alert severity="error">{error}</Alert> : null}
-            {success ? <Alert severity="success">{success}</Alert> : null}
 
             {loading ? (
               <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 4 }}>
@@ -280,37 +357,90 @@ export default function DocumentCellEditorDialog({
                         />
                         <Box sx={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
                           {page.cells.map((cell) => {
-                            const selected = selectedCell?.cellKey === cell.cellKey;
-                            const existing = edits.find(
-                              (row) => String(row.cell_key) === String(cell.cellKey)
-                            );
+                            const editing =
+                              inputOpen && String(selectedCell?.cellKey) === String(cell.cellKey);
+                            const existing = findEditForCell(edits, cell);
+                            const boxLeft = `${cell.leftPct * 100}%`;
+                            const boxTop = `${cell.topPct * 100}%`;
+                            if (editing) {
+                              return (
+                                <Box
+                                  key={cell.cellKey}
+                                  sx={{
+                                    position: "absolute",
+                                    left: boxLeft,
+                                    top: boxTop,
+                                    minWidth: 64,
+                                    width: `${Math.max(0.6, cell.widthPct * 100)}%`,
+                                    height: `${Math.max(1, cell.heightPct * 100)}%`,
+                                    minHeight: 22,
+                                    zIndex: 5,
+                                    pointerEvents: "auto"
+                                  }}
+                                >
+                                  <input
+                                    autoFocus
+                                    value={replacementText}
+                                    onChange={(event) => setReplacementText(event.target.value)}
+                                    onKeyDown={onInputKeyDown}
+                                    onFocus={(event) => event.target.select()}
+                                    onBlur={() => {
+                                      if (suppressBlurRef.current) return;
+                                      commitEdit(0);
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      height: "100%",
+                                      boxSizing: "border-box",
+                                      font: "13px/1 sans-serif",
+                                      textAlign: "center",
+                                      color: "#111827",
+                                      background: "#ffffff",
+                                      border: "2px solid #2563EB",
+                                      borderRadius: 2,
+                                      outline: "none",
+                                      boxShadow: "0 2px 8px rgba(0,0,0,0.25)"
+                                    }}
+                                  />
+                                </Box>
+                              );
+                            }
                             return (
                               <Box
                                 key={cell.cellKey}
                                 onClick={() => onCellClick(cell)}
                                 title={
                                   existing
-                                    ? `${cell.cellText} → ${existing.replacement}`
+                                    ? `${existing.cell_text || cell.cellText} → ${existing.replacement}`
                                     : cell.cellText
                                 }
                                 sx={{
                                   position: "absolute",
-                                  left: `${cell.leftPct * 100}%`,
-                                  top: `${cell.topPct * 100}%`,
+                                  left: boxLeft,
+                                  top: boxTop,
                                   width: `${Math.max(0.6, cell.widthPct * 100)}%`,
                                   height: `${Math.max(1, cell.heightPct * 100)}%`,
-                                  border: selected
-                                    ? "2px solid #22D3EE"
-                                    : existing
-                                      ? "2px solid #16A34A"
-                                      : "1.5px solid rgba(250, 204, 21, 0.88)",
-                                  backgroundColor: selected
-                                    ? "rgba(34,211,238,0.3)"
-                                    : existing
-                                      ? "rgba(22,163,74,0.22)"
-                                      : "rgba(250, 204, 21, 0.2)",
-                                  cursor: "pointer",
-                                  pointerEvents: "auto"
+                                  border: "1px solid transparent",
+                                  borderBottom: existing ? "2px solid #16A34A" : "1px solid transparent",
+                                  cursor: "text",
+                                  pointerEvents: "auto",
+                                  "&::after": existing
+                                    ? {
+                                        content: '""',
+                                        position: "absolute",
+                                        top: -1,
+                                        right: -1,
+                                        width: 0,
+                                        height: 0,
+                                        borderTop: "6px solid #16A34A",
+                                        borderLeft: "6px solid transparent"
+                                      }
+                                    : undefined,
+                                  "&:hover": {
+                                    border: "1px solid #2563EB",
+                                    borderBottom: existing ? "2px solid #16A34A" : "1px solid #2563EB",
+                                    backgroundColor: "rgba(37,99,235,0.12)"
+                                  }
                                 }}
                               />
                             );
@@ -381,72 +511,20 @@ export default function DocumentCellEditorDialog({
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 2, py: 1.5 }}>
+          {/* Статус внизу, чтобы страницы не «прыгали» при каждом сохранении. */}
+          <Typography
+            variant="body2"
+            color={error ? "error" : "success.main"}
+            sx={{ flex: 1, minWidth: 0 }}
+          >
+            {saving ? "Сохранение…" : error || success}
+          </Typography>
           <Button onClick={onClose} disabled={saving}>
             Закрыть
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog
-        open={Boolean(open && inputOpen && selectedCell)}
-        onClose={() => {
-          if (saving) return;
-          setInputOpen(false);
-        }}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Замена значения</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
-            <Typography variant="body2" color="text.secondary">
-              Страница {selectedCell?.page}. Исходное значение:
-            </Typography>
-            <Alert severity="info" sx={{ py: 0.5 }}>
-              {selectedCell?.cellText || "—"}
-            </Alert>
-            <TextField
-              label="Новое значение"
-              value={replacementText}
-              onChange={(event) => setReplacementText(event.target.value)}
-              fullWidth
-              autoFocus
-              multiline
-              minRows={2}
-              disabled={saving}
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            color="inherit"
-            disabled={saving}
-            onClick={() => {
-              setInputOpen(false);
-              setSelectedCell(null);
-            }}
-          >
-            Отмена
-          </Button>
-          {edits.some((row) => String(row.cell_key) === String(selectedCell?.cellKey)) ? (
-            <Button
-              color="error"
-              disabled={saving}
-              onClick={() => {
-                const row = edits.find(
-                  (item) => String(item.cell_key) === String(selectedCell?.cellKey)
-                );
-                if (row?.id) handleDelete(row.id);
-              }}
-            >
-              Удалить правку
-            </Button>
-          ) : null}
-          <Button variant="contained" disabled={saving} onClick={handleSave}>
-            {saving ? "Сохранение…" : "Сохранить в PDF"}
-          </Button>
-        </DialogActions>
-      </Dialog>
     </>
   );
 }
