@@ -3,6 +3,7 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 
 import AiMenuDialog from "./components/AiMenuDialog";
 import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
+import CropwiseSeasonDialog from "./components/CropwiseSeasonDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import TaskFactsDialog from "./components/TaskFactsDialog";
@@ -130,6 +131,7 @@ export default function App() {
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
+  const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
   const [cookieRevision, setCookieRevision] = useState(0);
   const cropwiseActive = cropwiseOn && cropwiseCookie;
   const cropwiseCaption = !cropwiseCookie
@@ -640,7 +642,16 @@ export default function App() {
         showQueueButton={canGenerate}
         cropwise={
           canGenerate
-            ? { active: cropwiseActive, caption: cropwiseCaption, onToggle: toggleCropwise }
+            ? {
+                active: cropwiseActive,
+                caption: cropwiseCaption,
+                onToggle: toggleCropwise,
+                onSeason: () => setSeasonDialogOpen(true),
+                seasonDisabled: !cropwiseCookie,
+                seasonCaption: cropwiseCookie
+                  ? "Посчитать гектары за сезоны из редактора планов"
+                  : "На сервере нет cookie Cropwise",
+              }
             : null
         }
         onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
@@ -705,6 +716,11 @@ export default function App() {
         open={cookieDialogOpen && isDeveloper}
         onClose={() => setCookieDialogOpen(false)}
         onSaved={() => setCookieRevision((value) => value + 1)}
+      />
+      <CropwiseSeasonDialog
+        open={seasonDialogOpen && canGenerate}
+        onClose={() => setSeasonDialogOpen(false)}
+        summaryDate={summaryDate}
       />
       <AiMenuDialog
         open={aiMenuOpen}

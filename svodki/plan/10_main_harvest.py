@@ -58,6 +58,8 @@ from task_area_shared import (
     area_ha_by_shift_date,
     harvest_area_booked_on_close,
     harvest_item_area_for_shift,
+    history_crop_name,
+    named_corn_subtype,
     resolve_corn_subtype,
 )
 from plans import (
@@ -182,9 +184,8 @@ def _field_base_code(name: str | None) -> str:
 
 
 # Канонические названия культур отчёта — сюда сопоставляем текстовое поле
-# "crop" записи Namolot. Кукуруза обрабатывается отдельно (см. ниже) —
-# ей нужно уточнение силос/зерно по данным Cropwise (field_id), которого
-# в самом тексте "crop" нет.
+# "crop" записи Namolot. «Кукуруза на силос» / «на зерно» берутся из текста.
+# Без этой подписи силос/зерно уточняется по полю Cropwise (field_id).
 _CANONICAL_CROP_NAMES: list[str] = [
     "Рапс озимый",
     "Рапс яровой",
@@ -257,7 +258,9 @@ def _canonical_crop_from_namolot_text(crop_text: str | None) -> str | None:
     if not t_norm:
         return None
     if "кукуруз" in t_norm:
-        return "__corn__"
+        # «на силос» / «на зерно» из текста Намолота, как культура строки в сводке 1.
+        # Без подтипа остаётся __corn__: силос/зерно тогда по «Скашиванию» на поле.
+        return named_corn_subtype(t_norm) or "__corn__"
     aliased = _CROP_NAME_ALIASES.get(t_norm)
     if aliased:
         return aliased
@@ -480,8 +483,7 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
         crop_raw = r.get("crop")
         crop = _canonical_crop_from_namolot_text(crop_raw)
         if crop == "__corn__":
-            # Уточнение силос/зерно всё равно требует field_id (Cropwise) —
-            # определяем по операции «Скашивание» на поле, как и раньше.
+            # В тексте нет «на силос» / «на зерно» — по операции «Скашивание» на поле.
             crop = _resolve_corn_subtype("Кукуруза", fid) if fid is not None else None
         if not crop:
             # Картофель, лук и прочие овощи в тексте Namolot не из зернового
@@ -1640,9 +1642,8 @@ def get_field_to_crop() -> dict[int, str]:
     используется для разделения культур с одинаковым work_type_id
     (например, Рапс озимый / Рапс яровой оба имеют wt=145).
 
-    Кукуруза дополнительно разбивается на «на силос» / «на зерно»
-    по признаку операции «Скашивание» на поле (см. _resolve_corn_subtype),
-    а не по названию культуры из history_items/crops.
+    Подпись «Кукуруза на силос» / «Кукуруза на зерно» сохраняется.
+    Кукуруза без подтипа разбивается по операции «Скашивание» на поле.
     """
     global _field_to_crop_cache
     if _field_to_crop_cache is None:
@@ -2045,11 +2046,15 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 firm = cache.field_to_firm.get(fid_i)
                 if not firm:
                     continue
-                # Культура — с поля текущего сезона, как в рабочей 10_main_harvest.
-                # История задания часто пустая или чужая, и тогда подсолнечник
-                # НурлатАгро не попадал в лист «Уборка подсолнечника».
+                # Культура поля — активная история сезона. Подпись строки задания
+                # («Кукуруза на силос») важнее: в сводке 1 гектары садятся по ней,
+                # даже если карта поля сезона пустая или говорит «на зерно».
                 crop = field_to_crop.get(fid_i)
-                if is_mowing:
+                row_crop = history_crop_name(item, "", mowing=is_mowing)
+                explicit = named_corn_subtype(row_crop)
+                if explicit:
+                    crop = explicit
+                elif is_mowing:
                     # «Скашивание с измельчением кукурузы» на поле с кукурузой — это
                     # однозначно «Кукуруза на силос», как бы культура поля ни называлась
                     # («на зерно», «Кукуруза»): метка поля по agro_operations может
@@ -3099,8 +3104,8 @@ _GENERAL_CROP_ORDER_SET: set[str] = set(GENERAL_CROP_ORDER)
 def _get_crop_name_from_op(op: dict) -> str:
     """Извлекает название культуры из записи agro_operation.
 
-    Для кукурузы название дополнительно уточняется до «на силос» / «на зерно»
-    по признаку операции «Скашивание» на поле (см. _resolve_corn_subtype).
+    «На силос» / «на зерно» в названии сохраняются. Без подтипа кукуруза
+    уточняется по операции «Скашивание» на поле (см. _resolve_corn_subtype).
     """
     name = ""
     for key in ("crop_name", "crop_title", "culture_name", "culture_title"):

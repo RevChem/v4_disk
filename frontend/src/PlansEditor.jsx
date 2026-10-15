@@ -23,7 +23,6 @@ import TextField from "@mui/material/TextField";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Typography from "@mui/material/Typography";
-import CropwiseSeasonHa from "./components/CropwiseSeasonHa";
 import PlansSeasonsEditor from "./PlansSeasonsEditor";
 import PlansWorkGroupsEditor from "./PlansWorkGroupsEditor";
 import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
@@ -1450,16 +1449,6 @@ export default function PlansEditor({ summaryDate = null }) {
                     ? " Нажмите «Сохранить сезоны» — «Обновить» не сбрасывает несохранённый выбор."
                     : ""}
                 </Typography>
-                <CropwiseSeasonHa
-                  groupName={workGroup}
-                  summaryDate={summaryDate}
-                  disabled={saving || seasonSelectionDirty}
-                />
-                {seasonSelectionDirty ? (
-                  <Typography variant="caption" color="text.secondary">
-                    Сначала сохраните сезоны — запрос берёт годы и даты из редактора.
-                  </Typography>
-                ) : null}
               </Stack>
             </Paper>
           )}

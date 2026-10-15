@@ -35,13 +35,15 @@ def test_fetch_uses_editor_window_and_splits_years(monkeypatch):
     import proverka.cropwise_ui as ui
     import season_unified
 
-    captured = {}
+    captured = {"calls": []}
 
     def fake_load(cookie, jobs, years=None):
-        captured["cookie"] = cookie
-        captured["years"] = list(years)
-        captured["window"] = (jobs[0].time_from, jobs[0].time_to)
-        captured["wt"] = list(jobs[0].work_type_ids)
+        captured["calls"].append({
+            "years": list(years),
+            "window": (jobs[0].time_from, jobs[0].time_to),
+            "wt": list(jobs[0].work_type_ids),
+            "key": jobs[0].key,
+        })
         return {
             "3.1 Опрыскивание": {
                 2026: {"load_status": "loaded", "body": _body("100,5", "АФ А", "100,5")},
@@ -64,9 +66,9 @@ def test_fetch_uses_editor_window_and_splits_years(monkeypatch):
     monkeypatch.setattr(ui, "load_works_for_seasons", fake_load)
 
     out = sh.fetch_season_hectares("cookie", "3.1 Опрыскивание", REPORT_DATE)
-    assert captured["years"] == [2026, 2027]
-    assert captured["window"] == ("2025-07-01T06:00:00", "2026-10-15T06:00:00")
-    assert captured["wt"] == [64]
+    assert [call["years"] for call in captured["calls"]] == [[2026], [2027]]
+    assert captured["calls"][0]["window"] == ("2025-07-01T06:00:00", "2026-10-15T06:00:00")
+    assert captured["calls"][0]["wt"] == [64]
     assert out["period_start"] == "2025-07-01"
     assert out["seasons"][0]["status"] == "loaded"
     assert out["seasons"][0]["total_ha"] == 100.5

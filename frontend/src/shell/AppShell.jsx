@@ -131,27 +131,50 @@ export default function AppShell({
                 </Stack>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   {cropwise ? (
-                    <Tooltip title={cropwise.caption}>
-                      <Button
-                        size="small"
-                        variant="contained"
-                        onClick={cropwise.onToggle}
-                        sx={{
-                          minWidth: 0,
-                          px: 1,
-                          py: 0.2,
-                          fontSize: "0.75rem",
-                          lineHeight: 1.5,
-                          textTransform: "none",
-                          bgcolor: cropwise.active ? "success.main" : "error.main",
-                          "&:hover": {
-                            bgcolor: cropwise.active ? "success.dark" : "error.dark",
-                          },
-                        }}
-                      >
-                        Cropwise
-                      </Button>
-                    </Tooltip>
+                    <Stack spacing={0.5} alignItems="stretch">
+                      <Tooltip title={cropwise.caption}>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={cropwise.onToggle}
+                          sx={{
+                            minWidth: 0,
+                            px: 1,
+                            py: 0.2,
+                            fontSize: "0.75rem",
+                            lineHeight: 1.5,
+                            textTransform: "none",
+                            bgcolor: cropwise.active ? "success.main" : "error.main",
+                            "&:hover": {
+                              bgcolor: cropwise.active ? "success.dark" : "error.dark",
+                            },
+                          }}
+                        >
+                          Cropwise
+                        </Button>
+                      </Tooltip>
+                      <Tooltip title={cropwise.seasonCaption || "Гектары за сезоны из редактора планов"}>
+                        <span>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            disabled={Boolean(cropwise.seasonDisabled)}
+                            onClick={cropwise.onSeason}
+                            sx={{
+                              minWidth: 0,
+                              width: "100%",
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Cropwise сезон
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </Stack>
                   ) : null}
                   {onCookieOpen ? (
                     <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">

@@ -385,6 +385,11 @@ class CropwiseSeasonHaOut(BaseModel):
     seasons: list[CropwiseSeasonYearOut]
 
 
+class CropwiseSeasonHaListOut(BaseModel):
+    report_date: str
+    groups: list[CropwiseSeasonHaOut]
+
+
 class PlansEditorOut(BaseModel):
     sections: list[PlansEditorSectionOut]
     work_groups: list[str]

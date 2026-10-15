@@ -4,8 +4,9 @@
 Площадь за смену: MTFMI по полям в окне [window_start, window_end),
 затем пропорциональное распределение task.covered_area по агрофирмам.
 
-Кукуруза на силос / на зерно (сводки 10, 14): «Скашивание» (SILAGE_CORN_MOWING_WT_IDS)
-кукурузы учитывается как «Кукуруза на силос», даже если в истории написано «на зерно».
+Кукуруза на силос / на зерно (сводки 10, 13): явная подпись «на силос» или «на зерно»
+сохраняется. «Скашивание» (SILAGE_CORN_MOWING_WT_IDS) кукурузы учитывается как
+«Кукуруза на силос», даже если в истории написано «на зерно».
 """
 from __future__ import annotations
 
@@ -139,14 +140,33 @@ def collect_silage_corn_field_ids(
     return field_ids
 
 
+def named_corn_subtype(crop_name: str | None) -> str | None:
+    """Явная подпись «на силос» / «на зерно». None — в тексте подтипа нет."""
+    folded = str(crop_name or "").casefold().replace("ё", "е")
+    if "кукуруз" not in folded:
+        return None
+    if "силос" in folded:
+        return CORN_SILAGE_CROP
+    if "зерн" in folded:
+        return CORN_GRAIN_CROP
+    return None
+
+
 def resolve_corn_subtype(
     crop_name: str,
     field_id: int | None,
     silage_field_ids: set[int],
 ) -> str:
-    """Кукуруза → «на силос» / «на зерно» по признаку «Скашивание» на поле."""
+    """Кукуруза → «на силос» / «на зерно».
+
+    Подпись «на силос» или «на зерно» не переписывается. Без подтипа поле
+    со «Скашиванием» — силос, иначе зерно.
+    """
     if not crop_name or "кукуруза" not in crop_name.casefold():
         return crop_name
+    named = named_corn_subtype(crop_name)
+    if named:
+        return named
     if field_id is None:
         return crop_name
     return (

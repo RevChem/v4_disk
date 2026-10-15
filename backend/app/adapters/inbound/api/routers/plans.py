@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.adapters.inbound.api.deps import get_client_ip, require_plans_access
+from app.adapters.inbound.api.deps import get_client_ip, require_generate_access, require_plans_access
 from app.application.audit_activity import record_activity
 from app.database import get_db
 from app.infrastructure.logging import get_logger
@@ -28,9 +28,10 @@ from app.legacy.plans_editor import (
     sync_hardcoded_plan_to_file,
 )
 from app.legacy.season_meta import set_calendar_seasons, set_season_range_override
-from app.application.cropwise_season_ha import cropwise_season_hectares
+from app.application.cropwise_season_ha import cropwise_season_hectares, cropwise_season_hectares_all
 from app.schemas import (
     CropwiseSeasonHaIn,
+    CropwiseSeasonHaListOut,
     CropwiseSeasonHaOut,
     PlansEditPresenceIn,
     PlansEditPresenceOut,
@@ -276,5 +277,18 @@ def post_cropwise_season_hectares(
     report_date = summary_date or date.today()
     try:
         return cropwise_season_hectares(payload.group_name, report_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/cropwise-seasons", response_model=CropwiseSeasonHaListOut)
+def post_cropwise_season_hectares_all(
+    summary_date: date | None = Query(default=None),
+    _: object = Depends(require_generate_access),
+):
+    """Гектары всех операций за сезоны редактора планов. work.json запрашивается заново."""
+    report_date = summary_date or date.today()
+    try:
+        return cropwise_season_hectares_all(report_date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
