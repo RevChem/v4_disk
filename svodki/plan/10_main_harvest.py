@@ -184,8 +184,8 @@ def _field_base_code(name: str | None) -> str:
 
 
 # Канонические названия культур отчёта — сюда сопоставляем текстовое поле
-# "crop" записи Namolot. «Кукуруза на силос» / «на зерно» берутся из текста.
-# Без этой подписи силос/зерно уточняется по полю Cropwise (field_id).
+# "crop" записи Namolot. Кукуруза в 1С — «Кукуруза на зерно»; силос/зерно
+# для тонн, как в 1-й сводке, определяется по «Скашиванию» на поле.
 _CANONICAL_CROP_NAMES: list[str] = [
     "Рапс озимый",
     "Рапс яровой",
@@ -258,9 +258,10 @@ def _canonical_crop_from_namolot_text(crop_text: str | None) -> str | None:
     if not t_norm:
         return None
     if "кукуруз" in t_norm:
-        # «на силос» / «на зерно» из текста Намолота, как культура строки в сводке 1.
-        # Без подтипа остаётся __corn__: силос/зерно тогда по «Скашиванию» на поле.
-        return named_corn_subtype(t_norm) or "__corn__"
+        # В 1С кукуруза приходит как «Кукуруза на зерно». В 1-й сводке
+        # силос и зерно для этих тонн берутся по «Скашиванию» на поле,
+        # а не по тексту записи.
+        return "__corn__"
     aliased = _CROP_NAME_ALIASES.get(t_norm)
     if aliased:
         return aliased
@@ -483,7 +484,8 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
         crop_raw = r.get("crop")
         crop = _canonical_crop_from_namolot_text(crop_raw)
         if crop == "__corn__":
-            # В тексте нет «на силос» / «на зерно» — по операции «Скашивание» на поле.
+            # «Кукуруза на зерно» из 1С: силос/зерно по «Скашиванию» на поле,
+            # как в 1-й сводке.
             crop = _resolve_corn_subtype("Кукуруза", fid) if fid is not None else None
         if not crop:
             # Картофель, лук и прочие овощи в тексте Namolot не из зернового

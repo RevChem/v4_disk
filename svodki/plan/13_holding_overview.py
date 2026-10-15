@@ -521,7 +521,7 @@ def build_firm_report(main10, firm_name: str, report_date: date,
             "Доля убранной площади в %": share,
             "Урожайность за сутки (по валовому сбору), т/га": yield_today,
             "Урожайность за сезон (по валовому сбору), т/га": yield_season,
-        })
+            })
 
     if use_cache:
         other_t, other_d = main10.other_crop_area_for_firm(cache, firm_name)
