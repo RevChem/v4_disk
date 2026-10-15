@@ -51,6 +51,7 @@ import {
   generateReports,
   getStoredTokens,
   listGeneratedFiles,
+  startGeneratedFileDownload,
   summaryIsExcel,
 } from "../api";
 import dayjs from "dayjs";
@@ -195,6 +196,19 @@ export default function DashboardPage({
         j.summary_date === summaryDate && (j.status === "pending" || j.status === "running")
     ).length;
     const shouldReload = prevActive > 0 && activeJobsForDate.length === 0;
+    for (const job of generationQueue) {
+      const old = prev.find((item) => item.id === job.id);
+      if (!old || (old.status !== "pending" && old.status !== "running")) continue;
+      if (job.status !== "completed") continue;
+      const excelRows = (job.created || []).filter(
+        (row) => String(row?.report_id) === "28" && row.xlsx_filename
+      );
+      if (!excelRows.length || !job.summary_date) continue;
+      for (const row of excelRows) {
+        startGeneratedFileDownload(job.summary_date, row.xlsx_filename);
+      }
+      setInfo("Сводка 28 готова. Файл Excel скачивается.");
+    }
     prevQueueRef.current = generationQueue;
 
     if (shouldReload) {

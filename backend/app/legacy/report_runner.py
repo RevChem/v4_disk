@@ -326,7 +326,8 @@ def _execute_single_report_to_disk(
     storage_title = _resolve_storage_title(cfg, summary_date)
     report_temp = temp_root / f"{cfg_id}_{uuid.uuid4().hex}"
     report_temp.mkdir(parents=True, exist_ok=True)
-    excel_only = _is_report27_family(cfg_id)
+    # 28 — только Excel: PDF не строим, файл не показываем на панели, его скачивает интерфейс.
+    excel_only = _is_report27_family(cfg_id) or cfg_id == "28"
     job_opts = load_job_options(generation_job_id) if generation_job_id else {}
     r27_cutoff = job_opts.get("report27_cutoff")
     r27_time_from = job_opts.get("report27_time_from")
@@ -380,8 +381,10 @@ def _execute_single_report_to_disk(
         if excel_only:
             if " (Excel)" not in storage_title:
                 storage_title = f"{storage_title} (Excel)"
-            local_logs.append(f"[{cfg.title}] Сводка 27/27.1: сохраняем только Excel, без PDF.")
+            local_logs.append(f"[{cfg.title}] Сохраняем только Excel, без PDF.")
             saved_xlsx = _save_artifact(xlsx_path, summary_date, storage_title, ".xlsx", report_id=cfg_id)
+            if cfg_id == "28":
+                _purge_same_report_files(_output_folder(summary_date), cfg_id, ext=".pdf")
             local_logs.append(f"[{cfg.title}] XLSX: {saved_xlsx.name}")
         else:
             pdf_started = time.monotonic()
@@ -1126,6 +1129,8 @@ def list_generated_files(summary_date: date) -> list[dict[str, str]]:
         if suffix not in {".pdf", ".xlsx"}:
             continue
         rid = _report_id_from_filename(path.name)
+        if rid == "28":
+            continue
         if suffix == ".xlsx":
             pdf_twins = [
                 p
@@ -1164,7 +1169,9 @@ def list_available_dates() -> list[dict[str, str | int]]:
         file_count = sum(
             1
             for p in child.iterdir()
-            if p.is_file() and p.suffix.lower() in {".pdf", ".xlsx"}
+            if p.is_file()
+            and p.suffix.lower() in {".pdf", ".xlsx"}
+            and _report_id_from_filename(p.name) != "28"
         )
         if file_count == 0:
             continue

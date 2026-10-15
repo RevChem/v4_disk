@@ -2207,7 +2207,7 @@ def _execute_resolved_report(
             )
 
         db_started = time.monotonic()
-        publish_immediately = cfg_id not in {"1"}
+        publish_immediately = cfg_id not in {"1", "28"}
         report2_excel_only = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
         report27_excel_only = _is_report27_family(cfg_id)
         report28_excel_only = cfg_id == "28"
