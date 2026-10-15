@@ -11,6 +11,9 @@ from typing import Any
 
 _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
+# Фигуры тоньше этого (пункты) считаем линиями сетки, а не заливкой.
+_THIN_SHAPE_PT = 1.8
+
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -76,6 +79,9 @@ def _find_cell_fill(
             if raw_rect is None:
                 continue
             rect = fitz.Rect(raw_rect)
+            # Тонкие закрашенные полосы — это линии границ, а не заливка ячейки.
+            if min(float(rect.width), float(rect.height)) < _THIN_SHAPE_PT:
+                continue
             inter = rect & probe
             if inter.is_empty:
                 continue
@@ -252,11 +258,14 @@ def _detect_local_span(
                         best = span
         if not best:
             return None
+        origin = best.get("origin") or (0.0, 0.0)
         return {
             "font": str(best.get("font") or ""),
             "size": float(best.get("size") or 0.0),
             "color": int(best.get("color") or 0),
             "flags": int(best.get("flags") or 0),
+            # Базовая линия исходного текста (PyMuPDF, origin сверху).
+            "origin_y": float(origin[1]),
         }
     except Exception:
         return None
@@ -337,6 +346,94 @@ def _fit_font_size(
     return min_size
 
 
+def _collect_border_lines(fitz_page: Any) -> list[tuple[str, float, float, float, float]]:
+    """Линии сетки страницы: ('h', y0, y1, x0, x1) или ('v', x0, x1, y0, y1). PyMuPDF, origin сверху.
+
+    Граница в PDF бывает штрихом (stroke), тонким закрашенным прямоугольником или краем
+    обведённого прямоугольника. Толщина штриха учитывается, чтобы не задеть его край.
+    """
+    try:
+        import fitz
+    except Exception:
+        return []
+    out: list[tuple[str, float, float, float, float]] = []
+
+    def add_rect(r: Any, half: float) -> None:
+        x0, y0, x1, y1 = float(r.x0) - half, float(r.y0) - half, float(r.x1) + half, float(r.y1) + half
+        if (y1 - y0) <= _THIN_SHAPE_PT and (x1 - x0) >= 3.0:
+            out.append(("h", y0, y1, x0, x1))
+        elif (x1 - x0) <= _THIN_SHAPE_PT and (y1 - y0) >= 3.0:
+            out.append(("v", x0, x1, y0, y1))
+
+    try:
+        for d in fitz_page.get_drawings() or []:
+            kind = str(d.get("type") or "")
+            stroked = "s" in kind and d.get("color") is not None
+            half = (float(d.get("width") or 0.5) / 2.0) if stroked else 0.0
+            for item in d.get("items") or []:
+                op = item[0]
+                if op == "l":
+                    p1, p2 = item[1], item[2]
+                    if abs(p1.y - p2.y) < 0.05 and abs(p1.x - p2.x) >= 3.0 and stroked:
+                        out.append(("h", p1.y - half, p1.y + half, min(p1.x, p2.x), max(p1.x, p2.x)))
+                    elif abs(p1.x - p2.x) < 0.05 and abs(p1.y - p2.y) >= 3.0 and stroked:
+                        out.append(("v", p1.x - half, p1.x + half, min(p1.y, p2.y), max(p1.y, p2.y)))
+                elif op == "re":
+                    r = fitz.Rect(item[1])
+                    if min(r.width, r.height) <= _THIN_SHAPE_PT:
+                        add_rect(r, half)
+                    elif stroked:
+                        # Обведённый прямоугольник: четыре края — границы.
+                        add_rect(fitz.Rect(r.x0, r.y0, r.x1, r.y0), half)
+                        add_rect(fitz.Rect(r.x0, r.y1, r.x1, r.y1), half)
+                        add_rect(fitz.Rect(r.x0, r.y0, r.x0, r.y1), half)
+                        add_rect(fitz.Rect(r.x1, r.y0, r.x1, r.y1), half)
+                elif op == "qu":
+                    r = fitz.Rect(item[1].rect)
+                    if min(r.width, r.height) <= _THIN_SHAPE_PT:
+                        add_rect(r, half)
+    except Exception:
+        return out
+    return out
+
+
+def _clip_rect_to_borders(
+    lines: list[tuple[str, float, float, float, float]],
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    cx: float,
+    cy: float,
+    gap: float = 0.2,
+) -> tuple[float, float, float, float]:
+    """Подрезать прямоугольник так, чтобы он не заходил на линии сетки (PyMuPDF, origin сверху).
+
+    Линия ниже/правее центра ограничивает низ/право, выше/левее — верх/лево.
+    """
+    for kind, a0, a1, b0, b1 in lines:
+        if kind == "h":
+            if min(x1, b1) - max(x0, b0) < min(2.0, 0.3 * (x1 - x0)):
+                continue
+            if a1 <= y0 or a0 >= y1:
+                continue
+            if (a0 + a1) / 2.0 >= cy:
+                y1 = min(y1, a0 - gap)
+            else:
+                y0 = max(y0, a1 + gap)
+        else:
+            if min(y1, b1) - max(y0, b0) < min(2.0, 0.3 * (y1 - y0)):
+                continue
+            if a1 <= x0 or a0 >= x1:
+                continue
+            if (a0 + a1) / 2.0 >= cx:
+                x1 = min(x1, a0 - gap)
+            else:
+                x0 = max(x0, a1 + gap)
+    return x0, y0, x1, y1
+
+
 def _edit_rect_pdf_top_left(row: dict[str, Any], page_w: float, page_h: float) -> tuple[float, float, float, float]:
     """Прямоугольник правки в координатах PyMuPDF (origin сверху), пункты."""
     left = _clamp01(float(row.get("left", 0.0)))
@@ -367,20 +464,45 @@ def _superseded_edit_ids(rows: list[dict[str, Any]], page_w: float, page_h: floa
     return dead
 
 
-def _strip_original_text(base_pdf_path: Path, page_map: dict[int, list[dict[str, Any]]]) -> Path | None:
+def _glyphs_remain(page: Any, probe: Any) -> bool:
+    """Остались ли в области видимые символы (центр бокса внутри probe)."""
+    try:
+        raw = page.get_text("rawdict", clip=probe)
+    except Exception:
+        return True
+    for block in raw.get("blocks", []) or []:
+        if int(block.get("type", 0) or 0) != 0:
+            continue
+        for line in block.get("lines", []) or []:
+            for span in line.get("spans", []) or []:
+                for ch in span.get("chars", []) or []:
+                    if not str(ch.get("c") or "").strip():
+                        continue
+                    bb = ch.get("bbox") or (0, 0, 0, 0)
+                    cx, cy = (bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0
+                    if probe.x0 <= cx <= probe.x1 and probe.y0 <= cy <= probe.y1:
+                        return True
+    return False
+
+
+def _strip_original_text(
+    base_pdf_path: Path, page_map: dict[int, list[dict[str, Any]]]
+) -> tuple[Path | None, set[int]]:
     """Физически удалить исходный текст редактируемых ячеек из копии PDF.
 
     Раньше исходное значение только закрашивалось прямоугольником и оставалось в файле
     под новым («1», поверх которой «0»). Здесь глифы вырезаются из потока содержимого
     страницы (redaction без заливки), линии сетки и картинки не трогаем.
-    Возвращает путь к временной копии или None, если удалить не удалось.
+    Возвращает (путь к временной копии или None, id() строк правок, у которых глифы
+    действительно вырезаны). Для таких правок маску рисовать не нужно.
     """
     try:
         import fitz
     except Exception:
-        return None
+        return None, set()
     out = base_pdf_path.with_suffix(".stripped.tmp.pdf")
     doc = None
+    removed: set[int] = set()
     try:
         doc = fitz.open(str(base_pdf_path))
         touched = False
@@ -389,6 +511,7 @@ def _strip_original_text(base_pdf_path: Path, page_map: dict[int, list[dict[str,
                 continue
             page = doc[page_no - 1]
             pw, ph = float(page.rect.width), float(page.rect.height)
+            page_probes: list[tuple[dict[str, Any], Any]] = []
             for row in rows:
                 x0, y0, x1, y1 = _edit_rect_pdf_top_left(row, pw, ph)
                 # pdf.js отдаёт рамку по базовой линии; даём запас по краям.
@@ -416,6 +539,8 @@ def _strip_original_text(base_pdf_path: Path, page_map: dict[int, list[dict[str,
                                 )
                                 page.add_redact_annot(tight, fill=False)
                                 found = True
+                if found:
+                    page_probes.append((row, probe))
                 if not found:
                     # Символы не нашлись (текст — картинка/контуры): режем по центру рамки.
                     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
@@ -425,14 +550,20 @@ def _strip_original_text(base_pdf_path: Path, page_map: dict[int, list[dict[str,
                 graphics=getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0),
                 text=getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0),
             )
+            # Самопроверка: после вырезания в области правки не должно остаться символов.
+            # Если остались (мелкие знаки вроде запятой, нестандартный шрифт) — для такой правки
+            # нужна маска, поэтому в «очищенные» её не записываем.
+            for row, probe in page_probes:
+                if not _glyphs_remain(page, probe):
+                    removed.add(id(row))
             touched = True
         if not touched:
-            return None
+            return None, set()
         doc.save(str(out), garbage=3, deflate=True)
-        return out
+        return out, removed
     except Exception:
         out.unlink(missing_ok=True)
-        return None
+        return None, set()
     finally:
         if doc is not None:
             try:
@@ -479,7 +610,7 @@ def apply_cell_edits_to_pdf(
         # Новые правки рисуем последними — они должны лежать сверху.
         rows_on_page.sort(key=lambda r: str(r.get("updated_at") or ""))
 
-    stripped_pdf = _strip_original_text(base_pdf_path, page_map)
+    stripped_pdf, removed_ids = _strip_original_text(base_pdf_path, page_map)
     reader = PdfReader(str(stripped_pdf or base_pdf_path))
     writer = PdfWriter()
 
@@ -504,6 +635,8 @@ def apply_cell_edits_to_pdf(
             fitz_page = None
             if fitz_doc is not None and 0 <= idx - 1 < fitz_doc.page_count:
                 fitz_page = fitz_doc[idx - 1]
+
+            border_lines = _collect_border_lines(fitz_page) if fitz_page is not None else []
 
             dead_rows = _superseded_edit_ids(rows, w, h)
             for row_idx, row in enumerate(rows):
@@ -603,6 +736,20 @@ def apply_cell_edits_to_pdf(
                     y0 += 0.25
                     y1 -= 0.25
 
+                # Не заходим на линии сетки: ни маской, ни текстом (иначе граница «съедается»).
+                if border_lines:
+                    cx0, cy0, cx1, cy1 = _clip_rect_to_borders(
+                        border_lines,
+                        x0,
+                        h - y1,
+                        x1,
+                        h - y0,
+                        cx=cell_cx,
+                        cy=(fitz_y0 + fitz_y1) / 2.0,
+                    )
+                    if cx1 - cx0 >= 1.0 and cy1 - cy0 >= 2.0:
+                        x0, x1, y0, y1 = cx0, cx1, h - cy1, h - cy0
+
                 if x1 - x0 < 1.0:
                     mid = (x0 + x1) / 2.0
                     x0, x1 = mid - 0.5, mid + 0.5
@@ -627,11 +774,15 @@ def apply_cell_edits_to_pdf(
                     else:
                         text_hex = _contrast_text_hex(fill_hex)
 
-                try:
-                    c.setFillColor(HexColor(fill_hex))
-                except Exception:
-                    c.setFillColor(white)
-                c.rect(x0, y0, box_w, box_h, stroke=0, fill=1)
+                # Исходные глифы уже вырезаны из PDF — закрашивать нечего, и фон/границы остаются
+                # нетронутыми. Маска нужна только в запасном случае (текст не удалось вырезать).
+                needs_mask = stripped_pdf is None or id(row) not in removed_ids
+                if needs_mask:
+                    try:
+                        c.setFillColor(HexColor(fill_hex))
+                    except Exception:
+                        c.setFillColor(white)
+                    c.rect(x0, y0, box_w, box_h, stroke=0, fill=1)
 
                 if not text or row_idx in dead_rows:
                     continue
@@ -659,8 +810,17 @@ def apply_cell_edits_to_pdf(
                 tx = cell_cx - text_w / 2.0
                 tx = max(x0 + 0.5, min(tx, x1 - text_w - 0.5))
                 # Вертикально — на исходной высоте текста (не уезжаем вниз вместе с маской).
-                text_cy = (orig_y0 + orig_y1) / 2.0
-                ty = text_cy - font_size * 0.35
+                baseline = None
+                if span is not None and span.get("origin_y") is not None:
+                    origin_y = float(span["origin_y"])
+                    if abs(origin_y - fitz_y1) <= max(3.0, orig_h * 0.6):
+                        baseline = h - origin_y
+                if baseline is not None:
+                    # Та же базовая линия, что у исходной цифры, — значения в строке не «прыгают».
+                    ty = baseline
+                else:
+                    text_cy = (orig_y0 + orig_y1) / 2.0
+                    ty = text_cy - font_size * 0.35
                 c.drawString(tx, ty, text)
 
             c.save()
