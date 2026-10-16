@@ -1,12 +1,15 @@
-"""Сверка уборки (5.0): Excel сводок 1, 2, 10, 11, 13 между собой и с Cropwise UI.
+"""Сверка агроопераций: Excel сводок между собой и с Cropwise UI.
 
 Сводки заново не считаются: читаются уже сохранённые .xlsx в uploads/<дата>/ — ровно
 те цифры, что видит пользователь. Cropwise — work.json по cookie за смену и за сезон.
 
-Каждое значение сводится к ключу (агрофирма, культура, показатель), где показатель —
-``day`` (за сутки) или ``season`` (с начала уборки). Агрофирма или культура может быть
-``ALL`` — итог по холдингу или по всем культурам фирмы. Если сводка даёт только
-разбивку, итоги досчитываются суммой и помечаются ``derived``.
+Каждое значение сводится к ключу (операция, агрофирма, культура, показатель), где
+показатель — ``day`` (за сутки) или ``season`` (с начала сезона операции). Агрофирма
+или культура может быть ``ALL`` — итог по холдингу или по всем культурам фирмы. Если
+сводка даёт только разбивку, итоги досчитываются суммой и помечаются ``derived``.
+
+Как читать листы каждой операции, задано в ``SPECS``: новая операция добавляется
+тем же словарём (сводка → лист, колонки суток и сезона, при необходимости секция).
 
 Подчинённые юрлица Cropwise (ООО «Агрофирма 5» в папке Дрожжаного и т.п.) уже
 сложены в родителя: в Excel — генерацией сводок, в work.json — разбором дерева
@@ -25,13 +28,16 @@ from openpyxl import load_workbook
 from plans import FIRM_ORDER
 from proverka.file_values import find_report_xlsx
 
-OPERATION = "5.0 Уборка"
 ALL = "ALL"
 DAY = "day"
 SEASON = "season"
-REPORT_IDS = ("1", "2", "10", "11", "13")
 CROPWISE = "cropwise"
 DEFAULT_TOLERANCE_HA = 0.5
+_DAY_PERF = ("Обработано за сутки, га",)
+_DAY_VOLUME = ("Общий объем выполненной работы за сутки, га",)
+_SEASON_R2 = ("Выполнено работ в Га", "Выполнено, га")
+_FACT = ("Факт общий, га",)
+_FACT_DAY = ("Факт за сутки, га",)
 
 CORN_PARENT = "Кукуруза, всего"
 CORN_CHILDREN = ("Кукуруза на зерно", "Кукуруза на силос")
@@ -43,10 +49,18 @@ CROP_ORDER = (
 REPORT_TITLES = {
     "1": "1. ХК Крупно",
     "2": "2. ХК Детальная",
+    "3": "3. Внесение МУ",
+    "4": "4. Боронование",
+    "5": "5. Посев",
+    "6": "6. Опрыскивание",
+    "7": "7. Дискование",
+    "8": "8. Культивация",
+    "9": "9. Вспашка и глубокорыхление",
     "10": "10. Уборка культур",
     "11": "11. Уборка",
     "13": "13. Обзор ХК",
 }
+_REPORT_ORDER = tuple(REPORT_TITLES)
 
 _MONTHS_GEN = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -147,12 +161,15 @@ def _num(value: Any) -> float | None:
 # ----------------------------------------------------------------------------- чтение Excel
 @dataclass(frozen=True)
 class TableSpec:
-    """Как читать таблицу уборки на листе.
+    """Как читать одну таблицу на листе.
 
-    sheet — имя листа или предикат по имени. Колонки ищутся по тексту шапки.
-    ``firm_from_sheet`` / ``crop_from_sheet`` — второе измерение берётся из имени листа
-    (сводка 13: лист на фирму; сводка 10: лист на культуру). ``day_is_date`` — колонка
-    суток подписана датой смены («15 октября»), как в сводке 2.
+    sheet — имя листа или предикат по имени. Excel режет имя до 31 символа:
+    полное имя в спецификации совпадает с обрезанным листом по префиксу.
+    ``section`` — заголовок блока на общем листе («2.4 Вспашка», «КУЛЬТУРЫ»):
+    читается только этот блок, до пустой строки или следующего заголовка.
+    ``firm_from_sheet`` / ``crop_from_sheet`` — второе измерение берётся из имени листа.
+    ``crop_prefix`` снимается с имени листа перед названием культуры («Вспашка », «Посев »).
+    ``day_is_date`` — колонка суток подписана датой смены («15 октября»), как в сводке 2.
     """
 
     sheet: str | Callable[[str], bool]
@@ -161,11 +178,29 @@ class TableSpec:
     day_is_date: bool = False
     firm_from_sheet: bool = False
     crop_from_sheet: bool = False
+    section: str | None = None
+    crop_prefix: str = ""
 
     def matches(self, title: str) -> bool:
         if callable(self.sheet):
             return bool(self.sheet(title))
-        return _flat(title) == _flat(self.sheet)
+        want = _flat(self.sheet)
+        got = _flat(title)
+        if want == got:
+            return True
+        return len(str(title)) == 31 and len(got) >= 12 and want.startswith(got)
+
+
+def _r2(sheet: str) -> TableSpec:
+    return TableSpec(sheet, season=_SEASON_R2, day_is_date=True)
+
+
+def _perf(sheet: str, section: str | None = None) -> TableSpec:
+    return TableSpec(sheet, day=_DAY_PERF, section=section)
+
+
+def _summary(day: tuple[str, ...], section: str | None = None, sheet: str = "Сводка") -> TableSpec:
+    return TableSpec(sheet, day=day, section=section)
 
 
 def _is_firm_sheet(title: str) -> bool:
@@ -176,26 +211,126 @@ def _is_crop_sheet_10(title: str) -> bool:
     return _flat(title) not in ("Общий намолот", "Овощи")
 
 
-SPECS: dict[str, tuple[TableSpec, ...]] = {
-    "1": (
-        TableSpec("Выраб. — 5.0 Уборка", day=("Обработано за сутки, га",)),
-        TableSpec("Общий намолот", season=("Факт общий, га",), day=("Факт за сутки, га",)),
-    ),
-    "2": (
-        TableSpec("5.0 Уборка", season=("Выполнено работ в Га", "Выполнено, га"), day_is_date=True),
-    ),
-    "10": (
-        TableSpec("Общий намолот", season=("Факт общий, га",), day=("Факт за сутки, га",)),
-        TableSpec(_is_crop_sheet_10, season=("Факт общий, га",), day=("Факт за сутки, га",), crop_from_sheet=True),
-    ),
-    "11": (
-        TableSpec("Сводка", day=("Убрано за сутки, га",)),
-    ),
-    "13": (
-        TableSpec("Зерновые культуры", season=("Убранная площадь, га",), day=("Убрано за сутки, га",)),
-        TableSpec(_is_firm_sheet, season=("Факт общий, га",), day=("Факт за сутки, га",), firm_from_sheet=True),
-    ),
+def _is_plow_crop_sheet(title: str) -> bool:
+    return str(title or "").startswith("Вспашка ")
+
+
+def _is_seeding_crop_sheet(title: str) -> bool:
+    return str(title or "").startswith("Посев ")
+
+
+# Операция → сводка → как читать её листы. Порядок операций — порядок в таблице.
+SPECS: dict[str, dict[str, tuple[TableSpec, ...]]] = {
+    "1.1 Внесение минеральных удобрений": {
+        "1": (_perf("Выработка техники"),),
+        "2": (_r2("1.1 Внесение минеральных удобрений"),),
+        "3": (_summary(_DAY_PERF),),
+    },
+    "2.1 Боронование": {
+        "1": (_perf("Выраб. — 2.1 Боронование"),),
+        "2": (_r2("2.1 Боронование"),),
+        "4": (_summary(_DAY_PERF),),
+    },
+    "2.9 Дискование": {
+        "1": (_perf("Выраб. — 2.9 Дискование"),),
+        "2": (_r2("2.9 Дискование"),),
+        "7": (_summary(_DAY_VOLUME),),
+    },
+    "2.4 Вспашка": {
+        "1": (_perf("Вспашка + Глубокорыхление", section="2.4 Вспашка"),),
+        "2": (_r2("2.4 Вспашка"),),
+        "9": (
+            _summary(_DAY_PERF, section="2.4 Вспашка"),
+            TableSpec("Итого (все АФ)", season=_FACT, day=_FACT_DAY),
+            TableSpec(
+                _is_plow_crop_sheet, season=_FACT, day=_FACT_DAY,
+                crop_from_sheet=True, crop_prefix="Вспашка ",
+            ),
+        ),
+    },
+    "2.8 Глубокорыхление": {
+        "1": (_perf("Вспашка + Глубокорыхление", section="2.8 Глубокорыхление"),),
+        "2": (_r2("2.8 Глубокорыхление"),),
+        "9": (
+            _summary(_DAY_PERF, section="2.8 Глубокорыхление"),
+            TableSpec("Глубокорыхление", season=_FACT, day=_FACT_DAY),
+        ),
+    },
+    "2.11 Культивация": {
+        "1": (_perf("Выраб. — 2.11 Культивация"),),
+        "2": (_r2("2.11 Культивация"),),
+        "8": (_summary(_DAY_VOLUME),),
+    },
+    "4.0 Посев": {
+        "1": (_perf("Выраб. — 4.0 Посев"),),
+        "2": (_r2("4.0 Посев"),),
+        "5": (
+            _summary(_DAY_VOLUME, section="КУЛЬТУРЫ"),
+            TableSpec(
+                _is_seeding_crop_sheet, season=_FACT, day=_FACT_DAY,
+                crop_from_sheet=True, crop_prefix="Посев ",
+            ),
+        ),
+    },
+    "3.1 Опрыскивание": {
+        "1": (_perf("Выраб. — 3.1 Опрыскивание"),),
+        "2": (_r2("3.1 Опрыскивание"),),
+        "6": (_summary(_DAY_VOLUME, section="3.1 Опрыскивание"),),
+    },
+    "3.2 Опрыскивание (овощи)": {
+        "1": (_perf("Выраб. — 3.2 Опрыскивание (овощи)"),),
+        "2": (_r2("3.2 Опрыскивание (овощи)"),),
+        "6": (_summary(_DAY_VOLUME, section="Опрыскивание овощных культур"),),
+    },
+    "5.0 Уборка": {
+        "1": (
+            TableSpec("Выраб. — 5.0 Уборка", day=_DAY_PERF),
+            TableSpec("Общий намолот", season=_FACT, day=_FACT_DAY),
+        ),
+        "2": (_r2("5.0 Уборка"),),
+        "10": (
+            TableSpec("Общий намолот", season=_FACT, day=_FACT_DAY),
+            TableSpec(_is_crop_sheet_10, season=_FACT, day=_FACT_DAY, crop_from_sheet=True),
+        ),
+        "11": (_summary(("Убрано за сутки, га",)),),
+        "13": (
+            TableSpec("Зерновые культуры", season=("Убранная площадь, га",), day=("Убрано за сутки, га",)),
+            TableSpec(_is_firm_sheet, season=_FACT, day=_FACT_DAY, firm_from_sheet=True),
+        ),
+    },
+    "4.1 Посев (овощи)": {
+        "2": (_r2("4.1 Посев (овощи)"),),
+        "5": (_summary(_DAY_VOLUME, section="Посев / посадка овощных культур"),),
+    },
+    "2.12 Прикатывание": {
+        "1": (_perf("Выраб. — 2.12 Прикатывание"),),
+        "2": (_r2("2.12 Прикатывание"),),
+    },
+    "2.7 Гребнеобразование": {
+        "1": (_perf("Выраб. — 2.7 Гребнеобразование"),),
+        "2": (_r2("2.7 Гребнеобразование"),),
+    },
+    "2.6 Фрезерование": {
+        "1": (_perf("Выраб. — 2.6 Фрезерование"),),
+        "2": (_r2("2.6 Фрезерование"),),
+    },
+    "5.4 Уборка картофеля, лука": {
+        "1": (
+            TableSpec("Сводка овощи", day=("Убрано за сутки, га",)),
+            TableSpec("Овощи", season=_FACT, day=_FACT_DAY),
+        ),
+        "2": (_r2("5.4 Уборка овощей"),),
+        "10": (TableSpec("Овощи", season=_FACT, day=_FACT_DAY),),
+    },
 }
+
+
+def all_report_ids() -> list[str]:
+    used = {rid for specs in SPECS.values() for rid in specs}
+    return [rid for rid in _REPORT_ORDER if rid in used]
+
+
+REPORT_IDS = tuple(all_report_ids())
 
 
 @dataclass
@@ -242,14 +377,45 @@ def _header(values: list[Any], spec: TableSpec, day_label: str) -> dict[str, int
     return cols
 
 
+def _lone_text(values: list[Any]) -> str | None:
+    texts = [_flat(v) for v in values if v not in (None, "")]
+    return texts[0] if len(texts) == 1 else None
+
+
+def _same_text(a: str, b: str) -> bool:
+    return _flat(a).casefold() == _flat(b).casefold()
+
+
+def _sheet_crop(title: str, spec: TableSpec) -> str | None:
+    if not spec.crop_from_sheet:
+        return None
+    raw = str(title or "")
+    if spec.crop_prefix and raw.startswith(spec.crop_prefix):
+        raw = raw[len(spec.crop_prefix):]
+    return canonical_crop(raw)
+
+
 def _read_sheet(ws: Any, spec: TableSpec, day_label: str) -> tuple[list[Fact], list[str]]:
     facts: list[Fact] = []
     unknown: list[str] = []
     sheet_firm = canonical_firm(ws.title) if spec.firm_from_sheet else None
-    sheet_crop = canonical_crop(ws.title) if spec.crop_from_sheet else None
+    sheet_crop = _sheet_crop(ws.title, spec)
     cols: dict[str, int] | None = None
+    in_section = spec.section is None
     for r, row in enumerate(ws.iter_rows(values_only=True), start=1):
         values = list(row)
+        lone = _lone_text(values)
+        if spec.section:
+            if lone is not None and _same_text(lone, spec.section):
+                in_section = True
+                cols = None
+                continue
+            if not in_section:
+                continue
+            if lone is not None:
+                in_section = False
+                cols = None
+                continue
         head = _header(values, spec, day_label)
         if head:
             cols = head
@@ -258,6 +424,8 @@ def _read_sheet(ws: Any, spec: TableSpec, day_label: str) -> tuple[list[Fact], l
             continue
         if not any(v not in (None, "") for v in values):
             cols = None
+            if spec.section:
+                in_section = False
             continue
         if _find(values, _FIRM_HEADERS) is not None or _find(values, _CROP_HEADERS) is not None:
             cols = None  # шапка соседней таблицы без нужных колонок
@@ -304,31 +472,46 @@ def _read_sheet(ws: Any, spec: TableSpec, day_label: str) -> tuple[list[Fact], l
     return facts, unknown
 
 
-def read_report(path: Path, report_id: str, report_date: date) -> dict[str, Any]:
-    """Факты уборки из одного .xlsx. Ошибки не прячутся: {found, error, facts, warnings}."""
-    specs = SPECS[report_id]
+def _spec_label(spec: TableSpec) -> str:
+    if isinstance(spec.sheet, str):
+        label = spec.sheet
+    else:
+        label = "листы по фирмам/культурам"
+    if spec.section:
+        return f"{label} / {spec.section}"
+    return label
+
+
+def read_specs(wb: Any, specs: tuple[TableSpec, ...], report_date: date) -> tuple[list[Fact], list[str]]:
+    """Факты операции из уже открытой книги."""
     day_label = _day_label(shift_date(report_date))
+    facts: list[Fact] = []
+    warnings: list[str] = []
+    for spec in specs:
+        sheets = [ws for ws in wb.worksheets if spec.matches(ws.title)]
+        if not sheets:
+            warnings.append(f"нет листа «{_spec_label(spec)}»")
+            continue
+        for ws in sheets:
+            got, unknown = _read_sheet(ws, spec, day_label)
+            facts.extend(got)
+            warnings.extend(f"не узнали агрофирму {u}" for u in unknown)
+    if not facts:
+        warnings.append("в файле не найдено ни одного значения")
+    return facts, warnings
+
+
+def read_report(path: Path, report_id: str, report_date: date, operation: str = "5.0 Уборка") -> dict[str, Any]:
+    """Факты одной операции из одного .xlsx. Ошибки не прячутся: {found, error, facts, warnings}."""
+    specs = SPECS[operation][report_id]
     try:
         wb = load_workbook(path, data_only=True, read_only=True)
     except Exception as exc:  # noqa: BLE001
         return {"found": False, "error": f"{path.name}: {type(exc).__name__}: {exc}", "facts": [], "warnings": []}
-    facts: list[Fact] = []
-    warnings: list[str] = []
     try:
-        for spec in specs:
-            sheets = [ws for ws in wb.worksheets if spec.matches(ws.title)]
-            if not sheets:
-                label = spec.sheet if isinstance(spec.sheet, str) else "листы по фирмам/культурам"
-                warnings.append(f"нет листа «{label}»")
-                continue
-            for ws in sheets:
-                got, unknown = _read_sheet(ws, spec, day_label)
-                facts.extend(got)
-                warnings.extend(f"не узнали агрофирму {u}" for u in unknown)
+        facts, warnings = read_specs(wb, specs, report_date)
     finally:
         wb.close()
-    if not facts:
-        warnings.append("в файле не найдено ни одного значения уборки")
     return {"found": True, "error": None, "facts": facts, "warnings": warnings}
 
 
@@ -360,11 +543,11 @@ def _rollup(facts: Iterable[Fact]) -> dict[tuple[str, str, str], Fact]:
 
 
 # ----------------------------------------------------------------------------- Cropwise
-def _season_start(report_date: date) -> date:
+def _season_start(report_date: date, operation: str) -> date:
     try:
         from season_unified import combine_season_start_for_date, editor_period_bounds
 
-        saved = editor_period_bounds(OPERATION, report_date)
+        saved = editor_period_bounds(operation, report_date)
         return saved[0] if saved else combine_season_start_for_date(report_date)
     except Exception:  # noqa: BLE001 — без настроек как в сводке 10: 10 июня
         start = date(report_date.year, 6, 10)
@@ -375,10 +558,10 @@ def _iso(d: date, hour: int = 6) -> str:
     return datetime(d.year, d.month, d.day, hour).isoformat()
 
 
-def cropwise_windows(report_date: date) -> dict[str, tuple[str, str]]:
+def cropwise_windows(report_date: date, operation: str) -> dict[str, tuple[str, str]]:
     return {
         DAY: (_iso(shift_date(report_date)), _iso(report_date)),
-        SEASON: (_iso(_season_start(report_date)), _iso(report_date)),
+        SEASON: (_iso(_season_start(report_date, operation)), _iso(report_date)),
     }
 
 
@@ -387,16 +570,16 @@ def _cropwise_crop(crop: str) -> str:
     return "Кукуруза на зерно" if c.casefold() == "кукуруза" else c
 
 
-def load_cropwise(cookie: str, report_date: date) -> dict[str, Any]:
-    """work.json за смену и за сезон (оба сезона сессии, как в основной проверке)."""
+def load_cropwise(cookie: str, report_date: date, operation: str) -> dict[str, Any]:
+    """work.json одной операции за смену и за сезон (оба сезона сессии, как в основной проверке)."""
     from proverka.crop_compare import cropwise_area_by_firm_crop
     from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons, parse_work_report_body, ui_check_years
     from proverka.task_names import tasks_for_group
     from proverka.work_groups import work_type_ids_for_group
 
-    windows = cropwise_windows(report_date)
-    wt_ids = work_type_ids_for_group(OPERATION)
-    hints = tuple(tasks_for_group(OPERATION))
+    windows = cropwise_windows(report_date, operation)
+    wt_ids = work_type_ids_for_group(operation)
+    hints = tuple(tasks_for_group(operation))
     years = ui_check_years(report_date)
     jobs = [WorkLoadJob(metric, t0, t1, wt_ids, hints) for metric, (t0, t1) in windows.items()]
     loaded = load_works_for_seasons(cookie, jobs, years=years)
@@ -476,73 +659,119 @@ def run_check(
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     prog = progress or (lambda _msg: None)
+    operations = list(SPECS)
     sources: list[dict[str, Any]] = []
-    by_source: dict[str, dict[tuple[str, str, str], Fact]] = {}
+    opened: dict[str, Any] = {}
+    file_error: dict[str, str] = {}
 
     for rid in REPORT_IDS:
         prog(f"Читаем Excel сводки {rid}…")
         path = find_report_xlsx(report_date, rid)
-        src = {"id": rid, "title": REPORT_TITLES[rid], "file": path.name if path else None}
+        src = {"id": rid, "title": REPORT_TITLES[rid], "file": path.name if path else None, "warnings": []}
         if path is None:
-            src.update(found=False, error="файл не найден — сгенерируйте сводку за эту дату", warnings=[])
+            src.update(found=False, error="файл не найден — сгенерируйте сводку за эту дату")
+            file_error[rid] = src["error"]
             sources.append(src)
             continue
-        got = read_report(path, rid, report_date)
-        src.update(found=got["found"], error=got["error"], warnings=got["warnings"], values=len(got["facts"]))
+        try:
+            opened[rid] = load_workbook(path, data_only=True, read_only=True)
+        except Exception as exc:  # noqa: BLE001
+            src.update(found=False, error=f"{path.name}: {type(exc).__name__}: {exc}")
+            file_error[rid] = src["error"]
+            sources.append(src)
+            continue
+        src.update(found=True, error=None)
         sources.append(src)
-        if got["facts"]:
-            by_source[rid] = _rollup(got["facts"])
+
+    by_source: dict[tuple[str, str], dict[tuple[str, str, str], Fact]] = {}
+    op_warnings: dict[str, list[str]] = {op: [] for op in operations}
+    try:
+        for op in operations:
+            for rid, specs in SPECS[op].items():
+                if rid in file_error:
+                    op_warnings[op].append(f"сводка {rid}: {file_error[rid]}")
+                    continue
+                facts, warnings = read_specs(opened[rid], specs, report_date)
+                op_warnings[op].extend(f"сводка {rid}: {w}" for w in warnings)
+                if facts:
+                    by_source[(op, rid)] = _rollup(facts)
+    finally:
+        for wb in opened.values():
+            wb.close()
 
     cropwise: dict[str, Any] = {"enabled": bool(cookie)}
+    cw_by_op: dict[str, dict[str, Any]] = {}
     if cookie:
-        prog("Загружаем Cropwise (work.json за сутки и за сезон)…")
-        try:
-            cw = load_cropwise(cookie, report_date)
-            cropwise.update(status=cw["status"], warnings=cw["warnings"], error=cw["error"])
+        for op in operations:
+            prog(f"Cropwise: {op}…")
+            try:
+                cw = load_cropwise(cookie, report_date, op)
+            except Exception as exc:  # noqa: BLE001 — сверка Excel между собой остаётся
+                cw = {"facts": [], "status": {}, "warnings": [], "error": f"{type(exc).__name__}: {exc}"}
+            cw_by_op[op] = cw
             if cw["facts"]:
-                by_source[CROPWISE] = _rollup(cw["facts"])
-        except Exception as exc:  # noqa: BLE001 — сверка Excel между собой остаётся
-            cropwise.update(error=f"{type(exc).__name__}: {exc}", warnings=[])
+                by_source[(op, CROPWISE)] = _rollup(cw["facts"])
 
     prog("Сводим таблицу…")
-    keys = set()
-    for facts in by_source.values():
-        keys.update(facts)
     rows: list[dict[str, Any]] = []
-    for firm, crop, metric in keys:
-        values = {}
-        for rid in REPORT_IDS:
-            f = by_source.get(rid, {}).get((firm, crop, metric))
-            if f is not None:
-                values[rid] = {"value": f.value, "where": f.where, "derived": f.derived}
-        cwf = by_source.get(CROPWISE, {}).get((firm, crop, metric))
-        cw_val = {"value": cwf.value, "where": cwf.where, "derived": cwf.derived} if cwf else None
-        if cw_val is None and not values:
-            continue
-        spread, cw_diff, st = _status(
-            {k: v["value"] for k, v in values.items()}, cw_val["value"] if cw_val else None, tolerance,
-        )
-        rows.append({
-            "firm": firm, "crop": crop, "metric": metric,
-            "values": values, "cropwise": cw_val,
-            "spread": spread, "cropwise_diff": cw_diff, "status": st,
-        })
-    rows.sort(key=lambda r: (_firm_sort_key(r["firm"]), _crop_sort_key(r["crop"]), r["metric"] != DAY))
+    by_operation: dict[str, Any] = {}
+    for op in operations:
+        ids = list(SPECS[op])
+        keys: set[tuple[str, str, str]] = set()
+        for rid in (*ids, CROPWISE):
+            keys.update(by_source.get((op, rid), {}))
+        op_rows: list[dict[str, Any]] = []
+        for firm, crop, metric in keys:
+            values = {}
+            for rid in ids:
+                f = by_source.get((op, rid), {}).get((firm, crop, metric))
+                if f is not None:
+                    values[rid] = {"value": f.value, "where": f.where, "derived": f.derived}
+            cwf = by_source.get((op, CROPWISE), {}).get((firm, crop, metric))
+            cw_val = {"value": cwf.value, "where": cwf.where, "derived": cwf.derived} if cwf else None
+            if cw_val is None and not values:
+                continue
+            spread, cw_diff, st = _status(
+                {k: v["value"] for k, v in values.items()}, cw_val["value"] if cw_val else None, tolerance,
+            )
+            op_rows.append({
+                "operation": op, "firm": firm, "crop": crop, "metric": metric,
+                "values": values, "cropwise": cw_val,
+                "spread": spread, "cropwise_diff": cw_diff, "status": st,
+            })
+        op_rows.sort(key=lambda r: (_firm_sort_key(r["firm"]), _crop_sort_key(r["crop"]), r["metric"] != DAY))
+        rows.extend(op_rows)
+        counts: dict[str, int] = defaultdict(int)
+        for r in op_rows:
+            counts[r["status"]] += 1
+        cw = cw_by_op.get(op) or {}
+        by_operation[op] = {
+            "report_ids": ids,
+            "season_start": _season_start(report_date, op).isoformat(),
+            "warnings": op_warnings[op],
+            "cropwise": {
+                "error": cw.get("error"),
+                "warnings": cw.get("warnings") or [],
+                "status": cw.get("status"),
+            },
+            "summary": dict(counts),
+        }
 
-    counts: dict[str, int] = defaultdict(int)
+    summary: dict[str, int] = defaultdict(int)
     for r in rows:
-        counts[r["status"]] += 1
+        summary[r["status"]] += 1
     return {
-        "operation": OPERATION,
+        "operations": operations,
+        "peers": {op: list(SPECS[op]) for op in operations},
         "report_date": report_date.isoformat(),
         "shift_date": shift_date(report_date).isoformat(),
-        "season_start": _season_start(report_date).isoformat(),
         "tolerance": tolerance,
         "report_ids": list(REPORT_IDS),
         "sources": sources,
         "cropwise": cropwise,
+        "by_operation": by_operation,
         "rows": rows,
-        "summary": dict(counts),
+        "summary": dict(summary),
     }
 
 
@@ -559,4 +788,4 @@ if __name__ == "__main__":  # pragma: no cover — ручной прогон
     for r in res["rows"]:
         if r["status"] not in ("ok", "single"):
             vals = {k: v["value"] for k, v in r["values"].items()}
-            print(r["firm"], "|", r["crop"], "|", r["metric"], vals, "cw:", (r["cropwise"] or {}).get("value"), r["status"])
+            print(r["operation"], "|", r["firm"], "|", r["crop"], "|", r["metric"], vals, "cw:", (r["cropwise"] or {}).get("value"), r["status"])

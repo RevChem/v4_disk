@@ -3,6 +3,7 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 
 import AiMenuDialog from "./components/AiMenuDialog";
 import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
+import NamolotDialog from "./components/NamolotDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import AnalysisDialog from "./components/AnalysisDialog";
@@ -134,6 +135,7 @@ export default function App() {
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
+  const [namolotOpen, setNamolotOpen] = useState(false);
   const [cropwiseSeasonOn, setCropwiseSeasonOn] = useState(
     () => window.localStorage.getItem("svodki.cropwiseSeasonCheck") === "1",
   );
@@ -678,6 +680,7 @@ export default function App() {
             : null
         }
         onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
+        onNamolotOpen={isDeveloper ? () => setNamolotOpen(true) : null}
         equipment={
           isDeveloper
             ? {
@@ -740,6 +743,11 @@ export default function App() {
         open={cookieDialogOpen && isDeveloper}
         onClose={() => setCookieDialogOpen(false)}
         onSaved={() => setCookieRevision((value) => value + 1)}
+      />
+      <NamolotDialog
+        open={namolotOpen && isDeveloper}
+        onClose={() => setNamolotOpen(false)}
+        summaryDate={summaryDate}
       />
       <AiMenuDialog
         open={aiMenuOpen}

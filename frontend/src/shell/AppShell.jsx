@@ -72,6 +72,7 @@ export default function AppShell({
   cropwise = null,
   equipment = null,
   onCookieOpen = null,
+  onNamolotOpen = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -176,24 +177,47 @@ export default function AppShell({
                       </Tooltip>
                     </Stack>
                   ) : null}
-                  {onCookieOpen ? (
-                    <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={onCookieOpen}
-                        sx={{
-                          minWidth: 0,
-                          px: 1,
-                          py: 0.2,
-                          fontSize: "0.75rem",
-                          lineHeight: 1.5,
-                          textTransform: "none",
-                        }}
-                      >
-                        Cookie
-                      </Button>
-                    </Tooltip>
+                  {onCookieOpen || onNamolotOpen ? (
+                    <Stack spacing={0.5} alignItems="stretch">
+                      {onCookieOpen ? (
+                        <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={onCookieOpen}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Cookie
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                      {onNamolotOpen ? (
+                        <Tooltip title="Намолот из API 1С за период, по агрофирмам">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={onNamolotOpen}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Namolot
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                    </Stack>
                   ) : null}
                   {equipment ? (
                     <Tooltip title={equipment.caption}>

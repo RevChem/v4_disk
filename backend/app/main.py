@@ -15,6 +15,7 @@ from app.adapters.inbound.api.routers import (
     field_season,
     interface_settings,
     users_manage,
+    namolot,
     page_order,
     pdf_header_labels,
     plans,
@@ -64,6 +65,7 @@ app.include_router(users_manage.router)
 app.include_router(plans.router)
 app.include_router(reports.router)
 app.include_router(proverka.router)
+app.include_router(namolot.router)
 app.include_router(convert.router)
 app.include_router(schedule.router)
 app.include_router(audit.router)

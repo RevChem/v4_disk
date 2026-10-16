@@ -83,7 +83,9 @@ function ValueCell({ cell, off }) {
 }
 
 export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
-  const [reportIds, setReportIds] = useState(["1", "2", "10", "11", "13"]);
+  const [reportIds, setReportIds] = useState(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "13"]);
+  const [operations, setOperations] = useState([]);
+  const [peers, setPeers] = useState({});
   const [cookieConfigured, setCookieConfigured] = useState(false);
   const [cookie, setCookie] = useState("");
   const [tolerance, setTolerance] = useState(0.5);
@@ -93,6 +95,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
   const [error, setError] = useState("");
   const [genWarning, setGenWarning] = useState("");
   const [job, setJob] = useState(null);
+  const [operation, setOperation] = useState("*");
   const [firm, setFirm] = useState("*");
   const [crop, setCrop] = useState("*");
   const [metric, setMetric] = useState("all");
@@ -123,6 +126,8 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
     fetchHarvestCheckReports()
       .then((d) => {
         setReportIds(d.report_ids || []);
+        setOperations(d.operations || []);
+        setPeers(d.peers || {});
         setCookieConfigured(Boolean(d.cookie_configured));
       })
       .catch(() => {});
@@ -191,37 +196,74 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
   }
 
   const result = job?.status === "completed" ? job.result : null;
-  const rows = result?.rows || [];
+  const rows = useMemo(
+    () => (result?.rows || []).map((r) => ({ ...r, operation: r.operation || "5.0 Уборка" })),
+    [result]
+  );
   const tol = result?.tolerance ?? tolerance;
   const busy = phase !== "idle";
+  const opList = result?.operations?.length ? result.operations : operations;
+  const peerMap = result?.peers || peers;
 
-  const firms = useMemo(() => [...new Set(rows.map((r) => r.firm))], [rows]);
-  const crops = useMemo(() => [...new Set(rows.map((r) => r.crop))], [rows]);
+  const scoped = useMemo(
+    () => rows.filter((r) => operation === "*" || r.operation === operation),
+    [rows, operation]
+  );
+  const firms = useMemo(() => [...new Set(scoped.map((r) => r.firm))], [scoped]);
+  const crops = useMemo(() => [...new Set(scoped.map((r) => r.crop))], [scoped]);
+  const colIds = useMemo(() => {
+    const ids = result?.report_ids || reportIds;
+    const ops = operation === "*" ? opList : [operation];
+    const used = new Set(ops.flatMap((op) => peerMap[op] || []));
+    const picked = ids.filter((id) => used.has(id));
+    return picked.length ? picked : ids;
+  }, [result, reportIds, operation, opList, peerMap]);
 
   const visible = useMemo(
     () =>
-      rows.filter(
+      scoped.filter(
         (r) =>
           (firm === "*" || r.firm === firm) &&
           (crop === "*" || r.crop === crop) &&
           (metric === "all" || r.metric === metric) &&
           (!onlyDiff || (r.status !== "ok" && r.status !== "single"))
       ),
-    [rows, firm, crop, metric, onlyDiff]
+    [scoped, firm, crop, metric, onlyDiff]
   );
 
-  const summary = result?.summary || {};
+  const summary = useMemo(() => {
+    const counts = {};
+    for (const r of scoped) counts[r.status] = (counts[r.status] || 0) + 1;
+    return counts;
+  }, [scoped]);
   const cw = result?.cropwise;
+  const opInfo = operation !== "*" ? result?.by_operation?.[operation] : null;
+  const cwErrors = useMemo(() => {
+    const bag = result?.by_operation || {};
+    const names = operation === "*" ? Object.keys(bag) : [operation];
+    const byMsg = new Map();
+    for (const name of names) {
+      const err = bag[name]?.cropwise?.error;
+      if (!err) continue;
+      const ops = byMsg.get(err) || [];
+      ops.push(name);
+      byMsg.set(err, ops);
+    }
+    return [...byMsg.entries()].map(([err, ops]) =>
+      ops.length === 1 ? `${ops[0]}: ${err}` : `${ops.length} операций: ${err}`
+    );
+  }, [result, operation]);
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="xl" fullWidth>
-      <DialogTitle>Сверка уборки (5.0): Excel сводок и Cropwise</DialogTitle>
+      <DialogTitle>Сверка: Excel сводок и Cropwise</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
-            Дата сводок {summaryDate}. Сравниваются гектары за сутки и за сезон из Excel сводок{" "}
-            {reportIds.join(", ")} между собой и с отчётом Cropwise «Работы машин». Подчинённые
-            юрлица (например, ООО «Агрофирма 5» у Дрожжаного) уже входят в свою агрофирму.
+            Дата сводок {summaryDate}. Сравниваются гектары за сутки и за сезон по всем
+            агрооперациям: Excel сводок {reportIds.join(", ")} между собой и с отчётом Cropwise
+            «Работы машин». Подчинённые юрлица (например, ООО «Агрофирма 5» у Дрожжаного) уже входят
+            в свою агрофирму.
           </Typography>
 
           <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
@@ -284,22 +326,36 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 <Tooltip
                   arrow
                   title={
-                    cw?.enabled
-                      ? [cw.error, ...(cw.warnings || [])].filter(Boolean).join(" · ") ||
-                        `сутки ${cw.status?.day?.window?.join(" — ")}; сезон ${cw.status?.season?.window?.join(" — ")}`
-                      : "Cookie не задана — сверка только между сводками"
+                    !cw?.enabled
+                      ? "Cookie не задана — сверка только между сводками"
+                      : cwErrors.join(" · ") || "work.json по каждой операции, сутки и сезон"
                   }
                 >
                   <Chip
                     size="small"
                     variant="outlined"
-                    color={!cw?.enabled ? "default" : cw.error ? "error" : cw.warnings?.length ? "warning" : "success"}
-                    label={!cw?.enabled ? "Cropwise: выключен" : cw.error ? "Cropwise: ошибка" : "Cropwise"}
+                    color={!cw?.enabled ? "default" : cwErrors.length ? "error" : "success"}
+                    label={
+                      !cw?.enabled
+                        ? "Cropwise: выключен"
+                        : cwErrors.length
+                          ? `Cropwise: ошибки ${cwErrors.length}`
+                          : "Cropwise"
+                    }
                   />
                 </Tooltip>
               </Stack>
 
-              {cw?.error && <Alert severity="warning">Cropwise: {cw.error}</Alert>}
+              {cwErrors.map((text) => (
+                <Alert key={text} severity="warning">
+                  Cropwise: {text}
+                </Alert>
+              ))}
+              {(opInfo?.warnings || []).map((text) => (
+                <Alert key={text} severity="warning">
+                  {text}
+                </Alert>
+              ))}
               {result.sources
                 .filter((s) => s.error)
                 .map((s) => (
@@ -313,11 +369,28 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 <Chip size="small" color="error" label={`Сводки расходятся: ${(summary.svodki || 0) + (summary.both || 0)}`} />
                 <Chip size="small" color="warning" label={`Расходится с Cropwise: ${(summary.cropwise || 0) + (summary.both || 0)}`} />
                 <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
-                  смена {result.shift_date}, сезон с {result.season_start}, допуск {tol} га
+                  смена {result.shift_date}
+                  {opInfo?.season_start ? `, сезон с ${opInfo.season_start}` : ", сезон — по настройке операции"}
+                  , допуск {tol} га
                 </Typography>
               </Stack>
 
               <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
+                <TextField
+                  select
+                  size="small"
+                  label="Операция"
+                  value={operation}
+                  onChange={(e) => setOperation(e.target.value)}
+                  sx={{ minWidth: 280 }}
+                >
+                  <MenuItem value="*">Все</MenuItem>
+                  {opList.map((op) => (
+                    <MenuItem key={op} value={op}>
+                      {op}
+                    </MenuItem>
+                  ))}
+                </TextField>
                 <TextField select size="small" label="Агрофирма" value={firm} onChange={(e) => setFirm(e.target.value)} sx={{ minWidth: 220 }}>
                   <MenuItem value="*">Все</MenuItem>
                   {firms.map((f) => (
@@ -349,10 +422,11 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 <Table size="small" stickyHeader>
                   <TableHead>
                     <TableRow>
+                      <TableCell>Операция</TableCell>
                       <TableCell>Агрофирма</TableCell>
                       <TableCell>Культура</TableCell>
                       <TableCell>Показатель, га</TableCell>
-                      {result.report_ids.map((rid) => (
+                      {colIds.map((rid) => (
                         <TableCell key={rid} align="right">
                           Сводка {rid}
                         </TableCell>
@@ -368,11 +442,12 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                       const med = median(nums);
                       const meta = STATUS_META[r.status] || STATUS_META.single;
                       return (
-                        <TableRow key={`${r.firm}|${r.crop}|${r.metric}`} hover>
+                        <TableRow key={`${r.operation}|${r.firm}|${r.crop}|${r.metric}`} hover>
+                          <TableCell>{r.operation}</TableCell>
                           <TableCell sx={{ fontWeight: r.firm === ALL ? 600 : 400 }}>{firmLabel(r.firm)}</TableCell>
                           <TableCell sx={{ fontWeight: r.crop === ALL ? 600 : 400 }}>{cropLabel(r.crop)}</TableCell>
                           <TableCell>{METRIC_LABEL[r.metric]}</TableCell>
-                          {result.report_ids.map((rid) => {
+                          {colIds.map((rid) => {
                             const cell = r.values[rid];
                             const off = cell && nums.length >= 2 && Math.abs(cell.value - med) > tol;
                             return <ValueCell key={rid} cell={cell} off={off} />;
@@ -389,7 +464,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                     })}
                     {!visible.length && (
                       <TableRow>
-                        <TableCell colSpan={result.report_ids.length + 6}>
+                        <TableCell colSpan={colIds.length + 7}>
                           <Box sx={{ py: 2, textAlign: "center", color: "text.secondary" }}>
                             {onlyDiff ? "Расхождений нет" : "Нет данных"}
                           </Box>

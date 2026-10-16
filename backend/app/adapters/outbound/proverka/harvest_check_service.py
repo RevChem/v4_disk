@@ -1,4 +1,4 @@
-"""Сверка уборки: Excel сводок 1, 2, 10, 11, 13 между собой и с Cropwise (svodki/plan/proverka/harvest_check)."""
+"""Сверка агроопераций: Excel сводок между собой и с Cropwise (svodki/plan/proverka/harvest_check)."""
 from __future__ import annotations
 
 import json
@@ -48,6 +48,17 @@ def report_ids() -> list[str]:
     from proverka.harvest_check import REPORT_IDS
 
     return list(REPORT_IDS)
+
+
+def catalog() -> dict[str, Any]:
+    _ensure_plan_path()
+    from proverka.harvest_check import REPORT_IDS, SPECS
+
+    return {
+        "report_ids": list(REPORT_IDS),
+        "operations": list(SPECS),
+        "peers": {op: list(specs) for op, specs in SPECS.items()},
+    }
 
 
 def _run(job_id: str, report_date: date, cookie: str, tolerance: float) -> None:

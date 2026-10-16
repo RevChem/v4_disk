@@ -701,7 +701,7 @@ export default function DashboardPage({
                         onClick={() => setHarvestCheckOpen(true)}
                         startIcon={<FactCheckRoundedIcon sx={{ fontSize: 18 }} />}
                       >
-                        Сверка уборки
+                        Сверка
                       </Button>
                     )}
                   </>

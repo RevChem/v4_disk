@@ -496,9 +496,9 @@ class HarvestCheckIn(BaseModel):
 
 @router.get("/harvest-check/reports")
 def get_harvest_check_reports(_: User = Depends(require_developer_access)):
-    from app.adapters.outbound.proverka.harvest_check_service import report_ids
+    from app.adapters.outbound.proverka.harvest_check_service import catalog
 
-    return {"report_ids": report_ids(), "cookie_configured": bool(session_cookie_from_env())}
+    return {**catalog(), "cookie_configured": bool(session_cookie_from_env())}
 
 
 @router.post("/harvest-check")
@@ -508,7 +508,7 @@ def run_harvest_check(
     db: Session = Depends(get_db),
     user: User = Depends(require_developer_access),
 ):
-    """Сверка уборки по уже сгенерированным Excel (и Cropwise, если есть cookie)."""
+    """Сверка агроопераций по уже сгенерированным Excel (и Cropwise, если есть cookie)."""
     from app.adapters.outbound.proverka.harvest_check_service import start_job
 
     st = start_job(payload.report_date, payload.cookie, payload.tolerance)

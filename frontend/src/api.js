@@ -984,6 +984,53 @@ export async function fetchHarvestCheck(jobId) {
   return data;
 }
 
+export async function fetchNamolot({ dateBegin, dateEnd }) {
+  try {
+    const { data } = await api.get("/proverka/namolot", {
+      params: { date_begin: dateBegin, date_end: dateEnd },
+      timeout: 180_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+async function errorFromBlob(err) {
+  const data = err?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text();
+      const json = JSON.parse(text);
+      if (typeof json?.detail === "string" && json.detail) return json.detail;
+    } catch {
+      /* ответ не JSON */
+    }
+  }
+  return formatError(err);
+}
+
+export async function downloadNamolotExcel({ dateBegin, dateEnd }) {
+  try {
+    const res = await api.get("/proverka/namolot/excel", {
+      params: { date_begin: dateBegin, date_end: dateEnd },
+      responseType: "blob",
+      timeout: 180_000,
+    });
+    const cd = res.headers["content-disposition"] || "";
+    const match = /filename="?([^";]+)"?/i.exec(cd);
+    const filename = match?.[1] || `namolot_${dateBegin}_${dateEnd}.xlsx`;
+    const url = URL.createObjectURL(res.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    throw new Error(await errorFromBlob(e));
+  }
+}
+
 export async function cancelProverkaMachinesJob(jobId, reportIds = null) {
   try {
     const body = reportIds?.length ? { report_ids: reportIds } : {};
