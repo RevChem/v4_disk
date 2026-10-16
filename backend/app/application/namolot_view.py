@@ -18,8 +18,11 @@ from app.config import get_namolot_config
 # Тонны в отчётах = quantity / 1000 (как в 10_main_harvest).
 QTY_TO_TONNES = 1.0 / 1000.0
 MAX_PERIOD_DAYS = 200
+BRIEF_MAX_DAYS = 400
+SHIFT_HOUR = 6
 TZ_MSK = timezone(timedelta(hours=3))
 _CACHE_TTL_SEC = 15 * 60
+_YEAR_SUFFIX_RE = re.compile(r"\s*\d{2,4}\s*г?\.?\s*$")
 
 # Организация из Namolot → агрофирма холдинга.
 # Номер «Агрофирма N» важнее названия: в 1С строка часто без кавычек и в другом порядке слов.
@@ -231,16 +234,16 @@ def _auth_header(username: str, password: str) -> dict[str, str]:
     return {"Authorization": f"Basic {token}"}
 
 
-def _check_period(date_begin: date, date_end: date) -> None:
+def _check_period(date_begin: date, date_end: date, *, max_days: int = MAX_PERIOD_DAYS) -> None:
     if date_end < date_begin:
         raise ValueError("Дата окончания раньше даты начала")
-    if (date_end - date_begin).days > MAX_PERIOD_DAYS:
-        raise ValueError(f"Период длиннее {MAX_PERIOD_DAYS} дней")
+    if (date_end - date_begin).days > max_days:
+        raise ValueError(f"Период длиннее {max_days} дней")
 
 
-def fetch_live(date_begin: date, date_end: date) -> list[dict]:
+def fetch_live(date_begin: date, date_end: date, *, max_days: int = MAX_PERIOD_DAYS) -> list[dict]:
     """Прямой GET в Namolot. Кэш сводок не используется."""
-    _check_period(date_begin, date_end)
+    _check_period(date_begin, date_end, max_days=max_days)
     key = (date_begin.isoformat(), date_end.isoformat())
     now = time.monotonic()
     with _cache_lock:
@@ -349,6 +352,113 @@ def workbook_bytes(records: list[dict]) -> bytes:
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _crop_key(text: object) -> str:
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    raw = _YEAR_SUFFIX_RE.sub("", raw).strip()
+    return raw.casefold().replace("ё", "е")
+
+
+def same_crop(record_crop: object, wanted: str) -> bool:
+    got = _crop_key(record_crop)
+    need = _crop_key(wanted)
+    if not got or not need:
+        return False
+    return got == need or got.startswith(need + " ")
+
+
+def shift_cutoff(report_date: date) -> datetime:
+    """06:00 даты сводки: записи этой смены идут до 05:59."""
+    return datetime(report_date.year, report_date.month, report_date.day, SHIFT_HOUR)
+
+
+def harvest_season_start(report_date: date) -> date:
+    from app.legacy.manual_overrides import combine_season_start_for_date
+
+    return combine_season_start_for_date(report_date)
+
+
+def _shown_end(cutoff: datetime) -> str:
+    return (cutoff - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _select_brief(records: list[dict], report_date: date, firm: str, crop: str) -> tuple[dict, list[dict]]:
+    """Тонны одной агрофирмы и культуры и сырые записи этого среза."""
+    cutoff = shift_cutoff(report_date)
+    day0 = cutoff - timedelta(days=1)
+    season_day = harvest_season_start(report_date)
+    season0 = datetime(season_day.year, season_day.month, season_day.day, SHIFT_HOUR)
+    day_kg = season_kg = 0.0
+    day_n = season_n = 0
+    kept: list[dict] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        if holding_firm(rec.get("organization")) != firm:
+            continue
+        if not same_crop(rec.get("crop"), crop):
+            continue
+        wall = msk_wall(rec.get("date"))
+        if wall is None or wall < season0 or wall >= cutoff:
+            continue
+        try:
+            qty = float(rec.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        season_kg += qty
+        season_n += 1
+        if day0 <= wall < cutoff:
+            day_kg += qty
+            day_n += 1
+        kept.append(rec)
+    summary = {
+        "firm": firm,
+        "crop": crop,
+        "report_date": report_date.isoformat(),
+        "day": {
+            "from": day0.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to": _shown_end(cutoff),
+            "tonnes": _round_t(day_kg),
+            "records": day_n,
+        },
+        "season": {
+            "from": season0.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to": _shown_end(cutoff),
+            "tonnes": _round_t(season_kg),
+            "records": season_n,
+        },
+    }
+    return summary, kept
+
+
+def brief_from_records(records: list[dict], report_date: date, firm: str, crop: str) -> dict:
+    summary, kept = _select_brief(records, report_date, firm, crop)
+    summary["rows"] = record_rows(kept)
+    return summary
+
+
+def _require_firm_crop(firm: str, crop: str) -> tuple[str, str]:
+    firm = str(firm or "").strip()
+    crop = str(crop or "").strip()
+    if not firm or not crop:
+        raise ValueError("Нужны агрофирма и культура")
+    return firm, crop
+
+
+def build_brief(report_date: date, firm: str, crop: str) -> dict:
+    firm, crop = _require_firm_crop(firm, crop)
+    start = harvest_season_start(report_date)
+    records = fetch_live(start, report_date, max_days=BRIEF_MAX_DAYS)
+    return brief_from_records(records, report_date, firm, crop)
+
+
+def build_brief_excel(report_date: date, firm: str, crop: str) -> bytes:
+    firm, crop = _require_firm_crop(firm, crop)
+    start = harvest_season_start(report_date)
+    records = fetch_live(start, report_date, max_days=BRIEF_MAX_DAYS)
+    _summary, kept = _select_brief(records, report_date, firm, crop)
+    return workbook_bytes(kept)
 
 
 def build_excel(date_begin: date, date_end: date) -> bytes:

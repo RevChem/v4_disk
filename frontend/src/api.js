@@ -996,6 +996,18 @@ export async function fetchNamolot({ dateBegin, dateEnd }) {
   }
 }
 
+export async function fetchNamolotBrief({ reportDate, firm, crop }) {
+  try {
+    const { data } = await api.get("/proverka/namolot/brief", {
+      params: { report_date: reportDate, firm, crop },
+      timeout: 180_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 async function errorFromBlob(err) {
   const data = err?.response?.data;
   if (data instanceof Blob) {
@@ -1010,16 +1022,19 @@ async function errorFromBlob(err) {
   return formatError(err);
 }
 
-export async function downloadNamolotExcel({ dateBegin, dateEnd }) {
+export async function downloadNamolotExcel({ dateBegin, dateEnd, reportDate, firm, crop }) {
   try {
+    const params = reportDate && firm && crop
+      ? { report_date: reportDate, firm, crop }
+      : { date_begin: dateBegin, date_end: dateEnd };
     const res = await api.get("/proverka/namolot/excel", {
-      params: { date_begin: dateBegin, date_end: dateEnd },
+      params,
       responseType: "blob",
       timeout: 180_000,
     });
     const cd = res.headers["content-disposition"] || "";
     const match = /filename="?([^";]+)"?/i.exec(cd);
-    const filename = match?.[1] || `namolot_${dateBegin}_${dateEnd}.xlsx`;
+    const filename = match?.[1] || `namolot_${reportDate || dateBegin}_${dateEnd || ""}.xlsx`;
     const url = URL.createObjectURL(res.data);
     const link = document.createElement("a");
     link.href = url;

@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -18,12 +17,13 @@ import {
   TableRow,
   TableSortLabel,
   TextField,
+  MenuItem,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 
-import { downloadNamolotExcel, fetchNamolot } from "../api";
+import { downloadNamolotExcel, fetchNamolotBrief } from "../api";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
 
 const FIRM_ORDER = [
@@ -37,14 +37,17 @@ const FIRM_ORDER = [
   "Прочие",
 ];
 
-function shiftIso(iso, days) {
-  const base = new Date(`${iso}T12:00:00`);
-  if (Number.isNaN(base.getTime())) return iso;
-  base.setDate(base.getDate() + days);
-  const month = String(base.getMonth() + 1).padStart(2, "0");
-  const day = String(base.getDate()).padStart(2, "0");
-  return `${base.getFullYear()}-${month}-${day}`;
-}
+const CROPS = [
+  "Рапс озимый",
+  "Рапс яровой",
+  "Пшеница озимая",
+  "Пшеница яровая",
+  "Тритикале озимая",
+  "Соя",
+  "Подсолнечник",
+  "Кукуруза на зерно",
+  "Кукуруза на силос",
+];
 
 function fmtTonnes(value) {
   const n = Number(value);
@@ -65,19 +68,15 @@ function joinList(values) {
 }
 
 export default function NamolotDialog({ open, onClose, summaryDate }) {
-  const [dateBegin, setDateBegin] = useState("");
-  const [dateEnd, setDateEnd] = useState("");
-  const [timeFrom, setTimeFrom] = useState("");
-  const [timeTo, setTimeTo] = useState("");
-  const [loadedBegin, setLoadedBegin] = useState("");
-  const [loadedEnd, setLoadedEnd] = useState("");
+  const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
   const [rows, setRows] = useState([]);
+  const [brief, setBrief] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
-  const [firms, setFirms] = useState([]);
-  const [crops, setCrops] = useState([]);
+  const [firm, setFirm] = useState("");
+  const [crop, setCrop] = useState("");
   const [plate, setPlate] = useState("");
   const [surname, setSurname] = useState("");
   const [mode, setMode] = useState("rows");
@@ -85,36 +84,12 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   const [sortDir, setSortDir] = useState("desc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
-
-  async function load(begin, end) {
-    if (!begin || !end) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await fetchNamolot({ dateBegin: begin, dateEnd: end });
-      setRows(Array.isArray(data?.rows) ? data.rows : []);
-      setLoadedBegin(begin);
-      setLoadedEnd(end);
-      setLoaded(true);
-    } catch (err) {
-      setRows([]);
-      setLoaded(false);
-      setError(String(err.message || err));
-    } finally {
-      setLoading(false);
-    }
-  }
+  const ready = Boolean(firm && crop);
 
   useEffect(() => {
-    if (!open) return undefined;
-    const end = summaryDate || new Date().toISOString().slice(0, 10);
-    const begin = shiftIso(end, -34);
-    setDateBegin(begin);
-    setDateEnd(end);
-    setTimeFrom("");
-    setTimeTo("");
-    setFirms([]);
-    setCrops([]);
+    if (open) return undefined;
+    setFirm("");
+    setCrop("");
     setPlate("");
     setSurname("");
     setMode("rows");
@@ -122,39 +97,53 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setSortDir("desc");
     setPage(0);
     setRows([]);
+    setBrief(null);
     setLoaded(false);
-    void load(begin, end);
+    setError("");
     return undefined;
-  }, [open, summaryDate]);
+  }, [open]);
 
-  const cropOptions = useMemo(() => {
-    const names = new Set(rows.map((row) => row.crop).filter(Boolean));
-    return [...names].sort((a, b) => a.localeCompare(b, "ru"));
-  }, [rows]);
-
-  const firmOptions = useMemo(() => {
-    const present = new Set(rows.map((row) => row.firm).filter(Boolean));
-    const ordered = FIRM_ORDER.filter((name) => present.has(name));
-    for (const name of present) {
-      if (!ordered.includes(name)) ordered.push(name);
+  useEffect(() => {
+    if (!open || !ready) {
+      setRows([]);
+      setBrief(null);
+      setLoaded(false);
+      return undefined;
     }
-    return ordered;
-  }, [rows]);
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setPage(0);
+    setBrief(null);
+    setRows([]);
+    setLoaded(false);
+    fetchNamolotBrief({ reportDate, firm, crop })
+      .then((data) => {
+        if (cancelled) return;
+        setBrief(data);
+        setRows(Array.isArray(data?.rows) ? data.rows : []);
+        setLoaded(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRows([]);
+        setBrief(null);
+        setLoaded(false);
+        setError(String(err.message || err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, ready, reportDate, firm, crop]);
 
   const visible = useMemo(() => {
-    const filtered = filterRows(rows, {
-      dateFrom: dateBegin,
-      dateTo: dateEnd,
-      timeFrom,
-      timeTo,
-      firms,
-      crops,
-      plate,
-      surname,
-    });
+    const filtered = filterRows(rows, { plate, surname });
     if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
     return rankRows(filtered, mode, sortDir);
-  }, [rows, dateBegin, dateEnd, timeFrom, timeTo, firms, crops, plate, surname, mode, sortKey, sortDir]);
+  }, [rows, plate, surname, mode, sortKey, sortDir]);
 
   const shownTonnes = useMemo(
     () => visible.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
@@ -162,9 +151,6 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   );
 
   const pageRows = visible.slice(page * pageSize, page * pageSize + pageSize);
-  const widerThanLoaded = Boolean(
-    loaded && loadedBegin && loadedEnd && (dateBegin < loadedBegin || dateEnd > loadedEnd),
-  );
 
   function toggleSort(key) {
     setPage(0);
@@ -177,10 +163,6 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   }
 
   function resetFilters() {
-    setTimeFrom("");
-    setTimeTo("");
-    setFirms([]);
-    setCrops([]);
     setPlate("");
     setSurname("");
     setPage(0);
@@ -190,7 +172,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setDownloading(true);
     setError("");
     try {
-      await downloadNamolotExcel({ dateBegin, dateEnd });
+      await downloadNamolotExcel({ reportDate, firm, crop });
     } catch (err) {
       setError(String(err.message || err));
     } finally {
@@ -205,85 +187,68 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
       <DialogTitle>Namolot</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Записи 1С с даты и времени по дату и время. Пустое время — с начала или до конца дня.
-          Пустые культура и агрофирма означают «все». Госномер ищется без пробелов, фамилия — по ФИО.
+          Дата сводки {reportDate}. За сутки — смена с 06:00 предыдущего дня по 05:59 этой даты.
+          За сезон — с 06:00 начала уборки по то же 05:59. Запрос в 1С уходит только после выбора
+          агрофирмы и культуры. Госномер и фамилия сужают уже загруженные записи.
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
           <TextField
-            label="Дата с"
-            type="date"
+            select
+            label="Агрофирма"
             size="small"
-            value={dateBegin}
-            onChange={(event) => {
-              setDateBegin(event.target.value);
-              setPage(0);
-            }}
-            slotProps={{ inputLabel: { shrink: true } }}
+            value={firm}
+            onChange={(event) => setFirm(event.target.value)}
             disabled={loading}
-          />
+            sx={{ minWidth: 240 }}
+          >
+            <MenuItem value="">Не выбрана</MenuItem>
+            {FIRM_ORDER.map((name) => (
+              <MenuItem key={name} value={name}>
+                {name}
+              </MenuItem>
+            ))}
+          </TextField>
           <TextField
-            label="Дата по"
-            type="date"
+            select
+            label="Культура"
             size="small"
-            value={dateEnd}
-            onChange={(event) => {
-              setDateEnd(event.target.value);
-              setPage(0);
-            }}
-            slotProps={{ inputLabel: { shrink: true } }}
+            value={crop}
+            onChange={(event) => setCrop(event.target.value)}
             disabled={loading}
-          />
-          <TextField
-            label="Время с"
-            type="time"
-            size="small"
-            value={timeFrom}
-            onChange={(event) => {
-              setTimeFrom(event.target.value);
-              setPage(0);
-            }}
-            slotProps={{ inputLabel: { shrink: true } }}
-            disabled={loading}
-          />
-          <TextField
-            label="Время по"
-            type="time"
-            size="small"
-            value={timeTo}
-            onChange={(event) => {
-              setTimeTo(event.target.value);
-              setPage(0);
-            }}
-            slotProps={{ inputLabel: { shrink: true } }}
-            disabled={loading}
-          />
-          <Button variant="contained" onClick={() => void load(dateBegin, dateEnd)} disabled={loading || !dateBegin || !dateEnd}>
-            Обновить
-          </Button>
+            sx={{ minWidth: 220 }}
+          >
+            <MenuItem value="">Не выбрана</MenuItem>
+            {CROPS.map((name) => (
+              <MenuItem key={name} value={name}>
+                {name}
+              </MenuItem>
+            ))}
+          </TextField>
         </Stack>
-        {widerThanLoaded ? (
-          <Alert severity="info" sx={{ mb: 1.5 }}>
-            Даты шире загруженного периода {loadedBegin} — {loadedEnd}. Нажмите «Обновить», чтобы запросить 1С.
-          </Alert>
-        ) : null}
-        <FilterChips
-          label="Культура"
-          options={cropOptions}
-          selected={crops}
-          onChange={(next) => {
-            setCrops(next);
-            setPage(0);
-          }}
-        />
-        <FilterChips
-          label="Агрофирма"
-          options={firmOptions}
-          selected={firms}
-          onChange={(next) => {
-            setFirms(next);
-            setPage(0);
-          }}
-        />
+        <Table size="small" sx={{ mb: 2 }}>
+          <TableHead>
+            <TableRow>
+              <TableCell>Показатель</TableCell>
+              <TableCell>Период</TableCell>
+              <TableCell align="right">Намолот, т</TableCell>
+              <TableCell align="right">Записей</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableRow>
+              <TableCell>За сутки</TableCell>
+              <TableCell>{ready && brief ? `${fmtAt(brief.day?.from)} — ${fmtAt(brief.day?.to)}` : "—"}</TableCell>
+              <TableCell align="right">{ready && brief ? fmtTonnes(brief.day?.tonnes) : "—"}</TableCell>
+              <TableCell align="right">{ready && brief ? brief.day?.records ?? 0 : "—"}</TableCell>
+            </TableRow>
+            <TableRow>
+              <TableCell>За сезон</TableCell>
+              <TableCell>{ready && brief ? `${fmtAt(brief.season?.from)} — ${fmtAt(brief.season?.to)}` : "—"}</TableCell>
+              <TableCell align="right">{ready && brief ? fmtTonnes(brief.season?.tonnes) : "—"}</TableCell>
+              <TableCell align="right">{ready && brief ? brief.season?.records ?? 0 : "—"}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} alignItems={{ sm: "center" }}>
           <TextField
             label="Госномер"
@@ -340,7 +305,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
             </Typography>
           </Stack>
         ) : null}
-        {!loading && loaded ? (
+        {!loading && ready && loaded ? (
           <>
             <Typography variant="body2" sx={{ mb: 1 }}>
               {mode === "rows" ? "Записей" : "Строк"} {visible.length.toLocaleString("ru-RU")}
@@ -375,7 +340,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
               </Box>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                Ничего не найдено. Сбросьте фильтр или расширьте период.
+                По этой агрофирме и культуре записей нет.
               </Typography>
             )}
             <TablePagination
@@ -394,9 +359,14 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
             />
           </>
         ) : null}
+        {!loading && !ready ? (
+          <Typography variant="body2" color="text.secondary">
+            Таблица пустая, пока не выбраны агрофирма и культура.
+          </Typography>
+        ) : null}
       </DialogContent>
       <DialogActions>
-        <Button onClick={() => void download()} disabled={busy || !dateBegin || !dateEnd}>
+        <Button onClick={() => void download()} disabled={busy || !ready}>
           {downloading ? "Excel…" : "Скачать Excel"}
         </Button>
         <Button onClick={onClose} disabled={busy}>
@@ -404,35 +374,6 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
         </Button>
       </DialogActions>
     </Dialog>
-  );
-}
-
-function FilterChips({ label, options, selected, onChange }) {
-  if (!options.length) return null;
-  return (
-    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mb: 1 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 72 }}>
-        {label}
-      </Typography>
-      {options.map((name) => {
-        const on = selected.includes(name);
-        return (
-          <Chip
-            key={name}
-            size="small"
-            label={name}
-            color={on ? "primary" : "default"}
-            variant={on ? "filled" : "outlined"}
-            onClick={() => onChange(on ? selected.filter((item) => item !== name) : [...selected, name])}
-          />
-        );
-      })}
-      {!selected.length ? (
-        <Typography variant="caption" color="text.secondary">
-          все
-        </Typography>
-      ) : null}
-    </Stack>
   );
 }
 
