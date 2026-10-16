@@ -85,6 +85,13 @@ def _find_cell_fill(
             inter = rect & probe
             if inter.is_empty:
                 continue
+            # Заливка обязана накрывать саму цифру. Иначе узкая цветная ячейка
+            # справа (её задевает расширенный вправо поиск) побеждает белый фон
+            # строки, и маска вместе с новым текстом уезжает в соседний столбец.
+            cx = (x0 + x1) / 2.0
+            tol = 1.5
+            if not (rect.x0 - tol <= cx <= rect.x1 + tol and rect.y0 - tol <= cell_cy <= rect.y1 + tol):
+                continue
             area = float(inter.width * inter.height)
             if area < 0.8:
                 continue
@@ -788,17 +795,20 @@ def apply_cell_edits_to_pdf(
                     continue
 
                 max_size = max(5.0, min(14.0, target_font + 0.5))
+                # Кегль подбираем по ширине исходного фрагмента, а не по подрезанной маске:
+                # маска бывает уже цифры, и тогда шрифт сжимался, а текст уезжал.
+                fit_width = max(4.0, orig_w)
                 font_size = _fit_font_size(
                     c,
                     text,
                     font_name=text_font,
-                    max_width=max(4.0, box_w - 2.0),
-                    max_height=max(3.5, min(box_h - 0.5, max(orig_h + 0.5, target_font + 0.5))),
+                    max_width=fit_width,
+                    max_height=max(3.5, min(max(box_h - 0.5, orig_h), max(orig_h + 0.5, target_font + 0.5))),
                     min_size=max(4.5, min(target_font, 5.0)),
                     max_size=max_size,
                 )
                 # Если влез исходный кегль — используем его (совпадение со сводкой).
-                if span_size >= 4.5 and c.stringWidth(text, text_font, span_size) <= max(4.0, box_w - 2.0):
+                if span_size >= 4.5 and c.stringWidth(text, text_font, span_size) <= fit_width + 1.0:
                     font_size = span_size
                 try:
                     c.setFillColor(HexColor(text_hex))
@@ -806,9 +816,13 @@ def apply_cell_edits_to_pdf(
                     c.setFillColor(HexColor("#111827"))
                 c.setFont(text_font, font_size)
                 text_w = c.stringWidth(text, text_font, font_size)
-                # По центру исходной ячейки/фрагмента по горизонтали.
+                # Центр исходного фрагмента. К краю маски не прижимаем: если заливка
+                # нашлась неверно, прижатие сдвигает цифру вправо, в соседнюю ячейку.
                 tx = cell_cx - text_w / 2.0
-                tx = max(x0 + 0.5, min(tx, x1 - text_w - 0.5))
+                if tx < 0.4:
+                    tx = 0.4
+                if tx + text_w > w - 0.4:
+                    tx = max(0.4, w - text_w - 0.4)
                 # Вертикально — на исходной высоте текста (не уезжаем вниз вместе с маской).
                 baseline = None
                 if span is not None and span.get("origin_y") is not None:
