@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -7,45 +7,57 @@ import CircularProgress from "@mui/material/CircularProgress";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import List from "@mui/material/List";
 import ListItem from "@mui/material/ListItem";
 import ListItemText from "@mui/material/ListItemText";
 import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import FitScreenRoundedIcon from "@mui/icons-material/FitScreenRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
+import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
+import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
+import ZoomInRoundedIcon from "@mui/icons-material/ZoomInRounded";
+import ZoomOutRoundedIcon from "@mui/icons-material/ZoomOutRounded";
 import {
-  deleteSummaryCellEdit,
   fetchSummaryCellEdits,
   getPreviewUrl,
-  saveSummaryCellEdit,
+  saveSummaryCellEditsBatch,
   summaryIsExcel
 } from "../api";
 import { parsePdfCellsFromUrl } from "../utils/pdfCellParser";
+import {
+  CHANGED_TINT,
+  applyDraftValue,
+  buildBatchPayload,
+  cellFontCqw,
+  clampZoom,
+  draftCount,
+  findCellForEdit,
+  findEditForCell,
+  isCellChanged,
+  mergeEditRows,
+  originalText,
+  readingNeighbor,
+  stepZoom,
+  verticalNeighbor
+} from "../utils/cellEditDraft";
 
-/** Правка, относящаяся к этой ячейке: по ключу или по тому же месту на странице
- * (после замены в PDF у ячейки уже другой текст и другой ключ). */
-function findEditForCell(edits, cell) {
-  if (!cell) return null;
-  const byKey = edits.find((row) => String(row.cell_key) === String(cell.cellKey));
-  if (byKey) return byKey;
-  const cx = Number(cell.leftPct) + Number(cell.widthPct) / 2;
-  const cy = Number(cell.topPct) + Number(cell.heightPct) / 2;
-  return (
-    edits.find((row) => {
-      if (Number(row.page) !== Number(cell.page)) return false;
-      const l = Number(row.left);
-      const t = Number(row.top);
-      const w = Number(row.width);
-      const h = Number(row.height);
-      const tx = Math.max(0.003, w * 0.5);
-      const ty = Math.max(0.002, h * 0.5);
-      return cx >= l - tx && cx <= l + w + tx && cy >= t - ty && cy <= t + h + ty;
-    }) || null
-  );
-}
+/** Чёткость картинки страницы: выше обычной, чтобы при приближении текст не «мылился». */
+const IMAGE_SCALE = 2;
+const DRAFT_OUTLINE = "1px dashed rgba(22, 163, 74, 0.85)";
+const REVERT_OUTLINE = "1px dashed rgba(100, 116, 139, 0.9)";
+
+const STATUS_LABEL = {
+  saved: "Нажмите, чтобы изменить",
+  modified: "Изменена · не сохранено",
+  new: "Новая · не сохранено",
+  revert: "Будет удалена при сохранении"
+};
 
 export default function DocumentCellEditorDialog({
   open,
@@ -64,58 +76,108 @@ export default function DocumentCellEditorDialog({
   const [selectedCell, setSelectedCell] = useState(null);
   const [inputOpen, setInputOpen] = useState(false);
   const [replacementText, setReplacementText] = useState("");
+  /** Черновик: правки копятся здесь и уходят на сервер одним запросом. */
+  const [draft, setDraft] = useState({});
+  const [zoom, setZoom] = useState(1);
+  const [confirm, setConfirm] = useState(null); // null | "close" | "discard"
+  const [scroller, setScroller] = useState(null);
+
+  const draftRef = useRef({});
+  const zoomRef = useRef(1);
+  const zoomAnchorRef = useRef(null);
   const loadTokenRef = useRef(0);
   const editingKeyRef = useRef("");
   const suppressBlurRef = useRef(false);
+  const saveDraftRef = useRef(null);
 
+  zoomRef.current = zoom;
   const title = summaryItem?.title || "Сводка";
+  const dirtyCount = draftCount(draft);
 
-  const loadEditor = useCallback(async (silent = false) => {
-    if (!summaryItem?.id) return;
-    if (summaryIsExcel(summaryItem)) {
-      setError("Правки ячеек доступны только для PDF.");
-      setPdfPages([]);
-      setEdits([]);
-      return;
-    }
-    const loadToken = loadTokenRef.current + 1;
-    loadTokenRef.current = loadToken;
-    const isStale = () => loadTokenRef.current !== loadToken;
+  const updateDraft = useCallback((updater) => {
+    draftRef.current = updater(draftRef.current);
+    setDraft(draftRef.current);
+  }, []);
 
-    if (!silent) {
-      setLoading(true);
-      setError("");
-      setSuccess("");
+  const draftByEditId = useMemo(() => {
+    const map = new Map();
+    for (const entry of Object.values(draft)) {
+      if (entry.editId) map.set(String(entry.editId), entry);
     }
-    try {
-      const baseUrl = getPreviewUrl(summaryItem, accessToken);
-      const previewUrl =
-        !baseUrl || baseUrl === "#"
-          ? baseUrl
-          : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}ts=${Date.now()}`;
-      const [serverState, pages] = await Promise.all([
-        fetchSummaryCellEdits(summaryItem.id),
-        parsePdfCellsFromUrl(previewUrl)
-      ]);
-      if (isStale()) return;
-      setEdits(Array.isArray(serverState?.edits) ? serverState.edits : []);
-      setReportId(String(serverState?.report_id || ""));
-      setPdfPages(Array.isArray(pages) ? pages : []);
-    } catch (e) {
-      if (!isStale()) {
-        setError(
-          String(e?.response?.data?.detail || e?.message || "Не удалось загрузить редактор правок.")
-        );
+    return map;
+  }, [draft]);
+
+  const rows = useMemo(() => mergeEditRows(edits, draft), [edits, draft]);
+
+  /** Запись черновика для ячейки (по ключу или по сохранённой правке в этом месте). */
+  const draftEntryFor = useCallback(
+    (cell, existing) =>
+      draft[String(cell.cellKey)] || (existing ? draftByEditId.get(String(existing.id)) : undefined),
+    [draft, draftByEditId]
+  );
+
+  const loadEditor = useCallback(
+    async (silent = false) => {
+      if (!summaryItem?.id) return false;
+      if (summaryIsExcel(summaryItem)) {
+        setError("Правки ячеек доступны только для PDF.");
         setPdfPages([]);
         setEdits([]);
+        return false;
       }
-    } finally {
-      if (!isStale() && !silent) setLoading(false);
-    }
-  }, [summaryItem, accessToken]);
+      const loadToken = loadTokenRef.current + 1;
+      loadTokenRef.current = loadToken;
+      const isStale = () => loadTokenRef.current !== loadToken;
 
+      if (!silent) {
+        setLoading(true);
+        setError("");
+        setSuccess("");
+      }
+      try {
+        const baseUrl = getPreviewUrl(summaryItem, accessToken);
+        const previewUrl =
+          !baseUrl || baseUrl === "#"
+            ? baseUrl
+            : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}ts=${Date.now()}`;
+        const [serverState, pages] = await Promise.all([
+          fetchSummaryCellEdits(summaryItem.id),
+          parsePdfCellsFromUrl(previewUrl, { imageScale: IMAGE_SCALE })
+        ]);
+        if (isStale()) return false;
+        setEdits(Array.isArray(serverState?.edits) ? serverState.edits : []);
+        setReportId(String(serverState?.report_id || ""));
+        setPdfPages(Array.isArray(pages) ? pages : []);
+        return true;
+      } catch (e) {
+        if (!isStale()) {
+          setError(
+            String(e?.response?.data?.detail || e?.message || "Не удалось загрузить редактор правок.")
+          );
+          if (!silent) {
+            setPdfPages([]);
+            setEdits([]);
+          }
+        }
+        return false;
+      } finally {
+        if (!isStale() && !silent) setLoading(false);
+      }
+    },
+    [summaryItem, accessToken]
+  );
+
+  // Новое открытие диалога / другая сводка — чистый черновик и масштаб.
   useEffect(() => {
     if (!open) return;
+    draftRef.current = {};
+    setDraft({});
+    setZoom(1);
+    setConfirm(null);
+  }, [open, summaryItem?.id]);
+
+  useEffect(() => {
+    if (!open) return undefined;
     setSelectedCell(null);
     setInputOpen(false);
     setReplacementText("");
@@ -125,14 +187,88 @@ export default function DocumentCellEditorDialog({
     };
   }, [open, loadEditor]);
 
-  function startEdit(cell, editsList = edits) {
-    const existing = findEditForCell(editsList, cell);
+  // Не даём случайно закрыть вкладку с несохранёнными правками.
+  useEffect(() => {
+    if (!open || dirtyCount === 0) return undefined;
+    const handler = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [open, dirtyCount]);
+
+  // Ctrl/Cmd+S — сохранить правки.
+  useEffect(() => {
+    if (!open) return undefined;
+    const handler = (event) => {
+      if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "s") {
+        event.preventDefault();
+        saveDraftRef.current?.();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open]);
+
+  // ---- масштаб ----------------------------------------------------------------------------
+  const changeZoom = useCallback(
+    (next, anchor) => {
+      const target = clampZoom(next);
+      const current = zoomRef.current;
+      if (target === current) return;
+      const el = scroller;
+      zoomAnchorRef.current = {
+        ratio: target / current,
+        x: anchor?.x ?? (el ? el.clientWidth / 2 : 0),
+        y: anchor?.y ?? (el ? el.clientHeight / 2 : 0)
+      };
+      zoomRef.current = target;
+      setZoom(target);
+    },
+    [scroller]
+  );
+
+  // После смены масштаба удерживаем под курсором (или по центру) то же место страницы.
+  useLayoutEffect(() => {
+    const info = zoomAnchorRef.current;
+    if (!info || !scroller) return;
+    zoomAnchorRef.current = null;
+    // При 100% и меньше страница целиком помещается по ширине — горизонтальный сдвиг не нужен.
+    scroller.scrollLeft = zoom <= 1 ? 0 : (scroller.scrollLeft + info.x) * info.ratio - info.x;
+    scroller.scrollTop = (scroller.scrollTop + info.y) * info.ratio - info.y;
+  }, [zoom, scroller]);
+
+  // Ctrl/Cmd + колесо (в т.ч. щипок на трекпаде) — масштаб. Нужен не-passive слушатель.
+  useEffect(() => {
+    if (!scroller) return undefined;
+    const onWheel = (event) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const rect = scroller.getBoundingClientRect();
+      changeZoom(zoomRef.current * Math.exp(-event.deltaY * 0.002), {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      });
+    };
+    scroller.addEventListener("wheel", onWheel, { passive: false });
+    return () => scroller.removeEventListener("wheel", onWheel);
+  }, [scroller, changeZoom]);
+
+  // ---- редактирование ---------------------------------------------------------------------
+  function startEdit(cell) {
+    const existing = findEditForCell(edits, cell);
     // Для уже изменённой ячейки исходное значение берём из правки, а не из текущего PDF.
     const normalized = existing ? { ...cell, cellText: existing.cell_text || cell.cellText } : cell;
+    const entry =
+      draftRef.current[String(cell.cellKey)] ||
+      (existing
+        ? Object.values(draftRef.current).find((d) => String(d.editId) === String(existing.id))
+        : undefined);
     editingKeyRef.current = String(cell.cellKey);
     suppressBlurRef.current = false;
     setSelectedCell(normalized);
-    setReplacementText(existing?.replacement || cell.cellText || "");
+    setReplacementText(entry ? entry.replacement : existing?.replacement || cell.cellText || "");
     setInputOpen(true);
     setError("");
     setSuccess("");
@@ -151,102 +287,50 @@ export default function DocumentCellEditorDialog({
   }
 
   function openEditFromRow(row) {
-    if (!row) return;
-    const pageInfo = pdfPages.find((p) => Number(p.page) === Number(row.page));
-    const matched = pageInfo?.cells?.find((cell) => String(cell.cellKey) === String(row.cell_key));
-    const fallback = {
-      cellKey: String(row.cell_key || ""),
-      cellText: String(row.cell_text || ""),
-      page: Number(row.page || 1),
-      leftPct: Number(row.left || 0),
-      topPct: Number(row.top || 0),
-      widthPct: Number(row.width || 0.01),
-      heightPct: Number(row.height || 0.02),
-      fillColor: String(row.fill_color || ""),
-      textColor: String(row.text_color || "")
-    };
-    const cell = matched
-      ? {
-          ...matched,
-          fillColor: matched.fillColor || String(row.fill_color || ""),
-          textColor: matched.textColor || String(row.text_color || "")
-        }
-      : fallback;
-    startEdit(cell);
+    if (saving) return;
+    const cell = row.edit
+      ? findCellForEdit(pdfPages, row.edit)
+      : draftRef.current[row.draftKey]?.cell;
+    if (cell) startEdit(cell);
   }
 
-  /** Соседняя ячейка в порядке чтения (по строкам, слева направо), в т.ч. на следующей странице. */
-  function neighborCell(cell, dir) {
-    const flat = [];
-    for (const page of pdfPages) {
-      const sorted = [...(page.cells || [])].sort(
-        (a, b) =>
-          Math.round(a.topPct * 250) - Math.round(b.topPct * 250) || a.leftPct - b.leftPct
-      );
-      flat.push(...sorted);
-    }
-    const idx = flat.findIndex((c) => String(c.cellKey) === String(cell.cellKey));
-    if (idx < 0) return null;
-    return flat[idx + dir] || null;
-  }
-
-  /** Сохранить значение из поля. dir: 0 — закрыть, 1/-1 — перейти к следующей/предыдущей ячейке. */
-  async function commitEdit(dir = 0) {
-    if (!summaryItem?.id || !selectedCell || saving) return;
+  /** Записать значение из поля в черновик (на сервер ничего не уходит).
+   * move: none — закрыть поле; down/up — по столбцу (как Enter в Excel); next/prev — по порядку чтения. */
+  function commitEdit(move = "none") {
+    if (!selectedCell) return;
     const cell = selectedCell;
     const text = String(replacementText || "").trim();
-    const existing = findEditForCell(edits, cell);
-    const current = String(existing ? existing.replacement : cell.cellText || "").trim();
-    const next = dir ? neighborCell(cell, dir) : null;
     if (!text) {
       setError("Значение не может быть пустым.");
       return;
     }
-    if (text === current) {
-      if (next) startEdit(next);
-      else if (editingKeyRef.current === String(cell.cellKey)) closeEdit();
-      return;
-    }
-    setSaving(true);
+    updateDraft((prev) => applyDraftValue(prev, edits, cell, text));
     setError("");
     setSuccess("");
-    try {
-      const result = await saveSummaryCellEdit({
-        summaryId: Number(summaryItem.id),
-        page: cell.page,
-        left: cell.leftPct,
-        top: cell.topPct,
-        width: cell.widthPct,
-        height: cell.heightPct,
-        cellKey: cell.cellKey,
-        cellText: cell.cellText,
-        replacement: text,
-        fillColor: cell.fillColor || "",
-        textColor: cell.textColor || ""
-      });
-      const newEdits = Array.isArray(result?.edits) ? result.edits : [];
-      setEdits(newEdits);
-      setSuccess("Сохранено, PDF обновлён.");
-      if (next) startEdit(next, newEdits);
-      else if (editingKeyRef.current === String(cell.cellKey)) closeEdit();
-      await loadEditor(true);
-      onSaved?.();
-    } catch (e) {
-      setError(String(e?.response?.data?.detail || e?.message || "Не удалось сохранить правку."));
-    } finally {
-      setSaving(false);
-    }
+    let target = null;
+    if (move === "down") target = verticalNeighbor(pdfPages, cell, 1);
+    else if (move === "up") target = verticalNeighbor(pdfPages, cell, -1);
+    else if (move === "next") target = readingNeighbor(pdfPages, cell, 1);
+    else if (move === "prev") target = readingNeighbor(pdfPages, cell, -1);
+    if (target) startEdit(target);
+    else if (editingKeyRef.current === String(cell.cellKey)) closeEdit();
   }
 
   function onInputKeyDown(event) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "s") {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressBlurRef.current = true;
+      commitEdit("none");
+      saveDraftRef.current?.();
+    } else if (event.key === "Enter") {
       event.preventDefault();
       suppressBlurRef.current = true;
-      commitEdit(0);
+      commitEdit(event.shiftKey ? "up" : "down");
     } else if (event.key === "Tab") {
       event.preventDefault();
       suppressBlurRef.current = true;
-      commitEdit(event.shiftKey ? -1 : 1);
+      commitEdit(event.shiftKey ? "prev" : "next");
     } else if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -255,39 +339,196 @@ export default function DocumentCellEditorDialog({
     }
   }
 
-  async function handleDelete(editId) {
-    if (!summaryItem?.id || !editId) return;
+  /** Убрать запись из черновика (вернуть сохранённое значение). */
+  function discardDraftEntry(draftKey) {
+    updateDraft((prev) => {
+      const next = { ...prev };
+      delete next[draftKey];
+      return next;
+    });
+  }
+
+  /** Отменить уже сохранённую правку: в черновик ложится исходное значение, на сервере правка
+   * удалится при «Сохранить правки». */
+  function cancelSavedEdit(row) {
+    const cell = findCellForEdit(pdfPages, row.edit);
+    if (!cell) return;
+    updateDraft((prev) => applyDraftValue(prev, edits, cell, row.edit.cell_text));
+    setError("");
+    setSuccess("");
+  }
+
+  function discardAll() {
+    draftRef.current = {};
+    setDraft({});
+    closeEdit();
+    setError("");
+    setSuccess("");
+  }
+
+  /** Сохранить весь черновик одним запросом. Возвращает true при успехе. */
+  async function saveDraft() {
+    if (!summaryItem?.id || saving) return false;
+    const current = draftRef.current;
+    const { edits: upserts, deleteIds } = buildBatchPayload(current, edits);
+    if (!upserts.length && !deleteIds.length) return true;
     setSaving(true);
     setError("");
     setSuccess("");
     try {
-      const result = await deleteSummaryCellEdit({
+      const result = await saveSummaryCellEditsBatch({
         summaryId: Number(summaryItem.id),
-        editId
+        edits: upserts,
+        deleteIds
       });
-      setEdits(Array.isArray(result?.edits) ? result.edits : []);
-      setSuccess("Правка удалена, PDF пересобран.");
-      if (selectedCell) {
-        const still = Boolean(findEditForCell(result?.edits || [], selectedCell));
-        if (!still) {
-          setInputOpen(false);
-          setSelectedCell(null);
-        }
-      }
-      await loadEditor(true);
+      closeEdit();
+      // Черновик убираем только после перезагрузки PDF — пока она идёт, новые значения видны.
+      const reloaded = await loadEditor(true);
+      if (!reloaded && Array.isArray(result?.edits)) setEdits(result.edits);
+      draftRef.current = {};
+      setDraft({});
+      const parts = [];
+      if (upserts.length) parts.push(`изменено: ${upserts.length}`);
+      if (deleteIds.length) parts.push(`отменено: ${deleteIds.length}`);
+      setSuccess(
+        reloaded
+          ? `Сохранено (${parts.join(", ")}), PDF обновлён.`
+          : `Сохранено (${parts.join(", ")}), но превью не обновилось — нажмите «Обновить».`
+      );
       onSaved?.();
+      return true;
     } catch (e) {
-      setError(String(e?.response?.data?.detail || e?.message || "Не удалось удалить правку."));
+      // Черновик остаётся нетронутым — можно повторить.
+      setError(String(e?.response?.data?.detail || e?.message || "Не удалось сохранить правки."));
+      return false;
     } finally {
       setSaving(false);
     }
   }
+  saveDraftRef.current = saveDraft;
+
+  function requestClose() {
+    if (saving) return;
+    if (draftCount(draftRef.current) > 0) {
+      setConfirm("close");
+      return;
+    }
+    onClose?.();
+  }
+
+  async function saveAndClose() {
+    setConfirm(null);
+    if (await saveDraft()) onClose?.();
+  }
+
+  function discardAndClose() {
+    setConfirm(null);
+    discardAll();
+    onClose?.();
+  }
+
+  // ---- отрисовка ячеек --------------------------------------------------------------------
+  function renderCell(cell, aspect) {
+    const key = String(cell.cellKey);
+    const existing = findEditForCell(edits, cell);
+    const entry = draftEntryFor(cell, existing);
+    const changed = isCellChanged(cell, existing, entry);
+    const editing = inputOpen && String(selectedCell?.cellKey) === key;
+    const geom = {
+      left: `${cell.leftPct * 100}%`,
+      top: `${cell.topPct * 100}%`,
+      width: `${Math.max(0.6, cell.widthPct * 100)}%`,
+      height: `${Math.max(1, cell.heightPct * 100)}%`
+    };
+    const fontSize = `max(7px, ${cellFontCqw(cell, aspect).toFixed(3)}cqw)`;
+
+    if (editing) {
+      return (
+        <div
+          key={key}
+          style={{ ...geom, position: "absolute", minWidth: 64, minHeight: 22, zIndex: 5, pointerEvents: "auto" }}
+        >
+          <input
+            autoFocus
+            value={replacementText}
+            onChange={(event) => setReplacementText(event.target.value)}
+            onKeyDown={onInputKeyDown}
+            onFocus={(event) => event.target.select()}
+            onBlur={() => {
+              if (suppressBlurRef.current) return;
+              commitEdit("none");
+            }}
+            style={{
+              width: "100%",
+              height: "100%",
+              boxSizing: "border-box",
+              font: `${fontSize}/1 Arial, Helvetica, sans-serif`,
+              textAlign: "center",
+              color: "#111827",
+              background: "#ffffff",
+              border: "2px solid #2563EB",
+              borderRadius: 2,
+              outline: "none",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.25)"
+            }}
+          />
+        </div>
+      );
+    }
+
+    if (entry) {
+      // Несохранённое значение: показываем его поверх страницы сразу, до обращения к серверу.
+      const cx = (cell.leftPct + cell.widthPct / 2) * 100;
+      return (
+        <div
+          key={key}
+          className={`cell-draft ${changed ? "cell-draft-changed" : "cell-draft-reverted"}`}
+          onClick={() => onCellClick(cell)}
+          title={`${originalText(cell, existing)} → ${entry.replacement} (не сохранено)`}
+          style={{
+            position: "absolute",
+            left: `${cx}%`,
+            top: geom.top,
+            transform: "translateX(-50%)",
+            minWidth: geom.width,
+            width: "max-content",
+            height: geom.height,
+            fontSize,
+            color: cell.textColor || "#111827",
+            backgroundColor: cell.fillColor || "#ffffff"
+          }}
+        >
+          {entry.replacement}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={key}
+        className={`cell-hit${changed ? " cell-changed" : ""}`}
+        onClick={() => onCellClick(cell)}
+        title={changed ? `${originalText(cell, existing)} → ${currentValueText(cell, existing)}` : cell.cellText}
+        style={{ ...geom, position: "absolute" }}
+      />
+    );
+  }
+
+  function currentValueText(cell, existing) {
+    return existing ? existing.replacement : cell.cellText;
+  }
+
+  const zoomPercent = `${Math.round(zoom * 100)}%`;
+  const statusColor = error ? "error" : success ? "success.main" : dirtyCount ? "warning.main" : "text.secondary";
+  const statusText = saving
+    ? "Сохранение…"
+    : error || success || (dirtyCount ? `Несохранённых правок: ${dirtyCount}` : "");
 
   return (
     <>
       <Dialog
         open={open}
-        onClose={saving ? undefined : onClose}
+        onClose={requestClose}
         maxWidth="lg"
         fullWidth
         sx={{
@@ -308,223 +549,360 @@ export default function DocumentCellEditorDialog({
             {reportId ? ` · id ${reportId}` : ""}
           </Typography>
         </DialogTitle>
-        <DialogContent dividers sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-          <Stack spacing={1.5}>
-            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-              <Typography variant="body2" color="text.secondary">
-                Кликните по значению и введите новое. Enter — сохранить, Tab — к следующей ячейке, Esc — отмена. Старое значение удаляется из PDF.
-              </Typography>
-              <Button
-                size="small"
-                startIcon={<RefreshRoundedIcon />}
-                onClick={() => loadEditor()}
-                disabled={loading || saving}
-              >
-                Обновить
-              </Button>
-            </Stack>
 
+        <Box
+          sx={{
+            px: 3,
+            py: 1,
+            borderTop: 1,
+            borderColor: "divider",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 1.5
+          }}
+        >
+          <Stack direction="row" spacing={0.25} alignItems="center">
+            <Tooltip title="Уменьшить">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => changeZoom(stepZoom(zoom, -1))}
+                  disabled={loading || zoom <= 0.5}
+                  aria-label="Уменьшить"
+                >
+                  <ZoomOutRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Typography
+              variant="body2"
+              sx={{ minWidth: 44, textAlign: "center", fontVariantNumeric: "tabular-nums" }}
+            >
+              {zoomPercent}
+            </Typography>
+            <Tooltip title="Увеличить">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => changeZoom(stepZoom(zoom, 1))}
+                  disabled={loading || zoom >= 3}
+                  aria-label="Увеличить"
+                >
+                  <ZoomInRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="По ширине окна (100%)">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => changeZoom(1)}
+                  disabled={loading || zoom === 1}
+                  aria-label="По ширине окна"
+                >
+                  <FitScreenRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
+
+          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flex: 1, minWidth: 0 }}>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Box
+                sx={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: 0.5,
+                  bgcolor: CHANGED_TINT,
+                  border: "1px solid rgba(22,163,74,0.45)"
+                }}
+              />
+              <Typography variant="caption" color="text.secondary">
+                изменено
+              </Typography>
+            </Stack>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Box
+                sx={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: 0.5,
+                  bgcolor: CHANGED_TINT,
+                  border: DRAFT_OUTLINE
+                }}
+              />
+              <Typography variant="caption" color="text.secondary">
+                не сохранено
+              </Typography>
+            </Stack>
+          </Stack>
+
+          <Button
+            size="small"
+            startIcon={<RefreshRoundedIcon />}
+            onClick={() => loadEditor()}
+            disabled={loading || saving}
+          >
+            Обновить
+          </Button>
+        </Box>
+
+        <DialogContent
+          dividers
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            p: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: { xs: "column", md: "row" }
+          }}
+        >
+          <Box
+            ref={setScroller}
+            sx={{
+              flex: "1 1 0",
+              minWidth: 0,
+              minHeight: 0,
+              overflow: "auto",
+              p: 2,
+              // Подсветка и состояния ячеек: стили заданы один раз, а не на каждую ячейку.
+              "& .cell-hit": { cursor: "text", pointerEvents: "auto", boxSizing: "border-box" },
+              "& .cell-hit:hover": {
+                outline: "1px solid #2563EB",
+                backgroundColor: "rgba(37,99,235,0.12)"
+              },
+              "& .cell-changed": {
+                backgroundColor: CHANGED_TINT,
+                boxShadow: "0 0 0 1px rgba(34,197,94,0.14)"
+              },
+              "& .cell-draft": {
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxSizing: "border-box",
+                px: "2px",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                fontFamily: "Arial, Helvetica, sans-serif",
+                cursor: "text",
+                pointerEvents: "auto",
+                zIndex: 2
+              },
+              "& .cell-draft-changed": {
+                backgroundImage: `linear-gradient(${CHANGED_TINT}, ${CHANGED_TINT})`,
+                outline: DRAFT_OUTLINE
+              },
+              "& .cell-draft-reverted": { outline: REVERT_OUTLINE },
+              "& .cell-draft:hover": { outline: "1px solid #2563EB" }
+            }}
+          >
             {loading ? (
               <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 4 }}>
                 <CircularProgress size={22} />
                 <Typography color="text.secondary">Загрузка PDF и разметки ячеек…</Typography>
               </Stack>
             ) : (
-              <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="flex-start">
-                <Stack spacing={2} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
-                  {pdfPages.map((page) => (
-                    <Box
-                      key={page.page}
-                      sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 1 }}
-                    >
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                        Страница {page.page}
-                      </Typography>
+              <>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                  Кликните по значению и введите новое. Enter — вниз, Tab — вправо, Esc — отмена.
+                  Изменения копятся в черновике и применяются кнопкой «Сохранить правки» (Ctrl+S).
+                  Ctrl + колесо мыши — масштаб.
+                </Typography>
+                <Stack
+                  spacing={2}
+                  sx={{ width: `${zoom * 100}%`, mx: zoom < 1 ? "auto" : 0 }}
+                >
+                  {pdfPages.map((page) => {
+                    const aspect = page.width > 0 ? page.height / page.width : 1.414;
+                    return (
                       <Box
-                        sx={{
-                          position: "relative",
-                          width: "100%",
-                          overflow: "auto",
-                          borderRadius: 1,
-                          bgcolor: "#fff"
-                        }}
+                        key={page.page}
+                        sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 1 }}
                       >
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                          Страница {page.page}
+                        </Typography>
                         <Box
-                          component="img"
-                          src={page.imageDataUrl}
-                          alt={`page-${page.page}`}
-                          sx={{ display: "block", width: "100%", height: "auto" }}
-                        />
-                        <Box sx={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-                          {page.cells.map((cell) => {
-                            const editing =
-                              inputOpen && String(selectedCell?.cellKey) === String(cell.cellKey);
-                            const existing = findEditForCell(edits, cell);
-                            const boxLeft = `${cell.leftPct * 100}%`;
-                            const boxTop = `${cell.topPct * 100}%`;
-                            if (editing) {
-                              return (
-                                <Box
-                                  key={cell.cellKey}
-                                  sx={{
-                                    position: "absolute",
-                                    left: boxLeft,
-                                    top: boxTop,
-                                    minWidth: 64,
-                                    width: `${Math.max(0.6, cell.widthPct * 100)}%`,
-                                    height: `${Math.max(1, cell.heightPct * 100)}%`,
-                                    minHeight: 22,
-                                    zIndex: 5,
-                                    pointerEvents: "auto"
-                                  }}
-                                >
-                                  <input
-                                    autoFocus
-                                    value={replacementText}
-                                    onChange={(event) => setReplacementText(event.target.value)}
-                                    onKeyDown={onInputKeyDown}
-                                    onFocus={(event) => event.target.select()}
-                                    onBlur={() => {
-                                      if (suppressBlurRef.current) return;
-                                      commitEdit(0);
-                                    }}
-                                    style={{
-                                      width: "100%",
-                                      height: "100%",
-                                      boxSizing: "border-box",
-                                      font: "13px/1 sans-serif",
-                                      textAlign: "center",
-                                      color: "#111827",
-                                      background: "#ffffff",
-                                      border: "2px solid #2563EB",
-                                      borderRadius: 2,
-                                      outline: "none",
-                                      boxShadow: "0 2px 8px rgba(0,0,0,0.25)"
-                                    }}
-                                  />
-                                </Box>
-                              );
-                            }
-                            return (
-                              <Box
-                                key={cell.cellKey}
-                                onClick={() => onCellClick(cell)}
-                                title={
-                                  existing
-                                    ? `${existing.cell_text || cell.cellText} → ${existing.replacement}`
-                                    : cell.cellText
-                                }
-                                sx={{
-                                  position: "absolute",
-                                  left: boxLeft,
-                                  top: boxTop,
-                                  width: `${Math.max(0.6, cell.widthPct * 100)}%`,
-                                  height: `${Math.max(1, cell.heightPct * 100)}%`,
-                                  border: "1px solid transparent",
-                                  borderBottom: existing ? "2px solid #16A34A" : "1px solid transparent",
-                                  cursor: "text",
-                                  pointerEvents: "auto",
-                                  "&::after": existing
-                                    ? {
-                                        content: '""',
-                                        position: "absolute",
-                                        top: -1,
-                                        right: -1,
-                                        width: 0,
-                                        height: 0,
-                                        borderTop: "6px solid #16A34A",
-                                        borderLeft: "6px solid transparent"
-                                      }
-                                    : undefined,
-                                  "&:hover": {
-                                    border: "1px solid #2563EB",
-                                    borderBottom: existing ? "2px solid #16A34A" : "1px solid #2563EB",
-                                    backgroundColor: "rgba(37,99,235,0.12)"
-                                  }
-                                }}
-                              />
-                            );
-                          })}
+                          sx={{
+                            position: "relative",
+                            width: "100%",
+                            borderRadius: 1,
+                            bgcolor: "#fff",
+                            containerType: "inline-size"
+                          }}
+                        >
+                          <Box
+                            component="img"
+                            src={page.imageDataUrl}
+                            alt={`page-${page.page}`}
+                            sx={{ display: "block", width: "100%", height: "auto" }}
+                          />
+                          <Box sx={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+                            {page.cells.map((cell) => renderCell(cell, aspect))}
+                          </Box>
                         </Box>
                       </Box>
-                    </Box>
-                  ))}
-                  {!pdfPages.length && !loading ? (
-                    <Alert severity="info">Нет страниц для отображения.</Alert>
-                  ) : null}
+                    );
+                  })}
                 </Stack>
-
-                <Box
-                  sx={{
-                    width: { xs: "100%", md: 300 },
-                    flexShrink: 0,
-                    border: 1,
-                    borderColor: "divider",
-                    borderRadius: 1.5,
-                    p: 1.5,
-                    bgcolor: (t) =>
-                      t.palette.mode === "light" ? t.palette.grey[50] : "rgba(255,255,255,0.03)"
-                  }}
-                >
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                    <Typography variant="subtitle2">Сохранённые правки</Typography>
-                    <Chip size="small" label={edits.length} variant="outlined" />
-                  </Stack>
-                  {edits.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary">
-                      Пока нет правок. Выберите ячейку на странице.
-                    </Typography>
-                  ) : (
-                    <List dense disablePadding>
-                      {edits.map((row) => (
-                        <ListItem
-                          key={row.id}
-                          disableGutters
-                          secondaryAction={
-                            <IconButton
-                              edge="end"
-                              size="small"
-                              disabled={saving}
-                              onClick={() => handleDelete(row.id)}
-                              aria-label="Удалить правку"
-                            >
-                              <DeleteOutlineRoundedIcon fontSize="small" />
-                            </IconButton>
-                          }
-                          sx={{ alignItems: "flex-start", pr: 5 }}
-                        >
-                          <ListItemText
-                            primary={`Стр. ${row.page}: ${row.cell_text || "—"} → ${row.replacement}`}
-                            secondary="Нажмите, чтобы изменить"
-                            primaryTypographyProps={{ variant: "body2" }}
-                            secondaryTypographyProps={{ variant: "caption" }}
-                            onClick={() => openEditFromRow(row)}
-                            sx={{ cursor: "pointer", mr: 1 }}
-                          />
-                        </ListItem>
-                      ))}
-                    </List>
-                  )}
-                </Box>
-              </Stack>
+                {!pdfPages.length ? <Alert severity="info">Нет страниц для отображения.</Alert> : null}
+              </>
             )}
-          </Stack>
-        </DialogContent>
-        <DialogActions sx={{ px: 2, py: 1.5 }}>
-          {/* Статус внизу, чтобы страницы не «прыгали» при каждом сохранении. */}
-          <Typography
-            variant="body2"
-            color={error ? "error" : "success.main"}
-            sx={{ flex: 1, minWidth: 0 }}
+          </Box>
+
+          <Box
+            sx={{
+              flex: { xs: "0 0 auto", md: "0 0 300px" },
+              maxHeight: { xs: "38%", md: "none" },
+              overflow: "auto",
+              borderLeft: { md: 1 },
+              borderTop: { xs: 1, md: 0 },
+              borderColor: "divider",
+              p: 1.5,
+              bgcolor: (t) =>
+                t.palette.mode === "light" ? t.palette.grey[50] : "rgba(255,255,255,0.03)"
+            }}
           >
-            {saving ? "Сохранение…" : error || success}
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap">
+              <Typography variant="subtitle2">Правки</Typography>
+              <Chip size="small" label={rows.length} variant="outlined" />
+              {dirtyCount ? (
+                <Chip size="small" color="warning" variant="outlined" label={`не сохранено: ${dirtyCount}`} />
+              ) : null}
+            </Stack>
+            {rows.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                Пока нет правок. Выберите ячейку на странице.
+              </Typography>
+            ) : (
+              <List dense disablePadding>
+                {rows.map((row) => {
+                  const unsaved = row.status !== "saved";
+                  return (
+                    <ListItem
+                      key={row.id}
+                      disableGutters
+                      secondaryAction={
+                        row.status === "saved" ? (
+                          <Tooltip title="Отменить правку (применится при сохранении)">
+                            <span>
+                              <IconButton
+                                edge="end"
+                                size="small"
+                                disabled={saving}
+                                onClick={() => cancelSavedEdit(row)}
+                                aria-label="Отменить правку"
+                              >
+                                <DeleteOutlineRoundedIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip title={row.status === "revert" ? "Вернуть правку" : "Сбросить изменение"}>
+                            <span>
+                              <IconButton
+                                edge="end"
+                                size="small"
+                                disabled={saving}
+                                onClick={() => discardDraftEntry(row.draftKey)}
+                                aria-label="Сбросить изменение"
+                              >
+                                <UndoRoundedIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )
+                      }
+                      sx={{ alignItems: "flex-start", pr: 5 }}
+                    >
+                      <ListItemText
+                        primary={`Стр. ${row.page}: ${row.from || "—"} → ${row.to}`}
+                        secondary={STATUS_LABEL[row.status]}
+                        primaryTypographyProps={{
+                          variant: "body2",
+                          sx: row.status === "revert" ? { textDecoration: "line-through" } : undefined
+                        }}
+                        secondaryTypographyProps={{
+                          variant: "caption",
+                          color: unsaved ? "warning.main" : "text.secondary"
+                        }}
+                        onClick={() => openEditFromRow(row)}
+                        sx={{ cursor: "pointer", mr: 1 }}
+                      />
+                    </ListItem>
+                  );
+                })}
+              </List>
+            )}
+          </Box>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, py: 1.5, gap: 1 }}>
+          {/* Статус внизу, чтобы страницы не «прыгали» при каждом сохранении. */}
+          <Typography variant="body2" color={statusColor} sx={{ flex: 1, minWidth: 0 }}>
+            {statusText}
           </Typography>
-          <Button onClick={onClose} disabled={saving}>
+          <Button
+            color="inherit"
+            startIcon={<UndoRoundedIcon />}
+            onClick={() => setConfirm("discard")}
+            disabled={saving || dirtyCount === 0}
+          >
+            Сбросить
+          </Button>
+          <Button onClick={requestClose} disabled={saving}>
             Закрыть
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={
+              saving ? <CircularProgress size={16} color="inherit" /> : <SaveRoundedIcon />
+            }
+            onClick={() => saveDraft()}
+            disabled={saving || dirtyCount === 0}
+          >
+            {dirtyCount ? `Сохранить правки (${dirtyCount})` : "Сохранить правки"}
           </Button>
         </DialogActions>
       </Dialog>
 
+      <Dialog open={confirm !== null} onClose={() => setConfirm(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>
+          {confirm === "discard" ? "Сбросить изменения?" : "Есть несохранённые правки"}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {confirm === "discard"
+              ? `Несохранённые изменения (${dirtyCount}) будут отброшены. Сохранённые ранее правки не изменятся.`
+              : `Несохранённых правок: ${dirtyCount}. Сохранить их перед закрытием?`}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, flexWrap: "wrap", gap: 1 }}>
+          <Button onClick={() => setConfirm(null)}>Продолжить редактирование</Button>
+          {confirm === "discard" ? (
+            <Button
+              color="error"
+              onClick={() => {
+                setConfirm(null);
+                discardAll();
+              }}
+            >
+              Сбросить
+            </Button>
+          ) : (
+            <>
+              <Button color="error" onClick={discardAndClose}>
+                Не сохранять
+              </Button>
+              <Button variant="contained" onClick={saveAndClose}>
+                Сохранить и закрыть
+              </Button>
+            </>
+          )}
+        </DialogActions>
+      </Dialog>
     </>
   );
 }

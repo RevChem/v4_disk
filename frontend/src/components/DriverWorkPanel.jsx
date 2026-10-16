@@ -4,10 +4,6 @@ import {
   Autocomplete,
   Box,
   Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Link,
   Stack,
   Table,
@@ -18,7 +14,6 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import AgricultureOutlinedIcon from "@mui/icons-material/AgricultureOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 
 import { fetchDriverWork, fetchDriverWorkPeople } from "../api";
@@ -66,7 +61,7 @@ function rowsToCsv(rows) {
   return `\uFEFF${lines.join("\r\n")}`;
 }
 
-export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
+export default function DriverWorkPanel({ summaryDate = "", preset = null }) {
   const initial = useMemo(() => monthBounds(summaryDate), [summaryDate]);
   const [dateFrom, setDateFrom] = useState(initial.from);
   const [dateTo, setDateTo] = useState(initial.to);
@@ -79,7 +74,6 @@ export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!open) return;
     const bounds = monthBounds(summaryDate);
     setDateFrom(bounds.from);
     setDateTo(bounds.to);
@@ -88,7 +82,42 @@ export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
     setResult(null);
     setNamesNote("");
     setError("");
-  }, [open, summaryDate]);
+  }, [summaryDate]);
+
+  useEffect(() => {
+    if (!preset?.person?.id) return undefined;
+    const from = preset.dateFrom;
+    const to = preset.dateTo;
+    setDateFrom(from);
+    setDateTo(to);
+    setPeople([preset.person]);
+    setPerson(preset.person);
+    setResult(null);
+    setError("");
+    setNamesNote("");
+    let alive = true;
+    setLoadingRows(true);
+    fetchDriverWork({ dateFrom: from, dateTo: to, driverId: preset.person.id })
+      .then((data) => {
+        if (!alive) return;
+        if (!data.available) {
+          setResult(null);
+          setError(data.detail || "Хранилище заданий недоступно");
+          return;
+        }
+        setResult(data);
+        setNamesNote(data.names_note || "");
+      })
+      .catch((e) => {
+        if (alive) setError(String(e.message || e));
+      })
+      .finally(() => {
+        if (alive) setLoadingRows(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [preset]);
 
   async function loadPeople() {
     setLoadingPeople(true);
@@ -149,15 +178,11 @@ export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
   const rows = result?.rows || [];
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <AgricultureOutlinedIcon color="primary" />
-        Работа исполнителя
-      </DialogTitle>
-      <DialogContent dividers>
+    <Box>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
             Гектары из хранилища заданий по сменным дням (с 06:00). ФИО подставляется из Cropwise по номеру исполнителя.
+            Расход топлива по исполнителям смотрите во вкладке «Топливо».
           </Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
             <TextField
@@ -232,7 +257,7 @@ export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
             <Alert severity="info">Показаны первые 5000 строк. Сумма гектаров посчитана по всем.</Alert>
           )}
           {rows.length > 0 && (
-            <Box sx={{ maxHeight: 420, overflow: "auto" }}>
+            <Box sx={{ maxHeight: "calc(92vh - 430px)", minHeight: 240, overflow: "auto" }}>
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
@@ -270,10 +295,6 @@ export default function DriverWorkDialog({ open, onClose, summaryDate = "" }) {
             </Box>
           )}
         </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Закрыть</Button>
-      </DialogActions>
-    </Dialog>
+    </Box>
   );
 }

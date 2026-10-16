@@ -838,6 +838,19 @@ export async function fetchDriverWork({ dateFrom, dateTo, driverId }) {
   }
 }
 
+/** Расход топлива (поле и дорога) в разрезах и аномалии расхода. Модель не вызывается. */
+export async function fetchFuel({ dateFrom, dateTo }) {
+  try {
+    const { data } = await api.get("/proverka/fuel", {
+      params: { date_from: dateFrom, date_to: dateTo },
+      timeout: 180_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 /** Отфильтрованные строки + агрегаты. Модель не вызывается, 0 токенов. */
 export async function queryTaskFacts(filters) {
   try {
@@ -1058,6 +1071,26 @@ export async function saveSummaryCellEdit({
     replacement,
     fill_color: fillColor || "",
     text_color: textColor || "",
+  });
+  return data;
+}
+
+/** Сохранить накопленный черновик за один запрос: правки + удаления, одна пересборка PDF. */
+export async function saveSummaryCellEditsBatch({ summaryId, edits = [], deleteIds = [] }) {
+  const { data } = await api.post(`/summaries/${summaryId}/cell-edits/batch`, {
+    edits: edits.map((row) => ({
+      page: row.page,
+      left: row.left,
+      top: row.top,
+      width: row.width,
+      height: row.height,
+      cell_key: row.cellKey,
+      cell_text: row.cellText,
+      replacement: row.replacement,
+      fill_color: row.fillColor || "",
+      text_color: row.textColor || "",
+    })),
+    delete_ids: deleteIds,
   });
   return data;
 }
@@ -1408,4 +1441,13 @@ export async function fetchAnalytics(path, params = {}) {
     );
   }
   return data;
+}
+
+export async function fetchHubQuery(queryId, params = {}) {
+  return fetchAnalytics(`hub/${queryId}`, params);
+}
+
+export async function fetchHubOptions(kind, params = {}) {
+  const data = await fetchAnalytics(`hub/options/${kind}`, params);
+  return Array.isArray(data?.items) ? data.items : [];
 }

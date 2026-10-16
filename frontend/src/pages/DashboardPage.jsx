@@ -22,7 +22,6 @@ import {
 } from "@mui/material";
 import CloudUploadRoundedIcon from "@mui/icons-material/CloudUploadRounded";
 import FactCheckRoundedIcon from "@mui/icons-material/FactCheckRounded";
-import AgricultureOutlinedIcon from "@mui/icons-material/AgricultureOutlined";
 import EventRoundedIcon from "@mui/icons-material/EventRounded";
 import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
@@ -36,8 +35,6 @@ import DocumentCellEditorDialog from "../components/DocumentCellEditorDialog";
 import SummaryCommentEditorDialog from "../components/SummaryCommentEditorDialog";
 import FieldSeasonDialog from "../components/FieldSeasonDialog";
 import WorksSummaryDialog from "../components/WorksSummaryDialog";
-import AnalyticsDialog from "../components/AnalyticsDialog";
-import DriverWorkDialog from "../components/DriverWorkDialog";
 import Report1LayoutEditorDialog from "../components/Report1LayoutEditorDialog";
 import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
 import HarvestGrossDialog from "../components/HarvestGrossDialog";
@@ -106,8 +103,6 @@ export default function DashboardPage({
   const [failedJobId, setFailedJobId] = useState(null);
   const [fieldSeasonOpen, setFieldSeasonOpen] = useState(false);
   const [worksOpen, setWorksOpen] = useState(false);
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
-  const [driverWorkOpen, setDriverWorkOpen] = useState(false);
   const [pageOrderOpen, setPageOrderOpen] = useState(false);
   const [pdfLabelsOpen, setPdfLabelsOpen] = useState(false);
   const [cellEditOpen, setCellEditOpen] = useState(false);
@@ -644,25 +639,6 @@ export default function DashboardPage({
                     >
                       Работы 2025/2026
                     </Button>
-                    <Button
-                      variant="outlined"
-                      fullWidth
-                      size="small"
-                      sx={sidebarToolBtnSx}
-                      onClick={() => setAnalyticsOpen(true)}
-                    >
-                      Аналитика
-                    </Button>
-                    <Button
-                      variant="outlined"
-                      fullWidth
-                      size="small"
-                      sx={sidebarToolBtnSx}
-                      onClick={() => setDriverWorkOpen(true)}
-                      startIcon={<AgricultureOutlinedIcon sx={{ fontSize: 18 }} />}
-                    >
-                      Работа исполнителя
-                    </Button>
                     {canProverka && (
                       <Button
                         variant="outlined"
@@ -800,12 +776,6 @@ export default function DashboardPage({
         onClose={() => setWorksOpen(false)}
         onError={setError}
         onInfo={setInfo}
-      />
-      <AnalyticsDialog open={analyticsOpen} onClose={() => setAnalyticsOpen(false)} />
-      <DriverWorkDialog
-        open={driverWorkOpen}
-        onClose={() => setDriverWorkOpen(false)}
-        summaryDate={summaryDate}
       />
       <Report1LayoutEditorDialog
         open={pageOrderOpen}

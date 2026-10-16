@@ -20,8 +20,7 @@ import {
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import EditNoteOutlinedIcon from "@mui/icons-material/EditNoteOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
-import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
-import AgricultureOutlinedIcon from "@mui/icons-material/AgricultureOutlined";
+import QueryStatsRoundedIcon from "@mui/icons-material/QueryStatsRounded";
 
 import { fetchProverkaAiSettings, saveProverkaAiSettings } from "../api";
 import CropwiseAskPanel from "./CropwiseAskPanel";
@@ -31,8 +30,7 @@ export default function AiMenuDialog({
   onClose,
   onOpenReport,
   onOpenPrompts,
-  onOpenTaskFacts,
-  onOpenDriverWork,
+  onOpenAnalysis,
   isDeveloper = true,
   summaryDate = "",
 }) {
@@ -134,30 +132,20 @@ export default function AiMenuDialog({
           </Stack>
 
           {isDeveloper && (
-            <Stack spacing={1}>
-              <Button
-                variant="outlined"
-                fullWidth
-                startIcon={<AgricultureOutlinedIcon />}
-                onClick={() => {
-                  onClose();
-                  onOpenDriverWork?.();
-                }}
-              >
-                Работа исполнителя
-              </Button>
-              <Button
-                variant="outlined"
-                fullWidth
-                startIcon={<QuestionAnswerOutlinedIcon />}
-                onClick={() => {
-                  onClose();
-                  onOpenTaskFacts?.();
-                }}
-              >
-                Вопросы по заданиям
-              </Button>
-            </Stack>
+            <Button
+              variant="contained"
+              color="secondary"
+              fullWidth
+              size="large"
+              startIcon={<QueryStatsRoundedIcon />}
+              onClick={() => {
+                onClose();
+                onOpenAnalysis?.();
+              }}
+              sx={{ py: 1.25 }}
+            >
+              Анализ
+            </Button>
           )}
 
           <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>

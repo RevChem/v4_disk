@@ -1,15 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   FormControl,
-  IconButton,
   InputLabel,
   MenuItem,
   Select,
@@ -24,7 +20,6 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import { BarChart } from "@mui/x-charts/BarChart";
 import { LineChart } from "@mui/x-charts/LineChart";
 import { PieChart } from "@mui/x-charts/PieChart";
@@ -420,7 +415,7 @@ function SeasonTab({ group }) {
   );
 }
 
-export default function AnalyticsDialog({ open, onClose }) {
+export default function AnalyticsPanel({ active = true }) {
   const [tab, setTab] = useState("pace");
   const [overview, setOverview] = useState(null);
   const [err, setErr] = useState("");
@@ -450,9 +445,13 @@ export default function AnalyticsDialog({ open, onClose }) {
       })
       .catch((e) => setErr(errText(e)));
   }, []);
+  const loadedOnce = useRef(false);
   useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+    if (active && !loadedOnce.current) {
+      loadedOnce.current = true;
+      load();
+    }
+  }, [active, load]);
 
   const groups = overview?.groups || [];
   const range = useMemo(() => ({ from, to }), [from, to]);
@@ -460,12 +459,7 @@ export default function AnalyticsDialog({ open, onClose }) {
   const showGroup = tab === "pace" || tab === "machines" || tab === "crops" || tab === "season";
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xl">
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <Box sx={{ flex: 1 }}>Аналитика по хранилищу заданий</Box>
-        <IconButton onClick={onClose} size="small"><CloseIcon /></IconButton>
-      </DialogTitle>
-      <DialogContent dividers>
+    <Box>
         {err && <Alert severity="error" sx={{ mb: 2 }}>{err}</Alert>}
         {overview && (
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
@@ -497,7 +491,6 @@ export default function AnalyticsDialog({ open, onClose }) {
         {overview && tab === "quality" && <QualityTab />}
         {overview && tab === "restate" && <RestateTab />}
         {overview && tab === "season" && <SeasonTab group={group} />}
-      </DialogContent>
-    </Dialog>
+    </Box>
   );
 }

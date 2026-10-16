@@ -39,6 +39,7 @@ from app.adapters.outbound.proverka.driver_work_service import (
     driver_work_detail,
     driver_work_people,
 )
+from app.adapters.outbound.proverka.fuel_service import fuel_report
 from app.adapters.outbound.proverka.task_facts_service import (
     facts_ask,
     facts_options,
@@ -808,5 +809,18 @@ def get_driver_work(
     """День, агрофирма, поле, операция, гектары и ссылка на задание."""
     try:
         return driver_work_detail(date_from, date_to, driver_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/fuel")
+def get_fuel(
+    date_from: date = Query(..., alias="date_from"),
+    date_to: date = Query(..., alias="date_to"),
+    _: User = Depends(require_plans_access),
+):
+    """Расход топлива (поле и дорога) в разрезах и аномалии расхода за период."""
+    try:
+        return fuel_report(date_from, date_to)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

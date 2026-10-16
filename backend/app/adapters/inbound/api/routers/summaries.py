@@ -35,6 +35,7 @@ from app.legacy.comments_store import (
 from app.models import Summary, User
 from app.schemas import (
     SummaryCellEditUpsertIn,
+    SummaryCellEditsBatchIn,
     SummaryCellEditsOut,
     SummaryCommentFutureToggleIn,
     SummaryCommentsOut,
@@ -139,6 +140,112 @@ def save_summary_cell_edit(
         new_text=payload.replacement,
         edit_id=(target or {}).get("id"),
     )
+    return _cell_edits_response(db, summary_id)
+
+
+@router.post("/{summary_id}/cell-edits/batch", response_model=SummaryCellEditsOut)
+@_serialized
+def save_summary_cell_edits_batch(
+    summary_id: int,
+    payload: SummaryCellEditsBatchIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_cell_edit_access),
+):
+    """Применить пачку правок (добавление/изменение и удаление) одним запросом.
+
+    Хранилище читается и пишется один раз, PDF пересобирается один раз. Операция атомарна по
+    данным: при ошибке в любой правке (например, пустая замена) ничего не сохраняется.
+    """
+    item = _require_visible_summary(db.get(Summary, summary_id))
+    if Path(item.file_path).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Правки ячеек доступны только для PDF.")
+    if not payload.edits and not payload.delete_ids:
+        raise HTTPException(status_code=400, detail="Нет изменений для сохранения.")
+    report_id = report_id_from_title(item.title)
+    store = load_cell_edits_store()
+
+    deleted_ids: list[str] = []
+    for edit_id in dict.fromkeys(str(x) for x in payload.delete_ids):
+        _, deleted = delete_summary_cell_edit(store, summary_id, edit_id)
+        if deleted:
+            deleted_ids.append(edit_id)
+
+    applied: list[tuple[SummaryCellEditUpsertIn, str | None]] = []
+    edits: list[dict] = list_summary_cell_edits(store, summary_id)
+    for index, row in enumerate(payload.edits, start=1):
+        # Повторная правка приходит с ключом уже заменённого текста. Хранилище оставляет
+        # исходный ключ, поэтому id ищем по строке, которая реально изменилась.
+        before = {
+            str(item_row.get("id")): (
+                str(item_row.get("replacement") or ""),
+                str(item_row.get("updated_at") or ""),
+            )
+            for item_row in edits
+        }
+        try:
+            edits = upsert_summary_cell_edit(
+                store,
+                summary_id,
+                report_id=report_id,
+                base_pdf_path=item.file_path,
+                page=row.page,
+                left=row.left,
+                top=row.top,
+                width=row.width,
+                height=row.height,
+                cell_key=row.cell_key,
+                cell_text=row.cell_text,
+                replacement=row.replacement,
+                fill_color=row.fill_color,
+                text_color=row.text_color,
+            )
+        except ValueError as exc:
+            # Хранилище ещё не сохранено — частично применённый пакет не попадёт на диск.
+            raise HTTPException(status_code=400, detail=f"Правка №{index}: {exc}") from exc
+        changed = next(
+            (
+                item_row
+                for item_row in edits
+                if before.get(str(item_row.get("id")))
+                != (str(item_row.get("replacement") or ""), str(item_row.get("updated_at") or ""))
+            ),
+            None,
+        )
+        applied.append((row, None if changed is None else changed.get("id")))
+
+    save_cell_edits_store(store)
+    try:
+        rebuild_summary_pdf_layers(item)
+    except Exception:
+        log.warning("cell_edit.batch_apply_failed", summary_id=summary_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Не удалось применить правки к PDF.") from None
+
+    for row, edit_id in applied:
+        record_activity(
+            db,
+            action="summary.cell_edit.upsert",
+            user_id=user.id,
+            ip=get_client_ip(request),
+            summary_id=summary_id,
+            report_id=report_id,
+            summary_date=item.summary_date.isoformat(),
+            cell_key=row.cell_key,
+            old_text=row.cell_text,
+            new_text=row.replacement,
+            edit_id=edit_id,
+        )
+    for edit_id in deleted_ids:
+        record_activity(
+            db,
+            action="summary.cell_edit.delete",
+            user_id=user.id,
+            ip=get_client_ip(request),
+            summary_id=summary_id,
+            report_id=report_id,
+            summary_date=item.summary_date.isoformat(),
+            edit_id=edit_id,
+        )
     return _cell_edits_response(db, summary_id)
 
 

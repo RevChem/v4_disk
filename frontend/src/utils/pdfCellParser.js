@@ -6,10 +6,13 @@ if (!GlobalWorkerOptions.workerSrc) {
 }
 
 function sampleCellFillColor(ctx, left, top, width, height) {
-  const x0 = Math.max(0, Math.floor(left));
-  const y0 = Math.max(0, Math.floor(top));
-  const w = Math.max(1, Math.ceil(width));
-  const h = Math.max(1, Math.ceil(height));
+  const maxW = ctx.canvas.width;
+  const maxH = ctx.canvas.height;
+  if (maxW < 1 || maxH < 1) return "#ffffff";
+  const x0 = Math.max(0, Math.min(maxW - 1, Math.floor(left)));
+  const y0 = Math.max(0, Math.min(maxH - 1, Math.floor(top)));
+  const w = Math.max(1, Math.min(Math.ceil(width), maxW - x0));
+  const h = Math.max(1, Math.min(Math.ceil(height), maxH - y0));
   let data;
   try {
     data = ctx.getImageData(x0, y0, w, h).data;
@@ -68,7 +71,18 @@ function contrastTextColor(fillHex) {
   return lum > 0.55 ? "#111827" : "#ffffff";
 }
 
-export async function parsePdfCellsFromUrl(fileUrl) {
+/** Масштаб, в котором считаются координаты и ключи ячеек. Менять нельзя: по ключам
+ * находятся уже сохранённые правки и комментарии. */
+const BASE_SCALE = 1.2;
+
+/**
+ * @param {string} fileUrl
+ * @param {{ imageScale?: number }} [options] imageScale — чёткость картинки страницы
+ *   (по умолчанию как раньше). Геометрия и ключи ячеек от неё не зависят, поэтому
+ *   картинку можно рендерить крупнее для приближения без потери совместимости с правками.
+ */
+export async function parsePdfCellsFromUrl(fileUrl, options = {}) {
+  const imageScale = Math.max(BASE_SCALE, Number(options?.imageScale) || BASE_SCALE);
   const loadingTask = getDocument({
     url: fileUrl,
     withCredentials: true
@@ -77,14 +91,16 @@ export async function parsePdfCellsFromUrl(fileUrl) {
   const pages = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 1.2 });
+    const viewport = page.getViewport({ scale: BASE_SCALE });
+    const renderViewport = imageScale === BASE_SCALE ? viewport : page.getViewport({ scale: imageScale });
+    const pixelRatio = renderViewport.width / viewport.width;
     const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
+    canvas.width = Math.ceil(renderViewport.width);
+    canvas.height = Math.ceil(renderViewport.height);
     const ctx = canvas.getContext("2d", { alpha: false });
     await page.render({
       canvasContext: ctx,
-      viewport
+      viewport: renderViewport
     }).promise;
     const textContent = await page.getTextContent();
     const cells = [];
@@ -109,7 +125,13 @@ export async function parsePdfCellsFromUrl(fileUrl) {
       const top = Math.max(0, Math.min(rect[1], rect[3]));
       const width = Math.max(3, Math.abs(rect[2] - rect[0]));
       const height = Math.max(8, Math.abs(rect[3] - rect[1]));
-      const fillColor = sampleCellFillColor(ctx, left, top, width, height);
+      const fillColor = sampleCellFillColor(
+        ctx,
+        left * pixelRatio,
+        top * pixelRatio,
+        width * pixelRatio,
+        height * pixelRatio
+      );
       cells.push({
         cellKey: `${pageNumber}:${Math.round(left)}:${Math.round(top)}:${str.slice(0, 40)}`,
         cellText: str,

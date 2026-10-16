@@ -5,8 +5,9 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.adapters.inbound.api.deps import get_current_active_user
+from app.adapters.inbound.api.deps import get_current_active_user, require_plans_access
 from app.legacy.analytics import module
+from app.legacy.analytics_hub import run_options, run_query
 from app.models import User
 
 # Под /summaries/* — nginx уже проксирует (отдельный /analytics часто отдаёт index.html SPA).
@@ -90,3 +91,28 @@ def season_compare(group: str | None = None, year_a: int | None = None, year_b: 
                    _: User = Depends(get_current_active_user)):
     y = date.today().year
     return _run(module().season_compare, group or None, year_a or y - 1, year_b or y)
+
+
+def _hub_range(date_from: str | None, date_to: str | None, default_days: int = 30) -> tuple[str, str]:
+    """Даты проверок — включительные, как в полях ввода."""
+    today = date.today()
+    return (date_from or (today - timedelta(days=default_days)).isoformat(), date_to or today.isoformat())
+
+
+@router.get("/hub/options/{kind}")
+def hub_options(kind: str, date_from: str | None = None, date_to: str | None = None,
+                _: User = Depends(require_plans_access)):
+    """Списки для фильтров проверки: machines | fields | drivers."""
+    a, b = _hub_range(date_from, date_to)
+    return {"items": _run(run_options, kind, a, b)}
+
+
+@router.get("/hub/{query_id}")
+def hub_query(query_id: str, date_from: str | None = None, date_to: str | None = None,
+              group: str | None = None, driver_id: int | None = None, machine_id: int | None = None,
+              field_id: int | None = None, threshold: float | None = Query(None, gt=0),
+              _: User = Depends(require_plans_access)):
+    """Один срез проверки в едином табличном формате."""
+    a, b = _hub_range(date_from, date_to)
+    return _run(run_query, query_id, date_from=a, date_to=b, group=group or None, driver_id=driver_id,
+                machine_id=machine_id, field_id=field_id, threshold=threshold)

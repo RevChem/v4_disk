@@ -6,8 +6,7 @@ import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
 import CropwiseSeasonDialog from "./components/CropwiseSeasonDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
-import TaskFactsDialog from "./components/TaskFactsDialog";
-import DriverWorkDialog from "./components/DriverWorkDialog";
+import AnalysisDialog from "./components/AnalysisDialog";
 import GenerationQueueDrawer from "./components/GenerationQueueDrawer";
 import InterfaceMenuDialog from "./components/InterfaceMenuDialog";
 import PageModalDialog from "./components/PageModalDialog";
@@ -86,9 +85,9 @@ export default function App() {
   const [aiReportOpen, setAiReportOpen] = useState(false);
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
-  const [taskFactsOpen, setTaskFactsOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysisSection, setAnalysisSection] = useState("analytics");
   const [taskFactsJobId, setTaskFactsJobId] = useState("");
-  const [driverWorkOpen, setDriverWorkOpen] = useState(false);
   const [interfaceOpen, setInterfaceOpen] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -121,7 +120,12 @@ export default function App() {
   const isDeveloper = user?.role === "developer";
   const openTaskFacts = useCallback((jobId) => {
     setTaskFactsJobId(jobId || "");
-    setTaskFactsOpen(true);
+    setAnalysisSection("facts");
+    setAnalysisOpen(true);
+  }, []);
+  const openAnalysis = useCallback((section = "analytics") => {
+    setAnalysisSection(section);
+    setAnalysisOpen(true);
   }, []);
   const canGenerate =
     user?.role === "developer" || user?.role === "admin" || user?.role === "user";
@@ -727,8 +731,7 @@ export default function App() {
         onClose={() => setAiMenuOpen(false)}
         onOpenReport={handleAiReportClick}
         onOpenPrompts={() => setAiPromptsOpen(true)}
-        onOpenTaskFacts={() => openTaskFacts()}
-        onOpenDriverWork={() => setDriverWorkOpen(true)}
+        onOpenAnalysis={() => openAnalysis("analytics")}
         isDeveloper={isDeveloper}
         summaryDate={summaryDate}
       />
@@ -791,16 +794,12 @@ export default function App() {
         open={aiPromptsOpen && isDeveloper}
         onClose={() => setAiPromptsOpen(false)}
       />
-      <TaskFactsDialog
-        open={taskFactsOpen && isDeveloper}
-        onClose={() => setTaskFactsOpen(false)}
+      <AnalysisDialog
+        open={analysisOpen && isDeveloper}
+        onClose={() => setAnalysisOpen(false)}
+        initialSection={analysisSection}
         summaryDate={summaryDate}
         initialJobId={taskFactsJobId}
-      />
-      <DriverWorkDialog
-        open={driverWorkOpen && isDeveloper}
-        onClose={() => setDriverWorkOpen(false)}
-        summaryDate={summaryDate}
       />
     </ThemeProvider>
   );

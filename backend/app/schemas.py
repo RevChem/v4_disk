@@ -562,6 +562,13 @@ class SummaryCellEditUpsertIn(BaseModel):
     text_color: str = ""
 
 
+class SummaryCellEditsBatchIn(BaseModel):
+    """Пакет правок из редактора: накопленный черновик сохраняется за один запрос."""
+
+    edits: list[SummaryCellEditUpsertIn] = Field(default_factory=list, max_length=1000)
+    delete_ids: list[str] = Field(default_factory=list, max_length=1000)
+
+
 class FieldSeasonFieldOut(BaseModel):
     field_id: int
     field_name: str
