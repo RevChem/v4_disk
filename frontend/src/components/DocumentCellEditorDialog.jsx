@@ -443,10 +443,23 @@ export default function DocumentCellEditorDialog({
     const fontSize = `max(7px, ${cellFontCqw(cell, aspect).toFixed(3)}cqw)`;
 
     if (editing) {
+      // Ячейка узкая, а поле не может быть меньше ~36px. Расти оно должно от центра
+      // цифры: если оставить левый край на месте, текст с text-align:center уезжает вправо.
+      const cx = (cell.leftPct + cell.widthPct / 2) * 100;
+      const cy = (cell.topPct + cell.heightPct / 2) * 100;
       return (
         <div
           key={key}
-          style={{ ...geom, position: "absolute", minWidth: 64, minHeight: 22, zIndex: 5, pointerEvents: "auto" }}
+          style={{
+            position: "absolute",
+            left: `${cx}%`,
+            top: `${cy}%`,
+            transform: "translate(-50%, -50%)",
+            width: `max(${geom.width}, 36px)`,
+            height: `max(${geom.height}, 18px)`,
+            zIndex: 5,
+            pointerEvents: "auto"
+          }}
         >
           <input
             autoFocus
@@ -462,7 +475,10 @@ export default function DocumentCellEditorDialog({
               width: "100%",
               height: "100%",
               boxSizing: "border-box",
+              margin: 0,
+              padding: 0,
               font: `${fontSize}/1 Arial, Helvetica, sans-serif`,
+              fontVariantNumeric: "tabular-nums",
               textAlign: "center",
               color: "#111827",
               background: "#ffffff",
@@ -682,10 +698,11 @@ export default function DocumentCellEditorDialog({
                 alignItems: "center",
                 justifyContent: "center",
                 boxSizing: "border-box",
-                px: "2px",
+                padding: 0,
                 lineHeight: 1,
                 whiteSpace: "nowrap",
                 fontFamily: "Arial, Helvetica, sans-serif",
+                fontVariantNumeric: "tabular-nums",
                 cursor: "text",
                 pointerEvents: "auto",
                 zIndex: 2

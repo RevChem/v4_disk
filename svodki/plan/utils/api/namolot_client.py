@@ -81,7 +81,7 @@ def _read_timeout_sec(*, supplement: bool = False) -> float:
         raw = (
             os.environ.get("NAMOLOT_READ_TIMEOUT_SEC")
             or os.environ.get("NAMOLOT_LIVE_TIMEOUT_SEC")
-            or "180"
+            or "30"
         ).strip()
     try:
         return max(1.0, float(raw))
@@ -247,36 +247,34 @@ def _filter_records_by_period(
     return out
 
 
-def _replace_period(
-    existing: list[dict],
-    live: list[dict],
-    date_begin: date,
-    date_end: date,
-) -> list[dict]:
-    """Живой ответ 1С заменяет кэш на этих календарных датах.
+def _record_dedupe_key(rec: dict) -> tuple[str, ...]:
+    return (
+        str(rec.get("spp_guid") or rec.get("spp") or ""),
+        str(rec.get("date") or ""),
+        str(rec.get("quantity") or ""),
+        str(rec.get("combine_harvester_guid") or rec.get("combine_harvester_id") or ""),
+    )
 
-    Дописывать нельзя: у отвеса меняется quantity, а старый ключ содержал
-    количество, поэтому правка в 1С оставалась в кэше второй строкой и
-    сезон в сводке был выше, чем в Namolot.
-    """
-    kept: list[dict] = []
-    dropped = 0
-    for rec in existing:
+
+def _merge_records(existing: list[dict], extra: list[dict]) -> list[dict]:
+    seen = {_record_dedupe_key(rec) for rec in existing}
+    merged = list(existing)
+    added = 0
+    for rec in extra:
         if not isinstance(rec, dict):
             continue
-        rec_date = _record_calendar_date(rec.get("date"))
-        if rec_date is not None and date_begin <= rec_date <= date_end:
-            dropped += 1
+        key = _record_dedupe_key(rec)
+        if key in seen:
             continue
-        kept.append(rec)
-    fresh = [rec for rec in live if isinstance(rec, dict)]
-    if dropped or fresh:
+        seen.add(key)
+        merged.append(rec)
+        added += 1
+    if added:
         print(
-            f"  [namolot] кэш {date_begin}..{date_end}: "
-            f"убрано старых {dropped}, записан живой ответ {len(fresh)}",
+            f"  [namolot] кэш дополнен: +{added} записей (всего {len(merged)})",
             flush=True,
         )
-    return kept + fresh
+    return merged
 
 
 def _persist_cache(
@@ -379,14 +377,12 @@ def _ensure_fresh_records(
     else:
         inc_begin = date_begin
 
-    window_begin = inc_begin
     live = _fetch_live(inc_begin, date_end, supplement=True)
     if not live and not cached:
-        window_begin = date_begin
         live = _fetch_live(date_begin, date_end, supplement=False)
 
     if live:
-        merged = _replace_period(cached, live, window_begin, date_end)
+        merged = _merge_records(cached, live)
         if cache_path is not None:
             old_begin = meta.get("date_begin")
             try:
@@ -469,7 +465,7 @@ def refresh_namolot_cache(
         }
 
     before = len(cached)
-    merged = _replace_period(cached, live, date_begin, date_end) if cached else list(live)
+    merged = _merge_records(cached, live) if cached else list(live)
     if cache_path is not None:
         _persist_cache(
             cache_path,
@@ -538,7 +534,7 @@ def _backfill_late_entries(
                 flush=True,
             )
         else:
-            merged = _replace_period(merged, live, cursor, chunk_end)
+            merged = _merge_records(merged, live)
         cursor = chunk_end + timedelta(days=1)
     added = len(merged) - len(records)
     if added == 0 and failed:
@@ -563,53 +559,22 @@ def _backfill_late_entries(
     return merged
 
 
-def _live_replace_is_fresh(meta: dict | None, date_begin: date, date_end: date) -> bool:
-    """Кэш уже заменён живым ответом 1С за этот же период в последние 6 часов."""
-    meta = meta or {}
-    if str(meta.get("live_replaced_begin") or "")[:10] != date_begin.isoformat():
-        return False
-    if str(meta.get("live_replaced_end") or "")[:10] != date_end.isoformat():
-        return False
-    raw = str(meta.get("live_replaced_at") or "")
-    try:
-        stamped = datetime.fromisoformat(raw)
-    except ValueError:
-        return False
-    if stamped.tzinfo is None:
-        stamped = stamped.replace(tzinfo=TZ_MSK)
-    return datetime.now(TZ_MSK) - stamped < timedelta(hours=6)
-
-
 def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
-    """Сырые записи «Намолот». Живой ответ 1С заменяет кэш за запрошенные даты."""
+    """Сырые записи «Намolot»: свежий кэш (быстро) или догрузка через live API."""
     cached, meta, cache_path = _load_cache_payload()
-
-    if cached and _live_replace_is_fresh(meta, date_begin, date_end):
-        return _filter_records_by_period(cached, date_begin, date_end)
-
-    live = _fetch_live(date_begin, date_end)
-    if live:
-        merged = _replace_period(cached or [], live, date_begin, date_end)
-        if cache_path is not None:
-            new_meta = dict(meta or {})
-            new_meta["live_replaced_begin"] = date_begin.isoformat()
-            new_meta["live_replaced_end"] = date_end.isoformat()
-            new_meta["live_replaced_at"] = datetime.now(TZ_MSK).isoformat()
-            stored_begin = _stored_date_begin(new_meta, date_begin)
-            _persist_cache(
-                cache_path,
-                merged,
-                date_begin=min(stored_begin, date_begin),
-                date_end=date_end,
-                meta=new_meta,
-            )
-        return live
 
     if cached and (_prefer_cache() or cache_path is not None):
         records = _ensure_fresh_records(cached, meta, cache_path, date_begin, date_end)
         if records:
             records = _backfill_late_entries(records, meta, cache_path, date_end)
             return _filter_records_by_period(records, date_begin, date_end)
+
+    live = _fetch_live(date_begin, date_end)
+    if live:
+        if cache_path is not None:
+            merged = _merge_records(cached, live)
+            _persist_cache(cache_path, merged, date_begin=date_begin, date_end=date_end, meta=meta)
+        return live
 
     # Кэш без покрытия смены: всё равно отдаём (нужен сезон), но не притворяемся
     # что сутки полные — это ловит 10_main_harvest (incomplete_day).
