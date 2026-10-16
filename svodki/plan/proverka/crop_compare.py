@@ -12,22 +12,10 @@ from proverka.cropwise_ui import (
 from proverka.ha_thresholds import DIFF_MIN_HA
 
 
-def _body_is_corn_silage_mowing(body: dict | None, fact_hints: list[str]) -> bool:
-    """Колонка факта только из скашивания кукурузы (6.3 …) — культура = силос."""
-    if not isinstance(body, dict):
-        return False
-    from proverka.cropwise_ui import column_work_types, matching_fact_columns
-
-    cols = body.get("cropColumns") or body.get("regionColumns") or []
-    fact_cols = matching_fact_columns(cols, list(fact_hints))
-    text = " ".join(
-        name for col in fact_cols for name in column_work_types(col)
-    ).casefold()
-    if "скашив" in text and "кукуруз" in text:
-        return True
-    if "6.3" in text:
-        return True
-    return False
+def is_corn_mowing_task(name: str) -> bool:
+    """Задача Cropwise «6.3 Скашивание с измельчением кукурузы» (кормозаготовка)."""
+    text = " ".join(str(name or "").replace("ё", "е").split()).casefold()
+    return ("скашив" in text and "кукуруз" in text) or text.startswith("6.3 ")
 
 
 def _crop_label(raw: str) -> str:
@@ -39,21 +27,31 @@ def _crop_label(raw: str) -> str:
         return str(raw or "").strip()
 
 
-def cropwise_area_by_firm_crop(
-    body: Any,
+def _silage_crop_name() -> str:
+    try:
+        from utils.shared.task_area_shared import CORN_SILAGE_CROP
+
+        return CORN_SILAGE_CROP
+    except ImportError:
+        return "Кукуруза на силос"
+
+
+def _add_crop_leaves(
+    out: dict[str, dict[str, float]],
+    body: dict,
     firm_names: list[str],
-    fact_hints: list[str],
-) -> dict[str, dict[str, float]]:
-    """Культура → агрофирма → га из дерева cropRows work.json."""
-    if not isinstance(body, dict):
-        return {}
+    hints: list[str],
+    *,
+    mowing: bool,
+) -> None:
+    """Листья cropRows по одному набору задач; скашивание кукурузы идёт в силос."""
     rows = body.get("cropRows") or []
     cols = body.get("cropColumns") or []
-    if not rows or not cols:
-        return {}
-    detail = parse_work_report_detail_rows(rows, cols, firm_names, list(fact_hints))
-    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    if not rows or not cols or not hints:
+        return
+    detail = parse_work_report_detail_rows(rows, cols, firm_names, list(hints))
     firm_set = set(firm_names)
+    silage = _silage_crop_name()
     for d in detail:
         if d.get("aggregate"):
             continue
@@ -62,14 +60,10 @@ def cropwise_area_by_firm_crop(
         if not parts:
             continue
         crop = _crop_label(parts[0])
-        if _body_is_corn_silage_mowing(body, list(fact_hints)):
-            if "кукуруз" in crop.casefold() and "зерно" in crop.casefold():
-                try:
-                    from utils.shared.task_area_shared import CORN_SILAGE_CROP
-
-                    crop = CORN_SILAGE_CROP
-                except ImportError:
-                    crop = "Кукуруза на силос"
+        # Как сводка 1: скашивание кукурузы — всегда «Кукуруза на силос».
+        # Уборка кукурузы остаётся «на зерно».
+        if mowing and "кукуруз" in crop.casefold():
+            crop = silage
         firm = str(d.get("firm") or "").strip()
         if not firm and len(parts) > 1:
             firm = parts[1].strip()
@@ -81,6 +75,28 @@ def cropwise_area_by_firm_crop(
         if ha <= 0:
             continue
         out[crop][firm] = round(out[crop].get(firm, 0.0) + ha, 2)
+
+
+def cropwise_area_by_firm_crop(
+    body: Any,
+    firm_names: list[str],
+    fact_hints: list[str],
+) -> dict[str, dict[str, float]]:
+    """Культура → агрофирма → га из дерева cropRows work.json.
+
+    Скашивание кукурузы (6.3) считается отдельным проходом по своей колонке и
+    записывается в «Кукуруза на силос»; остальные задачи (уборка 5.x) остаются
+    на культуре как есть. Раньше при наличии колонки 6.3 вся «кукуруза на зерно»
+    в теле ответа переименовывалась в силос, и уборка зерна терялась.
+    """
+    if not isinstance(body, dict):
+        return {}
+    hints = [str(h) for h in fact_hints]
+    mowing_hints = [h for h in hints if is_corn_mowing_task(h)]
+    other_hints = [h for h in hints if h not in mowing_hints]
+    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    _add_crop_leaves(out, body, firm_names, other_hints, mowing=False)
+    _add_crop_leaves(out, body, firm_names, mowing_hints, mowing=True)
     return {c: dict(by_firm) for c, by_firm in out.items()}
 
 

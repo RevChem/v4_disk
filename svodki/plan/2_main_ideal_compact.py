@@ -262,7 +262,7 @@ VEG_HARVEST_WT_IDS = frozenset({75, 76, 77})
 # Маркер версии правки листа 5.4 (для проверки на сервере: grep SVODKA2_VEG54_FIX).
 SVODKA2_VEG54_FIX = "2026-07-09c"
 # Маркер правки 5.0 Уборка → как 10_main_harvest (grep SVODKA2_HARVEST10_FIX).
-SVODKA2_HARVEST10_FIX = "2026-08-06a"
+SVODKA2_HARVEST10_FIX = "2026-10-16a"
 CORN_GRAIN_CROP = "Кукуруза на зерно"
 CORN_SILAGE_CROP = "Кукуруза на силос"
 CORN_SUMMARY_LABEL = "Кукуруза, из них:"
@@ -307,7 +307,6 @@ HARVEST_CROP_EXCLUDE_BY_FIRM: dict[str, frozenset[str]] = {
         "Зябь",
         "Многолетние травы",
         "Многолетние травы 2023 года",
-        "Тритикале озимая",
     }),
     "Дрожжаное Рассвет Агро": frozenset({
         "Однолетние травы",
@@ -3424,8 +3423,18 @@ def collect_work_data(
                         crop = crop_raw or UNDEFINED_CROP
                     else:
                         crop = crop_raw or UNDEFINED_CROP
-                        if is_harvest_grain:
-                            crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
+                        # is_harvest_grain в фазе B утек из последней группы и равен False,
+                        # поэтому скашивание кукурузы оставалось «на зерно».
+                        # Скашивание не-кукурузы в 5.0 не входит — как в 10_main_harvest.
+                        if group_name == HARVEST_GROUP_NAME:
+                            _wt_raw = task.get("work_type_id")
+                            crop = _as_silage_if_corn_mowing(_wt_raw, crop)
+                            try:
+                                _wt_i = int(_wt_raw) if _wt_raw is not None else None
+                            except (TypeError, ValueError):
+                                _wt_i = None
+                            if _wt_i in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
+                                continue
                         if group_name == DISK_GROUP_NAME and not crop_raw:
                             crop = ""
                         if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:
@@ -3486,24 +3495,6 @@ def collect_work_data(
                             _note_harvest_portion(
                                 firm, mid, tid, fid_i, crop, crop_for_agg,
                                 float(booked), task, t_date,
-                            )
-                        continue
-
-                    if is_harvest_grain:
-                        from task_area_shared import area_ha_by_shift_date
-
-                        portions = area_ha_by_shift_date(item, parse_dt=parse_dt)
-                        if not portions:
-                            raw_cov = float(item.get("covered_area") or 0)
-                            portions = {t_date: raw_cov} if raw_cov > 0 else {}
-                        for shift_date, shift_cov in portions.items():
-                            if shift_date < harvest_period_start or shift_date >= TODAY:
-                                continue
-                            if shift_cov <= 0:
-                                continue
-                            _note_harvest_portion(
-                                firm, mid, tid, fid_i, crop, crop_for_agg,
-                                float(shift_cov), task, shift_date,
                             )
                         continue
 
@@ -3576,8 +3567,18 @@ def collect_work_data(
                         crop = crop_raw or UNDEFINED_CROP
                     else:
                         crop = crop_raw or UNDEFINED_CROP
-                        if is_harvest_grain:
-                            crop = _as_silage_if_corn_mowing(task.get("work_type_id"), crop)
+                        # is_harvest_grain в фазе B утек из последней группы и равен False,
+                        # поэтому скашивание кукурузы оставалось «на зерно».
+                        # Скашивание не-кукурузы в 5.0 не входит — как в 10_main_harvest.
+                        if group_name == HARVEST_GROUP_NAME:
+                            _wt_raw = task.get("work_type_id")
+                            crop = _as_silage_if_corn_mowing(_wt_raw, crop)
+                            try:
+                                _wt_i = int(_wt_raw) if _wt_raw is not None else None
+                            except (TypeError, ValueError):
+                                _wt_i = None
+                            if _wt_i in SILAGE_CORN_MOWING_WT_IDS and crop != CORN_SILAGE_CROP:
+                                continue
                         if group_name == DISK_GROUP_NAME and not crop_raw:
                             crop = ""
                         if group_name == SPRAY_GROUP_NAME and crop in VEG_SPRAY_CROPS:

@@ -133,6 +133,19 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             except Exception as exc:
                 log.exception("reports.cropwise_check_failed", job_id=job.id, error=str(exc))
                 logs.append(f"Cropwise: проверка не выполнена ({exc})")
+        compare_season = bool(load_job_options(job.id).get("compare_cropwise_season"))
+        cropwise_season_diffs: list[dict] = []
+        if final_status == "completed" and created and compare_season:
+            try:
+                from app.application.cropwise_season_check import compare_generated_files_to_season
+
+                season_logs, cropwise_season_diffs = compare_generated_files_to_season(
+                    job.summary_date, created,
+                )
+                logs.extend(season_logs)
+            except Exception as exc:
+                log.exception("reports.cropwise_season_check_failed", job_id=job.id, error=str(exc))
+                logs.append(f"Cropwise сезон: проверка не выполнена ({exc})")
         total_duration_seconds = round(time.monotonic() - started_monotonic, 1)
         result = {
             "created": [
@@ -149,6 +162,7 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
             "cancelled": cancelled,
             "logs": logs,
             "cropwise_diffs": cropwise_diffs,
+            "cropwise_season_diffs": cropwise_season_diffs,
             # Полное время формирования всех сводок задания (для «Логов» и профиля).
             "total_duration_seconds": total_duration_seconds,
         }

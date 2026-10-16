@@ -488,6 +488,52 @@ def get_proverka_job(job_id: str, _: User = Depends(require_developer_access)):
     return st
 
 
+class HarvestCheckIn(BaseModel):
+    report_date: date
+    cookie: str | None = None
+    tolerance: float = Field(default=0.5, ge=0, le=1000)
+
+
+@router.get("/harvest-check/reports")
+def get_harvest_check_reports(_: User = Depends(require_developer_access)):
+    from app.adapters.outbound.proverka.harvest_check_service import report_ids
+
+    return {"report_ids": report_ids(), "cookie_configured": bool(session_cookie_from_env())}
+
+
+@router.post("/harvest-check")
+def run_harvest_check(
+    payload: HarvestCheckIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_developer_access),
+):
+    """Сверка уборки по уже сгенерированным Excel (и Cropwise, если есть cookie)."""
+    from app.adapters.outbound.proverka.harvest_check_service import start_job
+
+    st = start_job(payload.report_date, payload.cookie, payload.tolerance)
+    record_activity(
+        db,
+        action="proverka_harvest.requested",
+        user_id=user.id,
+        ip=get_client_ip(request),
+        job_id=st["job_id"],
+        report_date=payload.report_date.isoformat(),
+        summary_date=payload.report_date.isoformat(),
+    )
+    return st
+
+
+@router.get("/harvest-check/{job_id}")
+def get_harvest_check(job_id: str, _: User = Depends(require_developer_access)):
+    from app.adapters.outbound.proverka.harvest_check_service import read_job
+
+    st = read_job(job_id)
+    if st is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    return st
+
+
 @router.get("/jobs/{job_id}/download")
 def download_proverka_excel(job_id: str, _: User = Depends(require_developer_access)):
     path = excel_path_for_job(job_id)

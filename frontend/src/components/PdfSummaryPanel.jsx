@@ -57,12 +57,14 @@ export default function PdfSummaryPanel({
   canDelete = false,
   onDeleted,
   cropwiseByReport = {},
+  cropwiseSeasonByReport = {},
 }) {
   const [previewFilename, setPreviewFilename] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [diffReportId, setDiffReportId] = useState("");
+  const [seasonDiffReportId, setSeasonDiffReportId] = useState("");
 
   const sortedFiles = useMemo(() => {
     const key = (f) => {
@@ -151,6 +153,7 @@ export default function PdfSummaryPanel({
               const reportKey =
                 f.report_id || String(f.title || f.filename).match(/^(\d+(?:\.\d+)?)/)?.[1] || "";
               const diffs = cropwiseByReport[String(reportKey)] || [];
+              const seasonDiffs = cropwiseSeasonByReport[String(reportKey)] || [];
               return (
                 <Box key={f.filename}>
                   <Box
@@ -174,6 +177,23 @@ export default function PdfSummaryPanel({
                     })}
                   >
                     <Box sx={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 1 }}>
+                      {seasonDiffs.length > 0 ? (
+                        <IconButton
+                          aria-label="Различия с Cropwise за сезон"
+                          title="Различия с Cropwise за сезон (больше 10 га)"
+                          onClick={() => setSeasonDiffReportId(String(reportKey))}
+                          sx={{ p: 0.5, flexShrink: 0 }}
+                        >
+                          <Box
+                            sx={{
+                              width: 10,
+                              height: 10,
+                              borderRadius: "50%",
+                              bgcolor: "error.main",
+                            }}
+                          />
+                        </IconButton>
+                      ) : null}
                       {diffs.length > 0 ? (
                         <IconButton
                           aria-label="Различия с Cropwise"
@@ -303,6 +323,11 @@ export default function PdfSummaryPanel({
         rows={cropwiseByReport[diffReportId] || []}
         onClose={() => setDiffReportId("")}
       />
+      <CropwiseDiffDialog
+        season
+        rows={cropwiseSeasonByReport[seasonDiffReportId] || []}
+        onClose={() => setSeasonDiffReportId("")}
+      />
     </Card>
   );
 }
@@ -325,13 +350,20 @@ function columnCaption(row, side) {
   return side === "left" ? "итого листа" : "сумма строк";
 }
 
-function CropwiseDiffDialog({ rows, onClose }) {
+function CropwiseDiffDialog({ rows, onClose, season = false }) {
   const title = rows[0]?.title || (rows[0]?.report_id ? `Сводка ${rows[0].report_id}` : "Cropwise");
   const sheetsOnly = rows.length > 0 && rows.every((row) => row.source === "sheets");
   return (
     <Dialog open={rows.length > 0} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{sheetsOnly ? "Листы" : "Cropwise"} · {title}</DialogTitle>
+      <DialogTitle>
+        {sheetsOnly ? "Листы" : season ? "Cropwise за сезон" : "Cropwise"} · {title}
+      </DialogTitle>
       <DialogContent>
+        {season ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Сезонные гектары из файла сводки и work.json Cropwise. Показаны расхождения больше 10 га.
+          </Typography>
+        ) : null}
         <Table size="small">
           <TableHead>
             <TableRow>

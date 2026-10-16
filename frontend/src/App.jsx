@@ -3,7 +3,6 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 
 import AiMenuDialog from "./components/AiMenuDialog";
 import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
-import CropwiseSeasonDialog from "./components/CropwiseSeasonDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import AnalysisDialog from "./components/AnalysisDialog";
@@ -135,7 +134,9 @@ export default function App() {
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
-  const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
+  const [cropwiseSeasonOn, setCropwiseSeasonOn] = useState(
+    () => window.localStorage.getItem("svodki.cropwiseSeasonCheck") === "1",
+  );
   const [cookieRevision, setCookieRevision] = useState(0);
   const cropwiseActive = cropwiseOn && cropwiseCookie;
   const cropwiseCaption = !cropwiseCookie
@@ -158,6 +159,26 @@ export default function App() {
       cancelled = true;
     };
   }, [canGenerate, cookieRevision]);
+
+  const cropwiseSeasonActive = cropwiseSeasonOn && cropwiseCookie;
+  const cropwiseSeasonCaption = !cropwiseCookie
+    ? "На сервере нет cookie Cropwise — сезон не сверяется"
+    : cropwiseSeasonActive
+      ? "После создания сводок сверим сезонные гектары с work.json (ошибка больше 10 га — красная точка)"
+      : "Сезонные гектары сводок не сверяются с Cropwise";
+
+  function toggleCropwiseSeason() {
+    if (!cropwiseCookie) {
+      setCropwiseSeasonOn(false);
+      window.localStorage.setItem("svodki.cropwiseSeasonCheck", "0");
+      return;
+    }
+    setCropwiseSeasonOn((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("svodki.cropwiseSeasonCheck", next ? "1" : "0");
+      return next;
+    });
+  }
 
   function toggleCropwise() {
     if (!cropwiseCookie) {
@@ -650,11 +671,9 @@ export default function App() {
                 active: cropwiseActive,
                 caption: cropwiseCaption,
                 onToggle: toggleCropwise,
-                onSeason: () => setSeasonDialogOpen(true),
-                seasonDisabled: !cropwiseCookie,
-                seasonCaption: cropwiseCookie
-                  ? "Посчитать гектары за сезоны из редактора планов"
-                  : "На сервере нет cookie Cropwise",
+                seasonActive: cropwiseSeasonActive,
+                seasonCaption: cropwiseSeasonCaption,
+                onSeason: toggleCropwiseSeason,
               }
             : null
         }
@@ -699,6 +718,7 @@ export default function App() {
           }}
           onOpenTaskFacts={isDeveloper ? openTaskFacts : undefined}
           compareCropwise={cropwiseActive}
+          compareCropwiseSeason={cropwiseSeasonActive}
           equipmentRequest={equipmentRequest}
         />
       </AppShell>
@@ -720,11 +740,6 @@ export default function App() {
         open={cookieDialogOpen && isDeveloper}
         onClose={() => setCookieDialogOpen(false)}
         onSaved={() => setCookieRevision((value) => value + 1)}
-      />
-      <CropwiseSeasonDialog
-        open={seasonDialogOpen && canGenerate}
-        onClose={() => setSeasonDialogOpen(false)}
-        summaryDate={summaryDate}
       />
       <AiMenuDialog
         open={aiMenuOpen}

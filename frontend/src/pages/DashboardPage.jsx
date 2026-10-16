@@ -29,6 +29,7 @@ import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import PdfSummaryPanel from "../components/PdfSummaryPanel";
 import { sortCatalogAsc, sortCatalogDesc } from "../utils/reportSort";
 import ProverkaDialog from "../components/ProverkaDialog";
+import HarvestCheckDialog from "../components/HarvestCheckDialog";
 import ProverkaMachinesDialog from "../components/ProverkaMachinesDialog";
 import PlansEditorDialog from "../PlansEditorDialog";
 import DocumentCellEditorDialog from "../components/DocumentCellEditorDialog";
@@ -54,6 +55,14 @@ import {
 import dayjs from "dayjs";
 
 const CROPWISE_DIFF_MIN_HA = 1;
+// Сезон: ошибкой считается расхождение больше 10 га.
+const CROPWISE_SEASON_DIFF_MIN_HA = 10;
+
+function cropwiseSeasonDiffCounts(row) {
+  const delta = Number(row?.delta);
+  if (Number.isFinite(delta)) return delta > CROPWISE_SEASON_DIFF_MIN_HA;
+  return row?.status === "unread";
+}
 
 function cropwiseDiffCounts(row) {
   const delta = Number(row?.delta);
@@ -81,6 +90,7 @@ export default function DashboardPage({
   onHeaderToolsChange,
   onOpenTaskFacts,
   compareCropwise = false,
+  compareCropwiseSeason = false,
   equipmentRequest = 0,
 }) {
   const [summaryDateLocal, setSummaryDateLocal] = useState(todayIso());
@@ -96,6 +106,7 @@ export default function DashboardPage({
   const [enqueueing, setEnqueueing] = useState(false);
   const [plansOpen, setPlansOpen] = useState(false);
   const [proverkaOpen, setProverkaOpen] = useState(false);
+  const [harvestCheckOpen, setHarvestCheckOpen] = useState(false);
   const [proverkaMachinesOpen, setProverkaMachinesOpen] = useState(false);
   const [reportPickerExpanded, setReportPickerExpanded] = useState(true);
   const [failedItems, setFailedItems] = useState([]);
@@ -346,6 +357,35 @@ export default function DashboardPage({
     return map;
   }, [generationQueue, summaryDate]);
 
+  const cropwiseSeasonByReport = useMemo(() => {
+    const map = {};
+    const jobs = generationQueue
+      .filter(
+        (job) =>
+          job.summary_date === summaryDate &&
+          job.status === "completed" &&
+          Array.isArray(job.cropwise_season_diffs),
+      )
+      .slice()
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    for (const job of jobs) {
+      const requested = (job.report_ids || []).map(String).filter(Boolean);
+      const createdIds = (job.created || [])
+        .map((item) => String(item?.report_id || ""))
+        .filter(Boolean);
+      for (const rid of requested.length ? requested : createdIds) {
+        delete map[String(rid)];
+      }
+      for (const row of job.cropwise_season_diffs) {
+        const rid = String(row.report_id || "");
+        if (!rid || !cropwiseSeasonDiffCounts(row)) continue;
+        if (!map[rid]) map[rid] = [];
+        map[rid].push(row);
+      }
+    }
+    return map;
+  }, [generationQueue, summaryDate]);
+
   function setAllReportsSelected(checked) {
     setSelectedIds(checked ? visibleCatalog.map((i) => i.id) : []);
   }
@@ -361,6 +401,7 @@ export default function DashboardPage({
       const res = await generateReports(summaryDate, ids, {
         ...options,
         compareCropwise,
+        compareCropwiseSeason,
       });
       setInfo(`Задача поставлена в очередь (${res.job_id?.slice(0, 8) || "—"}…)`);
       onGenerationQueued?.();
@@ -651,6 +692,18 @@ export default function DashboardPage({
                         Проверка сводок
                       </Button>
                     )}
+                    {canProverka && (
+                      <Button
+                        variant="outlined"
+                        fullWidth
+                        size="small"
+                        sx={sidebarToolBtnSx}
+                        onClick={() => setHarvestCheckOpen(true)}
+                        startIcon={<FactCheckRoundedIcon sx={{ fontSize: 18 }} />}
+                      >
+                        Сверка уборки
+                      </Button>
+                    )}
                   </>
                 )}
 
@@ -675,6 +728,7 @@ export default function DashboardPage({
             onComment={(item) => openCommentsDialog(item.id)}
             canDelete={canComments}
             cropwiseByReport={cropwiseByReport}
+            cropwiseSeasonByReport={cropwiseSeasonByReport}
             onDeleted={() => {
               loadFiles();
               loadDates();
@@ -757,6 +811,11 @@ export default function DashboardPage({
         summaryDate={summaryDate}
         onComplete={onProverkaComplete}
         onOpenTaskFacts={onOpenTaskFacts}
+      />
+      <HarvestCheckDialog
+        open={harvestCheckOpen}
+        onClose={() => setHarvestCheckOpen(false)}
+        summaryDate={summaryDate}
       />
       <ProverkaMachinesDialog
         open={proverkaMachinesOpen}

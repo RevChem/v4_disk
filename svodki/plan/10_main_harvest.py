@@ -1951,13 +1951,6 @@ def _all_harvest_tasks_map(cache: "HarvestDataCache") -> dict[int, dict]:
     return {int(t["id"]): t for t in cache.tasks_season if t.get("id") is not None}
 
 
-def _cap_area_to_plan(fact: float, plan: float) -> float:
-    """Факт общий не может превышать план по культуре/агрофирме."""
-    if plan > 0 and fact > plan:
-        return round(plan, 1)
-    return round(fact, 1)
-
-
 def _crop_area_from_cache(
     cache: "HarvestDataCache",
     crop_name: str,
@@ -3042,7 +3035,7 @@ def build_crop_report(
             fact_total, fact_today, _, _ = \
                 _harvest_from_agro_df(firm_df, label_date)
 
-        fact_total = _cap_area_to_plan(fact_total, plan_ha)
+        fact_total = round(fact_total, 1)
 
         # Валовый сбор (т) — из Namolot API.
         harvest_total, harvest_today = get_namolot_harvest(
@@ -3260,7 +3253,7 @@ def build_general_harvest(report_date: date,
         fact_sum = data_rows["Факт общий, га"].sum()
         crop_data[crop_name] = {
             "План, га":                 plan_sum,
-            "Факт общий, га":           _cap_area_to_plan(fact_sum, plan_sum),
+            "Факт общий, га":           round(fact_sum, 1),
             "Валовый сбор общий, т":    harvest,
             "Факт за сутки, га":        data_rows["Факт за сутки, га"].sum(),
             "Валовый сбор за сутки, т": harvest_today,

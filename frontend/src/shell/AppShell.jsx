@@ -153,26 +153,26 @@ export default function AppShell({
                           Cropwise
                         </Button>
                       </Tooltip>
-                      <Tooltip title={cropwise.seasonCaption || "Гектары за сезоны из редактора планов"}>
-                        <span>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            disabled={Boolean(cropwise.seasonDisabled)}
-                            onClick={cropwise.onSeason}
-                            sx={{
-                              minWidth: 0,
-                              width: "100%",
-                              px: 1,
-                              py: 0.2,
-                              fontSize: "0.75rem",
-                              lineHeight: 1.5,
-                              textTransform: "none",
-                            }}
-                          >
-                            Cropwise сезон
-                          </Button>
-                        </span>
+                      <Tooltip title={cropwise.seasonCaption}>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={cropwise.onSeason}
+                          sx={{
+                            minWidth: 0,
+                            px: 1,
+                            py: 0.2,
+                            fontSize: "0.75rem",
+                            lineHeight: 1.5,
+                            textTransform: "none",
+                            bgcolor: cropwise.seasonActive ? "success.main" : "error.main",
+                            "&:hover": {
+                              bgcolor: cropwise.seasonActive ? "success.dark" : "error.dark",
+                            },
+                          }}
+                        >
+                          Cropwise за сезон
+                        </Button>
                       </Tooltip>
                     </Stack>
                   ) : null}

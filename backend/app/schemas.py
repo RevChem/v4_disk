@@ -30,6 +30,7 @@ class GenerateReportsIn(BaseModel):
         description="Ручной валовый сбор для сводок 1 / 10 / 13 (crops / vegetables).",
     )
     compare_cropwise: bool = False
+    compare_cropwise_season: bool = False
 
     def report27_options(self) -> dict[str, str] | None:
         if not any(
@@ -71,6 +72,8 @@ class GenerateReportsIn(BaseModel):
             opts["report_harvest_gross"] = self.report_harvest_gross
         if self.compare_cropwise:
             opts["compare_cropwise"] = True
+        if self.compare_cropwise_season:
+            opts["compare_cropwise_season"] = True
         return opts or None
 
 

@@ -379,6 +379,9 @@ export async function generateReports(summaryDate, reportIds, options = {}) {
     if (options?.compareCropwise || options?.compare_cropwise) {
       payload.compare_cropwise = true;
     }
+    if (options?.compareCropwiseSeason || options?.compare_cropwise_season) {
+      payload.compare_cropwise_season = true;
+    }
     const headers = {};
     if (
       payload.report27_date_from &&
@@ -953,6 +956,31 @@ export async function runProverkaMachines({ reportDate, reportIds }) {
 
 export async function fetchProverkaMachinesJob(jobId) {
   const { data } = await api.get(`/proverka/machines/jobs/${jobId}`, { timeout: 15_000 });
+  return data;
+}
+
+export async function fetchHarvestCheckReports() {
+  const { data } = await api.get("/proverka/harvest-check/reports", { timeout: 15_000 });
+  return data;
+}
+
+export async function runHarvestCheck({ reportDate, cookie, tolerance }) {
+  try {
+    const { data } = await api.post(
+      "/proverka/harvest-check",
+      { report_date: reportDate, cookie: cookie || null, tolerance },
+      { timeout: 60_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function fetchHarvestCheck(jobId) {
+  const { data } = await api.get(`/proverka/harvest-check/${encodeURIComponent(jobId)}`, {
+    timeout: 30_000,
+  });
   return data;
 }
 

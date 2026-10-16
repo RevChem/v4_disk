@@ -21,6 +21,41 @@ def fetch_season_hectares(cookie: str, group_name: str, report_date: date) -> di
     return found[0]
 
 
+def prepare_season_groups(report_date: date, groups: list[str] | None = None) -> list[dict[str, Any]]:
+    """Операции с сезонами редактора: окно, виды работ, имена задач. Без сети."""
+    from plans import WORK_GROUPS
+
+    names = (
+        [str(name) for name, _ids in WORK_GROUPS]
+        if groups is None
+        else [str(g).strip() for g in groups if str(g).strip()]
+    )
+    return [item for name in names if (item := _prepare_group(name, report_date))]
+
+
+def load_season_slots(
+    cookie: str,
+    prepared: list[dict[str, Any]],
+) -> dict[str, dict[int, dict[str, Any]]]:
+    """work.json по каждому сезону группы: {группа: {год: слот загрузки}}. Без кэша."""
+    if not str(cookie or "").strip():
+        raise ValueError("Нет CROPWISE_SESSION_COOKIE")
+    from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons
+
+    jobs_by_year: dict[int, list] = defaultdict(list)
+    for item in prepared:
+        job = WorkLoadJob(item["group_name"], item["window_from"], item["window_to"], item["wt_ids"], tuple(item["hints"]))
+        for year in item["years"]:
+            jobs_by_year[year].append(job)
+
+    loaded_by_group: dict[str, dict[int, dict[str, Any]]] = {item["group_name"]: {} for item in prepared}
+    for year in sorted(jobs_by_year):
+        loaded = load_works_for_seasons(cookie, jobs_by_year[year], years=[year])
+        for name, by_year in loaded.items():
+            loaded_by_group.setdefault(name, {}).update(by_year or {})
+    return loaded_by_group
+
+
 def fetch_all_season_hectares(
     cookie: str,
     report_date: date,
@@ -30,26 +65,14 @@ def fetch_all_season_hectares(
     if not str(cookie or "").strip():
         raise ValueError("Нет CROPWISE_SESSION_COOKIE")
 
-    from plans import FIRM_ORDER, WORK_GROUPS
-    from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons
+    from plans import FIRM_ORDER
 
-    names = [str(name) for name, _ids in WORK_GROUPS] if groups is None else [str(g).strip() for g in groups if str(g).strip()]
-    prepared = [item for name in names if (item := _prepare_group(name, report_date))]
-    if groups is not None and names and not prepared:
-        missing = names[0]
+    prepared = prepare_season_groups(report_date, groups)
+    if groups is not None and groups and not prepared:
+        missing = str(groups[0]).strip()
         raise ValueError(f"У «{missing}» в редакторе планов не заданы сезоны")
 
-    jobs_by_year: dict[int, list] = defaultdict(list)
-    for item in prepared:
-        job = WorkLoadJob(item["group_name"], item["window_from"], item["window_to"], item["wt_ids"], tuple(item["hints"]))
-        for year in item["years"]:
-            jobs_by_year[year].append(job)
-
-    loaded_by_group: dict[str, dict] = {item["group_name"]: {} for item in prepared}
-    for year in sorted(jobs_by_year):
-        loaded = load_works_for_seasons(cookie, jobs_by_year[year], years=[year])
-        for name, by_year in loaded.items():
-            loaded_by_group.setdefault(name, {}).update(by_year or {})
+    loaded_by_group = load_season_slots(cookie, prepared)
 
     firms = list(FIRM_ORDER)
     out_groups = []
@@ -72,13 +95,15 @@ def fetch_all_season_hectares(
 
 
 def _prepare_group(name: str, report_date: date) -> dict[str, Any] | None:
-    from plans import work_group_ids
     from proverka.task_names import tasks_for_group
+    from proverka.work_groups import work_type_ids_for_group
     from season_unified import resolve_group_season_config
 
     cfg = resolve_group_season_config(name, report_date)
     years = [int(y) for y in (cfg.get("task_season_years") or cfg.get("history_years") or [])]
-    wt_ids = [int(x) for x in work_group_ids(name)]
+    # Те же виды работ, что в проверке за смену: к «5.0 Уборка» добавлено 84
+    # («6.3 Скашивание с измельчением кукурузы»), иначе силос в сезоне не загрузится.
+    wt_ids = [int(x) for x in work_type_ids_for_group(name)]
     hints = list(tasks_for_group(name))
     if not years or not wt_ids or not hints:
         return None

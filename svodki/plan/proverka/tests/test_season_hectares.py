@@ -61,7 +61,9 @@ def test_fetch_uses_editor_window_and_splits_years(monkeypatch):
             "period_end": "2026-10-14",
         },
     )
-    monkeypatch.setattr(plans, "work_group_ids", lambda name: [64])
+    import proverka.work_groups as work_groups
+
+    monkeypatch.setattr(work_groups, "work_type_ids_for_group", lambda name: [64])
     monkeypatch.setattr(plans, "FIRM_ORDER", ["АФ А"])
     monkeypatch.setattr(ui, "load_works_for_seasons", fake_load)
 
@@ -92,3 +94,23 @@ def test_missing_editor_years_raise(monkeypatch):
         assert "не заданы сезоны" in str(exc)
     else:
         raise AssertionError("ожидали ошибку")
+
+
+def test_harvest_season_requests_corn_mowing_work_type(monkeypatch):
+    """«5.0 Уборка» за сезон грузится вместе с 84 (6.3 Скашивание кукурузы), как в сводке 1."""
+    import season_unified
+
+    monkeypatch.setattr(
+        season_unified,
+        "resolve_group_season_config",
+        lambda name, rd: {
+            "task_season_years": [2026],
+            "history_years": [2026],
+            "period_start": "2026-06-10",
+            "period_end": "2026-10-14",
+        },
+    )
+    prepared = sh.prepare_season_groups(REPORT_DATE, ["5.0 Уборка"])
+    assert len(prepared) == 1
+    assert 84 in prepared[0]["wt_ids"]
+    assert "6.3 Скашивание с измельчением кукурузы" in prepared[0]["hints"]
