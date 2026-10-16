@@ -77,6 +77,10 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   const [error, setError] = useState("");
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [timeTo, setTimeTo] = useState("");
   const [plate, setPlate] = useState("");
   const [surname, setSurname] = useState("");
   const [mode, setMode] = useState("rows");
@@ -90,6 +94,10 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     if (open) return undefined;
     setFirm("");
     setCrop("");
+    setDateFrom("");
+    setTimeFrom("");
+    setDateTo("");
+    setTimeTo("");
     setPlate("");
     setSurname("");
     setMode("rows");
@@ -140,10 +148,17 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   }, [open, ready, reportDate, firm, crop]);
 
   const visible = useMemo(() => {
-    const filtered = filterRows(rows, { plate, surname });
+    const filtered = filterRows(rows, {
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      plate,
+      surname,
+    });
     if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
     return rankRows(filtered, mode, sortDir);
-  }, [rows, plate, surname, mode, sortKey, sortDir]);
+  }, [rows, dateFrom, timeFrom, dateTo, timeTo, plate, surname, mode, sortKey, sortDir]);
 
   const shownTonnes = useMemo(
     () => visible.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
@@ -163,6 +178,10 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   }
 
   function resetFilters() {
+    setDateFrom("");
+    setTimeFrom("");
+    setDateTo("");
+    setTimeTo("");
     setPlate("");
     setSurname("");
     setPage(0);
@@ -189,7 +208,8 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Дата сводки {reportDate}. За сутки — смена с 06:00 предыдущего дня по 05:59 этой даты.
           За сезон — с 06:00 начала уборки по то же 05:59. Запрос в 1С уходит только после выбора
-          агрофирмы и культуры. Госномер и фамилия сужают уже загруженные записи.
+          агрофирмы и культуры. Дата, время, госномер и фамилия сужают уже загруженные записи сезона.
+          Пустое время — с начала или до конца указанного дня.
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
           <TextField
@@ -249,6 +269,56 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
             </TableRow>
           </TableBody>
         </Table>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
+          <TextField
+            label="Дата с"
+            type="date"
+            size="small"
+            value={dateFrom}
+            onChange={(event) => {
+              setDateFrom(event.target.value);
+              setPage(0);
+            }}
+            slotProps={{ inputLabel: { shrink: true } }}
+            disabled={loading && !loaded}
+          />
+          <TextField
+            label="Время с"
+            type="time"
+            size="small"
+            value={timeFrom}
+            onChange={(event) => {
+              setTimeFrom(event.target.value);
+              setPage(0);
+            }}
+            slotProps={{ inputLabel: { shrink: true } }}
+            disabled={loading && !loaded}
+          />
+          <TextField
+            label="Дата по"
+            type="date"
+            size="small"
+            value={dateTo}
+            onChange={(event) => {
+              setDateTo(event.target.value);
+              setPage(0);
+            }}
+            slotProps={{ inputLabel: { shrink: true } }}
+            disabled={loading && !loaded}
+          />
+          <TextField
+            label="Время по"
+            type="time"
+            size="small"
+            value={timeTo}
+            onChange={(event) => {
+              setTimeTo(event.target.value);
+              setPage(0);
+            }}
+            slotProps={{ inputLabel: { shrink: true } }}
+            disabled={loading && !loaded}
+          />
+        </Stack>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} alignItems={{ sm: "center" }}>
           <TextField
             label="Госномер"
@@ -340,7 +410,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
               </Box>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                По этой агрофирме и культуре записей нет.
+                {dateFrom || timeFrom || dateTo || timeTo || plate || surname
+                  ? "Ничего не найдено в этом диапазоне. Сбросьте фильтр или расширьте даты."
+                  : "По этой агрофирме и культуре записей нет."}
               </Typography>
             )}
             <TablePagination

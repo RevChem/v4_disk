@@ -6,6 +6,7 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -25,6 +26,8 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 
 import {
   fetchHarvestCheck,
@@ -44,6 +47,7 @@ const STATUS_META = {
   both: { label: "сводки и Cropwise", color: "error" },
   single: { label: "один источник", color: "default" },
 };
+const STATUS_RANK = { ok: 0, single: 1, cropwise: 2, svodki: 3, both: 4 };
 const GEN_TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const POLL_MS = 2500;
 
@@ -59,6 +63,22 @@ function median(nums) {
   const s = [...nums].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function worstStatus(list) {
+  return list.reduce((acc, row) => ((STATUS_RANK[row.status] ?? 0) > (STATUS_RANK[acc] ?? 0) ? row.status : acc), "ok");
+}
+
+function isDiff(row) {
+  return row.status !== "ok" && row.status !== "single";
+}
+
+function headlineValue(row) {
+  if (!row) return "—";
+  const nums = Object.values(row.values || {}).map((cell) => cell.value);
+  if (row.status === "ok" || row.status === "single") return fmt(nums[0] ?? row.cropwise?.value);
+  if (row.spread != null) return `разброс ${fmt(row.spread)}`;
+  return fmt(nums[0] ?? row.cropwise?.value);
 }
 
 function ValueCell({ cell, off }) {
@@ -95,7 +115,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
   const [error, setError] = useState("");
   const [genWarning, setGenWarning] = useState("");
   const [job, setJob] = useState(null);
-  const [operation, setOperation] = useState("*");
+  const [openOps, setOpenOps] = useState([]);
   const [firm, setFirm] = useState("*");
   const [crop, setCrop] = useState("*");
   const [metric, setMetric] = useState("all");
@@ -205,45 +225,51 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
   const opList = result?.operations?.length ? result.operations : operations;
   const peerMap = result?.peers || peers;
 
-  const scoped = useMemo(
-    () => rows.filter((r) => operation === "*" || r.operation === operation),
-    [rows, operation]
-  );
-  const firms = useMemo(() => [...new Set(scoped.map((r) => r.firm))], [scoped]);
-  const crops = useMemo(() => [...new Set(scoped.map((r) => r.crop))], [scoped]);
-  const colIds = useMemo(() => {
-    const ids = result?.report_ids || reportIds;
-    const ops = operation === "*" ? opList : [operation];
-    const used = new Set(ops.flatMap((op) => peerMap[op] || []));
-    const picked = ids.filter((id) => used.has(id));
-    return picked.length ? picked : ids;
-  }, [result, reportIds, operation, opList, peerMap]);
+  const firms = useMemo(() => [...new Set(rows.map((r) => r.firm).filter((name) => name !== ALL))], [rows]);
+  const crops = useMemo(() => [...new Set(rows.map((r) => r.crop).filter((name) => name !== ALL))], [rows]);
 
-  const visible = useMemo(
-    () =>
-      scoped.filter(
-        (r) =>
-          (firm === "*" || r.firm === firm) &&
-          (crop === "*" || r.crop === crop) &&
-          (metric === "all" || r.metric === metric) &&
-          (!onlyDiff || (r.status !== "ok" && r.status !== "single"))
-      ),
-    [scoped, firm, crop, metric, onlyDiff]
-  );
+  const groups = useMemo(() => {
+    const bag = new Map(opList.map((op) => [op, []]));
+    for (const row of rows) {
+      if (metric !== "all" && row.metric !== metric) continue;
+      if (firm === "*") {
+        if (row.firm !== ALL) continue;
+      } else if (row.firm !== firm) continue;
+      if (!bag.has(row.operation)) bag.set(row.operation, []);
+      bag.get(row.operation).push(row);
+    }
+    const out = [];
+    for (const [op, list] of bag) {
+      const totals = list.filter((row) => row.crop === ALL);
+      const crops = list.filter((row) => row.crop !== ALL && (crop === "*" || row.crop === crop));
+      if (crop !== "*" && !crops.length) continue;
+      const watched = crop === "*" ? [...totals, ...crops] : crops;
+      if (!watched.length) continue;
+      if (onlyDiff && !watched.some(isDiff)) continue;
+      out.push({
+        op,
+        headline: crop === "*" ? totals : crops,
+        crops,
+        reportIds: peerMap[op] || [],
+        status: worstStatus(watched),
+        warnings: result?.by_operation?.[op]?.warnings || [],
+        seasonStart: result?.by_operation?.[op]?.season_start,
+      });
+    }
+    return out;
+  }, [rows, opList, firm, crop, metric, onlyDiff, peerMap, result]);
 
   const summary = useMemo(() => {
     const counts = {};
-    for (const r of scoped) counts[r.status] = (counts[r.status] || 0) + 1;
+    for (const group of groups) counts[group.status] = (counts[group.status] || 0) + 1;
     return counts;
-  }, [scoped]);
+  }, [groups]);
   const cw = result?.cropwise;
-  const opInfo = operation !== "*" ? result?.by_operation?.[operation] : null;
   const cwErrors = useMemo(() => {
     const bag = result?.by_operation || {};
-    const names = operation === "*" ? Object.keys(bag) : [operation];
     const byMsg = new Map();
-    for (const name of names) {
-      const err = bag[name]?.cropwise?.error;
+    for (const [name, info] of Object.entries(bag)) {
+      const err = info?.cropwise?.error;
       if (!err) continue;
       const ops = byMsg.get(err) || [];
       ops.push(name);
@@ -252,7 +278,11 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
     return [...byMsg.entries()].map(([err, ops]) =>
       ops.length === 1 ? `${ops[0]}: ${err}` : `${ops.length} операций: ${err}`
     );
-  }, [result, operation]);
+  }, [result]);
+
+  function toggleOp(name) {
+    setOpenOps((prev) => (prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]));
+  }
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="xl" fullWidth>
@@ -351,11 +381,6 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                   Cropwise: {text}
                 </Alert>
               ))}
-              {(opInfo?.warnings || []).map((text) => (
-                <Alert key={text} severity="warning">
-                  {text}
-                </Alert>
-              ))}
               {result.sources
                 .filter((s) => s.error)
                 .map((s) => (
@@ -369,30 +394,13 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 <Chip size="small" color="error" label={`Сводки расходятся: ${(summary.svodki || 0) + (summary.both || 0)}`} />
                 <Chip size="small" color="warning" label={`Расходится с Cropwise: ${(summary.cropwise || 0) + (summary.both || 0)}`} />
                 <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
-                  смена {result.shift_date}
-                  {opInfo?.season_start ? `, сезон с ${opInfo.season_start}` : ", сезон — по настройке операции"}
-                  , допуск {tol} га
+                  смена {result.shift_date}, допуск {tol} га. Нажмите на операцию, чтобы открыть культуры.
                 </Typography>
               </Stack>
 
               <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
-                <TextField
-                  select
-                  size="small"
-                  label="Операция"
-                  value={operation}
-                  onChange={(e) => setOperation(e.target.value)}
-                  sx={{ minWidth: 280 }}
-                >
-                  <MenuItem value="*">Все</MenuItem>
-                  {opList.map((op) => (
-                    <MenuItem key={op} value={op}>
-                      {op}
-                    </MenuItem>
-                  ))}
-                </TextField>
                 <TextField select size="small" label="Агрофирма" value={firm} onChange={(e) => setFirm(e.target.value)} sx={{ minWidth: 220 }}>
-                  <MenuItem value="*">Все</MenuItem>
+                  <MenuItem value="*">Холдинг</MenuItem>
                   {firms.map((f) => (
                     <MenuItem key={f} value={f}>
                       {firmLabel(f)}
@@ -418,65 +426,123 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 />
               </Stack>
 
-              <TableContainer sx={{ maxHeight: "60vh", border: 1, borderColor: "divider", borderRadius: 1 }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Операция</TableCell>
-                      <TableCell>Агрофирма</TableCell>
-                      <TableCell>Культура</TableCell>
-                      <TableCell>Показатель, га</TableCell>
-                      {colIds.map((rid) => (
-                        <TableCell key={rid} align="right">
-                          Сводка {rid}
-                        </TableCell>
-                      ))}
-                      <TableCell align="right">Cropwise</TableCell>
-                      <TableCell align="right">Разброс сводок</TableCell>
-                      <TableCell>Статус</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {visible.map((r) => {
-                      const nums = Object.values(r.values).map((v) => v.value);
-                      const med = median(nums);
-                      const meta = STATUS_META[r.status] || STATUS_META.single;
-                      return (
-                        <TableRow key={`${r.operation}|${r.firm}|${r.crop}|${r.metric}`} hover>
-                          <TableCell>{r.operation}</TableCell>
-                          <TableCell sx={{ fontWeight: r.firm === ALL ? 600 : 400 }}>{firmLabel(r.firm)}</TableCell>
-                          <TableCell sx={{ fontWeight: r.crop === ALL ? 600 : 400 }}>{cropLabel(r.crop)}</TableCell>
-                          <TableCell>{METRIC_LABEL[r.metric]}</TableCell>
-                          {colIds.map((rid) => {
-                            const cell = r.values[rid];
-                            const off = cell && nums.length >= 2 && Math.abs(cell.value - med) > tol;
-                            return <ValueCell key={rid} cell={cell} off={off} />;
-                          })}
-                          <ValueCell cell={r[CROPWISE]} off={r.cropwise_diff != null && r.cropwise_diff > tol} />
-                          <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                            {fmt(r.spread)}
-                          </TableCell>
-                          <TableCell>
-                            <Chip size="small" variant="outlined" color={meta.color} label={meta.label} />
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                    {!visible.length && (
-                      <TableRow>
-                        <TableCell colSpan={colIds.length + 7}>
-                          <Box sx={{ py: 2, textAlign: "center", color: "text.secondary" }}>
-                            {onlyDiff ? "Расхождений нет" : "Нет данных"}
-                          </Box>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <Stack spacing={1}>
+                {groups.map((group) => {
+                  const openGroup = openOps.includes(group.op);
+                  const meta = STATUS_META[group.status] || STATUS_META.single;
+                  return (
+                    <Box key={group.op} sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
+                      <Box
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={openGroup}
+                        onClick={() => toggleOp(group.op)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleOp(group.op);
+                          }
+                        }}
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1,
+                          px: 1,
+                          py: 0.5,
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "action.hover" },
+                        }}
+                      >
+                        {openGroup ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
+                        <Typography sx={{ fontWeight: 600, minWidth: 220 }}>{group.op}</Typography>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+                          {group.headline.map((row) => (
+                            <Chip
+                              key={`${row.crop}|${row.metric}`}
+                              size="small"
+                              variant="outlined"
+                              label={`${crop === "*" ? METRIC_LABEL[row.metric] : `${cropLabel(row.crop)}, ${METRIC_LABEL[row.metric].toLowerCase()}`}: ${headlineValue(row)} га`}
+                            />
+                          ))}
+                        </Stack>
+                        <Chip size="small" variant="outlined" color={meta.color} label={meta.label} />
+                      </Box>
+                      <Collapse in={openGroup} unmountOnExit>
+                        <Box sx={{ px: 1, pb: 1 }}>
+                          {group.warnings.map((text) => (
+                            <Alert key={text} severity="warning" sx={{ mb: 1 }}>
+                              {text}
+                            </Alert>
+                          ))}
+                          {group.seasonStart && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                              Сезон с {group.seasonStart}
+                            </Typography>
+                          )}
+                          {group.crops.length ? (
+                            <TableContainer>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell>Культура</TableCell>
+                                    <TableCell>Показатель, га</TableCell>
+                                    {group.reportIds.map((rid) => (
+                                      <TableCell key={rid} align="right">
+                                        Сводка {rid}
+                                      </TableCell>
+                                    ))}
+                                    <TableCell align="right">Cropwise</TableCell>
+                                    <TableCell align="right">Разброс сводок</TableCell>
+                                    <TableCell>Статус</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {group.crops.map((r) => {
+                                    const nums = Object.values(r.values).map((v) => v.value);
+                                    const med = median(nums);
+                                    const rowMeta = STATUS_META[r.status] || STATUS_META.single;
+                                    return (
+                                      <TableRow key={`${r.firm}|${r.crop}|${r.metric}`} hover>
+                                        <TableCell>{cropLabel(r.crop)}</TableCell>
+                                        <TableCell>{METRIC_LABEL[r.metric]}</TableCell>
+                                        {group.reportIds.map((rid) => {
+                                          const cell = r.values[rid];
+                                          const off = cell && nums.length >= 2 && Math.abs(cell.value - med) > tol;
+                                          return <ValueCell key={rid} cell={cell} off={off} />;
+                                        })}
+                                        <ValueCell cell={r[CROPWISE]} off={r.cropwise_diff != null && r.cropwise_diff > tol} />
+                                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                                          {fmt(r.spread)}
+                                        </TableCell>
+                                        <TableCell>
+                                          <Chip size="small" variant="outlined" color={rowMeta.color} label={rowMeta.label} />
+                                        </TableCell>
+                                      </TableRow>
+                                    );
+                                  })}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+                              По культурам разбивки нет.
+                            </Typography>
+                          )}
+                        </Box>
+                      </Collapse>
+                    </Box>
+                  );
+                })}
+                {!groups.length && (
+                  <Box sx={{ py: 2, textAlign: "center", color: "text.secondary" }}>
+                    {onlyDiff ? "Расхождений нет" : "Нет данных"}
+                  </Box>
+                )}
+              </Stack>
               <Typography variant="caption" color="text.secondary">
-                Курсивом — итог, которого нет в файле: досчитан суммой строк этой сводки. Наведите на число,
-                чтобы увидеть лист и строку. Красным — значение, отличающееся от медианы сводок больше допуска.
+                На строке операции — итог {firm === "*" ? "по холдингу" : `по «${firm}»`}. Курсивом — итог, которого нет в файле: досчитан суммой
+                строк этой сводки. Наведите на число, чтобы увидеть лист и строку. Красным — значение,
+                отличающееся от медианы сводок больше допуска.
               </Typography>
             </>
           )}
