@@ -297,6 +297,12 @@ NAMOLOT_TO_CROPWISE_REG: dict[str, str] = {
     "АМ 2964 16": "2964АМ",
     "ОУ 3156": "3156ОУ",
     "74-80": "7480АЕ",
+    # Буквы в Namolot и Cropwise разные, модель и цифры — одной машины.
+    # Без явной пары сравнение по цифрам склеило бы чужой номер.
+    "АВ 8862 16": "8862АА",
+    "3515 АМ": "3515АЕ",
+    "0177 МА 09": "0177НА",
+    "6032 ОВ 23": "6032УВ",
 }
 
 
@@ -354,12 +360,29 @@ def _reg_main_digits(raw: str | None) -> str:
     return max(digit_groups, key=len) if digit_groups else ""
 
 
+def _plate_lookup_key(raw: str | None) -> str:
+    """Ключ словаря: верхний регистр, омоглифы, пробелы и дефисы схлопнуты."""
+    s = _normalize_plate_str(raw)
+    return re.sub(r"[\s\-]+", " ", s).strip()
+
+
+_PLATE_LOOKUP: dict[str, str] = {
+    _plate_lookup_key(k): v for k, v in NAMOLOT_TO_CROPWISE_REG.items()
+}
+
+
 def _cropwise_reg_for_namolot(raw_id: str | None) -> str | None:
-    """Гос.номер Cropwise для записи Namolot, если задан ручной маппинг."""
+    """Гос.номер Cropwise для записи Namolot, если задан ручной маппинг.
+
+    Сначала точный ключ, затем тот же номер с другими пробелами и раскладкой.
+    """
     key = str(raw_id or "").strip()
     if not key:
         return None
-    return NAMOLOT_TO_CROPWISE_REG.get(key)
+    hit = NAMOLOT_TO_CROPWISE_REG.get(key)
+    if hit:
+        return hit
+    return _PLATE_LOOKUP.get(_plate_lookup_key(key))
 
 
 def _reg_source_for_namolot(raw_id: str | None) -> str:
