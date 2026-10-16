@@ -1022,19 +1022,16 @@ async function errorFromBlob(err) {
   return formatError(err);
 }
 
-export async function downloadNamolotExcel({ dateBegin, dateEnd, reportDate, firm, crop }) {
+export async function downloadNamolotExcel({ mode, rows }) {
   try {
-    const params = reportDate && firm && crop
-      ? { report_date: reportDate, firm, crop }
-      : { date_begin: dateBegin, date_end: dateEnd };
-    const res = await api.get("/proverka/namolot/excel", {
-      params,
-      responseType: "blob",
-      timeout: 180_000,
-    });
+    const res = await api.post(
+      "/proverka/namolot/excel",
+      { mode: mode || "rows", rows: rows || [] },
+      { responseType: "blob", timeout: 180_000 }
+    );
     const cd = res.headers["content-disposition"] || "";
     const match = /filename="?([^";]+)"?/i.exec(cd);
-    const filename = match?.[1] || `namolot_${reportDate || dateBegin}_${dateEnd || ""}.xlsx`;
+    const filename = match?.[1] || "namolot.xlsx";
     const url = URL.createObjectURL(res.data);
     const link = document.createElement("a");
     link.href = url;

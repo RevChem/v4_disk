@@ -2,7 +2,11 @@
 from datetime import date
 
 from app.application import namolot_view
-from app.application.namolot_view import OTHER_FIRM, holding_firm, record_rows, summarize
+from io import BytesIO
+
+from openpyxl import load_workbook
+
+from app.application.namolot_view import OTHER_FIRM, field_base_code, holding_firm, record_rows, summarize, table_excel
 
 
 def test_api_organization_names_map_to_holding():
@@ -106,3 +110,71 @@ def test_brief_keeps_shift_and_season_for_one_firm_and_crop(monkeypatch):
     assert view["day"]["to"] == "2026-10-16T05:59:00"
     assert view["season"]["from"] == "2026-06-10T06:00:00"
     assert len(view["rows"]) == 3
+
+
+def test_field_code_puts_razdolye_row_on_the_holding_firm():
+    assert field_base_code("АР-03-16 Соя 26г.") == "АР-03-16"
+    assert field_base_code("*AP-03-16 Соя") == "АР-03-16"
+    index = {"АР-03-16": "АгроРаздолье"}
+    rows = record_rows(
+        [
+            {
+                "organization": "Элеватор Текэ Тау ООО",
+                "crop": "Соя",
+                "quantity": 1500,
+                "spp": "АР-03-16 Соя 26г.",
+                "date": "2026-10-15T08:00:00",
+            }
+        ],
+        index,
+    )
+    assert len(rows) == 1
+    assert rows[0]["firm"] == "АгроРаздолье"
+    assert rows[0]["field"] == "АР-03-16 Соя 26г."
+
+
+def test_unknown_field_and_organization_are_not_other():
+    rows = record_rows(
+        [
+            {
+                "organization": "Элеватор Текэ Тау ООО",
+                "crop": "Соя",
+                "quantity": 1500,
+                "spp": "НЕИЗВЕСТНО-1 Соя",
+                "date": "2026-10-15T08:00:00",
+            }
+        ],
+        {},
+    )
+    assert rows == []
+
+
+def test_table_excel_keeps_filtered_rows_and_columns():
+    payload = table_excel(
+        "rows",
+        [
+            {
+                "at": "2026-10-15T08:30:00",
+                "firm": "АгроРаздолье",
+                "crop": "Соя",
+                "plate": "АН 2824 16",
+                "operator": "Пискеев Александр",
+                "field": "АР-03-16 Соя 26г.",
+                "tonnes": 1.5,
+            }
+        ],
+    )
+    ws = load_workbook(BytesIO(payload)).active
+    assert [cell.value for cell in ws[1]] == [
+        "№",
+        "Дата",
+        "Агрофирма",
+        "Культура",
+        "Госномер",
+        "Механизатор",
+        "Поле",
+        "Намолот, т",
+    ]
+    assert ws["C2"].value == "АгроРаздолье"
+    assert ws["G2"].value == "АР-03-16 Соя 26г."
+    assert ws["B2"].value == "15.10.2026 08:30"

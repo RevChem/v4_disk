@@ -543,25 +543,44 @@ def _rollup(facts: Iterable[Fact]) -> dict[tuple[str, str, str], Fact]:
 
 
 # ----------------------------------------------------------------------------- Cropwise
-def _season_start(report_date: date, operation: str) -> date:
-    try:
-        from season_unified import combine_season_start_for_date, editor_period_bounds
+def season_scope(report_date: date, operation: str) -> dict[str, Any]:
+    """Сезон операции так же, как его берут сводки: начало окна и сезоны Cropwise.
 
-        saved = editor_period_bounds(operation, report_date)
-        return saved[0] if saved else combine_season_start_for_date(report_date)
-    except Exception:  # noqa: BLE001 — без настроек как в сводке 10: 10 июня
-        start = date(report_date.year, 6, 10)
-        return start if report_date >= start else date(report_date.year - 1, 6, 10)
+    years=None — сводка не режет machine_task.season, берутся все сезоны сессии.
+    """
+    from proverka.cropwise_ui import ui_check_years
+    from season_unified import applies_task_season_filter, resolve_group_season_config
+
+    cfg = resolve_group_season_config(operation, report_date)
+    start = min(date.fromisoformat(cfg["period_start"]), report_date)
+    task_years = [int(y) for y in (cfg.get("task_season_years") or [])]
+    years = sorted(set(task_years)) if task_years and applies_task_season_filter(operation) else None
+    return {
+        "start": start,
+        "years": years,
+        "load_years": years or list(ui_check_years(report_date)),
+        "harvest": operation.startswith("5.0 Уборка"),
+    }
+
+
+def _season_start_iso(report_date: date, operation: str) -> str | None:
+    try:
+        return season_scope(report_date, operation)["start"].isoformat()
+    except Exception:  # noqa: BLE001 — подпись в UI не должна ронять сверку
+        return None
 
 
 def _iso(d: date, hour: int = 6) -> str:
     return datetime(d.year, d.month, d.day, hour).isoformat()
 
 
-def cropwise_windows(report_date: date, operation: str) -> dict[str, tuple[str, str]]:
+def cropwise_windows(report_date: date, operation: str, scope: dict[str, Any] | None = None) -> dict[str, tuple[str, str]]:
+    scope = scope or season_scope(report_date, operation)
+    # Уборка считает сезон от начала смены (сводка 10), остальные сводки — с полуночи.
+    start_hour = 6 if scope["harvest"] else 0
     return {
         DAY: (_iso(shift_date(report_date)), _iso(report_date)),
-        SEASON: (_iso(_season_start(report_date, operation)), _iso(report_date)),
+        SEASON: (_iso(scope["start"], start_hour), _iso(report_date)),
     }
 
 
@@ -571,16 +590,17 @@ def _cropwise_crop(crop: str) -> str:
 
 
 def load_cropwise(cookie: str, report_date: date, operation: str) -> dict[str, Any]:
-    """work.json одной операции за смену и за сезон (оба сезона сессии, как в основной проверке)."""
+    """work.json одной операции за смену и за сезон — только сезоны, которые учитывает сводка."""
     from proverka.crop_compare import cropwise_area_by_firm_crop
-    from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons, parse_work_report_body, ui_check_years
+    from proverka.cropwise_ui import WorkLoadJob, load_works_for_seasons, parse_work_report_body
     from proverka.task_names import tasks_for_group
     from proverka.work_groups import work_type_ids_for_group
 
-    windows = cropwise_windows(report_date, operation)
+    scope = season_scope(report_date, operation)
+    windows = cropwise_windows(report_date, operation, scope)
     wt_ids = work_type_ids_for_group(operation)
     hints = tuple(tasks_for_group(operation))
-    years = ui_check_years(report_date)
+    years = scope["load_years"]
     jobs = [WorkLoadJob(metric, t0, t1, wt_ids, hints) for metric, (t0, t1) in windows.items()]
     loaded = load_works_for_seasons(cookie, jobs, years=years)
 
@@ -628,7 +648,7 @@ def load_cropwise(cookie: str, report_date: date, operation: str) -> dict[str, A
             error = "Cookie Cropwise недействительна (401) — скопируйте свежую из браузера"
         else:
             error = "Cropwise не отдал данные ни за один сезон"
-    return {"facts": facts, "status": status, "warnings": warnings, "error": error}
+    return {"facts": facts, "status": status, "warnings": warnings, "error": error, "years": years}
 
 
 # ----------------------------------------------------------------------------- сверка
@@ -747,10 +767,11 @@ def run_check(
         cw = cw_by_op.get(op) or {}
         by_operation[op] = {
             "report_ids": ids,
-            "season_start": _season_start(report_date, op).isoformat(),
+            "season_start": _season_start_iso(report_date, op),
             "warnings": op_warnings[op],
             "cropwise": {
                 "error": cw.get("error"),
+                "years": cw.get("years"),
                 "warnings": cw.get("warnings") or [],
                 "status": cw.get("status"),
             },

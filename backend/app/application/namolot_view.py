@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import threading
 import time
@@ -23,6 +24,31 @@ SHIFT_HOUR = 6
 TZ_MSK = timezone(timedelta(hours=3))
 _CACHE_TTL_SEC = 15 * 60
 _YEAR_SUFFIX_RE = re.compile(r"\s*\d{2,4}\s*г?\.?\s*$")
+_FIELD_CODE_RE = re.compile(r"^[^\s(]+")
+# Латиница, внешне неотличимая от кириллицы: в 1С и Cropwise код поля набирают по-разному.
+_FIELD_CODE_TRANSLATE = str.maketrans(
+    {
+        "A": "А",
+        "B": "В",
+        "C": "С",
+        "E": "Е",
+        "H": "Н",
+        "K": "К",
+        "M": "М",
+        "O": "О",
+        "P": "Р",
+        "T": "Т",
+        "X": "Х",
+        "Y": "У",
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+    }
+)
+_FIELD_INDEX_TTL_SEC = 6 * 60 * 60
 
 # Организация из Namolot → агрофирма холдинга.
 # Номер «Агрофирма N» важнее названия: в 1С строка часто без кавычек и в другом порядке слов.
@@ -83,6 +109,38 @@ def _norm_org(text: object) -> str:
     raw = raw.replace("/", " / ")
     raw = re.sub(r"[^0-9a-zа-я/\s]+", " ", raw)
     return re.sub(r"\s+", " ", raw).strip()
+
+
+def field_base_code(name: object) -> str:
+    """Код поля: всё до пробела или «(», как в сводках 10 и 14.
+
+    «АР-03-16 Соя 26г.» и «АР-03-16» — одно поле. Звёздочка в начале и
+    латинские двойники кириллицы не мешают сравнению с Cropwise.
+    """
+    raw = str(name or "").strip().lstrip("*").strip()
+    if not raw:
+        return ""
+    match = _FIELD_CODE_RE.match(raw)
+    if not match:
+        return ""
+    code = match.group(0).upper().lstrip("*").replace("Ё", "Е")
+    return code.translate(_FIELD_CODE_TRANSLATE)
+
+
+def record_firm(rec: dict, index: dict[str, str] | None = None) -> str | None:
+    """Агрофирма записи: сначала код поля spp, затем узнаваемая организация.
+
+    Неузнанное не складывается в «Прочие»: в сводках такие тонны тоже не
+    попадают ни в одну агрофирму.
+    """
+    code = field_base_code(rec.get("spp"))
+    catalog = index or {}
+    if code and code in catalog:
+        return catalog[code]
+    firm = holding_firm(rec.get("organization"))
+    if firm == OTHER_FIRM:
+        return None
+    return firm
 
 
 def holding_firm(organization: object) -> str:
@@ -200,11 +258,14 @@ def _surname(operator: str) -> str:
     return parts[0] if parts else ""
 
 
-def record_rows(records: list[dict]) -> list[dict]:
+def record_rows(records: list[dict], index: dict[str, str] | None = None) -> list[dict]:
     """Компактные строки для фильтра: агрофирма, культура, госномер, фамилия, тонны."""
     rows: list[dict] = []
     for rec in records:
         if not isinstance(rec, dict):
+            continue
+        firm = record_firm(rec, index)
+        if not firm:
             continue
         try:
             qty = float(rec.get("quantity") or 0)
@@ -215,7 +276,7 @@ def record_rows(records: list[dict]) -> list[dict]:
         rows.append(
             {
                 "at": wall.strftime("%Y-%m-%dT%H:%M:%S") if wall else None,
-                "firm": holding_firm(rec.get("organization")),
+                "firm": firm,
                 "crop": str(rec.get("crop") or "").strip() or "—",
                 "plate": str(rec.get("combine_harvester_id") or "").strip(),
                 "operator": operator,
@@ -273,7 +334,7 @@ def fetch_live(date_begin: date, date_end: date, *, max_days: int = MAX_PERIOD_D
 
 def build_view(date_begin: date, date_end: date) -> dict:
     records = fetch_live(date_begin, date_end)
-    rows = record_rows(records)
+    rows = record_rows(records, field_code_index())
     return {
         "date_begin": date_begin.isoformat(),
         "date_end": date_end.isoformat(),
@@ -383,7 +444,92 @@ def _shown_end(cutoff: datetime) -> str:
     return (cutoff - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _select_brief(records: list[dict], report_date: date, firm: str, crop: str) -> tuple[dict, list[dict]]:
+def _field_codes_path():
+    from pathlib import Path
+
+    from app.config import settings
+
+    return Path(settings.upload_dir) / ".namolot_field_codes.json"
+
+
+def _read_field_codes() -> dict[str, str] | None:
+    path = _field_codes_path()
+    try:
+        if not path.is_file():
+            return None
+        if time.time() - path.stat().st_mtime > _FIELD_INDEX_TTL_SEC:
+            return None
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    return {str(code): str(firm) for code, firm in data.items() if code and firm}
+
+
+def _write_field_codes(index: dict[str, str]) -> None:
+    path = _field_codes_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _load_field_codes() -> dict[str, str]:
+    """Код поля Cropwise → агрофирма. Та же привязка, что в сводках 10 и 14."""
+    from app.config import get_cropwise_token, settings
+    from app.legacy.works_summary import _build_field_firm, _get_all
+
+    token = get_cropwise_token()
+    if not token:
+        return {}
+    base = (settings.cropwise_base_url or "").strip() or "https://operations.cropwise.com/api/v3"
+    session = requests.Session()
+    session.headers.update({"X-User-Api-Token": token})
+    fields = _get_all(session, base, "fields")
+    groups = _get_all(session, base, "field_groups")
+    folders = _get_all(session, base, "group_folders")
+    by_id = _build_field_firm(fields, groups, folders)
+    index: dict[str, str] = {}
+    for field in fields:
+        fid = field.get("id")
+        if fid is None:
+            continue
+        try:
+            firm = by_id.get(int(fid))
+        except (TypeError, ValueError):
+            continue
+        if not firm:
+            continue
+        code = field_base_code(field.get("name") or field.get("title"))
+        if code and code not in index:
+            index[code] = firm
+    return index
+
+
+def field_code_index() -> dict[str, str]:
+    """Справочник кодов полей. Сеть Cropwise — только если файла нет или он старше 6 часов."""
+    cached = _read_field_codes()
+    if cached:
+        return cached
+    try:
+        loaded = _load_field_codes()
+    except Exception:
+        return {}
+    if loaded:
+        _write_field_codes(loaded)
+    return loaded
+
+
+def _select_brief(
+    records: list[dict],
+    report_date: date,
+    firm: str,
+    crop: str,
+    index: dict[str, str] | None = None,
+) -> tuple[dict, list[dict]]:
     """Тонны одной агрофирмы и культуры и сырые записи этого среза."""
     cutoff = shift_cutoff(report_date)
     day0 = cutoff - timedelta(days=1)
@@ -395,7 +541,7 @@ def _select_brief(records: list[dict], report_date: date, firm: str, crop: str) 
     for rec in records:
         if not isinstance(rec, dict):
             continue
-        if holding_firm(rec.get("organization")) != firm:
+        if record_firm(rec, index) != firm:
             continue
         if not same_crop(rec.get("crop"), crop):
             continue
@@ -432,9 +578,15 @@ def _select_brief(records: list[dict], report_date: date, firm: str, crop: str) 
     return summary, kept
 
 
-def brief_from_records(records: list[dict], report_date: date, firm: str, crop: str) -> dict:
-    summary, kept = _select_brief(records, report_date, firm, crop)
-    summary["rows"] = record_rows(kept)
+def brief_from_records(
+    records: list[dict],
+    report_date: date,
+    firm: str,
+    crop: str,
+    index: dict[str, str] | None = None,
+) -> dict:
+    summary, kept = _select_brief(records, report_date, firm, crop, index)
+    summary["rows"] = record_rows(kept, index)
     return summary
 
 
@@ -448,9 +600,86 @@ def _require_firm_crop(firm: str, crop: str) -> tuple[str, str]:
 
 def build_brief(report_date: date, firm: str, crop: str) -> dict:
     firm, crop = _require_firm_crop(firm, crop)
+    index = field_code_index()
     start = harvest_season_start(report_date)
     records = fetch_live(start, report_date, max_days=BRIEF_MAX_DAYS)
-    return brief_from_records(records, report_date, firm, crop)
+    return brief_from_records(records, report_date, firm, crop, index)
+
+
+def _fmt_table_at(value: object) -> str:
+    text = str(value or "")
+    if "T" not in text:
+        return text or "—"
+    day, clock = text.split("T", 1)
+    parts = day.split("-")
+    if len(parts) != 3:
+        return text
+    year, month, date = parts
+    return f"{date}.{month}.{year} {clock[:5]}".strip()
+
+
+def _join_cell(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "—"
+    text = str(value or "").strip()
+    return text or "—"
+
+
+def table_excel(mode: str, rows: list[dict]) -> bytes:
+    """Лист в том виде, в каком таблица уже отфильтрована на экране."""
+    wb = Workbook()
+    ws = wb.active
+    if mode == "plates":
+        ws.title = "Госномера"
+        headers = ["№", "Госномер", "Намолот, т", "Записей", "Фамилии", "Культуры", "Агрофирмы"]
+    elif mode == "surnames":
+        ws.title = "Фамилии"
+        headers = ["№", "Фамилия", "Намолот, т", "Записей", "Госномера", "Культуры", "Агрофирмы"]
+    else:
+        ws.title = "Записи"
+        headers = ["№", "Дата", "Агрофирма", "Культура", "Госномер", "Механизатор", "Поле", "Намолот, т"]
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row_idx, row in enumerate(rows, start=1):
+        if mode in {"plates", "surnames"}:
+            values = [
+                row_idx,
+                row.get("key") or "—",
+                row.get("tonnes"),
+                row.get("records"),
+                _join_cell(row.get("names") if mode == "plates" else row.get("plates")),
+                _join_cell(row.get("crops")),
+                _join_cell(row.get("firms")),
+            ]
+        else:
+            values = [
+                row_idx,
+                _fmt_table_at(row.get("at")),
+                row.get("firm") or "—",
+                row.get("crop") or "—",
+                row.get("plate") or "—",
+                row.get("operator") or "—",
+                row.get("field") or "—",
+                row.get("tonnes"),
+            ]
+        for col_idx, value in enumerate(values, start=1):
+            ws.cell(row=row_idx + 1, column=col_idx, value=value)
+    for col_idx, header in enumerate(headers, start=1):
+        width = len(header)
+        for row in range(2, min(ws.max_row, 200) + 1):
+            val = ws.cell(row=row, column=col_idx).value
+            if val is not None:
+                width = max(width, len(str(val)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(width + 2, 45)
+    ws.freeze_panes = "A2"
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def build_brief_excel(report_date: date, firm: str, crop: str) -> bytes:

@@ -7,6 +7,7 @@ from urllib.parse import quote
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.adapters.inbound.api.deps import require_developer_access
 from app.application import namolot_view
@@ -48,6 +49,30 @@ def get_namolot_view(
     return _call(date_begin, date_end, namolot_view.build_view)
 
 
+class NamolotTableExcelIn(BaseModel):
+    mode: str = "rows"
+    rows: list[dict] = Field(default_factory=list, max_length=50_000)
+
+
+def _excel_response(payload: bytes, filename: str) -> Response:
+    # filename= только ASCII: заголовок HTTP не держит кириллицу и даёт 500.
+    ascii_name = "namolot.xlsx"
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": disposition},
+    )
+
+
+@router.post("/namolot/excel")
+def post_namolot_excel(body: NamolotTableExcelIn, _: User = Depends(require_developer_access)):
+    """Уже отфильтрованная таблица с экрана: записи, госномера или фамилии."""
+    mode = body.mode if body.mode in {"rows", "plates", "surnames"} else "rows"
+    payload = namolot_view.table_excel(mode, body.rows)
+    return _excel_response(payload, "namolot.xlsx")
+
+
 @router.get("/namolot/excel")
 def get_namolot_excel(
     date_begin: date | None = Query(None, alias="date_begin"),
@@ -70,9 +95,4 @@ def get_namolot_excel(
             raise HTTPException(status_code=400, detail="Нужны date_begin и date_end либо report_date, агрофирма и культура")
         payload = _call(date_begin, date_end, namolot_view.build_excel)
         filename = f"namolot_{date_begin.isoformat()}_{date_end.isoformat()}.xlsx"
-    disposition = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"
-    return Response(
-        content=payload,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": disposition},
-    )
+    return _excel_response(payload, filename)

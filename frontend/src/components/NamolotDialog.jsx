@@ -34,7 +34,6 @@ const FIRM_ORDER = [
   "Дрожжаное Рассвет Агро",
   "Лениногорская Птицефабрика",
   "НурлатАгро",
-  "Прочие",
 ];
 
 const CROPS = [
@@ -191,7 +190,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setDownloading(true);
     setError("");
     try {
-      await downloadNamolotExcel({ reportDate, firm, crop });
+      await downloadNamolotExcel({ mode, rows: visible });
     } catch (err) {
       setError(String(err.message || err));
     } finally {
@@ -438,7 +437,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
         ) : null}
       </DialogContent>
       <DialogActions>
-        <Button onClick={() => void download()} disabled={busy || !ready}>
+        <Button onClick={() => void download()} disabled={busy || !loaded}>
           {downloading ? "Excel…" : "Скачать Excel"}
         </Button>
         <Button onClick={onClose} disabled={busy}>

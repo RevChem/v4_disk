@@ -254,6 +254,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
         status: worstStatus(watched),
         warnings: result?.by_operation?.[op]?.warnings || [],
         seasonStart: result?.by_operation?.[op]?.season_start,
+        cropwiseYears: result?.by_operation?.[op]?.cropwise?.years || [],
       });
     }
     return out;
@@ -477,6 +478,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                           {group.seasonStart && (
                             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                               Сезон с {group.seasonStart}
+                              {group.cropwiseYears.length > 0 && ` · Cropwise: сезон ${group.cropwiseYears.join("+")}`}
                             </Typography>
                           )}
                           {group.crops.length ? (
