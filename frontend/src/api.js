@@ -618,6 +618,16 @@ export async function fetchActivityJob(jobId) {
   return data;
 }
 
+export async function fetchTaskLinks(ids) {
+  const list = (ids || []).map(String).filter(Boolean);
+  if (!list.length) return {};
+  const { data } = await api.get("/proverka/task-links", {
+    params: { ids: list.join(",") },
+    timeout: 15_000,
+  });
+  return data.urls || {};
+}
+
 export async function fetchProverkaCatalog() {
   const { data } = await api.get("/proverka/catalog", { timeout: 15_000 });
   return data;

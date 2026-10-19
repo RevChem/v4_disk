@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 
-from app.adapters.inbound.api.deps import get_client_ip, require_developer_access, require_plans_access
+from app.adapters.inbound.api.deps import (
+    get_client_ip,
+    require_developer_access,
+    require_generate_access,
+    require_plans_access,
+)
+from app.application.task_links import task_page_urls
 from app.adapters.outbound.persistence import repositories as repo
 from app.adapters.inbound.celery.tasks import (
     run_proverka_ai_task,
@@ -94,6 +100,16 @@ from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/proverka", tags=["proverka"])
 log = get_logger(__name__)
+
+
+@router.get("/task-links")
+def get_task_links(
+    ids: str = Query(default="", max_length=2000, description="id заданий через запятую"),
+    _: User = Depends(require_generate_access),
+):
+    """Страницы заданий Cropwise для номеров из текста ошибки данных."""
+    nums = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    return {"urls": task_page_urls(nums)}
 
 
 @router.get("/catalog", response_model=ProverkaCatalogOut)

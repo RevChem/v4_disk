@@ -27,6 +27,7 @@ import BugReportRoundedIcon from "@mui/icons-material/BugReportRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 
 import { fetchActivityFeed, fetchActivityJob } from "../api";
+import { TaskText, useTaskLinks } from "../components/TaskText";
 import { formatDuration, reportLabel } from "../utils/formatDuration";
 
 function formatWhen(iso) {
@@ -152,6 +153,8 @@ function LogEventLine({ when, username, message, extra, reports, durationSeconds
 
 function ReportDetailPanel({ detail, highlightReportId }) {
   const ref = useRef(null);
+  const logLines = (detail?.reports || []).flatMap((r) => r.log_lines || []);
+  const taskUrls = useTaskLinks(logLines);
 
   useEffect(() => {
     if (highlightReportId && ref.current) {
@@ -204,7 +207,7 @@ function ReportDetailPanel({ detail, highlightReportId }) {
             )}
             {(r.log_lines || []).length > 0 && (
               <Box component="pre" className="log-lines-pre">
-                {(r.log_lines || []).join("\n")}
+                <TaskText text={(r.log_lines || []).join("\n")} urls={taskUrls} />
               </Box>
             )}
           </Box>

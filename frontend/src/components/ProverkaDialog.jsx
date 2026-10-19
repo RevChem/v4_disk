@@ -31,6 +31,7 @@ import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import AiReportPanel from "./AiReportPanel";
+import { TaskText, useTaskLinks } from "./TaskText";
 
 /** Согласовано с proverka/ha_thresholds.py DIFF_MIN_HA */
 const DIFF_MIN_HA = 0.5;
@@ -155,6 +156,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const [running, setRunning] = useState(false);
   const [checkedAt, setCheckedAt] = useState(null);
   const [dataChecks, setDataChecks] = useState([]);
+  const taskUrls = useTaskLinks(dataChecks);
   const runningRef = useRef(false);
   runningRef.current = running;
   // onComplete приходит из родителя как новая стрелка на каждый рендер — держим в ref,
@@ -573,7 +575,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
                   variant="body2"
                   sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
                 >
-                  {line}
+                  <TaskText text={line} urls={taskUrls} />
                 </Typography>
               ))}
               {dataChecks.length > 40 && (
