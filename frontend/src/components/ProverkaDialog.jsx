@@ -31,7 +31,8 @@ import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import AiReportPanel from "./AiReportPanel";
-import { TaskText, useTaskLinks } from "./TaskText";
+import { ErrorParagraph } from "./ErrorParagraph";
+import { useTaskLinks } from "./TaskText";
 
 /** Согласовано с proverka/ha_thresholds.py DIFF_MIN_HA */
 const DIFF_MIN_HA = 0.5;
@@ -156,7 +157,11 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
   const [running, setRunning] = useState(false);
   const [checkedAt, setCheckedAt] = useState(null);
   const [dataChecks, setDataChecks] = useState([]);
-  const taskUrls = useTaskLinks(dataChecks);
+  const [dataCheckPlaces, setDataCheckPlaces] = useState({});
+  const taskUrls = useTaskLinks([
+    ...dataChecks,
+    ...Object.values(dataCheckPlaces || {}).flat(),
+  ]);
   const runningRef = useRef(false);
   runningRef.current = running;
   // onComplete приходит из родителя как новая стрелка на каждый рендер — держим в ref,
@@ -194,6 +199,7 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
       const latest = await fetchLatestProverkaJob(summaryDate);
       if (runningRef.current) return; // уже идёт запуск из этого окна
       setDataChecks(Array.isArray(latest?.data_checks) ? latest.data_checks : []);
+      setDataCheckPlaces(latest?.data_check_places && typeof latest.data_check_places === "object" ? latest.data_check_places : {});
       if (!latest?.job_id) {
         setJobId(null);
         setJob(null);
@@ -572,10 +578,11 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
               {dataChecks.slice(0, 40).map((line, idx) => (
                 <Typography
                   key={`${idx}-${line.slice(0, 24)}`}
+                  component="div"
                   variant="body2"
                   sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
                 >
-                  <TaskText text={line} urls={taskUrls} />
+                  <ErrorParagraph message={line} placesByKey={dataCheckPlaces} urls={taskUrls} />
                 </Typography>
               ))}
               {dataChecks.length > 40 && (

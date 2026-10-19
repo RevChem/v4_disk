@@ -104,7 +104,7 @@ log = get_logger(__name__)
 
 @router.get("/task-links")
 def get_task_links(
-    ids: str = Query(default="", max_length=2000, description="id заданий через запятую"),
+    ids: str = Query(default="", max_length=30000, description="id заданий через запятую"),
     _: User = Depends(require_generate_access),
 ):
     """Страницы заданий Cropwise для номеров из текста ошибки данных."""
@@ -445,14 +445,20 @@ def cancel_proverka_job(
 
 
 def _latest_job_payload(found: tuple[str, float] | None, report_date: date | None = None) -> dict:
-    from app.legacy.report_generation import load_generation_data_checks
+    from app.legacy.report_generation import load_generation_data_check_places, load_generation_data_checks
 
     data_checks = load_generation_data_checks(report_date) if report_date else []
+    places = load_generation_data_check_places(report_date) if report_date else {}
     if not found:
-        return {"job_id": None, "checked_at": None, "data_checks": data_checks}
+        return {"job_id": None, "checked_at": None, "data_checks": data_checks, "data_check_places": places}
     job_id, mtime = found
     checked_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None
-    return {"job_id": job_id, "checked_at": checked_at, "data_checks": data_checks}
+    return {
+        "job_id": job_id,
+        "checked_at": checked_at,
+        "data_checks": data_checks,
+        "data_check_places": places,
+    }
 
 
 @router.get("/latest-job")
@@ -488,14 +494,17 @@ def get_proverka_job(job_id: str, _: User = Depends(require_developer_access)):
         st = enrich_job_file_column(st)
         if st.get("file_enriched"):
             write_job_status(job_id, st)
-    from app.legacy.report_generation import load_generation_data_checks
+    from app.legacy.report_generation import load_generation_data_check_places, load_generation_data_checks
 
     raw_date = st.get("report_date")
     if raw_date:
         try:
-            st["data_checks"] = load_generation_data_checks(date.fromisoformat(str(raw_date)))
+            day = date.fromisoformat(str(raw_date))
+            st["data_checks"] = load_generation_data_checks(day)
+            st["data_check_places"] = load_generation_data_check_places(day)
         except ValueError:
             st["data_checks"] = []
+            st["data_check_places"] = {}
     if st.get("status") == "completed" and "violation_count" not in st:
         from app.adapters.outbound.proverka.service import _attach_violations
 

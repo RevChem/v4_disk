@@ -5,9 +5,9 @@
 при завершении процесса. Работает на данных, которые сводка и так уже загрузила, — новых
 запросов к API нет (кроме одноразовой докачки history_items, см. ``settled``).
 
-Цена. Один проход по строкам площади, O(строк). В памяти — счётчики, до SAMPLES примеров
-на каждый код и по одному int на history_item (три числа упакованы в одно). Строки и задания
-не копируются и не хранятся. Выключить целиком: ``SVODKI_SANITY=0``.
+Цена. Один проход по строкам площади, O(строк). В строке DATA_CHECK — до SAMPLES примеров.
+Полный список строк с ошибкой печатается отдельно (DATA_CHECK_PLACES), чтобы окно в интерфейсе
+показало все задания. Выключить целиком: ``SVODKI_SANITY=0``.
 
 Что проверяется (поля — по документации Cropwise API v3):
 
@@ -50,7 +50,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 MARK = "DATA_CHECK"
-SAMPLES = 3  # примеров на код
+SAMPLES = 3  # примеров в короткой строке DATA_CHECK
+_EX_CAP = 5000  # полный список для окна «все задания»
 
 
 def _env_f(name: str, default: float) -> float:
@@ -170,7 +171,7 @@ def _hit(code: str, ha: float = 0.0, note: str = "") -> None:
     if ha:
         _HA[code] += abs(ha)
     ex = _EX.setdefault(code, [])
-    if len(ex) < SAMPLES and note:
+    if note and len(ex) < _EX_CAP:
         ex.append(note)
 
 
@@ -806,9 +807,13 @@ def report(out=None) -> None:
     warn = sum(1 for _, v in codes if v["severity"] == "WARN")
     try:
         for code, v in codes:
-            ex = "; ".join(v["examples"])
+            shown = v["examples"][:SAMPLES]
+            ex = "; ".join(shown)
             print(f"{MARK} [{v['severity']}] сводка={label} {code}: {v['count']} шт, "
                   f"{v['ha']:.1f} га — {v['text']}" + (f" | {ex}" if ex else ""), file=out, flush=True)
+            if v["examples"]:
+                blob = json.dumps(v["examples"], ensure_ascii=False, separators=(",", ":"))
+                print(f"{MARK}_PLACES сводка={label} code={code} {blob}", file=out, flush=True)
         verdict = "замечаний нет" if not codes else f"CRIT={crit} WARN={warn}"
         print(f"{MARK} итог сводка={label}: проверено строк={s['rows']} заданий={s['tasks']}; {verdict}",
               file=out, flush=True)

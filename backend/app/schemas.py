@@ -103,7 +103,7 @@ class GeneratedFileListOut(BaseModel):
     summary_date: date
     files: list[dict[str, str]] = Field(default_factory=list)
     # report_id -> заметные ошибки данных при генерации [{level: ERROR|WARN, code, message}]
-    alerts: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    alerts: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 
 class ProverkaCatalogItemOut(BaseModel):
@@ -228,6 +228,7 @@ class ProverkaJobOut(BaseModel):
     violations: list[dict[str, Any]] = Field(default_factory=list)
     error_logs: list[dict[str, str]] = Field(default_factory=list)
     data_checks: list[str] = Field(default_factory=list)
+    data_check_places: dict[str, list[str]] = Field(default_factory=dict)
     checked_at: str | None = None
     ai_status: str | None = None
     ai_violation_count: int = 0

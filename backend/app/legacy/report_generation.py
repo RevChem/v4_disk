@@ -425,7 +425,11 @@ def _data_check_log_lines(stdout: str, title: str) -> list[str]:
     out: list[str] = []
     for line in (stdout or "").splitlines():
         text = line.strip()
-        if "DATA_CHECK" not in text or text.startswith("DATA_CHECK_CALC_TOTAL="):
+        if (
+            "DATA_CHECK" not in text
+            or text.startswith("DATA_CHECK_CALC_TOTAL=")
+            or "DATA_CHECK_PLACES" in text
+        ):
             continue
         out.append(f"[{title}] {text}")
         if len(out) >= 80:
@@ -462,16 +466,31 @@ def _report_alert_log_lines(stdout: str, title: str) -> list[str]:
     return out
 
 
+def _data_check_places_lines(stdout: str, title: str) -> list[str]:
+    """Полный список строк с ошибкой. В человеческий лог не кладём: строка длинная."""
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if "DATA_CHECK_PLACES" not in text:
+            continue
+        out.append(f"[{title}] {text}")
+    return out
+
+
 def _append_script_stdout_logs(logs: list[str], stdout: str, title: str, *, tail: int) -> list[str]:
     """Сезоны, DATA_CHECK и REPORT_ALERT — целиком; остальной хвост скрипта — как раньше, без дублей.
 
     Возвращаемый список уходит в save_generation_data_checks: из него берутся и замечания
-    DATA_CHECK, и REPORT_ALERT."""
-    checks = _data_check_log_lines(stdout, title) + _report_alert_log_lines(stdout, title)
+    DATA_CHECK, и REPORT_ALERT, и полный список DATA_CHECK_PLACES."""
+    visible = _data_check_log_lines(stdout, title)
+    places = _data_check_places_lines(stdout, title)
+    alert_lines = _report_alert_log_lines(stdout, title)
+    checks = visible + places + alert_lines
     if not (stdout or "").strip():
         return checks
     logs.extend(_season_mismatch_log_lines(stdout, title))
-    logs.extend(checks)
+    logs.extend(visible)
+    logs.extend(alert_lines)
     logs.extend(
         f"[{title}] {line}"
         for line in stdout.splitlines()[-tail:]
@@ -491,16 +510,51 @@ def _generation_alerts_dir(report_date: date) -> Path:
     return Path(settings.upload_dir) / report_date.isoformat() / ".data_check" / "alerts"
 
 
-def _alerts_from_lines(lines: list[str]) -> list[dict[str, str]]:
-    """REPORT_ALERT и критичные DATA_CHECK [CRIT] → список {level, code, message} без дублей."""
-    by_code: dict[str, dict[str, str]] = {}
+_PLACES_HEAD = re.compile(r"DATA_CHECK_PLACES\s+сводка=(\S+)\s+code=(\S+)\s+(\[.*\])\s*$")
+_ALERT_CODE = re.compile(r"сводка=(\S+)\s+([A-Z][A-Z0-9_]+):")
+
+
+def parse_data_check_places(line: str) -> tuple[str, str, list[str]] | None:
+    """«DATA_CHECK_PLACES сводка=2 code=AREA_GT_FIELD [...]» → (сводка, код, строки)."""
+    text = str(line or "")
+    pos = text.find("DATA_CHECK_PLACES")
+    if pos < 0:
+        return None
+    match = _PLACES_HEAD.search(text[pos:])
+    if match is None:
+        return None
+    try:
+        raw = json.loads(match.group(3))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, list):
+        return None
+    return match.group(1), match.group(2), [str(item) for item in raw]
+
+
+def _alerts_from_lines(lines: list[str]) -> list[dict]:
+    """REPORT_ALERT и критичные DATA_CHECK [CRIT] → список {level, code, message, places} без дублей."""
+    by_code: dict[str, dict] = {}
+    places: dict[tuple[str, str], list[str]] = {}
     for line in lines:
+        found = parse_data_check_places(line)
+        if found is not None:
+            report_id, code, items = found
+            places[(report_id, code)] = items
+            continue
         item = parse_report_alert(line)
-        if item is None and "DATA_CHECK" in line and "[CRIT]" in line:
+        if item is None and "DATA_CHECK" in line and "[CRIT]" in line and "DATA_CHECK_PLACES" not in line:
             text = line.split("DATA_CHECK", 1)[1].replace("[CRIT]", "").strip()
             item = {"level": "ERROR", "code": f"data_check_crit.{len(by_code)}", "message": text}
         if item is not None:
             by_code[item["code"]] = item  # одинаковый код — берём последнее значение
+    for item in by_code.values():
+        match = _ALERT_CODE.search(item.get("message") or "")
+        if match is None:
+            continue
+        full = places.get((match.group(1), match.group(2)))
+        if full:
+            item["places"] = full
     # ошибки выше предупреждений
     return sorted(by_code.values(), key=lambda a: a["level"] != "ERROR")
 
@@ -553,7 +607,10 @@ def save_generation_data_checks(report_date: date, report_id: str, lines: list[s
     folder.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^0-9A-Za-z._-]+", "_", str(report_id)) or "report"
     path = folder / f"{safe}.json"
-    alerts = [ln for ln in lines if "[CRIT]" in ln or "[WARN]" in ln]
+    alerts = [
+        ln for ln in lines
+        if "DATA_CHECK_PLACES" in ln or "[CRIT]" in ln or "[WARN]" in ln
+    ]
     if not alerts:
         path.unlink(missing_ok=True)
         return
@@ -578,8 +635,28 @@ def load_generation_data_checks(report_date: date) -> list[str]:
             continue
         for line in data.get("lines") or []:
             text = str(line).strip()
-            if text:
+            if text and "DATA_CHECK_PLACES" not in text:
                 out.append(text)
+    return out
+
+
+def load_generation_data_check_places(report_date: date) -> dict[str, list[str]]:
+    """Ключ «2:AREA_GT_FIELD» → все строки с этой ошибкой."""
+    folder = _data_check_sanity_dir(report_date)
+    if not folder.is_dir():
+        return {}
+    out: dict[str, list[str]] = {}
+    for path in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for line in data.get("lines") or []:
+            found = parse_data_check_places(str(line))
+            if found is None:
+                continue
+            report_id, code, items = found
+            out[f"{report_id}:{code}"] = items
     return out
 
 

@@ -148,6 +148,24 @@ def test_settled_and_dirty_roundtrip():
     assert sn.unpack_hist(dirty[100]) == (7, 2026, 10)
 
 
+def test_places_line_lists_every_row_while_summary_shows_three():
+    _fresh()
+    _hist()
+    rows = {i: [_row(tid=i, cov=200.0)] for i in range(1, 6)}
+    sn.on_mtfmi(rows)
+    buf = io.StringIO()
+    sn.report(buf)
+    out = buf.getvalue()
+    short = next(line for line in out.splitlines() if line.startswith("DATA_CHECK [CRIT]") and "AREA_GT_FIELD" in line)
+    places = next(line for line in out.splitlines() if line.startswith("DATA_CHECK_PLACES") and "AREA_GT_FIELD" in line)
+    assert short.count("задание=") == 3
+    assert "5 шт" in short
+    import json
+    items = json.loads(places.split("code=AREA_GT_FIELD ", 1)[1])
+    assert len(items) == 5
+    assert all(item.startswith("задание=") for item in items)
+
+
 def test_report_output_and_disabled():
     _fresh()
     _hist()

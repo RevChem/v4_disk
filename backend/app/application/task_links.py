@@ -9,7 +9,7 @@ import httpx
 from app.config import _upload_dir_path, get_cropwise_token, settings
 
 TASK_PAGE = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_id}"
-_MAX_IDS = 80
+_MAX_IDS = 2000
 
 
 def _store_db() -> Path | None:

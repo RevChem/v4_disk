@@ -56,6 +56,28 @@ def test_logs_keep_alerts_and_save_load_roundtrip(tmp_path, monkeypatch):
     assert rg.load_generation_alerts(day) == {}
 
 
+def test_places_attach_to_alert_and_stay_out_of_the_paragraph(tmp_path, monkeypatch):
+    monkeypatch.setattr(rg.settings, "upload_dir", str(tmp_path))
+    day = date(2026, 10, 19)
+    places = ["задание=187080 поле=1328 covered=66.00 поле=57.00", "задание=188074 поле=1237", "задание=1", "задание=2"]
+    import json
+    lines = [
+        "DATA_CHECK [CRIT] сводка=2 AREA_GT_FIELD: 4 шт, 10.0 га — площадь строки больше площади поля | "
+        + "; ".join(places[:3]),
+        "DATA_CHECK_PLACES сводка=2 code=AREA_GT_FIELD " + json.dumps(places, ensure_ascii=False),
+    ]
+    logs: list[str] = []
+    saved = rg._append_script_stdout_logs(logs, "\n".join(lines), "Сводка 2", tail=5)
+    assert not any("DATA_CHECK_PLACES" in line for line in logs)
+    rg.save_generation_data_checks(day, "2", saved)
+    alerts = rg.load_generation_alerts(day)["2"]
+    assert alerts[0]["places"] == places
+    assert alerts[0]["message"].count("задание=") == 3
+    assert rg.load_generation_data_checks(day)[0].count("задание=") == 3
+    assert "DATA_CHECK_PLACES" not in rg.load_generation_data_checks(day)[0]
+    assert rg.load_generation_data_check_places(day)["2:AREA_GT_FIELD"] == places
+
+
 def test_audit_message_and_area():
     assert event_area("reports.generation.report_alert") == "Сводки"
     msg = format_action_message(

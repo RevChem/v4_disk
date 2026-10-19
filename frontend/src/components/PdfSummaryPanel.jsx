@@ -25,7 +25,8 @@ import EditNoteRoundedIcon from "@mui/icons-material/EditNoteRounded";
 import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
 
 import { deleteSummary, downloadGeneratedFile, startGeneratedFileDownload, summaryIsExcel } from "../api";
-import { TaskText, useTaskLinks } from "./TaskText";
+import { ErrorParagraph } from "./ErrorParagraph";
+import { useTaskLinks } from "./TaskText";
 
 function formatAdded(modifiedAt, generationSeconds) {
   if (!modifiedAt) return "—";
@@ -365,7 +366,7 @@ export default function PdfSummaryPanel({
 
 /** Заметные ошибки данных, найденные при генерации сводки. Расчёт сводки не меняют. */
 function ReportAlertsDialog({ report, alerts, onClose }) {
-  const taskUrls = useTaskLinks(alerts.map((a) => a.message));
+  const taskUrls = useTaskLinks(alerts.flatMap((a) => [a.message, ...(a.places || [])]));
   return (
     <Dialog open={Boolean(report) && alerts.length > 0} onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>Ошибки данных · {report?.title}</DialogTitle>
@@ -386,8 +387,8 @@ function ReportAlertsDialog({ report, alerts, onClose }) {
                   bgcolor: a.level === "WARN" ? "warning.main" : "error.main",
                 }}
               />
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                <TaskText text={a.message} urls={taskUrls} />
+              <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                <ErrorParagraph message={a.message} places={a.places} urls={taskUrls} />
               </Typography>
             </Box>
           ))}
