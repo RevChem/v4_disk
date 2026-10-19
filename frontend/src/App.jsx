@@ -134,6 +134,9 @@ export default function App() {
   );
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
+  const [dataErrorsOn, setDataErrorsOn] = useState(
+    () => window.localStorage.getItem("svodki.dataErrors") === "1",
+  );
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
   const [namolotOpen, setNamolotOpen] = useState(false);
   const [cropwiseSeasonOn, setCropwiseSeasonOn] = useState(
@@ -178,6 +181,14 @@ export default function App() {
     setCropwiseSeasonOn((prev) => {
       const next = !prev;
       window.localStorage.setItem("svodki.cropwiseSeasonCheck", next ? "1" : "0");
+      return next;
+    });
+  }
+
+  function toggleDataErrors() {
+    setDataErrorsOn((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("svodki.dataErrors", next ? "1" : "0");
       return next;
     });
   }
@@ -690,6 +701,11 @@ export default function App() {
               }
             : null
         }
+        dataErrors={
+          isDeveloper
+            ? { active: dataErrorsOn, onToggle: toggleDataErrors }
+            : null
+        }
         showAiButton={isDeveloper}
         onInterfaceOpen={() => setInterfaceOpen(true)}
         onAiOpen={() => setAiMenuOpen(true)}
@@ -723,6 +739,7 @@ export default function App() {
           compareCropwise={cropwiseActive}
           compareCropwiseSeason={cropwiseSeasonActive}
           equipmentRequest={equipmentRequest}
+          showDataErrors={dataErrorsOn}
         />
       </AppShell>
       <GenerationQueueDrawer

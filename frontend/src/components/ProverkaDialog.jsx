@@ -146,7 +146,7 @@ function CrossCheckStatusChips({ row, cropwiseAlert }) {
   );
 }
 
-export default function ProverkaDialog({ open, onClose, summaryDate, onComplete, onOpenTaskFacts }) {
+export default function ProverkaDialog({ open, onClose, summaryDate, onComplete, onOpenTaskFacts, showDataErrors = false }) {
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [cookie, setCookie] = useState("");
@@ -570,12 +570,12 @@ export default function ProverkaDialog({ open, onClose, summaryDate, onComplete,
             Дата отчёта: <strong>{summaryDate}</strong> · Сводки ↔ Cropwise UI (Отчёт об агро работах машин)
           </Typography>
 
-          {dataChecks.length > 0 && (
+          {showDataErrors && dataChecks.some((line) => !String(line).includes("AREA_GT_FIELD")) && (
             <Alert severity="warning">
               <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
                 Замечания при создании сводок
               </Typography>
-              {dataChecks.slice(0, 40).map((line, idx) => (
+              {dataChecks.filter((line) => !String(line).includes("AREA_GT_FIELD")).slice(0, 40).map((line, idx) => (
                 <Typography
                   key={`${idx}-${line.slice(0, 24)}`}
                   component="div"

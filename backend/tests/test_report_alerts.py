@@ -62,9 +62,10 @@ def test_places_attach_to_alert_and_stay_out_of_the_paragraph(tmp_path, monkeypa
     places = ["задание=187080 поле=1328 covered=66.00 поле=57.00", "задание=188074 поле=1237", "задание=1", "задание=2"]
     import json
     lines = [
-        "DATA_CHECK [CRIT] сводка=2 AREA_GT_FIELD: 4 шт, 10.0 га — площадь строки больше площади поля | "
+        "DATA_CHECK [CRIT] сводка=2 CROP_UNRESOLVED: 4 шт, 10.0 га — history_item не найден или без культуры | "
         + "; ".join(places[:3]),
-        "DATA_CHECK_PLACES сводка=2 code=AREA_GT_FIELD " + json.dumps(places, ensure_ascii=False),
+        "DATA_CHECK_PLACES сводка=2 code=CROP_UNRESOLVED " + json.dumps(places, ensure_ascii=False),
+        "DATA_CHECK [CRIT] сводка=2 AREA_GT_FIELD: 309 шт, 10960.2 га — площадь строки больше площади поля | задание=187080",
     ]
     logs: list[str] = []
     saved = rg._append_script_stdout_logs(logs, "\n".join(lines), "Сводка 2", tail=5)
@@ -75,7 +76,25 @@ def test_places_attach_to_alert_and_stay_out_of_the_paragraph(tmp_path, monkeypa
     assert alerts[0]["message"].count("задание=") == 3
     assert rg.load_generation_data_checks(day)[0].count("задание=") == 3
     assert "DATA_CHECK_PLACES" not in rg.load_generation_data_checks(day)[0]
-    assert rg.load_generation_data_check_places(day)["2:AREA_GT_FIELD"] == places
+    assert rg.load_generation_data_check_places(day)["2:CROP_UNRESOLVED"] == places
+    assert all("AREA_GT_FIELD" not in a["message"] for a in alerts)
+    assert all("AREA_GT_FIELD" not in line for line in rg.load_generation_data_checks(day))
+
+
+def test_saved_area_gt_field_is_hidden(tmp_path, monkeypatch):
+    monkeypatch.setattr(rg.settings, "upload_dir", str(tmp_path))
+    day = date(2026, 10, 19)
+    folder = tmp_path / day.isoformat() / ".data_check" / "alerts"
+    folder.mkdir(parents=True)
+    (folder / "2.json").write_text(
+        '{"report_id": "2", "alerts": ['
+        '{"level": "ERROR", "code": "data_check_crit.0", "message": "сводка=2 AREA_GT_FIELD: 316 шт"},'
+        '{"level": "ERROR", "code": "data_check_crit.1", "message": "сводка=2 CROP_UNRESOLVED: 1 шт"}'
+        "]}",
+        encoding="utf-8",
+    )
+    alerts = rg.load_generation_alerts(day)["2"]
+    assert [a["message"] for a in alerts] == ["сводка=2 CROP_UNRESOLVED: 1 шт"]
 
 
 def test_audit_message_and_area():

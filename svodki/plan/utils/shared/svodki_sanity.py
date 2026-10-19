@@ -13,7 +13,6 @@
 
   Строка площади (MachineTaskFieldMappingItem)
     AREA_BAD         covered_area не число / NaN / < 0
-    AREA_GT_FIELD    covered_area больше площади поля (Field.tillable_area/calculated_area)
     AREA_HOURLY      сумма covered_area_hourly расходится с covered_area (смены посчитаются неверно)
     AREA_GT_WORK     covered_area больше work_area (work_area включает перекрытия, т.е. ≥ covered)
     AREA_RATE        выработка га/ч по work_duration нереальна
@@ -65,8 +64,6 @@ ENABLED = (os.environ.get("SVODKI_SANITY", "1").strip().lower()
            not in {"0", "false", "no", "off", "нет"})
 
 # ------------------------------------------------------------------ Пороги
-FIELD_TOL = _env_f("SVODKI_SANITY_FIELD_TOL", 1.10)    # covered_area ≤ площадь_поля·TOL + ABS
-FIELD_ABS = _env_f("SVODKI_SANITY_FIELD_ABS", 0.5)     # га
 HOURLY_REL = _env_f("SVODKI_SANITY_HOURLY_REL", 0.02)  # доля от covered_area
 HOURLY_ABS = _env_f("SVODKI_SANITY_HOURLY_ABS", 0.10)  # га
 WORK_TOL = _env_f("SVODKI_SANITY_WORK_TOL", 1.10)
@@ -86,7 +83,6 @@ NO_HARVEST_CROPS = frozenset(
 # (серьёзность, пояснение)
 CODES: dict[str, tuple[str, str]] = {
     "AREA_BAD": ("CRIT", "covered_area не число или отрицательная"),
-    "AREA_GT_FIELD": ("CRIT", "площадь строки больше площади поля"),
     "CROP_NO_HISTORY": ("CRIT", "у строки нет history_item_id — культура неизвестна"),
     "CROP_UNRESOLVED": ("CRIT", "history_item не найден или без культуры"),
     "CROP_FIELD": ("CRIT", "history_item принадлежит другому полю"),
@@ -113,6 +109,7 @@ _ORDER = {"CRIT": 0, "WARN": 1, "INFO": 2}
 _N: Counter = Counter()          # код → число замечаний
 _HA: Counter = Counter()         # код → га под замечанием
 _EX: dict[str, list[str]] = {}   # код → примеры
+_SEEN_FIELDS: dict[str, set[int]] = {}  # код → поля, уже попавшие в список
 _STAT = {"rows": 0, "tasks": 0}
 
 # history_item_id → (crop_id << 52) | (year << 40) | field_id   (одно int вместо кортежа)
@@ -166,7 +163,31 @@ def _i(v) -> int | None:
         return None
 
 
+def _field_id_from_note(note: str) -> int | None:
+    """«поле=4419» в тексте замечания. Нет числа — замечание не про поле."""
+    mark = "поле="
+    i = note.find(mark)
+    if i < 0:
+        return None
+    digits: list[str] = []
+    for ch in note[i + len(mark):]:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    return int("".join(digits)) if digits else None
+
+
 def _hit(code: str, ha: float = 0.0, note: str = "") -> None:
+    """Одно поле — одна строка. Второе задание на том же поле чинится тем же способом."""
+    field_id = _field_id_from_note(note) if note else None
+    if field_id is not None:
+        seen = _SEEN_FIELDS.setdefault(code, set())
+        if field_id in seen:
+            if ha:
+                _HA[code] += abs(ha)
+            return
+        seen.add(field_id)
     _N[code] += 1
     if ha:
         _HA[code] += abs(ha)
@@ -717,14 +738,10 @@ def on_mtfmi(mtfmi_map: dict, requested=None, *, crops_known: bool = True) -> No
                 _hit("AREA_GT_WORK", c - wa, f"{where} covered={c:.2f} work_area={wa:.2f}")
 
             # --- поле
-            if fid is not None and fa:
-                area = fa.get(fid)
-                if area is None:
-                    _hit("FIELD_UNKNOWN", c, where)
-                else:
-                    area = _f(area) or 0.0
-                    if area > 0 and c > area * FIELD_TOL + FIELD_ABS:
-                        _hit("AREA_GT_FIELD", c - area, f"{where} covered={c:.2f} поле={area:.2f}")
+            # Площадь строки больше площади поля не ошибка: несколько проходов дают
+            # covered_area больше tillable_area. На гектары сводки это не влияет.
+            if fid is not None and fa and fa.get(fid) is None:
+                _hit("FIELD_UNKNOWN", c, where)
 
             if seen is not None and fid is not None:
                 key = (fid, hid)
@@ -827,7 +844,7 @@ def report(out=None) -> None:
 
 def reset() -> None:
     """Для тестов."""
-    for d in (_N, _HA, _EX, _HIST, _DIRTY, _TASK, _FY):
+    for d in (_N, _HA, _EX, _HIST, _DIRTY, _TASK, _FY, _SEEN_FIELDS):
         d.clear()
     _DONE.clear()
     _SPLIT.clear()

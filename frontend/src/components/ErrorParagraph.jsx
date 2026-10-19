@@ -25,16 +25,34 @@ export function paragraphPlaces(message, places) {
     .filter(Boolean);
 }
 
+/** Одно поле — одна строка: второе задание на том же поле чинится так же. */
+export function uniqueByField(lines) {
+  const seen = new Set();
+  const out = [];
+  for (const line of lines || []) {
+    const match = String(line).match(/поле=(\d+)/);
+    const key = match ? match[1] : `row:${line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 /** Абзац ошибки и значок, который открывает все задания с этой ошибкой. */
 export function ErrorParagraph({ message, places, placesByKey, urls }) {
-  const all = paragraphPlaces(message, places || placesByKey?.[errorPlacesKey(message)]);
+  const listed = paragraphPlaces(message, places || placesByKey?.[errorPlacesKey(message)]);
+  const all = uniqueByField(listed);
   const raw = String(message || "");
   const cut = raw.indexOf(" | ");
   const summary = cut < 0 ? raw : raw.slice(0, cut);
-  const preview = cut < 0 ? [] : paragraphPlaces(raw).slice(0, 3);
-  const shown = preview.length ? `${summary} | ${preview.join("; ")}` : summary;
   const countMatch = summary.match(COUNT_RE);
-  const count = countMatch ? Number(countMatch[1]) : all.length;
+  const stated = countMatch ? Number(countMatch[1]) : all.length;
+  const complete = listed.length >= stated;
+  const count = complete ? all.length : stated;
+  const summaryText = complete ? summary.replace(COUNT_RE, `${count} шт`) : summary;
+  const preview = all.slice(0, 3);
+  const shown = preview.length ? `${summaryText} | ${preview.join("; ")}` : summaryText;
   const [open, setOpen] = useState(false);
 
   return (

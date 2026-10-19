@@ -71,6 +71,7 @@ export default function AppShell({
   onPasswordChanged,
   cropwise = null,
   equipment = null,
+  dataErrors = null,
   onCookieOpen = null,
   onNamolotOpen = null,
   children,
@@ -220,23 +221,45 @@ export default function AppShell({
                     </Stack>
                   ) : null}
                   {equipment ? (
-                    <Tooltip title={equipment.caption}>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={equipment.onClick}
-                        sx={{
-                          minWidth: 0,
-                          px: 1,
-                          py: 0.2,
-                          fontSize: "0.75rem",
-                          lineHeight: 1.5,
-                          textTransform: "none",
-                        }}
-                      >
-                        Оборудование
-                      </Button>
-                    </Tooltip>
+                    <Stack spacing={0.5} alignItems="stretch">
+                      <Tooltip title={equipment.caption}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={equipment.onClick}
+                          sx={{
+                            minWidth: 0,
+                            px: 1,
+                            py: 0.2,
+                            fontSize: "0.75rem",
+                            lineHeight: 1.5,
+                            textTransform: "none",
+                          }}
+                        >
+                          Оборудование
+                        </Button>
+                      </Tooltip>
+                      {dataErrors ? (
+                        <Tooltip title={dataErrors.active ? "Ошибки данных включены" : "Показать ошибки данных в сводках"}>
+                          <Button
+                            size="small"
+                            variant={dataErrors.active ? "contained" : "outlined"}
+                            color={dataErrors.active ? "success" : "primary"}
+                            onClick={dataErrors.onToggle}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Ошибки
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                    </Stack>
                   ) : null}
                   {(nav || [])
                     .filter((item) => item.id === "users")

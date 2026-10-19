@@ -512,10 +512,16 @@ def _generation_alerts_dir(report_date: date) -> Path:
 
 _PLACES_HEAD = re.compile(r"DATA_CHECK_PLACES\s+сводка=(\S+)\s+code=(\S+)\s+(\[.*\])\s*$")
 _ALERT_CODE = re.compile(r"сводка=(\S+)\s+([A-Z][A-Z0-9_]+):")
+# Площадь строки больше площади поля — не ошибка сводки.
+_IGNORED_DATA_CHECK_CODES = ("AREA_GT_FIELD",)
+
+
+def _data_check_ignored(text: str) -> bool:
+    return any(code in text for code in _IGNORED_DATA_CHECK_CODES)
 
 
 def parse_data_check_places(line: str) -> tuple[str, str, list[str]] | None:
-    """«DATA_CHECK_PLACES сводка=2 code=AREA_GT_FIELD [...]» → (сводка, код, строки)."""
+    """«DATA_CHECK_PLACES сводка=2 code=CROP_UNRESOLVED [...]» → (сводка, код, строки)."""
     text = str(line or "")
     pos = text.find("DATA_CHECK_PLACES")
     if pos < 0:
@@ -537,6 +543,8 @@ def _alerts_from_lines(lines: list[str]) -> list[dict]:
     by_code: dict[str, dict] = {}
     places: dict[tuple[str, str], list[str]] = {}
     for line in lines:
+        if _data_check_ignored(line):
+            continue
         found = parse_data_check_places(line)
         if found is not None:
             report_id, code, items = found
@@ -589,7 +597,10 @@ def load_generation_alerts(report_date: date) -> dict[str, list[dict[str, str]]]
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        items = [a for a in (data.get("alerts") or []) if isinstance(a, dict) and a.get("message")]
+        items = [
+            a for a in (data.get("alerts") or [])
+            if isinstance(a, dict) and a.get("message") and not _data_check_ignored(str(a.get("message")))
+        ]
         if items:
             out[str(data.get("report_id") or path.stem)] = items
     return out
@@ -609,7 +620,8 @@ def save_generation_data_checks(report_date: date, report_id: str, lines: list[s
     path = folder / f"{safe}.json"
     alerts = [
         ln for ln in lines
-        if "DATA_CHECK_PLACES" in ln or "[CRIT]" in ln or "[WARN]" in ln
+        if ("DATA_CHECK_PLACES" in ln or "[CRIT]" in ln or "[WARN]" in ln)
+        and not _data_check_ignored(ln)
     ]
     if not alerts:
         path.unlink(missing_ok=True)
@@ -635,7 +647,7 @@ def load_generation_data_checks(report_date: date) -> list[str]:
             continue
         for line in data.get("lines") or []:
             text = str(line).strip()
-            if text and "DATA_CHECK_PLACES" not in text:
+            if text and "DATA_CHECK_PLACES" not in text and not _data_check_ignored(text):
                 out.append(text)
     return out
 
@@ -656,6 +668,8 @@ def load_generation_data_check_places(report_date: date) -> dict[str, list[str]]
             if found is None:
                 continue
             report_id, code, items = found
+            if _data_check_ignored(code):
+                continue
             out[f"{report_id}:{code}"] = items
     return out
 

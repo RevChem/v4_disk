@@ -92,6 +92,7 @@ export default function DashboardPage({
   compareCropwise = false,
   compareCropwiseSeason = false,
   equipmentRequest = 0,
+  showDataErrors = false,
 }) {
   const [summaryDateLocal, setSummaryDateLocal] = useState(todayIso());
   const summaryDate = summaryDateProp ?? summaryDateLocal;
@@ -732,7 +733,18 @@ export default function DashboardPage({
             canDelete={canComments}
             cropwiseByReport={cropwiseByReport}
             cropwiseSeasonByReport={cropwiseSeasonByReport}
-            alertsByReport={alertsByReport}
+            alertsByReport={
+              showDataErrors
+                ? Object.fromEntries(
+                    Object.entries(alertsByReport)
+                      .map(([id, items]) => [
+                        id,
+                        (items || []).filter((a) => !String(a?.message || "").includes("AREA_GT_FIELD")),
+                      ])
+                      .filter(([, items]) => items.length),
+                  )
+                : {}
+            }
             onDeleted={() => {
               loadFiles();
               loadDates();
@@ -815,6 +827,7 @@ export default function DashboardPage({
         summaryDate={summaryDate}
         onComplete={onProverkaComplete}
         onOpenTaskFacts={onOpenTaskFacts}
+        showDataErrors={showDataErrors}
       />
       <HarvestCheckDialog
         open={harvestCheckOpen}

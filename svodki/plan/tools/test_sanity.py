@@ -46,9 +46,29 @@ def test_clean_data_no_findings():
 def test_area_bad_and_bigger_than_field():
     _fresh()
     _hist()
-    sn.on_mtfmi({1: [_row(cov=-3.0)], 2: [_row(tid=2, cov=200.0)], 3: [_row(tid=3, cov="abc")]})
-    assert {"AREA_BAD", "AREA_GT_FIELD"} <= _codes()
+    sn.on_mtfmi({
+        1: [_row(cov=-3.0)],
+        2: [_row(tid=2, fid=11, cov=200.0)],
+        3: [_row(tid=3, fid=12, cov="abc")],
+    })
+    assert "AREA_BAD" in _codes()
+    assert "AREA_GT_FIELD" not in _codes()
     assert sn._N["AREA_BAD"] == 2
+
+
+def test_same_field_is_one_task():
+    _fresh()
+    _hist()
+    _hist(101, fid=10, crop=0)
+    sn.on_mtfmi({
+        395525: [_row(tid=395525, hid=101, cov=1.5)],
+        395526: [_row(tid=395526, hid=101, cov=2.5)],
+    })
+    assert sn._N["CROP_UNRESOLVED"] == 1
+    assert len(sn._EX["CROP_UNRESOLVED"]) == 1
+    assert "395525" in sn._EX["CROP_UNRESOLVED"][0]
+    assert "395526" not in sn._EX["CROP_UNRESOLVED"][0]
+    assert sn._HA["CROP_UNRESOLVED"] == 4.0
 
 
 def test_hourly_work_rate_no_time_manual():
@@ -72,7 +92,7 @@ def test_crop_checks():
     _hist(103, fid=10, crop=8)           # другая культура того же поля и года
     sn.on_mtfmi({
         1: [_row(tid=1, hid=None)],                  # CROP_NO_HISTORY
-        2: [_row(tid=2, hid=555)],                   # CROP_UNRESOLVED (не найден)
+        2: [_row(tid=2, fid=11, hid=555)],           # CROP_UNRESOLVED (не найден)
         3: [_row(tid=3, hid=102)],                   # CROP_UNRESOLVED (без culture)
         4: [_row(tid=4, hid=101)],                   # CROP_FIELD
         5: [_row(tid=5, hid=100)],
@@ -149,19 +169,20 @@ def test_settled_and_dirty_roundtrip():
 
 
 def test_places_line_lists_every_row_while_summary_shows_three():
-    _fresh()
+    _fresh({10 + i: 60.0 for i in range(1, 6)})
     _hist()
-    rows = {i: [_row(tid=i, cov=200.0)] for i in range(1, 6)}
+    rows = {i: [_row(tid=i, fid=10 + i, cov=200.0)] for i in range(1, 6)}
     sn.on_mtfmi(rows)
     buf = io.StringIO()
     sn.report(buf)
     out = buf.getvalue()
-    short = next(line for line in out.splitlines() if line.startswith("DATA_CHECK [CRIT]") and "AREA_GT_FIELD" in line)
-    places = next(line for line in out.splitlines() if line.startswith("DATA_CHECK_PLACES") and "AREA_GT_FIELD" in line)
+    assert "AREA_GT_FIELD" not in out
+    short = next(line for line in out.splitlines() if line.startswith("DATA_CHECK [CRIT]") and "CROP_FIELD" in line)
+    places = next(line for line in out.splitlines() if line.startswith("DATA_CHECK_PLACES") and "CROP_FIELD" in line)
     assert short.count("задание=") == 3
     assert "5 шт" in short
     import json
-    items = json.loads(places.split("code=AREA_GT_FIELD ", 1)[1])
+    items = json.loads(places.split("code=CROP_FIELD ", 1)[1])
     assert len(items) == 5
     assert all(item.startswith("задание=") for item in items)
 
