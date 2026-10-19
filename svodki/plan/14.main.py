@@ -393,20 +393,35 @@ def _reg_source_for_namolot(raw_id: str | None) -> str:
 
 
 _FIELD_CODE_RE = re.compile(r"^[^\s(]+")
+# Хвостовые служебные пометки в коде поля Cropwise, которых нет в ключе Namolot:
+# Cropwise «АИ-02-27 (АА)», Namolot «АИ-02-27(АА) Соя 26г.» → оба дают «АИ-02-27».
+_FIELD_CODE_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 def _namolot_field_code(spp: str | None) -> str:
     """Код поля из поля "spp" записи Namolot.
 
     В Namolot "spp" — это код поля + название культуры + год через пробел,
-    например "АФЧ-01-01 Рапс яровой 26г." или "ФКО-02 Картофель 26г.".
-    В Cropwise то же поле называется просто кодом, без культуры и года —
-    "АФЧ-01-01" / "ФКО-02". Берём первый токен до пробела."""
+    например "АФЧ-01-01 Рапс яровой 26г." или "АИ-02-27(АА) Соя 26г.".
+    Берём первый токен до пробела или «(»."""
     s = str(spp or "").strip()
     if not s:
         return ""
     m = _FIELD_CODE_RE.match(s)
     return m.group(0) if m else ""
+
+
+def _cropwise_field_code(name: str | None) -> str:
+    """Код поля Cropwise без хвостовой пометки: «АИ-02-27 (АА)» → «АИ-02-27»."""
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    while True:
+        stripped = _FIELD_CODE_SUFFIX_RE.sub("", s).strip()
+        if stripped == s or not stripped:
+            break
+        s = stripped
+    return s
 
 
 def _norm_field_code(code: str | None) -> str:
@@ -1567,7 +1582,9 @@ def load_geo_reference() -> tuple[
         folder = field_to_firm_folder.get(fid_i)
         if folder is None:
             continue
-        code = _norm_field_code(f.get("name"))
+        # Хвостовые пометки "(АА)" в названии поля Cropwise убираем — в Namolot
+        # "spp" приходит как «АИ-02-27(АА) …», и без снятия пометки код не совпадёт.
+        code = _norm_field_code(_cropwise_field_code(f.get("name")))
         if not code:
             continue
         if code in field_name_to_firm_folder and field_name_to_firm_folder[code] != folder:
