@@ -3,7 +3,15 @@ from datetime import date
 
 from openpyxl import Workbook
 
-from proverka.harvest_check import SPECS, read_specs
+from proverka.harvest_check import (
+    DEFAULT_TOLERANCE_HA,
+    DEFAULT_TOLERANCE_SEASON_HA,
+    SEASON,
+    SPECS,
+    _status,
+    read_specs,
+    tolerance_for_metric,
+)
 from proverka.operation_registry import OPERATION_PEERS
 
 DAY = date(2026, 10, 16)
@@ -76,3 +84,11 @@ def test_crop_prefix_from_sheet_title():
     assert crops == {"Рапс озимый"}
     by_metric = {f.metric: f.value for f in facts if f.firm == FIRM}
     assert by_metric == {"season": 40, "day": 5}
+
+
+def test_season_tolerance_is_wider_than_day():
+    assert tolerance_for_metric("day", DEFAULT_TOLERANCE_HA, DEFAULT_TOLERANCE_SEASON_HA) == 0.5
+    assert tolerance_for_metric(SEASON, 0.5, 10) == 10
+    # 7 га — ошибка за сутки и норма за сезон
+    assert _status({"1": 100}, 107, 0.5)[2] == "cropwise"
+    assert _status({"1": 100}, 107, 10)[2] == "ok"

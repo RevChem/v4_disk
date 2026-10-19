@@ -58,6 +58,7 @@ export default function PdfSummaryPanel({
   onDeleted,
   cropwiseByReport = {},
   cropwiseSeasonByReport = {},
+  alertsByReport = {},
 }) {
   const [previewFilename, setPreviewFilename] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -65,6 +66,7 @@ export default function PdfSummaryPanel({
   const [deletingId, setDeletingId] = useState(null);
   const [diffReportId, setDiffReportId] = useState("");
   const [seasonDiffReportId, setSeasonDiffReportId] = useState("");
+  const [alertsReport, setAlertsReport] = useState(null);
 
   const sortedFiles = useMemo(() => {
     const key = (f) => {
@@ -154,6 +156,8 @@ export default function PdfSummaryPanel({
                 f.report_id || String(f.title || f.filename).match(/^(\d+(?:\.\d+)?)/)?.[1] || "";
               const diffs = cropwiseByReport[String(reportKey)] || [];
               const seasonDiffs = cropwiseSeasonByReport[String(reportKey)] || [];
+              const alerts = alertsByReport[String(reportKey)] || [];
+              const hasAlertError = alerts.some((a) => a.level !== "WARN");
               return (
                 <Box key={f.filename}>
                   <Box
@@ -212,7 +216,28 @@ export default function PdfSummaryPanel({
                         </IconButton>
                       ) : null}
                       <Box sx={{ minWidth: 0 }}>
-                      <Typography fontWeight={600}>{f.title || f.filename}</Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                        <Typography fontWeight={600}>{f.title || f.filename}</Typography>
+                        {alerts.length > 0 ? (
+                          <IconButton
+                            aria-label="Ошибки данных при генерации"
+                            title={`Ошибки данных при генерации (${alerts.length}): ${alerts[0].message}`}
+                            onClick={() =>
+                              setAlertsReport({ id: String(reportKey), title: f.title || f.filename })
+                            }
+                            sx={{ p: 0.5, flexShrink: 0 }}
+                          >
+                            <Box
+                              sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: "50%",
+                                bgcolor: hasAlertError ? "error.main" : "warning.main",
+                              }}
+                            />
+                          </IconButton>
+                        ) : null}
+                      </Box>
                       <Typography variant="body2" color="text.secondary">
                         Добавлено: {formatAdded(f.modified_at, f.generation_seconds)}
                         {isExcel ? " · Excel" : ""}
@@ -319,6 +344,11 @@ export default function PdfSummaryPanel({
           </Stack>
         )}
       </CardContent>
+      <ReportAlertsDialog
+        report={alertsReport}
+        alerts={alertsReport ? alertsByReport[alertsReport.id] || [] : []}
+        onClose={() => setAlertsReport(null)}
+      />
       <CropwiseDiffDialog
         rows={cropwiseByReport[diffReportId] || []}
         onClose={() => setDiffReportId("")}
@@ -329,6 +359,37 @@ export default function PdfSummaryPanel({
         onClose={() => setSeasonDiffReportId("")}
       />
     </Card>
+  );
+}
+
+/** Заметные ошибки данных, найденные при генерации сводки. Расчёт сводки не меняют. */
+function ReportAlertsDialog({ report, alerts, onClose }) {
+  return (
+    <Dialog open={Boolean(report) && alerts.length > 0} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Ошибки данных · {report?.title}</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Сводка сформирована, но часть данных не учтена или неточна. Подробности — в «Логи → Сводки».
+        </Typography>
+        <Stack spacing={1}>
+          {alerts.map((a) => (
+            <Box key={a.code + a.message} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
+              <Box
+                sx={{
+                  mt: 0.75,
+                  width: 10,
+                  height: 10,
+                  flexShrink: 0,
+                  borderRadius: "50%",
+                  bgcolor: a.level === "WARN" ? "warning.main" : "error.main",
+                }}
+              />
+              <Typography variant="body2">{a.message}</Typography>
+            </Box>
+          ))}
+        </Stack>
+      </DialogContent>
+    </Dialog>
   );
 }
 

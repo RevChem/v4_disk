@@ -185,6 +185,27 @@ def run_generation_job(db: Session, job: GenerationJob) -> GenerationJob:
                 summary_date=summary_date,
                 log_lines=_log_lines_for_report(logs, rid),
             )
+        # Заметные ошибки данных: в «Логи» и в результат. На файлы сводок это не влияет.
+        try:
+            from app.legacy.report_generation import load_generation_alerts
+
+            alerts_by_report = load_generation_alerts(job.summary_date)
+        except Exception as exc:  # noqa: BLE001
+            alerts_by_report = {}
+            log.warning("reports.alerts_load_failed", job_id=job.id, error=str(exc))
+        created_alert_ids = {str(c.report_id) for c in created}
+        result["alerts"] = {rid: a for rid, a in alerts_by_report.items() if rid in created_alert_ids}
+        for rid, items in result["alerts"].items():
+            _safe_activity(
+                db,
+                action="reports.generation.report_alert",
+                user_id=job.user_id,
+                job_id=job.id,
+                report_id=rid,
+                title=report_title(rid),
+                alerts=items,
+                summary_date=summary_date,
+            )
         job = repo.update_generation_job(
             db,
             job,

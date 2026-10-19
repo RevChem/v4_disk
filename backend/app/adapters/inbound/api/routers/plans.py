@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.inbound.api.deps import get_client_ip, require_generate_access, require_plans_access
 from app.application.audit_activity import record_activity
+from app.application.plans_history import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, build_plans_history
 from app.database import get_db
 from app.infrastructure.logging import get_logger
 from app.models import User
@@ -105,6 +106,20 @@ def drop_plans_edit_presence(
     if not token_is_valid(token):
         raise HTTPException(status_code=400, detail="Некорректный ключ сессии редактора.")
     return release_plans_presence(user.id, token)
+
+
+@router.get("/history")
+def get_plans_editor_history(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    q: str | None = Query(default=None, max_length=200, description="поиск по тексту записи"),
+    section: str | None = Query(default=None, max_length=80, description="раздел (section_key) или действие plans.*"),
+    user_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_plans_access),
+):
+    """История правок редактора планов: кто, когда и что изменил (значение было → стало)."""
+    return build_plans_history(db, page=page, page_size=page_size, query=q, section=section, user_id=user_id)
 
 
 @router.get("", response_model=PlansEditorOut)

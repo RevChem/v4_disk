@@ -28,13 +28,16 @@ from proverka.file_values import (
     _canonical_firm,
     _flat_header,
     _group_for_sheet_section,
+    _header_index,
     _read_failure,
     _section_title,
     find_report_xlsx,
 )
 
-# Сводки, в Excel которых числа машин нет (сейчас такие не известны).
-REPORTS_WITHOUT_MACHINES_IN_FILE: frozenset[str] = frozenset()
+# Сводки, в Excel которых числа машин нет. 10 и 13 — не «операционные»: у 10 листы по культурам
+# («Общий намолот», «Рапс озимый», …), у 13 — обзор холдинга по культурам и фирмам; листа «Сводка»
+# с колонкой техники там нет. Раньше они давали «файл не прочитан: нет листа «Сводка»».
+REPORTS_WITHOUT_MACHINES_IN_FILE: frozenset[str] = frozenset({"10", "13"})
 
 REPORT2_MACHINES_TITLE = "КОЛИЧЕСТВО ЗАДЕЙСТВОВАННЫХ АГРЕГАТОВ"
 _RU_MONTHS_GEN = (
@@ -109,6 +112,15 @@ def _summary_sheet_machines(ws: Any, report_id: str) -> dict[str, dict[str, int]
             flush()
             cols = header
             current = pending
+            pending = ""
+            continue
+        # Блок культур на том же листе («Культура» / «Остаток, га») стоит в тех же колонках, что
+        # агрофирма и техника. Без сброса «Свёкла — 21083 га остатка» читалась как 21083 машин
+        # (так же устроено чтение гектаров в file_values._xlsx_summary_firm_areas).
+        if _header_index(values, ("Культура",)) is not None:
+            flush()
+            cols = None
+            current = ""
             pending = ""
             continue
         title = _section_title(values)

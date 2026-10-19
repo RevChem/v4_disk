@@ -433,9 +433,41 @@ def _data_check_log_lines(stdout: str, title: str) -> list[str]:
     return out
 
 
+REPORT_ALERT_MARK = "REPORT_ALERT"
+_ALERT_LEVELS = ("ERROR", "WARN")
+
+
+def parse_report_alert(line: str) -> dict[str, str] | None:
+    """«REPORT_ALERT|ERROR|код|текст» (с любым префиксом вроде «[Сводка 14] ») → словарь."""
+    text = str(line or "")
+    pos = text.find(REPORT_ALERT_MARK + "|")
+    if pos < 0:
+        return None
+    parts = text[pos + len(REPORT_ALERT_MARK) + 1:].split("|", 2)
+    if len(parts) != 3 or parts[0] not in _ALERT_LEVELS:
+        return None
+    return {"level": parts[0], "code": parts[1].strip(), "message": parts[2].strip()}
+
+
+def _report_alert_log_lines(stdout: str, title: str) -> list[str]:
+    """Строки REPORT_ALERT из всего stdout: заметные ошибки данных (красная точка у сводки)."""
+    out: list[str] = []
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if parse_report_alert(text) is None:
+            continue
+        out.append(f"[{title}] {text}")
+        if len(out) >= 80:
+            break
+    return out
+
+
 def _append_script_stdout_logs(logs: list[str], stdout: str, title: str, *, tail: int) -> list[str]:
-    """Сезоны и DATA_CHECK — целиком; остальной хвост скрипта — как раньше, без дублей."""
-    checks = _data_check_log_lines(stdout, title)
+    """Сезоны, DATA_CHECK и REPORT_ALERT — целиком; остальной хвост скрипта — как раньше, без дублей.
+
+    Возвращаемый список уходит в save_generation_data_checks: из него берутся и замечания
+    DATA_CHECK, и REPORT_ALERT."""
+    checks = _data_check_log_lines(stdout, title) + _report_alert_log_lines(stdout, title)
     if not (stdout or "").strip():
         return checks
     logs.extend(_season_mismatch_log_lines(stdout, title))
@@ -443,7 +475,10 @@ def _append_script_stdout_logs(logs: list[str], stdout: str, title: str, *, tail
     logs.extend(
         f"[{title}] {line}"
         for line in stdout.splitlines()[-tail:]
-        if line.strip() and "SEASON_MISMATCH" not in line and "DATA_CHECK" not in line
+        if line.strip()
+        and "SEASON_MISMATCH" not in line
+        and "DATA_CHECK" not in line
+        and REPORT_ALERT_MARK not in line
     )
     return checks
 
@@ -452,8 +487,68 @@ def _data_check_sanity_dir(report_date: date) -> Path:
     return Path(settings.upload_dir) / report_date.isoformat() / ".data_check" / "sanity"
 
 
+def _generation_alerts_dir(report_date: date) -> Path:
+    return Path(settings.upload_dir) / report_date.isoformat() / ".data_check" / "alerts"
+
+
+def _alerts_from_lines(lines: list[str]) -> list[dict[str, str]]:
+    """REPORT_ALERT и критичные DATA_CHECK [CRIT] → список {level, code, message} без дублей."""
+    by_code: dict[str, dict[str, str]] = {}
+    for line in lines:
+        item = parse_report_alert(line)
+        if item is None and "DATA_CHECK" in line and "[CRIT]" in line:
+            text = line.split("DATA_CHECK", 1)[1].replace("[CRIT]", "").strip()
+            item = {"level": "ERROR", "code": f"data_check_crit.{len(by_code)}", "message": text}
+        if item is not None:
+            by_code[item["code"]] = item  # одинаковый код — берём последнее значение
+    # ошибки выше предупреждений
+    return sorted(by_code.values(), key=lambda a: a["level"] != "ERROR")
+
+
+def save_generation_alerts(report_date: date, report_id: str, lines: list[str]) -> None:
+    """Заметные ошибки данных сводки — их читает интерфейс (красная точка у сводки)."""
+    folder = _generation_alerts_dir(report_date)
+    safe = re.sub(r"[^0-9A-Za-z._-]+", "_", str(report_id)) or "report"
+    path = folder / f"{safe}.json"
+    alerts = _alerts_from_lines(lines)
+    if not alerts:
+        path.unlink(missing_ok=True)
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"report_id": str(report_id), "alerts": alerts}, ensure_ascii=False)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def load_generation_alerts(report_date: date) -> dict[str, list[dict[str, str]]]:
+    """report_id → [{level, code, message}] за дату."""
+    folder = _generation_alerts_dir(report_date)
+    if not folder.is_dir():
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for path in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        items = [a for a in (data.get("alerts") or []) if isinstance(a, dict) and a.get("message")]
+        if items:
+            out[str(data.get("report_id") or path.stem)] = items
+    return out
+
+
 def save_generation_data_checks(report_date: date, report_id: str, lines: list[str]) -> None:
-    """WARN/CRIT при создании сводки — файл, который читает «Проверка сводок»."""
+    """WARN/CRIT при создании сводки — файл, который читает «Проверка сводок».
+
+    Заодно сохраняет REPORT_ALERT этой сводки (отдельный файл для красной точки)."""
+    try:
+        save_generation_alerts(report_date, report_id, lines)
+    except OSError:
+        pass  # индикатор не должен ронять генерацию
     folder = _data_check_sanity_dir(report_date)
     folder.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^0-9A-Za-z._-]+", "_", str(report_id)) or "report"

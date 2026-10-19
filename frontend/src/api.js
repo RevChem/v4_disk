@@ -495,6 +495,15 @@ export function releasePlansPresenceKeepalive(token) {
 
 const PLANS_TIMEOUT_MS = 30_000;
 
+export async function fetchPlansEditorHistory({ page = 1, pageSize = 50, query = "", section = "", userId = "" } = {}) {
+  const params = { page, page_size: pageSize };
+  if (query && query.trim()) params.q = query.trim();
+  if (section) params.section = section;
+  if (userId) params.user_id = userId;
+  const { data } = await api.get("/plans-editor/history", { params, timeout: PLANS_TIMEOUT_MS });
+  return data;
+}
+
 export async function fetchPlansEditor(summaryDate = null) {
   const { data } = await api.get("/plans-editor", {
     params: summaryDate ? { summary_date: summaryDate } : undefined,
@@ -594,10 +603,11 @@ export async function updateSchedule(config) {
 }
 
 /** Одна страница вкладки «Логов»: { tab, tabs[], items[], page, pages, total, users[] }. */
-export async function fetchActivityFeed({ tab, page = 1, pageSize = 50, userId = "", refresh = false } = {}) {
+export async function fetchActivityFeed({ tab, page = 1, pageSize = 50, userId = "", query = "", refresh = false } = {}) {
   const params = { page, page_size: pageSize };
   if (tab) params.tab = tab;
   if (userId) params.user_id = userId;
+  if (query && query.trim()) params.q = query.trim();
   if (refresh) params.refresh = true;
   const { data } = await api.get("/activity/feed", { params, timeout: 60_000 });
   return data;
@@ -964,11 +974,16 @@ export async function fetchHarvestCheckReports() {
   return data;
 }
 
-export async function runHarvestCheck({ reportDate, cookie, tolerance }) {
+export async function runHarvestCheck({ reportDate, cookie, tolerance, toleranceSeason }) {
   try {
     const { data } = await api.post(
       "/proverka/harvest-check",
-      { report_date: reportDate, cookie: cookie || null, tolerance },
+      {
+        report_date: reportDate,
+        cookie: cookie || null,
+        tolerance,
+        tolerance_season: toleranceSeason,
+      },
       { timeout: 60_000 }
     );
     return data;
@@ -1127,6 +1142,13 @@ export async function fetchSummariesByDate(summaryDate) {
       report_id: f.report_id,
     }))
     .filter((row) => row.id > 0);
+}
+
+export async function fetchSummaryHistory(summaryId, { page = 1, pageSize = 50, query = "" } = {}) {
+  const params = { page, page_size: pageSize };
+  if (query && query.trim()) params.q = query.trim();
+  const { data } = await api.get(`/summaries/${summaryId}/history`, { params, timeout: 30_000 });
+  return data;
 }
 
 export async function fetchSummaryCellEdits(summaryId) {

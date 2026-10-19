@@ -4,11 +4,12 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.adapters.inbound.api.deps import get_client_ip, require_cell_edit_access, require_comment_access
-from app.application.audit_activity import record_activity
+from app.application.audit_activity import record_activity as _record_activity
+from app.application.plans_history import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, build_document_history
 from app.application.summary_pdf_layers import apply_future_comments_for_summary, rebuild_summary_pdf_layers
 from app.application.summary_registry import report_id_from_title
 from app.database import get_db
@@ -59,6 +60,15 @@ def _serialized(fn):
 log = get_logger(__name__)
 
 
+def record_activity(db: Session, **kwargs) -> None:
+    """Запись в журнал не должна превращать уже применённую правку в ошибку 500."""
+    try:
+        _record_activity(db, **kwargs)
+    except Exception:
+        db.rollback()
+        log.warning("summary.audit_failed", action=kwargs.get("action"), exc_info=True)
+
+
 def _require_visible_summary(item: Summary | None) -> Summary:
     if item is None or not item.visible:
         raise HTTPException(status_code=404, detail="Сводка не найдена.")
@@ -76,6 +86,20 @@ def _cell_edits_response(db: Session, summary_id: int) -> dict:
         "edits": list_summary_cell_edits(store, summary_id),
         "store_path": str(cell_edits_store_path()),
     }
+
+
+@router.get("/{summary_id}/history")
+def get_summary_history(
+    summary_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    q: str | None = Query(default=None, max_length=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_cell_edit_access),
+):
+    """Кто и когда правил ячейки и комментарии этого документа."""
+    _require_visible_summary(db.get(Summary, summary_id))
+    return build_document_history(db, summary_id=summary_id, page=page, page_size=page_size, query=q)
 
 
 @router.get("/{summary_id}/cell-edits", response_model=SummaryCellEditsOut)

@@ -19,6 +19,8 @@ import Typography from "@mui/material/Typography";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import FitScreenRoundedIcon from "@mui/icons-material/FitScreenRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
+import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
+import DocumentHistoryDialog from "./DocumentHistoryDialog";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
 import ZoomInRoundedIcon from "@mui/icons-material/ZoomInRounded";
@@ -75,6 +77,7 @@ export default function DocumentCellEditorDialog({
   const [reportId, setReportId] = useState("");
   const [selectedCell, setSelectedCell] = useState(null);
   const [inputOpen, setInputOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [replacementText, setReplacementText] = useState("");
   /** Черновик: правки копятся здесь и уходят на сервер одним запросом. */
   const [draft, setDraft] = useState({});
@@ -863,6 +866,13 @@ export default function DocumentCellEditorDialog({
           </Typography>
           <Button
             color="inherit"
+            startIcon={<HistoryRoundedIcon />}
+            onClick={() => setHistoryOpen(true)}
+          >
+            История
+          </Button>
+          <Button
+            color="inherit"
             startIcon={<UndoRoundedIcon />}
             onClick={() => setConfirm("discard")}
             disabled={saving || dirtyCount === 0}
@@ -884,6 +894,13 @@ export default function DocumentCellEditorDialog({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <DocumentHistoryDialog
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        summaryId={summaryItem?.id ? Number(summaryItem.id) : null}
+        title={title}
+      />
 
       <Dialog open={confirm !== null} onClose={() => setConfirm(null)} maxWidth="xs" fullWidth>
         <DialogTitle>

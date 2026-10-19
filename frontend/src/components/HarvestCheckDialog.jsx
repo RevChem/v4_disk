@@ -108,7 +108,11 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
   const [peers, setPeers] = useState({});
   const [cookieConfigured, setCookieConfigured] = useState(false);
   const [cookie, setCookie] = useState("");
-  const [tolerance, setTolerance] = useState(0.5);
+  const [tolerance, setTolerance] = useState(() => Number(localStorage.getItem("harvest_tol_day")) || 0.5);
+  const [toleranceSeason, setToleranceSeason] = useState(() => {
+    const saved = localStorage.getItem("harvest_tol_season");
+    return saved == null || saved === "" ? 10 : Number(saved) || 0;
+  });
   const [regenerate, setRegenerate] = useState(true);
   const [phase, setPhase] = useState("idle"); // idle | generating | checking
   const [progress, setProgress] = useState("");
@@ -204,7 +208,12 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
       }
       setPhase("checking");
       setProgress("Запуск сверки…");
-      const started = await runHarvestCheck({ reportDate: summaryDate, cookie: cookie.trim(), tolerance });
+      const started = await runHarvestCheck({
+        reportDate: summaryDate,
+        cookie: cookie.trim(),
+        tolerance,
+        toleranceSeason,
+      });
       localStorage.setItem(storageKey(summaryDate), started.job_id);
       const st = await pollCheck(started.job_id);
       if (st?.status === "failed") setError(st.error || "Ошибка сверки");
@@ -220,7 +229,9 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
     () => (result?.rows || []).map((r) => ({ ...r, operation: r.operation || "5.0 Уборка" })),
     [result]
   );
-  const tol = result?.tolerance ?? tolerance;
+  const tolDay = result?.tolerance_day ?? result?.tolerance ?? tolerance;
+  const tolSeason = result?.tolerance_season ?? toleranceSeason;
+  const tolFor = (metricName) => (metricName === "season" ? tolSeason : tolDay);
   const busy = phase !== "idle";
   const opList = result?.operations?.length ? result.operations : operations;
   const peerMap = result?.peers || peers;
@@ -310,12 +321,30 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
             <TextField
               size="small"
               type="number"
-              label="Допуск, га"
+              label="Допуск сутки, га"
               value={tolerance}
-              onChange={(e) => setTolerance(Math.max(0, Number(e.target.value) || 0))}
+              onChange={(e) => {
+                const v = Math.max(0, Number(e.target.value) || 0);
+                setTolerance(v);
+                localStorage.setItem("harvest_tol_day", String(v));
+              }}
               disabled={busy}
               inputProps={{ step: 0.1, min: 0 }}
-              sx={{ width: 120 }}
+              sx={{ width: 140 }}
+            />
+            <TextField
+              size="small"
+              type="number"
+              label="Допуск сезон, га"
+              value={toleranceSeason}
+              onChange={(e) => {
+                const v = Math.max(0, Number(e.target.value) || 0);
+                setToleranceSeason(v);
+                localStorage.setItem("harvest_tol_season", String(v));
+              }}
+              disabled={busy}
+              inputProps={{ step: 1, min: 0 }}
+              sx={{ width: 150 }}
             />
             <FormControlLabel
               control={
@@ -395,7 +424,7 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                 <Chip size="small" color="error" label={`Сводки расходятся: ${(summary.svodki || 0) + (summary.both || 0)}`} />
                 <Chip size="small" color="warning" label={`Расходится с Cropwise: ${(summary.cropwise || 0) + (summary.both || 0)}`} />
                 <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
-                  смена {result.shift_date}, допуск {tol} га. Нажмите на операцию, чтобы открыть культуры.
+                  смена {result.shift_date}, допуск: сутки {tolDay} га, сезон {tolSeason} га. Нажмите на операцию, чтобы открыть культуры.
                 </Typography>
               </Stack>
 
@@ -509,10 +538,10 @@ export default function HarvestCheckDialog({ open, onClose, summaryDate }) {
                                         <TableCell>{METRIC_LABEL[r.metric]}</TableCell>
                                         {group.reportIds.map((rid) => {
                                           const cell = r.values[rid];
-                                          const off = cell && nums.length >= 2 && Math.abs(cell.value - med) > tol;
+                                          const off = cell && nums.length >= 2 && Math.abs(cell.value - med) > tolFor(r.metric);
                                           return <ValueCell key={rid} cell={cell} off={off} />;
                                         })}
-                                        <ValueCell cell={r[CROPWISE]} off={r.cropwise_diff != null && r.cropwise_diff > tol} />
+                                        <ValueCell cell={r[CROPWISE]} off={r.cropwise_diff != null && r.cropwise_diff > tolFor(r.metric)} />
                                         <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                                           {fmt(r.spread)}
                                         </TableCell>

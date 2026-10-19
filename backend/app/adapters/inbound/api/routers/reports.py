@@ -5,7 +5,11 @@ import json
 from datetime import date
 from pathlib import Path
 
-from app.legacy.report_generation import DEVELOPER_ONLY_REPORT_IDS, _parse_report27_period_header
+from app.legacy.report_generation import (
+    DEVELOPER_ONLY_REPORT_IDS,
+    _parse_report27_period_header,
+    load_generation_alerts,
+)
 from app.legacy.report_runner import _report_id_from_filename, list_job_completed_report_ids
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -279,7 +283,13 @@ def get_generated_files(
     files = enrich_generated_files(db, summary_date, list_generated_files(summary_date))
     if user.role != "developer":
         files = [row for row in files if str(row.get("report_id") or "") not in DEVELOPER_ONLY_REPORT_IDS]
-    return GeneratedFileListOut(summary_date=summary_date, files=files)
+    try:
+        alerts = load_generation_alerts(summary_date)
+    except Exception:  # индикатор не должен ломать список файлов
+        alerts = {}
+    shown = {str(row.get("report_id") or "") for row in files}
+    alerts = {rid: items for rid, items in alerts.items() if rid in shown}
+    return GeneratedFileListOut(summary_date=summary_date, files=files, alerts=alerts)
 
 
 @router.get("/files/{summary_date}/{filename}")

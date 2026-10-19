@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -8,6 +8,8 @@ import {
   Chip,
   CircularProgress,
   FormControl,
+  IconButton,
+  InputAdornment,
   InputLabel,
   Link,
   MenuItem,
@@ -16,8 +18,11 @@ import {
   Stack,
   Tab,
   Tabs,
+  TextField,
   Typography,
 } from "@mui/material";
+import ClearRoundedIcon from "@mui/icons-material/ClearRounded";
+import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import BugReportRoundedIcon from "@mui/icons-material/BugReportRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 
@@ -48,12 +53,43 @@ function displayMessage(ev) {
   return msg.replace(/^—\s+/, "");
 }
 
+const SearchTermsContext = createContext([]);
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Подсвечивает слова поискового запроса (без учёта регистра, «ё» = «е»). */
+function Highlight({ text }) {
+  const terms = useContext(SearchTermsContext);
+  const value = String(text ?? "");
+  if (!terms.length || !value) return value;
+  // «ё»→«е» не меняет длину строки, поэтому индексы нормализованной копии совпадают с исходной
+  const folded = value.toLowerCase().replace(/ё/g, "е");
+  const re = new RegExp(terms.map((t) => escapeRegExp(t.replace(/ё/g, "е"))).join("|"), "g");
+  const parts = [];
+  let last = 0;
+  for (const m of folded.matchAll(re)) {
+    if (!m[0]) continue;
+    if (m.index > last) parts.push(value.slice(last, m.index));
+    parts.push(
+      <mark key={m.index} className="log-search-mark">
+        {value.slice(m.index, m.index + m[0].length)}
+      </mark>
+    );
+    last = m.index + m[0].length;
+  }
+  if (!parts.length) return value;
+  if (last < value.length) parts.push(value.slice(last));
+  return <>{parts}</>;
+}
+
 function LogEventMeta({ when, username, extra }) {
   return (
     <Box component="span" className="log-event-meta">
       {when}
-      {username ? ` · ${username}` : ""}
-      {extra ? ` · ${extra}` : ""}
+      {username ? <>{" · "}<Highlight text={username} /></> : ""}
+      {extra ? <>{" · "}<Highlight text={extra} /></> : ""}
     </Box>
   );
 }
@@ -103,7 +139,7 @@ function LogEventLine({ when, username, message, extra, reports, durationSeconds
     <Box className={`log-event-row${className ? ` ${className}` : ""}`}>
       <LogEventMeta when={when} username={username} extra={extra} />
       <Typography component="span" variant="body2" className="log-event-text">
-        {message ? ` — ${message}` : ""}
+        {message ? <>{" — "}<Highlight text={message} /></> : ""}
       </Typography>
       <ReportNumbersInline
         reports={reports}
@@ -220,7 +256,10 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
   const [jobDetail, setJobDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [userFilter, setUserFilter] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [query, setQuery] = useState(""); // применённый (с задержкой) поисковый запрос
   const requestSeq = useRef(0);
+  const jumpToHits = useRef(false); // после смены запроса перейти на первую вкладку с совпадениями
 
   const loadFeed = useCallback(
     async ({ refresh = false } = {}) => {
@@ -233,10 +272,22 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
           page,
           pageSize: PAGE_SIZE,
           userId: userFilter,
+          query,
           refresh,
         });
         if (seq !== requestSeq.current) return; // пришёл ответ на устаревший запрос
         setFeed(data);
+        if (jumpToHits.current) {
+          jumpToHits.current = false;
+          // в текущей вкладке ничего не нашлось, а в другой есть — переключаемся туда
+          const here = (data.tabs || []).find((t) => t.id === data.tab);
+          const firstHit = (data.tabs || []).find((t) => t.count > 0);
+          if (data.terms?.length && here && here.count === 0 && firstHit) {
+            setTab(firstHit.id);
+            setPage(1);
+            return;
+          }
+        }
         // сервер мог поправить вкладку (нет доступа) или страницу (за пределами диапазона)
         if (data.tab && data.tab !== tab) setTab(data.tab);
         if (data.page && data.page !== page) setPage(data.page);
@@ -246,7 +297,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
         if (seq === requestSeq.current) setLoading(false);
       }
     },
-    [tab, page, userFilter]
+    [tab, page, userFilter, query]
   );
 
   useEffect(() => {
@@ -299,6 +350,25 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
     setPage(1);
   };
 
+  // Запрос уходит на сервер через 400 мс после последнего нажатия клавиши.
+  useEffect(() => {
+    const next = searchInput.trim();
+    if (next === query) return undefined;
+    const timer = setTimeout(() => {
+      jumpToHits.current = true;
+      setQuery(next);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchInput, query]);
+
+  const clearSearch = () => {
+    setSearchInput("");
+    jumpToHits.current = false;
+    setQuery("");
+    setPage(1);
+  };
+
   const changeUserFilter = (value) => {
     setUserFilter(value);
     setPage(1);
@@ -326,9 +396,13 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
     [tab, items]
   );
 
-  const emptyForFilter = userFilter
-    ? "Нет записей для выбранного пользователя."
-    : "Пока нет записей.";
+  const searching = Boolean(query);
+  const searchTerms = useMemo(() => feed.terms || [], [feed.terms]);
+  const emptyForFilter = searching
+    ? `Ничего не найдено по запросу «${query}».`
+    : userFilter
+      ? "Нет записей для выбранного пользователя."
+      : "Пока нет записей.";
   const total = feed.total || 0;
   const from = total ? (feed.page - 1) * PAGE_SIZE + 1 : 0;
   const to = Math.min(feed.page * PAGE_SIZE, total);
@@ -360,6 +434,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
     ) : null;
 
   return (
+    <SearchTermsContext.Provider value={searchTerms}>
     <Card className="hero-card" elevation={0}>
       <CardContent sx={{ p: 2.5 }}>
         <Stack spacing={2}>
@@ -394,10 +469,39 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
                 ))}
               </Select>
             </FormControl>
+            <TextField
+              size="small"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && searchInput) clearSearch();
+              }}
+              placeholder="Поиск по логам"
+              label="Поиск"
+              sx={{ minWidth: 260 }}
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchRoundedIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                  endAdornment: searchInput ? (
+                    <InputAdornment position="end">
+                      <IconButton size="small" aria-label="Очистить поиск" onClick={clearSearch} edge="end">
+                        <ClearRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : null,
+                },
+              }}
+            />
             <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
-              {canViewUserEvents
-                ? "Правки разложены по вкладкам, по 50 записей на странице. Клик по красной сводке — технический лог."
-                : "Ошибки по сводкам и несовпадения сезонов. Клик по красной сводке — технический лог."}
+              {searching
+                ? "Показаны только совпадения; в скобках у вкладок — число найденных записей. Esc — сбросить поиск."
+                : canViewUserEvents
+                  ? "Правки разложены по вкладкам, по 50 записей на странице. Клик по красной сводке — технический лог."
+                  : "Ошибки по сводкам и несовпадения сезонов. Клик по красной сводке — технический лог."}
             </Typography>
           </Stack>
 
@@ -460,7 +564,7 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
               <Stack spacing={0.75} sx={{ flex: 1, minWidth: 0 }}>
                 {items.length === 0 && (
                   <Typography variant="body2" color="text.secondary">
-                    {userFilter ? "Нет записей для выбранного пользователя." : "Ошибок по сводкам нет."}
+                    {searching || userFilter ? emptyForFilter : "Ошибок по сводкам нет."}
                   </Typography>
                 )}
                 {items.map((ev) => {
@@ -511,5 +615,6 @@ export default function LogsPage({ focus, onFocusConsumed, canViewUserEvents = f
         </Stack>
       </CardContent>
     </Card>
+    </SearchTermsContext.Provider>
   );
 }

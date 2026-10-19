@@ -735,3 +735,10 @@
     animation: none !important;
   }
 }
+
+.log-search-mark {
+  background: rgba(255, 193, 7, 0.45);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}

@@ -491,7 +491,8 @@ def get_proverka_job(job_id: str, _: User = Depends(require_developer_access)):
 class HarvestCheckIn(BaseModel):
     report_date: date
     cookie: str | None = None
-    tolerance: float = Field(default=0.5, ge=0, le=1000)
+    tolerance: float | None = Field(default=None, ge=0, le=1000)  # допуск для суточных значений, га
+    tolerance_season: float | None = Field(default=None, ge=0, le=100000)  # допуск для сезонных значений, га
 
 
 @router.get("/harvest-check/reports")
@@ -511,7 +512,9 @@ def run_harvest_check(
     """Сверка агроопераций по уже сгенерированным Excel (и Cropwise, если есть cookie)."""
     from app.adapters.outbound.proverka.harvest_check_service import start_job
 
-    st = start_job(payload.report_date, payload.cookie, payload.tolerance)
+    st = start_job(
+        payload.report_date, payload.cookie, payload.tolerance, payload.tolerance_season,
+    )
     record_activity(
         db,
         action="proverka_harvest.requested",

@@ -61,7 +61,9 @@ def catalog() -> dict[str, Any]:
     }
 
 
-def _run(job_id: str, report_date: date, cookie: str, tolerance: float) -> None:
+def _run(
+    job_id: str, report_date: date, cookie: str, tolerance: float | None, tolerance_season: float | None = None,
+) -> None:
     st: dict[str, Any] = read_job(job_id) or {}
 
     def progress(msg: str) -> None:
@@ -76,7 +78,9 @@ def _run(job_id: str, report_date: date, cookie: str, tolerance: float) -> None:
         _inject_proverka_runtime_env(report_date)
         from proverka.harvest_check import run_check
 
-        st["result"] = run_check(report_date, cookie=cookie, tolerance=tolerance, progress=progress)
+        st["result"] = run_check(
+            report_date, cookie=cookie, tolerance=tolerance, tolerance_season=tolerance_season, progress=progress,
+        )
         st["status"] = "completed"
         st["progress"] = "Готово"
     except Exception as exc:  # noqa: BLE001 — ошибка уходит в статус задачи
@@ -87,7 +91,9 @@ def _run(job_id: str, report_date: date, cookie: str, tolerance: float) -> None:
     _write(job_id, st)
 
 
-def start_job(report_date: date, cookie: str | None, tolerance: float) -> dict[str, Any]:
+def start_job(
+    report_date: date, cookie: str | None, tolerance: float | None, tolerance_season: float | None = None,
+) -> dict[str, Any]:
     cookie = (cookie or "").strip() or session_cookie_from_env()
     job_id = str(uuid.uuid4())
     st = {
@@ -100,5 +106,5 @@ def start_job(report_date: date, cookie: str | None, tolerance: float) -> dict[s
         "progress": "В очереди",
     }
     _write(job_id, st)
-    threading.Thread(target=_run, args=(job_id, report_date, cookie, tolerance), daemon=True).start()
+    threading.Thread(target=_run, args=(job_id, report_date, cookie, tolerance, tolerance_season), daemon=True).start()
     return st

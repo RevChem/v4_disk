@@ -1,4 +1,5 @@
 import plans  # noqa: F401  # bootstrap utils/* (plan_paths via plans.py)
+from report_alerts import alert as report_alert
 from svodki_timing import stage, timing_finish, timing_start
 from report_fetch_orchestration import report_async_client, run_report_async
 """
@@ -675,6 +676,11 @@ def _build_namolot_signature_index(
             "ВНИМАНИЕ: 0 записей — колонка «Масса собранного урожая, т» будет пустой "
             "по всем машинам"
         )
+        report_alert(
+            "namolot_no_records",
+            f"Namolot не вернул ни одной записи за смену {label_date}…{report_date}: "
+            "колонка «Масса собранного урожая, т» пустая по всем машинам.",
+        )
 
     by_signature_firm_crop: dict[str, dict[int, dict[str, float]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(float))
@@ -759,6 +765,12 @@ def _build_namolot_signature_index(
             f"ВНИМАНИЕ: код поля не сопоставлен с агрофирмой, масса этих записей "
             f"НЕ учтена ни в одной агрофирме ({len(unmatched_field_codes)}): {shown_fc}{more_fc}"
         )
+        report_alert(
+            "namolot_field_unmatched",
+            f"Namolot: код поля не сопоставлен с агрофирмой ({len(unmatched_field_codes)}): "
+            f"{', '.join(shown_fc[:8])}{'…' if len(unmatched_field_codes) > 8 else ''}. "
+            "Масса этих записей не учтена ни в одной агрофирме.",
+        )
     if ambiguous_digits:
         _namolot_log(
             f"ВНИМАНИЕ: резервное сопоставление по цифрам неоднозначно "
@@ -769,8 +781,18 @@ def _build_namolot_signature_index(
         shown = sorted(unmatched)[:20]
         more = "" if len(unmatched) <= 20 else f" (и ещё {len(unmatched) - 20})"
         _namolot_log(f"ВНИМАНИЕ: не распознан гос.номер ({len(unmatched)}): {shown}{more}")
+        report_alert(
+            "namolot_plate_unparsed",
+            f"Namolot: гос.номер не распознан ({len(unmatched)}): {', '.join(map(repr, shown[:8]))}"
+            f"{'…' if len(unmatched) > 8 else ''}. Масса этих записей не учтена.",
+        )
     if undated:
         _namolot_log(f"ВНИМАНИЕ: записей без даты/времени (пропущены): {undated}")
+        report_alert(
+            "namolot_undated",
+            f"Namolot: {undated} записей без даты/времени пропущены — их масса не учтена.",
+            level="WARN",
+        )
     if out_of_shift and not in_shift:
         _namolot_log(
             f"ВНИМАНИЕ: все {out_of_shift} записей вне окна смены — "

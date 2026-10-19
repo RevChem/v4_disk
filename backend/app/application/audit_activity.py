@@ -217,6 +217,8 @@ def event_area(action: str) -> str:
         return "Расписание"
     if action.startswith("proverka"):
         return "Проверка"
+    if action == "reports.generation.report_alert":
+        return "Сводки"  # ошибки данных сводки — рядом с ошибками генерации сводок
     if action.startswith("reports.generation."):
         return "Генерация"
     if action.startswith("seasons."):
@@ -286,6 +288,13 @@ def format_action_message(action: str, username: str, details: dict[str, Any]) -
         title = d.get("title") or report_title(str(rid))
         err = str(d.get("error") or "ошибка")[:400]
         return f"Сводка {rid} ({title}){date_part}: {err}"
+    if action == "reports.generation.report_alert":
+        rid = d.get("report_id") or "?"
+        title = d.get("title") or report_title(str(rid))
+        alerts = d.get("alerts") or []
+        first = str((alerts[0] or {}).get("message") or "") if alerts else ""
+        more = f" (+ещё {len(alerts) - 1})" if len(alerts) > 1 else ""
+        return f"Сводка {rid} ({title}){date_part}: {first}{more}"
     if action == "proverka.requested":
         rids = d.get("report_ids") or []
         labels = compact_report_ids(rids) if rids else "все"

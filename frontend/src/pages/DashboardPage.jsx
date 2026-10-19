@@ -100,6 +100,7 @@ export default function DashboardPage({
   const [catalog, setCatalog] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [files, setFiles] = useState([]);
+  const [alertsByReport, setAlertsByReport] = useState({});
   const [filesLoading, setFilesLoading] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
@@ -170,8 +171,10 @@ export default function DashboardPage({
     try {
       const data = await listGeneratedFiles(summaryDate);
       setFiles(data.files || []);
+      setAlertsByReport(data.alerts || {});
     } catch {
       setFiles([]);
+      setAlertsByReport({});
     } finally {
       setFilesLoading(false);
     }
@@ -729,6 +732,7 @@ export default function DashboardPage({
             canDelete={canComments}
             cropwiseByReport={cropwiseByReport}
             cropwiseSeasonByReport={cropwiseSeasonByReport}
+            alertsByReport={alertsByReport}
             onDeleted={() => {
               loadFiles();
               loadDates();

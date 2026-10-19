@@ -89,3 +89,42 @@ def test_missing_file_is_reported(tmp_path: Path, monkeypatch) -> None:
     res = run_machine_proverka_batch(date(2026, 9, 25), ["4"], tmp_path / "out")
     assert "4" in res["missing_file_report_ids"]
     assert res["machine_cross_check_rows"] == []
+
+
+def test_crop_remainder_block_is_not_read_as_machines(tmp_path: Path) -> None:
+    """Сводка 6: под таблицей фирм идёт блок «Культура / Остаток, га» в тех же колонках."""
+    path = tmp_path / "6.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Сводка"
+    ws.append(["3.1 Опрыскивание"])
+    ws.append(["Агрофирма", "Количество задействованной техники", "Обработано за сутки, га"])
+    ws.append(["АФ Чистопольская", 15, 120])
+    ws.append(["Итого", 15, 120])
+    ws.append([None])
+    ws.append(["Культура", "Остаток, га", "Посев, га"])
+    ws.append(["Свекла", 21000, 5])
+    ws.append(["Рапс", 83, 1])
+    wb.save(path)
+    got = machines_from_path(path, "6")
+    assert got == {"3.1 Опрыскивание": {"АФ Чистопольская": 15}}
+
+
+def test_reports_10_and_13_are_skipped_not_errors(tmp_path: Path, monkeypatch) -> None:
+    from proverka import machine_runner
+
+    for rid, sheets in (("10", ["Общий намолот", "Овощи"]), ("13", ["Зерновые культуры"])):
+        wb = openpyxl.Workbook()
+        wb.active.title = sheets[0]
+        for extra in sheets[1:]:
+            wb.create_sheet(extra)
+        wb.save(tmp_path / f"{rid}.xlsx")
+    monkeypatch.setattr(
+        file_values, "find_report_xlsx",
+        lambda d, rid: (tmp_path / f"{rid}.xlsx") if (tmp_path / f"{rid}.xlsx").exists() else None,
+    )
+    res = machine_runner.run_machine_proverka_batch(
+        date(2026, 10, 15), ["10", "13"], tmp_path / "out", write_json=False,
+    )
+    assert res["file_read_errors"] == {}
+    assert set(res["no_machine_data_report_ids"]) >= {"10", "13"}

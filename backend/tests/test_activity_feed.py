@@ -193,3 +193,83 @@ def test_messages_are_human_readable():
         "proverka.cancel_requested", "proverka_machines.requested", "proverka_machines.cancel_requested",
     ):
         assert fmt(action, "U", {}) != f"U: {action}", action
+
+
+# ── Поиск ────────────────────────────────────────────────────────────────────────────────
+def test_search_counts_per_tab_and_pagination(db, dev):
+    for i in range(70):
+        _audit(db, i, "plans.value.update", 1, section_key="HARDCODED_PLAN",
+               keys=["Озимая пшеница", str(i)], old_value=1, new_value=2)
+    for i in range(10):
+        _audit(db, 100 + i, "summary.cell_edit.upsert", 1, report_id="3", new_text="пшеница")
+    _audit(db, 200, "plans.reset", 1)
+    db.commit()
+
+    page = al.build_activity_page(db, viewer=dev, tab="plans", query="ПШЕНИЦА")  # регистр не важен
+    counts = {t["id"]: t["count"] for t in page["tabs"]}
+    assert (page["total"], counts["plans"], counts["cells"]) == (70, 70, 10)
+    assert page["terms"] == ["пшеница"] and len(page["items"]) == 50
+    page2 = al.build_activity_page(db, viewer=dev, tab="plans", query="пшеница", page=2)
+    assert len(page2["items"]) == 20
+
+    # все слова должны встретиться; «ё» = «е»
+    both = al.build_activity_page(db, viewer=dev, tab="plans", query="пшеница 69")
+    assert both["total"] == 1
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="пшеница zzz")["total"] == 0
+
+
+def test_search_by_user_date_and_does_not_match_technical_fields(db, dev):
+    anna = _user(db, 2, "Анна", "user")
+    _audit(db, 1, "plans.reset", 2)
+    _audit(db, 2, "plans.reset", 1)
+    db.commit()
+    by_user = al.build_activity_page(db, viewer=dev, tab="plans", query="анна")
+    assert by_user["total"] == 1 and by_user["items"][0]["username"] == "Анна"
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="01.09.2026")["total"] == 2
+    # служебные поля (category, kind, id) в поиске не участвуют
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="audit")["total"] == 0
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="category")["total"] == 0
+    assert anna.id == 2
+
+
+def test_search_covers_errors_jobs_seasons_and_respects_visibility(db, dev):
+    anna = _user(db, 2, "anna", "user")
+    failed = {"created": [], "failed": [{"report_id": "7", "title": "Семь", "error": "Таймаут Cropwise"}],
+              "logs": ["SEASON_MISMATCH поле Берёзовое"]}
+    _job(db, 1, 1, ["7"], result=failed, failed=1)
+    _job(db, 2, 2, ["7"], result=failed, failed=1)
+    db.commit()
+
+    reports = al.build_activity_page(db, viewer=dev, tab="reports", query="таймаут")
+    assert reports["total"] == 2 and all(e["kind"] == "error" for e in reports["items"])
+    assert al.build_activity_page(db, viewer=dev, tab="seasons", query="березовое")["total"] == 2
+    gen = al.build_activity_page(db, viewer=dev, tab="generation", query="таймаут")
+    assert gen["total"] == 2  # карточки заданий ищутся по тексту ошибки
+    own = al.build_activity_page(db, viewer=anna, tab="reports", query="таймаут")
+    assert own["total"] == 1  # обычный пользователь видит только своё
+
+
+def test_search_empty_query_is_ignored_and_results_follow_refresh(db, dev):
+    _audit(db, 1, "plans.reset", 1)
+    db.commit()
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="   ")["total"] == 1
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="сбросил")["total"] == 1
+    _audit(db, 2, "plans.reset", 1)
+    db.commit()
+    assert al.build_activity_page(db, viewer=dev, tab="plans", query="сбросил", refresh=True)["total"] == 2
+
+
+def test_job_detail_for_all_reports_job_lists_created_and_failed(db, dev):
+    res = {"created": [{"report_id": "1", "title": "A"}],
+           "failed": [{"report_id": "2", "title": "B", "error": "boom"}], "logs": ["сводка 2 error"]}
+    _job(db, 1, 1, [], result=res, failed=1)
+    db.commit()
+    detail = al.job_detail(db, "job-0001", viewer=dev)
+    assert [(r["report_id"], r["status"]) for r in detail["reports"]] == [("1", "ok"), ("2", "error")]
+
+
+def test_season_events_have_utc_timestamp(db, dev):
+    _job(db, 1, 1, ["2"], result={"created": [], "failed": [], "logs": ["SEASON_MISMATCH x"]})
+    db.commit()
+    item = al.build_activity_page(db, viewer=dev, tab="seasons")["items"][0]
+    assert item["created_at"].endswith("+00:00")

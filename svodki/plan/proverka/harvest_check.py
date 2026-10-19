@@ -32,7 +32,10 @@ ALL = "ALL"
 DAY = "day"
 SEASON = "season"
 CROPWISE = "cropwise"
-DEFAULT_TOLERANCE_HA = 0.5
+DEFAULT_TOLERANCE_HA = 0.5  # допуск для суточных значений, га
+# Допуск для сезонных значений: за сезон копится округление, поэтому он шире суточного
+# (как красная точка «Cropwise за сезон»).
+DEFAULT_TOLERANCE_SEASON_HA = 10.0
 _DAY_PERF = ("Обработано за сутки, га",)
 _DAY_VOLUME = ("Общий объем выполненной работы за сутки, га",)
 _SEASON_R2 = ("Выполнено работ в Га", "Выполнено, га")
@@ -652,6 +655,11 @@ def load_cropwise(cookie: str, report_date: date, operation: str) -> dict[str, A
 
 
 # ----------------------------------------------------------------------------- сверка
+def tolerance_for_metric(metric: str, day: float, season: float) -> float:
+    """Допуск расхождения, га: для сезонных значений свой, шире суточного."""
+    return season if metric == SEASON else day
+
+
 def _status(values: dict[str, float], cw: float | None, tol: float) -> tuple[float | None, float | None, str]:
     nums = list(values.values())
     spread = round(max(nums) - min(nums), 2) if len(nums) >= 2 else None
@@ -675,10 +683,15 @@ def run_check(
     report_date: date,
     *,
     cookie: str = "",
-    tolerance: float = DEFAULT_TOLERANCE_HA,
+    tolerance: float | None = None,
+    tolerance_season: float | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     prog = progress or (lambda _msg: None)
+    if tolerance is None:
+        tolerance = DEFAULT_TOLERANCE_HA
+    if tolerance_season is None:
+        tolerance_season = DEFAULT_TOLERANCE_SEASON_HA
     operations = list(SPECS)
     sources: list[dict[str, Any]] = []
     opened: dict[str, Any] = {}
@@ -752,7 +765,8 @@ def run_check(
             if cw_val is None and not values:
                 continue
             spread, cw_diff, st = _status(
-                {k: v["value"] for k, v in values.items()}, cw_val["value"] if cw_val else None, tolerance,
+                {k: v["value"] for k, v in values.items()}, cw_val["value"] if cw_val else None,
+                tolerance_for_metric(metric, tolerance, tolerance_season),
             )
             op_rows.append({
                 "operation": op, "firm": firm, "crop": crop, "metric": metric,
@@ -786,7 +800,9 @@ def run_check(
         "peers": {op: list(SPECS[op]) for op in operations},
         "report_date": report_date.isoformat(),
         "shift_date": shift_date(report_date).isoformat(),
-        "tolerance": tolerance,
+        "tolerance": tolerance,  # суточный допуск (имя сохранено для совместимости)
+        "tolerance_day": tolerance,
+        "tolerance_season": tolerance_season,
         "report_ids": list(REPORT_IDS),
         "sources": sources,
         "cropwise": cropwise,

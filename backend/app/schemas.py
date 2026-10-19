@@ -102,6 +102,8 @@ class GenerateReportsOut(BaseModel):
 class GeneratedFileListOut(BaseModel):
     summary_date: date
     files: list[dict[str, str]] = Field(default_factory=list)
+    # report_id -> заметные ошибки данных при генерации [{level: ERROR|WARN, code, message}]
+    alerts: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
 
 
 class ProverkaCatalogItemOut(BaseModel):

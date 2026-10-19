@@ -24,6 +24,8 @@ import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Typography from "@mui/material/Typography";
 import PlansSeasonsEditor from "./PlansSeasonsEditor";
+import PlansHistoryDialog from "./components/PlansHistoryDialog";
+import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
 import PlansWorkGroupsEditor from "./PlansWorkGroupsEditor";
 import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
@@ -327,6 +329,7 @@ export default function PlansEditor({ summaryDate = null }) {
   const [workGroup, setWorkGroup] = useState("");
   const [dragCrop, setDragCrop] = useState(null);
   const [otherEditors, setOtherEditors] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // loadGen — «последний загрузчик побеждает» только среди reload() (смена даты);
   // writeGen растёт при каждом применении ответа записи: опрос, начатый до записи, отбрасывается.
   const loadGen = useRef(0);
@@ -1202,6 +1205,14 @@ export default function PlansEditor({ summaryDate = null }) {
             <Button
               variant="outlined"
               size="small"
+              startIcon={<HistoryRoundedIcon />}
+              onClick={() => setHistoryOpen(true)}
+            >
+              История
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
               disabled={loading || saving}
               onClick={async () => {
                 setSavingTracked(true);
@@ -1585,6 +1596,7 @@ export default function PlansEditor({ summaryDate = null }) {
           )}
         </Box>
       </Box>
+      <PlansHistoryDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </Box>
   );
 }

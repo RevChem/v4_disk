@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -268,17 +269,23 @@ def _audit_action_counts(db: Session, scope: _Scope) -> dict[str, int]:
     return {str(action): int(n) for action, n in q.all()}
 
 
+def _tab_for_action(action: str) -> str | None:
+    """Вкладка для действия аудита; None — действие в аудитных вкладках не показываем."""
+    if action == REPORT_FAILED_ACTION:
+        return None  # ошибки сводок — это вкладка «Сводки», а не «Генерация»
+    area = event_area(action)
+    if area == "Сезоны":
+        return None
+    return _AREA_TO_TAB.get(area) or f"area:{area}"
+
+
 def _actions_by_tab(counts: dict[str, int]) -> dict[str, list[str]]:
     """Какие действия аудита лежат на какой вкладке (неизвестные области — отдельные вкладки)."""
     out: dict[str, list[str]] = {}
     for action in counts:
-        if action == REPORT_FAILED_ACTION:
-            continue  # ошибки сводок — это вкладка «Сводки», а не «Генерация»
-        area = event_area(action)
-        if area == "Сезоны":
-            continue
-        tab_id = _AREA_TO_TAB.get(area) or f"area:{area}"
-        out.setdefault(tab_id, []).append(action)
+        tab_id = _tab_for_action(action)
+        if tab_id is not None:
+            out.setdefault(tab_id, []).append(action)
     return out
 
 
@@ -454,6 +461,107 @@ def _job_card(job: GenerationJob, username: str) -> dict[str, Any]:
     }
 
 
+# ── Поиск ────────────────────────────────────────────────────────────────────────────────
+MAX_QUERY_TERMS = 8
+# Ключи события, которые не должны участвовать в поиске: технические идентификаторы и флаги,
+# иначе запрос «error» или «audit» находил бы вообще всё.
+_SEARCH_SKIP_KEYS = frozenset({"id", "kind", "has_error", "user_id", "status", "details", "reports"})
+_SEARCH_SKIP_DETAILS = frozenset({"category"})
+
+
+def _norm(text: Any) -> str:
+    return str(text).casefold().replace("ё", "е")
+
+
+def search_terms(query: str | None) -> list[str]:
+    """Слова запроса (нижний регистр, ё=е). Событие подходит, если в нём есть ВСЕ слова."""
+    words = [_norm(w) for w in (query or "").split()]
+    return list(dict.fromkeys(w for w in words if w))[:MAX_QUERY_TERMS]
+
+
+def _flatten(value: Any, out: list[str]) -> None:
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, dict):
+        for v in value.values():
+            _flatten(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _flatten(v, out)
+    else:
+        out.append(str(value))
+
+
+def _ru_date_of(iso: Any) -> str:
+    parts = str(iso or "")[:10].split("-")
+    return f"{parts[2]}.{parts[1]}.{parts[0]}" if len(parts) == 3 and len(parts[0]) == 4 else ""
+
+
+def _haystack(ev: dict[str, Any]) -> str:
+    """Весь видимый и полезный для поиска текст события, в нормализованном виде."""
+    parts: list[str] = []
+    for key, value in ev.items():
+        if key not in _SEARCH_SKIP_KEYS:
+            _flatten(value, parts)
+    details = ev.get("details")
+    if isinstance(details, dict):
+        _flatten({k: v for k, v in details.items() if k not in _SEARCH_SKIP_DETAILS}, parts)
+    for item in ev.get("reports") or []:  # карточка задания: сводки и их ошибки
+        if isinstance(item, dict):
+            _flatten([item.get("report_id"), item.get("title"), item.get("error")], parts)
+    # даты в привычном виде (дд.мм.гггг), чтобы можно было искать «15.10.2026»
+    for key in ("created_at", "summary_date"):
+        ru = _ru_date_of(ev.get(key))
+        if ru:
+            parts.append(ru)
+    return _norm("\n".join(parts))
+
+
+def _matches(ev: dict[str, Any], terms: list[str]) -> bool:
+    text = _haystack(ev)
+    return all(t in text for t in terms)
+
+
+def _load_search_index(
+    db: Session,
+    scope: _Scope,
+    terms: list[str],
+    errors: list[tuple[float, dict[str, Any]]],
+    seasons: list[tuple[float, dict[str, Any]]],
+) -> dict[str, list[tuple[float, dict[str, Any]]]]:
+    """Все совпавшие события по вкладкам (новые сверху). Читаем таблицы целиком один раз."""
+    users = _Users(db)
+    buckets: dict[str, list[tuple[float, dict[str, Any]]]] = defaultdict(list)
+
+    if scope.developer:
+        q = _scope_audit(
+            db.query(AuditLog).filter(AuditLog.action.notin_(HIDDEN_FEED_ACTIONS)), scope
+        ).order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        for row in q.yield_per(500):
+            tab_id = _tab_for_action(row.action)
+            if tab_id is None:
+                continue
+            ev = _audit_event(row, users)
+            if tab_id == "reports":
+                ev["kind"] = "change"
+            if _matches(ev, terms):
+                buckets[tab_id].append((_ts(row.created_at), ev))
+
+        jq = _scope_jobs(db.query(GenerationJob), scope).order_by(
+            GenerationJob.created_at.desc(), GenerationJob.id.desc()
+        )
+        for job in jq.yield_per(50):
+            card = _job_card(job, users.label(job.user_id))
+            if _matches(card, terms):
+                buckets["generation"].append((_ts(job.created_at), card))
+
+    buckets["reports"].extend((ts, ev) for ts, ev in errors if _matches(ev, terms))
+    buckets["seasons"].extend((ts, ev) for ts, ev in seasons if _matches(ev, terms))
+    for items in buckets.values():
+        items.sort(key=lambda t: t[0], reverse=True)  # сортировка устойчивая
+    return dict(buckets)
+
+
 # ── Сборка страницы ──────────────────────────────────────────────────────────────────────
 def build_activity_page(
     db: Session,
@@ -464,13 +572,16 @@ def build_activity_page(
     page_size: int = DEFAULT_PAGE_SIZE,
     user_filter: str | None = None,
     refresh: bool = False,
+    query: str | None = None,
 ) -> dict[str, Any]:
     """Одна страница выбранной вкладки + счётчики всех вкладок.
 
     tab — id вкладки (см. FIXED_TABS или «area:<название>»); page — с 1; user_filter —
-    id пользователя, «system» (действия без пользователя) или пусто (все).
+    id пользователя, «system» (действия без пользователя) или пусто (все);
+    query — поиск по тексту событий: счётчики вкладок показывают число совпадений.
     """
     scope = _Scope(viewer, user_filter)
+    terms = search_terms(query)
     size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     users = _Users(db)
 
@@ -486,18 +597,31 @@ def build_activity_page(
     jobs_q = _scope_jobs(db.query(func.count(GenerationJob.id)), scope)
     jobs_total = int(jobs_q.scalar() or 0) if scope.developer else 0
 
-    totals: dict[str, int] = {
-        "reports": len(errors) + audit_total("reports"),
-        "seasons": len(seasons),
-    }
+    found: dict[str, list[tuple[float, dict[str, Any]]]] = {}
+    if terms:
+        found = _cached(
+            ("search", scope.cache_key, " ".join(terms)),
+            lambda: _load_search_index(db, scope, terms, errors, seasons),
+            refresh,
+        )
+
+    def tab_total(tab_id: str) -> int:
+        if terms:
+            return len(found.get(tab_id, ()))
+        if tab_id == "reports":
+            return len(errors) + audit_total("reports")
+        if tab_id == "seasons":
+            return len(seasons)
+        if tab_id == "generation":
+            return audit_total(tab_id) + jobs_total
+        return audit_total(tab_id)
+
+    totals: dict[str, int] = {}
     tabs: list[dict[str, Any]] = []
     for tab_id, label, _areas in FIXED_TABS:
         if not scope.developer and tab_id not in _PUBLIC_TABS:
             continue
-        if tab_id == "generation":
-            totals[tab_id] = audit_total(tab_id) + jobs_total
-        elif tab_id not in totals:
-            totals[tab_id] = audit_total(tab_id)
+        totals[tab_id] = tab_total(tab_id)
         tabs.append({"id": tab_id, "label": label, "count": totals[tab_id]})
     if scope.developer:
         extra = sorted(
@@ -505,7 +629,7 @@ def build_activity_page(
             key=lambda t: t.removeprefix("area:").casefold(),
         )
         for tab_id in extra:
-            totals[tab_id] = audit_total(tab_id)
+            totals[tab_id] = tab_total(tab_id)
             tabs.append({"id": tab_id, "label": tab_id.removeprefix("area:"), "count": totals[tab_id]})
 
     visible = [t["id"] for t in tabs]
@@ -518,7 +642,9 @@ def build_activity_page(
     need = offset + size
 
     items: list[dict[str, Any]]
-    if active == "seasons":
+    if terms:
+        items = [ev for _, ev in found.get(active, [])[offset: offset + size]]
+    elif active == "seasons":
         items = [ev for _, ev in seasons[offset: offset + size]]
     elif active == "reports":
         change_rows = _audit_rows(db, scope, by_tab.get("reports", []), 0, need)
@@ -561,6 +687,8 @@ def build_activity_page(
         "total": total,
         "users": users_list,
         "viewer_can_see_all": scope.see_all,
+        "query": " ".join(terms),
+        "terms": terms,
     }
 
 
@@ -568,7 +696,7 @@ def _season_events_from_logs(job: Any, logs: list, username: str) -> list[dict[s
     """Строки SEASON_MISMATCH из лога генерации — вкладка «Сезоны»."""
     events: list[dict[str, Any]] = []
     when = (job.updated_at or job.created_at)
-    created = when.isoformat() if when else None
+    created = iso_utc(when)  # naive-время SQLite — это UTC; без суффикса браузер прочёл бы его как локальное
     date_s = job.summary_date.isoformat() if job.summary_date else ""
     n = 0
     for line in logs or []:
@@ -615,6 +743,10 @@ def job_detail(db: Session, job_id: str, *, viewer: User) -> dict[str, Any] | No
     except json.JSONDecodeError:
         rids = []
     failed_map = {str(x.get("report_id")): x for x in (result.get("failed") or [])}
+    if not rids:
+        # Пустой список = «все сводки»: показываем то, что реально было сформировано (как в карточке задания).
+        created_ids = [str(x.get("report_id")) for x in (result.get("created") or []) if isinstance(x, dict)]
+        rids = list(dict.fromkeys([*created_ids, *failed_map]))
     for rid in rids:
         rs = str(rid)
         failed = failed_map.get(rs)

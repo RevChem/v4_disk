@@ -23,6 +23,7 @@ def activity_feed(
     page: int = Query(default=1, ge=1, description="номер страницы, с 1"),
     page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     user_id: str | None = Query(default=None, max_length=16, description="id пользователя или «system»"),
+    q: str | None = Query(default=None, max_length=200, description="поиск по тексту событий (все слова должны встретиться)"),
     refresh: bool = Query(default=False, description="сбросить кэш ошибок/сезонов"),
     db: Session = Depends(get_db),
     user: User = Depends(require_generate_access),
@@ -35,6 +36,7 @@ def activity_feed(
         page_size=page_size,
         user_filter=user_id,
         refresh=refresh,
+        query=q,
     )
 
 
