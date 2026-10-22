@@ -47,11 +47,14 @@ from plans import (
     WORK_GROUPS,
 )
 from task_area_shared import (
+    CORN_GRAIN_CROP,
+    CORN_SILAGE_CROP,
     CUTOFF_BUFFER_HOURS,
     HARVESTER_GROUP_IDS,
     SILAGE_CORN_MOWING_WT_IDS,
     harvest_area_booked_on_close,
     harvest_item_area_for_shift,
+    named_corn_subtype,
 )
 
 # =============================================================================
@@ -2024,38 +2027,19 @@ async def fetch_task_crop_via_agro_operation(
     return task_crop
 
 
-# Кукуруза на силос / на зерно — как 10_main_harvest.get_field_to_crop.
-SILAGE_CORN_MOWING_WT_IDS: frozenset[int] = frozenset({74, 83, 84, 147, 149})
-CORN_GRAIN_CROP = "Кукуруза на зерно"
-CORN_SILAGE_CROP = "Кукуруза на силос"
-_silage_corn_field_ids_cache: set[int] | None = None
+def _corn_name_from_history(crop_name: str) -> str:
+    """Подпись кукурузы из истории сезона, без карточки поля.
 
-
-def _get_silage_corn_field_ids(season_year: int) -> set[int]:
-    """field_id полей с операцией «Скашивание» в текущем сезоне уборки."""
-    global _silage_corn_field_ids_cache
-    if _silage_corn_field_ids_cache is None:
-        field_ids: set[int] = set()
-        for wt_id in SILAGE_CORN_MOWING_WT_IDS:
-            for op in get_all_from_id(
-                "agro_operations", {"work_type_id": wt_id, "season": season_year},
-            ):
-                fid = op.get("field_id")
-                if fid is not None:
-                    field_ids.add(int(fid))
-        _silage_corn_field_ids_cache = field_ids
-        print(f"    кукуруза на силос (Скашивание): {len(field_ids)} полей", flush=True)
-    return _silage_corn_field_ids_cache
-
-
-def _resolve_corn_subtype(
-    crop_name: str, field_id: int | None, silage_ids: set[int],
-) -> str:
-    if not crop_name or "кукуруза" not in crop_name.casefold():
-        return crop_name
-    if field_id is None:
-        return crop_name
-    return CORN_SILAGE_CROP if int(field_id) in silage_ids else CORN_GRAIN_CROP
+    «На зерно» и «на силос» сохраняются. Голая «Кукуруза» — зерно: силос
+    дают только гектары задания скашивания этих суток, а не запланированная
+    карточка 6.3 на поле. Тонны Namolot здесь не участвуют.
+    """
+    named = named_corn_subtype(crop_name)
+    if named:
+        return named
+    if crop_name and "кукуруз" in crop_name.casefold():
+        return CORN_GRAIN_CROP
+    return crop_name
 
 
 def load_crop_reference(report_date: date) -> tuple[dict[int, str], dict[int, str]]:
@@ -2066,20 +2050,19 @@ def load_crop_reference(report_date: date) -> tuple[dict[int, str], dict[int, st
       - field_to_crop_general — резервная карта field_id -> культура, используется,
         когда через AgroOperation культуру задания однозначно определить не удалось.
 
-    Логика уборки — как 10_main_harvest.get_field_to_crop: history_items только
-    за year=REPORT_DATE.year (не year+1), разбивка кукурузы по «Скашиванию».
-    Раньше грузили year+1 и через build_field_to_crop_general — из‑за этого на
-    уборке 2026 всплывала «Соя» (посев следующего сезона).
+    history_items только за year=REPORT_DATE.year (не year+1). Кукуруза не
+    переписывается в силос из‑за карточки «Скашивание» на поле: это решает
+    задание суток в build_own_table. Раньше грузили year+1 и через
+    build_field_to_crop_general — из‑за этого на уборке 2026 всплывала «Соя»
+    (посев следующего сезона).
     """
     print("  Загружаем crops...", flush=True)
     crops_map = {c["id"]: c.get("name") or c.get("title", "") for c in get_all_from_id("crops")}
 
     season_year = report_date.year
-    print(f"  Загружаем history_items year={season_year} (сезон уборки, как 10_main_harvest)...", flush=True)
+    print(f"  Загружаем history_items year={season_year} (сезон уборки)...", flush=True)
     history_items = get_all_from_id("history_items", {"year": season_year})
     print(f"    history_items year={season_year}: {len(history_items)} записей", flush=True)
-
-    silage_ids = _get_silage_corn_field_ids(season_year)
 
     history_item_to_crop: dict[int, str] = {}
     field_to_crop_general: dict[int, str] = {}
@@ -2093,7 +2076,7 @@ def load_crop_reference(report_date: date) -> tuple[dict[int, str], dict[int, st
         if not cname or cname in SKIP_CROPS:
             continue
         fid_i = int(fid) if fid is not None else None
-        crop_resolved = _resolve_corn_subtype(cname, fid_i, silage_ids)
+        crop_resolved = _corn_name_from_history(cname)
         if hi_id is not None:
             history_item_to_crop[int(hi_id)] = crop_resolved
         if fid_i is not None:
@@ -2403,8 +2386,13 @@ def _reassign_spurious_crop_fragments(
         if not confirmed:
             continue
         primary = max(confirmed, key=lambda c: float(crop_areas[c]))
+        silage_norm = _normalize_crop_name(CORN_SILAGE_CROP)
         for crop, area in crop_areas.items():
             if _normalize_crop_name(crop) in nm_norm:
+                continue
+            # Гектары задания «6.3 Скашивание» не сливаем в зерно: в Namolot
+            # кукуруза бывает только «на зерно», и силос туда не попадает.
+            if _normalize_crop_name(crop) == silage_norm:
                 continue
             if float(area) < MIN_FIELD_AREA_HA:
                 df.loc[mask & (df["crop"] == crop), "crop"] = primary
@@ -2534,20 +2522,22 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
         firm_fmi = firm_fmi.copy()
         firm_fmi["crop"] = "—"
 
-    # Скашивание кукурузы (wt 84 «6.3 Скашивание с измельчением кукурузы» и др.) —
-    # однозначно кукуруза на силос, даже если по полю/history_item она «на зерно».
-    if _SILAGE_TASK_IDS:
-        def _is_silage_task(tid) -> bool:
-            try:
-                return int(tid) in _SILAGE_TASK_IDS
-            except (TypeError, ValueError):
-                return False
+    # Гектары — по заданию этих суток, не по карточке поля на сезон.
+    # «6.3 Скашивание» кукурузы даёт силос только у площади этого задания.
+    # «5.3 Уборка кукурузы на зерно» остаётся зерном, даже если на поле
+    # есть запланированное скашивание. Тонны Namolot к силосу не переносятся:
+    # масса ищется по подписи строки, а в 1С кукуруза только «на зерно».
+    def _is_silage_task(tid) -> bool:
+        try:
+            return int(tid) in _SILAGE_TASK_IDS
+        except (TypeError, ValueError):
+            return False
 
-        _silage_mask = firm_fmi["machine_task_id"].map(_is_silage_task)
-        _corn_or_unknown = firm_fmi["crop"].map(
-            lambda c: "кукуруз" in str(c).casefold() or str(c).strip() in ("", "—")
-        )
-        firm_fmi.loc[_silage_mask & _corn_or_unknown, "crop"] = CORN_SILAGE_CROP
+    _silage_mask = firm_fmi["machine_task_id"].map(_is_silage_task)
+    _is_corn = firm_fmi["crop"].map(lambda c: "кукуруз" in str(c).casefold())
+    _unknown = firm_fmi["crop"].map(lambda c: str(c).strip() in ("", "—"))
+    firm_fmi.loc[_silage_mask & (_is_corn | _unknown), "crop"] = CORN_SILAGE_CROP
+    firm_fmi.loc[~_silage_mask & _is_corn, "crop"] = CORN_GRAIN_CROP
 
     if allowed_crops is not None or excluded_crops is not None:
         def _keep_crop(crop: str) -> bool:
@@ -3097,7 +3087,9 @@ def main():
         flush=True,
     )
 
-    output_file = f"harvester_report_by_firm_{report_date}.xlsx"
+    output_file = (
+        f"14. Выработка комбайнов за {(report_date - timedelta(days=1)).strftime('%d.%m.%Y')}.xlsx"
+    )
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Сводка", index=False, startrow=0)
         ws = writer.book["Сводка"]

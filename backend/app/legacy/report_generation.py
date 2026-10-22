@@ -3536,7 +3536,9 @@ def _run_report_script(
     if prefetch_only:
         return output_dir / "_prefetch_only.xlsx", last_out
 
-    saved_path = _extract_saved_xlsx_path(last_out, output_dir, cfg.title, report_date)
+    saved_path = _extract_saved_xlsx_path(
+        last_out, output_dir, _artifact_base_title(cfg), report_date
+    )
     try:
         file_note = _data_check_file_total_after_script(saved_path, last_out, report_date, cfg_id)
     except Exception:

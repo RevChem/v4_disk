@@ -59,7 +59,6 @@ from task_area_shared import (
     harvest_area_booked_on_close,
     harvest_item_area_for_shift,
     history_crop_name,
-    named_corn_subtype,
     resolve_corn_subtype,
 )
 from plans import (
@@ -184,8 +183,8 @@ def _field_base_code(name: str | None) -> str:
 
 
 # Канонические названия культур отчёта — сюда сопоставляем текстовое поле
-# "crop" записи Namolot. Кукуруза в 1С — «Кукуруза на зерно»; силос/зерно
-# для тонн, как в 1-й сводке, определяется по «Скашиванию» на поле.
+# "crop" записи Namolot. Кукуруза в 1С приходит только как «Кукуруза на зерно»:
+# силоса в Намолоте нет, и тонны по карточке «Скашивание» на поле не переносятся.
 _CANONICAL_CROP_NAMES: list[str] = [
     "Рапс озимый",
     "Рапс яровой",
@@ -258,10 +257,9 @@ def _canonical_crop_from_namolot_text(crop_text: str | None) -> str | None:
     if not t_norm:
         return None
     if "кукуруз" in t_norm:
-        # В 1С кукуруза приходит как «Кукуруза на зерно». В 1-й сводке
-        # силос и зерно для этих тонн берутся по «Скашиванию» на поле,
-        # а не по тексту записи.
-        return "__corn__"
+        # В Намолоте кукуруза бывает только «на зерно». Силос — это гектары
+        # конкретного задания «6.3 Скашивание», а не тонны этой записи.
+        return CORN_GRAIN_CROP
     aliased = _CROP_NAME_ALIASES.get(t_norm)
     if aliased:
         return aliased
@@ -483,10 +481,6 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
 
         crop_raw = r.get("crop")
         crop = _canonical_crop_from_namolot_text(crop_raw)
-        if crop == "__corn__":
-            # «Кукуруза на зерно» из 1С: силос/зерно по «Скашиванию» на поле,
-            # как в 1-й сводке.
-            crop = _resolve_corn_subtype("Кукуруза", fid) if fid is not None else None
         if not crop:
             # Картофель, лук и прочие овощи в тексте Namolot не из зернового
             # списка: культура берётся с поля Cropwise, как в рабочей сводке.
@@ -2041,22 +2035,22 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                 firm = cache.field_to_firm.get(fid_i)
                 if not firm:
                     continue
-                # Культура поля — активная история сезона. Подпись строки задания
-                # («Кукуруза на силос») важнее: в сводке 1 гектары садятся по ней,
-                # даже если карта поля сезона пустая или говорит «на зерно».
+                # Гектары — по заданию этих суток, не по карточке поля на сезон.
+                # «6.3 Скашивание» кукурузы даёт силос только у площади этого задания.
+                # «5.3 Уборка кукурузы на зерно» остаётся зерном, даже если на поле
+                # есть запланированное скашивание.
                 crop = field_to_crop.get(fid_i)
-                row_crop = history_crop_name(item, "", mowing=is_mowing)
-                explicit = named_corn_subtype(row_crop)
-                if explicit:
-                    crop = explicit
-                elif is_mowing:
-                    # «Скашивание с измельчением кукурузы» на поле с кукурузой — это
-                    # однозначно «Кукуруза на силос», как бы культура поля ни называлась
-                    # («на зерно», «Кукуруза»): метка поля по agro_operations может
-                    # отставать от заданий. Скашивание на не-кукурузе в строку не идёт.
-                    if not crop or "кукуруза" not in str(crop).casefold():
+                row_crop = history_crop_name(item, "", mowing=False)
+                is_corn = (
+                    "кукуруз" in str(row_crop or "").casefold()
+                    or "кукуруз" in str(crop or "").casefold()
+                )
+                if is_mowing:
+                    if not is_corn:
                         continue
                     crop = CORN_SILAGE_CROP
+                elif is_corn:
+                    crop = CORN_GRAIN_CROP
                 # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
                 if (
                     crop
@@ -4037,7 +4031,7 @@ if __name__ == "__main__":
     print(f"Сутки {label_date.strftime('%d.%m.%Y')} | диапазон: {day_start} — {cutoff}\n")
     print("Загружаем данные...", flush=True)
 
-    output_file = f"crop_report_holding_{REPORT_DATE}.xlsx"
+    output_file = f"10. Уборка культур за {label_date.strftime('%d.%m.%Y')}.xlsx"
 
     wb = openpyxl.Workbook()
     if "Sheet" in wb.sheetnames:

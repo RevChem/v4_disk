@@ -29,21 +29,21 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "1",
         "1_main_ammonium__1_.py",
-        "1.СВОДКА ХК Крупно",
+        "1. ХК Крупно",
         module="1_main_ammonium__1_",
         cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "2",
         "2_main_ideal_compact.py",
-        "2.Сводка ХК Детальная",
+        "2. ХК Детальная",
         module="2_main_ideal_compact",
         cropwise_per_operation=True,
     ),
     ReportCatalogEntry(
         "3",
         "3_main_real.py",
-        "3.РАБОТА ТЕХНИКИ Внесение МУ",
+        "3. Внесение МУ",
         module="3_main_real",
         work_groups=("1.1 Внесение минеральных удобрений",),
         season_rule="both_years",
@@ -62,7 +62,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "5",
         "5_main_fixed.py",
-        "5.Посев",
+        "5. Посев",
         module="5_main_fixed",
         work_groups=("4.0 Посев",),
         season_rule="year_plus_one",
@@ -73,7 +73,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "6",
         "6_main_3.py",
-        "6.РАБОТА ТЕХНИКИ Опрыскивание",
+        "6. Опрыскивание",
         module="6_main_3",
         work_groups=("3.1 Опрыскивание", "3.2 Опрыскивание (овощи)"),
         season_rule="year_plus_one",
@@ -84,7 +84,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "7",
         "7_main__4_.py",
-        "7.РАБОТА ТЕХНИКИ Дискование",
+        "7. Дискование",
         module="7_main__4_",
         work_groups=("2.9 Дискование",),
         season_rule="both_years",
@@ -103,7 +103,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "9",
         "9_main_fixed.py",
-        "9.РАБОТА ТЕХНИКИ Вспашка и глубокорыхление",
+        "9. Вспашка и глубокорыхление",
         module="9_main_fixed",
         work_groups=("2.4 Вспашка", "2.8 Глубокорыхление"),
         season_rule="plow_year_plus_one",
@@ -114,7 +114,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "10",
         "10_main_harvest.py",
-        "10. Уборка культур по холдингу",
+        "10. Уборка культур",
         module="10_main_harvest",
         work_groups=("5.4 Уборка картофеля, лука",),
         fact_column_hints=("Площадь", "Убор", "Обработ"),
@@ -129,7 +129,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
         fact_column_hints=("Убор", "Кормозаготов", "Скашиван", "Обработ"),
         cropwise_comparable=True,
     ),
-    ReportCatalogEntry("12", "12_main_harvest_idle.py", "12. Статистика простоя при уборке урожая"),
+    ReportCatalogEntry("12", "12_main_harvest_idle.py", "12. Статистика простоя"),
     ReportCatalogEntry(
         "13",
         "13_holding_overview.py",
@@ -141,7 +141,7 @@ REPORT_CATALOG: tuple[ReportCatalogEntry, ...] = (
     ReportCatalogEntry(
         "14",
         "14.main.py",
-        "14. Выработка комбайнов по агрофирмам",
+        "14. Выработка комбайнов",
         module="14.main",
         work_groups=("5.0 Уборка",),
         cross_check_only=True,
