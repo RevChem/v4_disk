@@ -14,8 +14,13 @@ from app.models import Summary
 
 
 def report_id_from_title(title: str) -> str:
-    m = re.match(r"\s*(\d+(?:\.\d+)?)", str(title or ""))
-    return m.group(1) if m else ""
+    text = str(title or "").strip()
+    m = re.match(r"(\d+(?:\.\d+)?)", text)
+    if m:
+        return m.group(1)
+    from app.legacy.report_generation import _report_id_from_code_filename
+
+    return _report_id_from_code_filename(text)
 
 
 def ensure_summary_for_file(

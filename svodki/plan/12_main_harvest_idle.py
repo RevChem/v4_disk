@@ -1470,7 +1470,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         data = await collect_idle_data(report_date)
     label_date = data.pop("_label_date", report_date)
 
-    output_file = f"12. Статистика простоя за {label_date.strftime('%d.%m.%Y')}.xlsx"
+    output_file = f"12. report_harvest_idle_{report_date}.xlsx"
     wb = openpyxl.Workbook()
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]

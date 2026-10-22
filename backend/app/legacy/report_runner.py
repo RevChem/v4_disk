@@ -42,6 +42,8 @@ from app.legacy.report_generation import (
     _resolve_report_config,
     _resolve_scripts_dirs,
     _artifact_title_for_report_id,
+    _pdf_named_as_script,
+    _report_id_from_code_filename,
     _resolve_storage_title,
     _resolve_svodki_root,
     _reorder_report1_workbook_file,
@@ -262,7 +264,10 @@ def _report_id_from_filename(filename: str) -> str:
     if re.match(r"^[0-9a-f]{8}_", stem, re.IGNORECASE):
         stem = stem.split("_", 1)[1]
     stem = Path(stem).stem
-    return _report_id_from_title(stem)
+    rid = _report_id_from_title(stem)
+    if rid:
+        return rid
+    return str(_report_id_from_code_filename(stem) or "")
 
 
 def _purge_same_report_files(
@@ -394,7 +399,8 @@ def _execute_single_report_to_disk(
                 logo_root=logo_root,
                 summary_date=summary_date,
             )
-            saved_pdf = _save_artifact(pdf_path, summary_date, storage_title, ".pdf", report_id=cfg_id)
+            pdf_path = _pdf_named_as_script(pdf_path, xlsx_path)
+            saved_pdf = _save_artifact(pdf_path, summary_date, pdf_path.stem, ".pdf", report_id=cfg_id)
             local_logs.append(f"[{cfg.title}] Время PDF: {time.monotonic() - pdf_started:.1f} с")
             local_logs.append(f"[{cfg.title}] PDF: {saved_pdf.name}")
             try:
@@ -418,7 +424,7 @@ def _execute_single_report_to_disk(
         local_logs.append(f"[{cfg.title}] Общее время отчёта: {duration_seconds:.1f} с")
         item = GeneratedFile(
             report_id=cfg_id,
-            title=storage_title,
+            title=saved_pdf.stem if saved_pdf is not None else storage_title,
             summary_date=summary_date,
             xlsx_path=saved_xlsx,
             pdf_path=saved_pdf,
@@ -1088,17 +1094,15 @@ def convert_xlsx_file_to_pdf(
 
 
 def _display_title_from_filename(filename: str, summary_date: date | None = None) -> str:
+    del summary_date
     stem = Path(filename).name
     if re.match(r"^[0-9a-f]{8}_", stem, re.IGNORECASE):
         stem = stem.split("_", 1)[1]
-    if stem.lower().endswith(".pdf"):
+    lower = stem.lower()
+    if lower.endswith(".pdf"):
         stem = stem[:-4]
-    rid = _report_id_from_title(stem)
-    if rid:
-        short = _artifact_title_for_report_id(rid, f"{rid}.Сводка")
-        if summary_date:
-            return f"{short} · {summary_date.isoformat()}"
-        return short
+    elif lower.endswith(".xlsx"):
+        stem = stem[:-5]
     return stem or filename
 
 

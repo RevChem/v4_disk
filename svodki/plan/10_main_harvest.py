@@ -4031,7 +4031,7 @@ if __name__ == "__main__":
     print(f"Сутки {label_date.strftime('%d.%m.%Y')} | диапазон: {day_start} — {cutoff}\n")
     print("Загружаем данные...", flush=True)
 
-    output_file = f"10. Уборка культур за {label_date.strftime('%d.%m.%Y')}.xlsx"
+    output_file = f"crop_report_holding_{REPORT_DATE}.xlsx"
 
     wb = openpyxl.Workbook()
     if "Sheet" in wb.sheetnames:

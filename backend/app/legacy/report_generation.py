@@ -2420,6 +2420,7 @@ def _execute_resolved_report(
                 summary_date=summary_date,
             )
             logs.append(f"[{cfg.title}] Время PDF-конвертации: {_elapsed_seconds(pdf_started)}")
+            pdf_path = _pdf_named_as_script(pdf_path, xlsx_path)
             logs.append(f"[{cfg.title}] PDF: {pdf_path.name}")
             if cfg_id in {"1"}:
                 _snapshot_report1_script_reference(
@@ -2432,7 +2433,7 @@ def _execute_resolved_report(
             created_item = _store_generated_pdf(
                 db=db,
                 pdf_path=pdf_path,
-                title=storage_title,
+                title=pdf_path.stem,
                 summary_date=summary_date,
                 visible=publish_immediately,
                 report_id=cfg_id,
@@ -3598,7 +3599,7 @@ def _finalize_data_check_cross_op(summary_date: date) -> list[str]:
     return list(finalize_cross_op_checks(summary_date, report_id="сверка") or [])
 
 
-def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_date: date) -> Path:
+def _extract_saved_xlsx_path(stdout: str, output_dir: Path, _title: str, _report_date: date) -> Path:
     for line in stdout.splitlines():
         if "Сохранено:" not in line:
             continue
@@ -3610,27 +3611,22 @@ def _extract_saved_xlsx_path(stdout: str, output_dir: Path, title: str, report_d
         if not fname:
             continue
         original = Path(fname) if os.path.isabs(fname) else output_dir / fname
-        renamed = _rename_output_to_title(original, title, report_date)
-        if renamed.exists():
-            return renamed
+        if original.exists():
+            return original
     candidates = sorted(output_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         raise ReportGenerationError("Скрипт не создал xlsx-файл.")
-    renamed = _rename_output_to_title(candidates[0], title, report_date)
-    if not renamed.exists():
-        raise ReportGenerationError("Не удалось определить итоговый xlsx-файл.")
-    return renamed
+    return candidates[0]
 
 
-def _rename_output_to_title(filepath: Path, title: str, fallback_date: date | None) -> Path:
-    safe = re.sub(r'[/\\:*?"<>|]', "-", title).strip() or "отчет"
-    date_str = _format_ru_date(_title_display_date(title, fallback_date)) if fallback_date else ""
-    new_name = f"{safe} за {date_str}.xlsx" if date_str else f"{safe}.xlsx"
-    new_path = filepath.parent / new_name
-    if new_path != filepath and filepath.exists():
-        filepath.replace(new_path)
-        return new_path
-    return filepath
+def _pdf_named_as_script(pdf_path: Path, xlsx_path: Path) -> Path:
+    """Имя PDF — то же, что у xlsx, который записал скрипт сводки."""
+    target = pdf_path.with_name(f"{xlsx_path.stem}.pdf")
+    if target == pdf_path:
+        return pdf_path
+    target.unlink(missing_ok=True)
+    pdf_path.replace(target)
+    return target
 
 
 def _report_display_date(report_date: date | None) -> date | None:
@@ -3872,7 +3868,7 @@ def _report_id_from_summary_title(title: str) -> str:
     m = re.match(r"^(\d+)\.", t)
     if m:
         return m.group(1)
-    return ""
+    return _report_id_from_code_filename(t)
 
 
 def find_published_summary_by_report_id(
@@ -5971,6 +5967,42 @@ def _pdf_firm_title_line(sheet_title: str) -> str:
     return f'ООО "{name.upper()}"'
 
 
+# Имена файлов из скриптов plan/ без номера в начале: шапка PDF и список сводок
+# всё равно должны узнать отчёт.
+_CODE_STEM_MARKERS: tuple[tuple[str, str], ...] = (
+    ("status_vpr_morning", "0.1"),
+    ("status_vpr", "0"),
+    ("fertilizer_report", "1"),
+    ("report_crop_works_compact", "2"),
+    ("report_fertilizer", "3"),
+    ("report_harrowing", "4"),
+    ("report_seeding", "5"),
+    ("report_spraying", "6"),
+    ("report_disking", "7"),
+    ("report_cultivation", "8"),
+    ("report_plowing", "9"),
+    ("crop_report_holding", "10"),
+    ("report_harvest_idle", "12"),
+    ("report_harvest", "11"),
+    ("harvester_report_by_firm", "14"),
+    ("daily_summary", "22"),
+    ("report_under10ha", "24"),
+    ("25_meeting_works", "25"),
+    ("mechanizator_rating", "27"),
+    ("combine_report", "26"),
+)
+
+
+def _report_id_from_code_filename(stem: str) -> str:
+    folded = str(stem or "").casefold()
+    if "дневной работе комбайнов" in folded:
+        return "14.2"
+    for marker, rid in _CODE_STEM_MARKERS:
+        if marker in folded:
+            return rid
+    return ""
+
+
 def _extract_report_id_from_stem(stem: str) -> str:
     s = stem.strip()
     # «0.1 …» не должен определяться как отчёт «0» (иначе ломается шапка PDF и regex съедает только «0.»).
@@ -5981,7 +6013,9 @@ def _extract_report_id_from_stem(stem: str) -> str:
     if m_dec:
         return m_dec.group(1)
     m = re.match(r"^\s*(\d+)(?:[\.\s_-]|$)", s)
-    return m.group(1) if m else ""
+    if m:
+        return m.group(1)
+    return _report_id_from_code_filename(s)
 
 
 def _is_report1_firm_header(line1: str) -> bool:

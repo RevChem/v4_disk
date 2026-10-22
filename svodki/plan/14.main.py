@@ -3087,9 +3087,7 @@ def main():
         flush=True,
     )
 
-    output_file = (
-        f"14. Выработка комбайнов за {(report_date - timedelta(days=1)).strftime('%d.%m.%Y')}.xlsx"
-    )
+    output_file = f"harvester_report_by_firm_{report_date}.xlsx"
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Сводка", index=False, startrow=0)
         ws = writer.book["Сводка"]

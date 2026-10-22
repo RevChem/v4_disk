@@ -45,6 +45,34 @@ def test_filename_stays_distinct_from_report_14():
     name = "14.2. Аналитика урожайности комбайнов за 06.10.2026.xlsx"
     assert _report_id_from_filename(name) == "14.2"
     assert _report_id_from_filename("14. Выработка комбайнов за 06.10.2026.xlsx") == "14"
+    assert _report_id_from_filename("harvester_report_by_firm_2026-10-22.pdf") == "14"
+    assert (
+        _report_id_from_filename(
+            "Аналитика по 7 дневной работе комбайнов 01.10.2026 - 07.10.2026.pdf"
+        )
+        == "14.2"
+    )
+
+
+def test_script_pdf_names_keep_report_id(tmp_path):
+    from app.legacy.report_generation import _extract_report_id_from_stem, _pdf_named_as_script
+
+    assert _extract_report_id_from_stem("1. fertilizer_report_2026-10-22") == "1"
+    assert _extract_report_id_from_stem("2. report_crop_works_compact_2026-10-22") == "2"
+    assert _extract_report_id_from_stem("report_harrowing_2026-10-22") == "4"
+    assert _extract_report_id_from_stem("report_plowing_2026-10-22") == "9"
+    assert _extract_report_id_from_stem("crop_report_holding_2026-10-22") == "10"
+    assert _extract_report_id_from_stem("11. report_harvest_2026-10-22") == "11"
+    assert _extract_report_id_from_stem("12. report_harvest_idle_2026-10-22") == "12"
+    assert _report_id_from_filename("8. report_cultivation_2026-10-22.pdf") == "8"
+
+    src_xlsx = tmp_path / "1. fertilizer_report_2026-10-22.xlsx"
+    src_pdf = tmp_path / "1. fertilizer_report за 21.10.2026.pdf"
+    src_xlsx.write_bytes(b"")
+    src_pdf.write_bytes(b"%PDF")
+    named = _pdf_named_as_script(src_pdf, src_xlsx)
+    assert named.name == "1. fertilizer_report_2026-10-22.pdf"
+    assert named.is_file()
 
 
 def test_schedule_hides_developer_report_and_keeps_saved_one():

@@ -244,7 +244,7 @@ async def build_report_async_v2() -> None:
         except Exception as exc:
             print(f"  [{tag}] Предупреждение: не удалось переставить листы — {exc}")
 
-    output_file = f"1. ХК Крупно за {day_start.strftime('%d.%m.%Y')}.xlsx"
+    output_file = f"1. fertilizer_report_{legacy.REPORT_DATE}.xlsx"
     with stage("сохранение xlsx"):
         wb.save(output_file)
     print(f"\n[{tag}] Сохранено: {output_file} (всего {time.monotonic() - t0:.1f} с)")

@@ -62,7 +62,7 @@ if _season_start_raw:
     except ValueError:
         pass
 
-OUTPUT_FILE  = f"2. ХК Детальная за {(TODAY - timedelta(days=1)).strftime('%d.%m.%Y')}.xlsx"
+OUTPUT_FILE  = f"report_crop_works_compact_{TODAY}.xlsx"
 REPORT_WINDOW_START_RAW = os.environ.get("REPORT_WINDOW_START", "").strip()
 REPORT_WINDOW_END_RAW = os.environ.get("REPORT_WINDOW_END", "").strip()
 CUSTOM_WINDOW_START: datetime | None = None
@@ -348,7 +348,7 @@ DETAIL_AREA_NO_THRESHOLD_GROUPS: frozenset[str] = frozenset({
 
 
 def _resolve_output_xlsx_path() -> Path:
-    name = f"2. ХК Детальная за {(TODAY - timedelta(days=1)).strftime('%d.%m.%Y')}.xlsx"
+    name = f"2. report_crop_works_compact_{TODAY}.xlsx"
     custom = (os.environ.get("SVODKI_OUTPUT_DIR") or "").strip()
     base = Path(custom).expanduser().resolve() if custom else Path.cwd()
     return base / name
@@ -411,8 +411,8 @@ def _init_custom_window() -> None:
     # cal_date < TODAY: включаем смены до CUSTOM_SHIFT_DATE_MAX включительно
     TODAY = CUSTOM_SHIFT_DATE_MAX + timedelta(days=1)
     OUTPUT_FILE = (
-        f"2. ХК Детальная за {CUSTOM_SHIFT_DATE_MIN.strftime('%d.%m.%Y')}"
-        f"—{CUSTOM_SHIFT_DATE_MAX.strftime('%d.%m.%Y')}.xlsx"
+        f"report_crop_works_compact_{CUSTOM_SHIFT_DATE_MIN.isoformat()}_"
+        f"{CUSTOM_SHIFT_DATE_MAX.isoformat()}.xlsx"
     )
 
 
