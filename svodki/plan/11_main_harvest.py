@@ -1929,7 +1929,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     print("\n")
     print(df.to_string(index=False))
 
-    output_file = f"11. report_harvest_{report_date}.xlsx"
+    output_file = f"11. Уборка за {label_date.strftime('%d.%m.%Y')}.xlsx"
     wb = openpyxl.Workbook()
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]

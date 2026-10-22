@@ -2420,7 +2420,8 @@ def _execute_resolved_report(
                 summary_date=summary_date,
             )
             logs.append(f"[{cfg.title}] Время PDF-конвертации: {_elapsed_seconds(pdf_started)}")
-            pdf_path = _pdf_named_as_script(pdf_path, xlsx_path)
+            pdf_file_title = pdf_download_title(cfg_id, summary_date, storage_title)
+            pdf_path = _pdf_with_download_name(pdf_path, pdf_file_title)
             logs.append(f"[{cfg.title}] PDF: {pdf_path.name}")
             if cfg_id in {"1"}:
                 _snapshot_report1_script_reference(
@@ -2433,7 +2434,7 @@ def _execute_resolved_report(
             created_item = _store_generated_pdf(
                 db=db,
                 pdf_path=pdf_path,
-                title=pdf_path.stem,
+                title=storage_title,
                 summary_date=summary_date,
                 visible=publish_immediately,
                 report_id=cfg_id,
@@ -3619,9 +3620,10 @@ def _extract_saved_xlsx_path(stdout: str, output_dir: Path, _title: str, _report
     return candidates[0]
 
 
-def _pdf_named_as_script(pdf_path: Path, xlsx_path: Path) -> Path:
-    """Имя PDF — то же, что у xlsx, который записал скрипт сводки."""
-    target = pdf_path.with_name(f"{xlsx_path.stem}.pdf")
+def _pdf_with_download_name(pdf_path: Path, title: str) -> Path:
+    """Кладёт PDF под именем скачивания, не меняя подпись в интерфейсе."""
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(title or "").strip())[:180] or "сводка"
+    target = pdf_path.with_name(f"{safe}.pdf")
     if target == pdf_path:
         return pdf_path
     target.unlink(missing_ok=True)
@@ -3659,6 +3661,37 @@ def _format_ru_date(value: date) -> str:
 
 def _title_with_report_day(title: str, report_date: date) -> str:
     return f"{title} за {_format_ru_date(_title_display_date(title, report_date) or report_date)}"
+
+
+# Имена скачиваемых PDF — как в архиве готовых сводок (11.zip).
+# Подписи в интерфейсе берутся из каталога и сюда не входят.
+PDF_DOWNLOAD_BASENAMES: dict[str, str] = {
+    "1": "1.СВОДКА ХК Крупно",
+    "2": "2.Сводка ХК Детальная",
+    "3": "3.РАБОТА ТЕХНИКИ Внесение МУ",
+    "4": "4.РАБОТА ТЕХНИКИ Боронование",
+    "5": "5.Посев {year}",
+    "6": "6.РАБОТА ТЕХНИКИ Опрыскивание",
+    "7": "7.РАБОТА ТЕХНИКИ Дискование",
+    "8": "8.РАБОТА ТЕХНИКИ Культивация",
+    "9": "9.РАБОТА ТЕХНИКИ Вспашка и глубокорыхление",
+    "10": "10. Уборка культур по холдингу",
+    "11": "11. Уборка",
+    "12": "12. Статистика простоя при уборке урожая",
+    "13": "13. Сводка обзор ХК",
+    "14": "14. Выработка комбайнов по агрофирмам",
+}
+
+
+def pdf_download_title(report_id: str, summary_date: date, fallback: str) -> str:
+    """Имя PDF при скачивании. Для сводок вне архива остаётся прежняя подпись."""
+    rid = str(report_id or "").strip()
+    pattern = PDF_DOWNLOAD_BASENAMES.get(rid)
+    if not pattern:
+        return fallback
+    shown = _title_display_date(pattern, summary_date) or summary_date
+    base = pattern.format(year=shown.year) if "{year}" in pattern else pattern
+    return f"{base} за {_format_ru_date(shown)}"
 
 
 def _resolve_storage_title(

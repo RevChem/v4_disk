@@ -54,25 +54,36 @@ def test_filename_stays_distinct_from_report_14():
     )
 
 
-def test_script_pdf_names_keep_report_id(tmp_path):
-    from app.legacy.report_generation import _extract_report_id_from_stem, _pdf_named_as_script
+def test_download_pdf_names_match_archive_and_ui_title_stays_short():
+    from datetime import date
 
-    assert _extract_report_id_from_stem("1. fertilizer_report_2026-10-22") == "1"
-    assert _extract_report_id_from_stem("2. report_crop_works_compact_2026-10-22") == "2"
-    assert _extract_report_id_from_stem("report_harrowing_2026-10-22") == "4"
-    assert _extract_report_id_from_stem("report_plowing_2026-10-22") == "9"
-    assert _extract_report_id_from_stem("crop_report_holding_2026-10-22") == "10"
-    assert _extract_report_id_from_stem("11. report_harvest_2026-10-22") == "11"
-    assert _extract_report_id_from_stem("12. report_harvest_idle_2026-10-22") == "12"
-    assert _report_id_from_filename("8. report_cultivation_2026-10-22.pdf") == "8"
+    from app.legacy.report_generation import pdf_download_title
+    from app.legacy.report_runner import _display_title_from_filename
 
-    src_xlsx = tmp_path / "1. fertilizer_report_2026-10-22.xlsx"
-    src_pdf = tmp_path / "1. fertilizer_report за 21.10.2026.pdf"
-    src_xlsx.write_bytes(b"")
-    src_pdf.write_bytes(b"%PDF")
-    named = _pdf_named_as_script(src_pdf, src_xlsx)
-    assert named.name == "1. fertilizer_report_2026-10-22.pdf"
-    assert named.is_file()
+    summary_date = date(2026, 10, 20)
+    expected = {
+        "1": "1.СВОДКА ХК Крупно за 19.10.2026",
+        "2": "2.Сводка ХК Детальная за 19.10.2026",
+        "3": "3.РАБОТА ТЕХНИКИ Внесение МУ за 19.10.2026",
+        "4": "4.РАБОТА ТЕХНИКИ Боронование за 19.10.2026",
+        "5": "5.Посев 2026 за 19.10.2026",
+        "6": "6.РАБОТА ТЕХНИКИ Опрыскивание за 19.10.2026",
+        "7": "7.РАБОТА ТЕХНИКИ Дискование за 19.10.2026",
+        "8": "8.РАБОТА ТЕХНИКИ Культивация за 19.10.2026",
+        "9": "9.РАБОТА ТЕХНИКИ Вспашка и глубокорыхление за 19.10.2026",
+        "10": "10. Уборка культур по холдингу за 19.10.2026",
+        "11": "11. Уборка за 19.10.2026",
+        "12": "12. Статистика простоя при уборке урожая за 19.10.2026",
+        "13": "13. Сводка обзор ХК за 19.10.2026",
+        "14": "14. Выработка комбайнов по агрофирмам за 19.10.2026",
+    }
+    for rid, name in expected.items():
+        assert pdf_download_title(rid, summary_date, "fallback") == name
+        assert _report_id_from_filename(name + ".pdf") == rid
+    assert (
+        _display_title_from_filename("1.СВОДКА ХК Крупно за 19.10.2026.pdf", summary_date)
+        == "1. ХК Крупно · 2026-10-20"
+    )
 
 
 def test_schedule_hides_developer_report_and_keeps_saved_one():
