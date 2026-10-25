@@ -90,6 +90,25 @@ def test_record_rows_keep_plate_surname_and_msk_time():
     assert rows[0]["field"].startswith("АФ3-06-13")
 
 
+def test_triticale_masculine_name_is_winter_triticale():
+    assert namolot_view.same_crop("Тритикале озимый", "Тритикале озимая")
+    assert namolot_view.same_crop("Трикитакле озимый 26г.", "Тритикале озимая")
+    assert namolot_view.canonical_crop("Кукуруза") == "Кукуруза на зерно"
+    rows = namolot_view.record_rows(
+        [
+            {
+                "organization": "АГРОФИРМА 15 ООО",
+                "crop": "Тритикале озимый",
+                "quantity": 351100,
+                "date": "2026-07-20T10:00:00",
+            }
+        ]
+    )
+    assert rows[0]["crop"] == "Тритикале озимая"
+    assert rows[0]["firm"] == "НурлатАгро"
+    assert rows[0]["tonnes"] == 351.1
+
+
 def test_brief_keeps_shift_and_season_for_one_firm_and_crop(monkeypatch):
     monkeypatch.setattr(namolot_view, "harvest_season_start", lambda _day: date(2026, 6, 10))
     records = [

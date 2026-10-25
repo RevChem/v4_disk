@@ -461,13 +461,15 @@ def _button_org_firm(text: object) -> str | None:
 
 
 def _button_crop_name(text: object) -> str | None:
-    """Культура кнопки Namolot: точное имя или имя с хвостом, без частичного «содержит»."""
+    """То же сопоставление культуры, что у кнопки Namolot и у строк сводки."""
+    canon = _canonical_crop_from_namolot_text(None if text is None else str(text))
+    if canon:
+        return canon
     raw = re.sub(r"\s+", " ", str(text or "").strip())
     raw = _YEAR_SUFFIX_RE.sub("", raw).strip().casefold().replace("ё", "е")
     if not raw:
         return None
-    names = list(_HARVEST_CROP_ORDER) + list(VEGETABLE_CONFIG)
-    for name in names:
+    for name in VEGETABLE_CONFIG:
         need = re.sub(r"\s+", " ", name).strip().casefold().replace("ё", "е")
         if raw == need or raw.startswith(need + " "):
             return name

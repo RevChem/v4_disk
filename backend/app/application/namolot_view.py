@@ -277,7 +277,7 @@ def record_rows(records: list[dict], index: dict[str, str] | None = None) -> lis
             {
                 "at": wall.strftime("%Y-%m-%dT%H:%M:%S") if wall else None,
                 "firm": firm,
-                "crop": str(rec.get("crop") or "").strip() or "—",
+                "crop": canonical_crop(rec.get("crop")) or "—",
                 "plate": str(rec.get("combine_harvester_id") or "").strip(),
                 "operator": operator,
                 "surname": _surname(operator),
@@ -421,12 +421,55 @@ def _crop_key(text: object) -> str:
     return raw.casefold().replace("ё", "е")
 
 
+# Те же расхождения, что в сводке 10: род («озимый»/«озимая») и «Трикитакле».
+_CROP_ALIASES = {
+    "тритикале озимый": "Тритикале озимая",
+    "тритикале яровой": "Тритикале яровая",
+    "трикитакле озимая": "Тритикале озимая",
+    "трикитакле озимый": "Тритикале озимая",
+}
+_CANONICAL_CROPS = (
+    "Рапс озимый",
+    "Рапс яровой",
+    "Пшеница озимая",
+    "Пшеница яровая",
+    "Тритикале озимая",
+    "Тритикале яровая",
+    "Соя",
+    "Подсолнечник",
+    "Кукуруза на зерно",
+)
+
+
+def canonical_crop(text: object) -> str | None:
+    """Имя культуры как в сводке 10. Незнакомое имя остаётся как в 1С."""
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    key = _crop_key(raw)
+    if not key:
+        return None
+    if "кукуруз" in key:
+        return "Кукуруза на зерно"
+    aliased = _CROP_ALIASES.get(key)
+    if aliased:
+        return aliased
+    if "тритикал" in key or "трикитакл" in key:
+        return "Тритикале озимая"
+    for name in _CANONICAL_CROPS:
+        if _crop_key(name) == key:
+            return name
+    for name in _CANONICAL_CROPS:
+        low = _crop_key(name)
+        if low in key or key in low:
+            return name
+    return raw
+
+
 def same_crop(record_crop: object, wanted: str) -> bool:
-    got = _crop_key(record_crop)
-    need = _crop_key(wanted)
+    got = canonical_crop(record_crop)
+    need = canonical_crop(wanted)
     if not got or not need:
         return False
-    return got == need or got.startswith(need + " ")
+    return _crop_key(got) == _crop_key(need)
 
 
 def shift_cutoff(report_date: date) -> datetime:
@@ -604,6 +647,49 @@ def build_brief(report_date: date, firm: str, crop: str) -> dict:
     start = harvest_season_start(report_date)
     records = fetch_live(start, report_date, max_days=BRIEF_MAX_DAYS)
     return brief_from_records(records, report_date, firm, crop, index)
+
+
+def season_from_records(
+    records: list[dict],
+    report_date: date,
+    index: dict[str, str] | None = None,
+) -> dict:
+    """Все записи сезона до 05:59, без отбора по агрофирме и культуре."""
+    cutoff = shift_cutoff(report_date)
+    day0 = cutoff - timedelta(days=1)
+    season_day = harvest_season_start(report_date)
+    season0 = datetime(season_day.year, season_day.month, season_day.day, SHIFT_HOUR)
+    kept: list[dict] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        wall = msk_wall(rec.get("date"))
+        if wall is None or wall < season0 or wall >= cutoff:
+            continue
+        kept.append(rec)
+    rows = record_rows(kept, index)
+    return {
+        "report_date": report_date.isoformat(),
+        "day": {
+            "from": day0.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to": _shown_end(cutoff),
+            "until": cutoff.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
+        "season": {
+            "from": season0.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to": _shown_end(cutoff),
+            "until": cutoff.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
+        "rows": rows,
+        "records": len(rows),
+    }
+
+
+def build_season(report_date: date) -> dict:
+    index = field_code_index()
+    start = harvest_season_start(report_date)
+    records = fetch_live(start, report_date, max_days=BRIEF_MAX_DAYS)
+    return season_from_records(records, report_date, index)
 
 
 def _fmt_table_at(value: object) -> str:

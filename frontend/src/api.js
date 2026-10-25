@@ -1021,6 +1021,18 @@ export async function fetchNamolot({ dateBegin, dateEnd }) {
   }
 }
 
+export async function fetchNamolotSeason({ reportDate }) {
+  try {
+    const { data } = await api.get("/proverka/namolot/season", {
+      params: { report_date: reportDate },
+      timeout: 180_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchNamolotBrief({ reportDate, firm, crop }) {
   try {
     const { data } = await api.get("/proverka/namolot/brief", {

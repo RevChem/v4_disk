@@ -23,7 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 
-import { downloadNamolotExcel, fetchNamolotBrief } from "../api";
+import { downloadNamolotExcel, fetchNamolotSeason } from "../api";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
 
 const FIRM_ORDER = [
@@ -69,7 +69,8 @@ function joinList(values) {
 export default function NamolotDialog({ open, onClose, summaryDate }) {
   const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
   const [rows, setRows] = useState([]);
-  const [brief, setBrief] = useState(null);
+  const [windows, setWindows] = useState(null);
+  const [applied, setApplied] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -87,7 +88,6 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   const [sortDir, setSortDir] = useState("desc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
-  const ready = Boolean(firm && crop);
 
   useEffect(() => {
     if (open) return undefined;
@@ -104,60 +104,78 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setSortDir("desc");
     setPage(0);
     setRows([]);
-    setBrief(null);
+    setWindows(null);
+    setApplied(null);
     setLoaded(false);
     setError("");
     return undefined;
   }, [open]);
 
   useEffect(() => {
-    if (!open || !ready) {
-      setRows([]);
-      setBrief(null);
-      setLoaded(false);
-      return undefined;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-    setPage(0);
-    setBrief(null);
     setRows([]);
+    setWindows(null);
+    setApplied(null);
     setLoaded(false);
-    fetchNamolotBrief({ reportDate, firm, crop })
-      .then((data) => {
-        if (cancelled) return;
-        setBrief(data);
-        setRows(Array.isArray(data?.rows) ? data.rows : []);
-        setLoaded(true);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setRows([]);
-        setBrief(null);
-        setLoaded(false);
-        setError(String(err.message || err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, ready, reportDate, firm, crop]);
+    setError("");
+  }, [reportDate]);
 
   const visible = useMemo(() => {
+    if (!applied) return [];
     const filtered = filterRows(rows, {
-      dateFrom,
-      timeFrom,
-      dateTo,
-      timeTo,
-      plate,
-      surname,
+      firms: applied.firm ? [applied.firm] : [],
+      crops: applied.crop ? [applied.crop] : [],
+      dateFrom: applied.dateFrom,
+      timeFrom: applied.timeFrom,
+      dateTo: applied.dateTo,
+      timeTo: applied.timeTo,
+      plate: applied.plate,
+      surname: applied.surname,
     });
     if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
     return rankRows(filtered, mode, sortDir);
-  }, [rows, dateFrom, timeFrom, dateTo, timeTo, plate, surname, mode, sortKey, sortDir]);
+  }, [rows, applied, mode, sortKey, sortDir]);
+
+  const headed = useMemo(() => {
+    if (!applied) return [];
+    return filterRows(rows, {
+      firms: applied.firm ? [applied.firm] : [],
+      crops: applied.crop ? [applied.crop] : [],
+    });
+  }, [rows, applied]);
+
+  const dayRows = useMemo(() => {
+    const from = windows?.day?.from;
+    const until = windows?.day?.until;
+    if (!from || !until) return [];
+    return headed.filter((row) => row.at && row.at >= from && row.at < until);
+  }, [headed, windows]);
+
+  const seasonTonnes = useMemo(
+    () => headed.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
+    [headed],
+  );
+
+  async function form() {
+    const next = { firm, crop, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
+    setApplied(next);
+    setPage(0);
+    if (loaded || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchNamolotSeason({ reportDate });
+      setWindows(data);
+      setRows(Array.isArray(data?.rows) ? data.rows : []);
+      setLoaded(true);
+    } catch (err) {
+      setRows([]);
+      setWindows(null);
+      setLoaded(false);
+      setError(String(err.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const shownTonnes = useMemo(
     () => visible.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
@@ -177,6 +195,8 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   }
 
   function resetFilters() {
+    setFirm("");
+    setCrop("");
     setDateFrom("");
     setTimeFrom("");
     setDateTo("");
@@ -184,6 +204,18 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setPlate("");
     setSurname("");
     setPage(0);
+    if (loaded) {
+      setApplied({
+        firm: "",
+        crop: "",
+        dateFrom: "",
+        timeFrom: "",
+        dateTo: "",
+        timeTo: "",
+        plate: "",
+        surname: "",
+      });
+    }
   }
 
   async function download() {
@@ -205,10 +237,10 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
       <DialogTitle>Namolot</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Дата сводки {reportDate}. За сутки — смена с 06:00 предыдущего дня по 05:59 этой даты.
-          За сезон — с 06:00 начала уборки по то же 05:59. Запрос в 1С уходит только после выбора
-          агрофирмы и культуры. Дата, время, госномер и фамилия сужают уже загруженные записи сезона.
-          Пустое время — с начала или до конца указанного дня.
+          Дата сводки {reportDate}. Нажмите «Сформировать»: без фильтров придут все записи сезона.
+          Агрофирма, культура, даты, госномер и фамилия необязательны и применяются по кнопке.
+          «Тритикале озимый» и опечатки вроде «Трикитакле» считаются как «Тритикале озимая», кукуруза — как зерно.
+          Сутки и сезон вверху считаются по агрофирме и культуре. Дата, госномер и фамилия сужают таблицу.
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
           <TextField
@@ -243,6 +275,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
               </MenuItem>
             ))}
           </TextField>
+          <Button variant="contained" onClick={() => void form()} disabled={loading}>
+            {loading ? "Запрос…" : "Сформировать"}
+          </Button>
         </Stack>
         <Table size="small" sx={{ mb: 2 }}>
           <TableHead>
@@ -256,15 +291,15 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
           <TableBody>
             <TableRow>
               <TableCell>За сутки</TableCell>
-              <TableCell>{ready && brief ? `${fmtAt(brief.day?.from)} — ${fmtAt(brief.day?.to)}` : "—"}</TableCell>
-              <TableCell align="right">{ready && brief ? fmtTonnes(brief.day?.tonnes) : "—"}</TableCell>
-              <TableCell align="right">{ready && brief ? brief.day?.records ?? 0 : "—"}</TableCell>
+              <TableCell>{applied && windows ? `${fmtAt(windows.day?.from)} — ${fmtAt(windows.day?.to)}` : "—"}</TableCell>
+              <TableCell align="right">{applied && windows ? fmtTonnes(dayRows.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0)) : "—"}</TableCell>
+              <TableCell align="right">{applied && windows ? dayRows.length : "—"}</TableCell>
             </TableRow>
             <TableRow>
               <TableCell>За сезон</TableCell>
-              <TableCell>{ready && brief ? `${fmtAt(brief.season?.from)} — ${fmtAt(brief.season?.to)}` : "—"}</TableCell>
-              <TableCell align="right">{ready && brief ? fmtTonnes(brief.season?.tonnes) : "—"}</TableCell>
-              <TableCell align="right">{ready && brief ? brief.season?.records ?? 0 : "—"}</TableCell>
+              <TableCell>{applied && windows ? `${fmtAt(windows.season?.from)} — ${fmtAt(windows.season?.to)}` : "—"}</TableCell>
+              <TableCell align="right">{applied && windows ? fmtTonnes(seasonTonnes) : "—"}</TableCell>
+              <TableCell align="right">{applied && windows ? headed.length : "—"}</TableCell>
             </TableRow>
           </TableBody>
         </Table>
@@ -374,7 +409,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
             </Typography>
           </Stack>
         ) : null}
-        {!loading && ready && loaded ? (
+        {!loading && applied && loaded ? (
           <>
             <Typography variant="body2" sx={{ mb: 1 }}>
               {mode === "rows" ? "Записей" : "Строк"} {visible.length.toLocaleString("ru-RU")}
@@ -409,9 +444,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
               </Box>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                {dateFrom || timeFrom || dateTo || timeTo || plate || surname
-                  ? "Ничего не найдено в этом диапазоне. Сбросьте фильтр или расширьте даты."
-                  : "По этой агрофирме и культуре записей нет."}
+                {applied?.firm || applied?.crop || applied?.dateFrom || applied?.timeFrom || applied?.dateTo || applied?.timeTo || applied?.plate || applied?.surname
+                  ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
+                  : "За сезон записей нет."}
               </Typography>
             )}
             <TablePagination
@@ -430,9 +465,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
             />
           </>
         ) : null}
-        {!loading && !ready ? (
+        {!loading && !applied ? (
           <Typography variant="body2" color="text.secondary">
-            Таблица пустая, пока не выбраны агрофирма и культура.
+            Таблица пустая, пока не нажато «Сформировать».
           </Typography>
         ) : null}
       </DialogContent>

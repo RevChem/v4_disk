@@ -28,6 +28,15 @@ def _call(date_begin: date, date_end: date, builder):
         ) from exc
 
 
+@router.get("/namolot/season")
+def get_namolot_season(
+    report_date: date = Query(..., alias="report_date"),
+    _: User = Depends(require_developer_access),
+):
+    """Весь сезон до 05:59 даты сводки. Агрофирма и культура не обязательны."""
+    return _call(report_date, report_date, lambda _begin, _end: namolot_view.build_season(report_date))
+
+
 @router.get("/namolot/brief")
 def get_namolot_brief(
     report_date: date = Query(..., alias="report_date"),
