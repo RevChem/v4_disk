@@ -78,9 +78,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
   const [dateFrom, setDateFrom] = useState("");
-  const [timeFrom, setTimeFrom] = useState("");
+  const [timeFrom, setTimeFrom] = useState("06:00");
   const [dateTo, setDateTo] = useState("");
-  const [timeTo, setTimeTo] = useState("");
+  const [timeTo, setTimeTo] = useState("05:59");
   const [plate, setPlate] = useState("");
   const [surname, setSurname] = useState("");
   const [mode, setMode] = useState("rows");
@@ -94,9 +94,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setFirm("");
     setCrop("");
     setDateFrom("");
-    setTimeFrom("");
+    setTimeFrom("06:00");
     setDateTo("");
-    setTimeTo("");
+    setTimeTo("05:59");
     setPlate("");
     setSurname("");
     setMode("rows");
@@ -198,9 +198,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
     setFirm("");
     setCrop("");
     setDateFrom("");
-    setTimeFrom("");
+    setTimeFrom("06:00");
     setDateTo("");
-    setTimeTo("");
+    setTimeTo("05:59");
     setPlate("");
     setSurname("");
     setPage(0);
@@ -209,9 +209,9 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
         firm: "",
         crop: "",
         dateFrom: "",
-        timeFrom: "",
+        timeFrom: "06:00",
         dateTo: "",
-        timeTo: "",
+        timeTo: "05:59",
         plate: "",
         surname: "",
       });
@@ -444,7 +444,7 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
               </Box>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                {applied?.firm || applied?.crop || applied?.dateFrom || applied?.timeFrom || applied?.dateTo || applied?.timeTo || applied?.plate || applied?.surname
+                {applied?.firm || applied?.crop || applied?.dateFrom || applied?.dateTo || applied?.plate || applied?.surname
                   ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
                   : "За сезон записей нет."}
               </Typography>
