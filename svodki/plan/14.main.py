@@ -693,6 +693,8 @@ def _build_namolot_signature_index(
     )
     digit_letter_variants: dict[str, set] = defaultdict(set)
     unmatched: set[str] = set()
+    unmatched_plate_rows: list[tuple[float, str, str, str]] = []
+    plate_mass: dict[str, dict] = {}
     unmatched_field_codes: set[str] = set()
     undated = 0
     out_of_shift = 0
@@ -715,10 +717,17 @@ def _build_namolot_signature_index(
             manual_mapped.add(f"{raw_id!r} → {reg_src!r}")
         sig = _reg_signature(reg_src)
         digits = _reg_main_digits(reg_src)
-        if not sig and not digits:
-            unmatched.add(str(raw_id or ""))
-            continue
         qty_t = float(r.get("quantity") or 0) * NAMOLOT_QTY_TO_TONNES
+        if not sig and not digits:
+            plate = str(raw_id or "—")
+            unmatched.add(plate)
+            unmatched_plate_rows.append((
+                qty_t,
+                plate,
+                str(r.get("crop") or "—"),
+                str(r.get("spp") or "—"),
+            ))
+            continue
         if qty_t <= 0:
             zero_qty += 1
             continue
@@ -747,6 +756,20 @@ def _build_namolot_signature_index(
             by_digits_firm_crop[digits][firm_folder_id][crop_name] += qty_t
             letters_part = sig[len(digits):] if sig.startswith(digits) else sig
             digit_letter_variants[digits].add(letters_part)
+        if sig or digits:
+            bucket = plate_mass.setdefault(sig or digits, {
+                "plate": str(raw_id or "—"),
+                "digits": digits,
+                "tonnes": 0.0,
+                "crops": set(),
+                "fields": set(),
+            })
+            bucket["tonnes"] += qty_t
+            if crop_name:
+                bucket["crops"].add(crop_name)
+            spp = str(r.get("spp") or "").strip()
+            if spp:
+                bucket["fields"].add(spp)
 
     ambiguous_digits = {d: v for d, v in digit_letter_variants.items() if len(v) > 1}
     total_mass_t = sum(
@@ -784,10 +807,15 @@ def _build_namolot_signature_index(
         shown = sorted(unmatched)[:20]
         more = "" if len(unmatched) <= 20 else f" (и ещё {len(unmatched) - 20})"
         _namolot_log(f"ВНИМАНИЕ: не распознан гос.номер ({len(unmatched)}): {shown}{more}")
+        ranked = sorted(unmatched_plate_rows, key=lambda item: item[0], reverse=True)
+        details = []
+        for tonnes, plate, crop_name, spp in ranked[:12]:
+            details.append(f"{plate} — {tonnes:.2f} т, {crop_name}, поле {spp}")
+        tail = "" if len(ranked) <= 12 else f" …и ещё {len(ranked) - 12}"
         report_alert(
-            "namolot_plate_unparsed",
-            f"Namolot: гос.номер не распознан ({len(unmatched)}): {', '.join(map(repr, shown[:8]))}"
-            f"{'…' if len(unmatched) > 8 else ''}. Масса этих записей не учтена.",
+            "namolot_plate_unmatched",
+            "Сводка 14: гос.номер из Namolot не разобран и не сопоставлен с техникой Cropwise. "
+            f"Масса не учтена ({len(unmatched)}): " + "; ".join(details) + tail,
         )
     if undated:
         _namolot_log(f"ВНИМАНИЕ: записей без даты/времени (пропущены): {undated}")
@@ -828,6 +856,10 @@ def _build_namolot_signature_index(
         },
         digit_letter_variants=dict(digit_letter_variants),
     )
+    result.plate_mass = plate_mass
+    result.cropwise_sigs = set()
+    result.cropwise_digits = set()
+    result.plate_alerted = False
     _namolot_signature_cache[report_date] = result
     return result
 
@@ -2418,6 +2450,65 @@ def _crop_listed(crop_name: str, catalog: frozenset[str] | set[str] | None) -> b
     return False
 
 
+def _note_cropwise_plates(index: _NamolotMassIndex, machines: list[dict]) -> None:
+    """Госномера Cropwise, с которыми Namolot вообще может совпасть."""
+    sigs = getattr(index, "cropwise_sigs", None)
+    if sigs is None:
+        index.cropwise_sigs = set()
+        index.cropwise_digits = set()
+    for machine in machines:
+        reg = str(machine.get("registration_number") or "")
+        sig = _reg_signature(reg)
+        if sig:
+            index.cropwise_sigs.add(sig)
+        digits = _reg_main_digits(reg)
+        if digits:
+            index.cropwise_digits.add(digits)
+
+
+def _emit_unmatched_cropwise_plates() -> None:
+    """Госномер Namolot есть в смене, а у техники Cropwise такого номера нет."""
+    for index in _namolot_signature_cache.values():
+        if getattr(index, "plate_alerted", False):
+            continue
+        index.plate_alerted = True
+        known_sigs = getattr(index, "cropwise_sigs", None) or set()
+        known_digits = getattr(index, "cropwise_digits", None) or set()
+        if not known_sigs and not known_digits:
+            continue
+        missed: list[dict] = []
+        for info in (getattr(index, "plate_mass", None) or {}).values():
+            plate = str(info.get("plate") or "—")
+            digits = str(info.get("digits") or "")
+            sig = _reg_signature(plate)
+            if sig and sig in known_sigs:
+                continue
+            if digits and digits in known_digits:
+                continue
+            missed.append(info)
+        if not missed:
+            continue
+        missed.sort(key=lambda item: float(item.get("tonnes") or 0), reverse=True)
+        parts = []
+        for info in missed[:12]:
+            crops = ", ".join(sorted(info.get("crops") or [])) or "—"
+            fields = ", ".join(sorted(info.get("fields") or [])[:2]) or "—"
+            parts.append(
+                f"{info.get('plate')} — {float(info.get('tonnes') or 0):.2f} т, {crops}, поле {fields}"
+            )
+        tail = "" if len(missed) <= 12 else f" …и ещё {len(missed) - 12}"
+        report_alert(
+            "namolot_plate_unmatched",
+            "Сводка 14: гос.номер из Namolot не найден у техники Cropwise. "
+            f"Масса этой машины в строки не попала ({len(missed)}): " + "; ".join(parts) + tail,
+        )
+
+
+import atexit
+
+atexit.register(_emit_unmatched_cropwise_plates)
+
+
 def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dict],
                     harvester_ids: set[int], task_to_machine: dict, fmi_list: list[dict],
                     field_to_fg: dict, fg_to_folder: dict,
@@ -2564,6 +2655,7 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
         return field_to_group.get(fid_i, field_to_group.get(fid, 1))
 
     namolot_index = _build_namolot_signature_index(report_date, field_name_to_firm_folder)
+    _note_cropwise_plates(namolot_index, harvesters)
     firm_fmi = _reassign_spurious_crop_fragments(
         firm_fmi, namolot_index, machine_info, firm_folder_id,
     )

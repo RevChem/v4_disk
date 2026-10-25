@@ -16,7 +16,7 @@ from __future__ import annotations
 
 MARK = "REPORT_ALERT"
 LEVELS = ("ERROR", "WARN")
-_MAX_TEXT = 600
+_MAX_TEXT = 1800
 
 _EMITTED: set[tuple[str, str]] = set()
 

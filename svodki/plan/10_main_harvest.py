@@ -436,6 +436,113 @@ class _NamolotAgg:
 _namolot_cache: dict[date, _NamolotAgg] = {}
 
 
+def _button_org_firm(text: object) -> str | None:
+    """Агрофирма так, как её выбирает кнопка Namolot, если код поля не найден."""
+    firm = firm_from_namolot_organization(text)
+    if firm:
+        return firm
+    raw = str(text or "").casefold().replace("ё", "е")
+    if not raw:
+        return None
+    rules = (
+        (re.compile(r"чистополь"), "АФ Чистопольская"),
+        (re.compile(r"(^|\s)полив($|\s)"), "АФ Чистопольская"),
+        (re.compile(r"раздолье"), "АгроРаздолье"),
+        (re.compile(r"(^|\s)аксу($|\s)"), "Аксу-Агро"),
+        (re.compile(r"(^|\s)актай($|\s)"), "Актай"),
+        (re.compile(r"дрожжан"), "Дрожжаное Рассвет Агро"),
+        (re.compile(r"лениногор"), "Лениногорская Птицефабрика"),
+        (re.compile(r"нурлат"), "НурлатАгро"),
+    )
+    for pattern, name in rules:
+        if pattern.search(raw):
+            return name
+    return None
+
+
+def _button_crop_name(text: object) -> str | None:
+    """Культура кнопки Namolot: точное имя или имя с хвостом, без частичного «содержит»."""
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    raw = _YEAR_SUFFIX_RE.sub("", raw).strip().casefold().replace("ё", "е")
+    if not raw:
+        return None
+    names = list(_HARVEST_CROP_ORDER) + list(VEGETABLE_CONFIG)
+    for name in names:
+        need = re.sub(r"\s+", " ", name).strip().casefold().replace("ё", "е")
+        if raw == need or raw.startswith(need + " "):
+            return name
+    return None
+
+
+def _alert_if_namolot_differs_from_button(
+    records: list[dict],
+    agg: _NamolotAgg,
+    field_code_to_id: dict[str, int],
+    field_to_firm: dict[int, str],
+    day_start: datetime,
+    cutoff: datetime,
+) -> None:
+    """Сверка тонн сводки 10 с правилами кнопки Namolot. Порог — 10 т."""
+    button_day: dict[tuple[str, str], float] = defaultdict(float)
+    button_season: dict[tuple[str, str], float] = defaultdict(float)
+    for rec in records:
+        code = _field_base_code(rec.get("spp"))
+        fid = field_code_to_id.get(code) if code else None
+        firm = field_to_firm.get(fid) if fid is not None else None
+        if not firm:
+            firm = _button_org_firm(rec.get("organization"))
+        crop = _button_crop_name(rec.get("crop"))
+        if not firm or not crop:
+            continue
+        try:
+            qty_t = float(rec.get("quantity") or 0) * NAMOLOT_QTY_TO_TONNES
+        except (TypeError, ValueError):
+            continue
+        if qty_t <= 0:
+            continue
+        rec_dt = _parse_namolot_datetime(rec.get("date"))
+        if rec_dt is None or rec_dt >= cutoff:
+            continue
+        button_season[(firm, crop)] += qty_t
+        if day_start <= rec_dt < cutoff:
+            button_day[(firm, crop)] += qty_t
+
+    diffs: list[str] = []
+    keys = set(agg.day) | set(agg.season) | set(button_day) | set(button_season)
+    for firm, crop in sorted(keys):
+        day_report = float(agg.day.get((firm, crop), 0.0))
+        day_button = float(button_day.get((firm, crop), 0.0))
+        season_report = float(agg.season.get((firm, crop), 0.0))
+        season_button = float(button_season.get((firm, crop), 0.0))
+        day_gap = abs(day_report - day_button)
+        season_gap = abs(season_report - season_button)
+        if day_gap <= 10 and season_gap <= 10:
+            continue
+        bits = [f"{firm}, {crop}"]
+        if day_gap > 10:
+            bits.append(f"сутки сводка {day_report:.1f} т, Namolot {day_button:.1f} т")
+        if season_gap > 10:
+            bits.append(f"сезон сводка {season_report:.1f} т, Namolot {season_button:.1f} т")
+        diffs.append(": ".join(bits[:1]) + " — " + "; ".join(bits[1:]))
+    if not diffs:
+        return
+    tail = "" if len(diffs) <= 8 else f" …и ещё {len(diffs) - 8}"
+    try:
+        from report_alerts import alert
+    except Exception:
+        print(
+            "REPORT_ALERT|WARN|namolot_tonnes_diff|Сводка 10 расходится с Namolot больше чем на 10 т",
+            flush=True,
+        )
+        return
+    alert(
+        "namolot_tonnes_diff",
+        "Сводка 10 расходится с кнопкой Namolot больше чем на 10 т. "
+        + " | ".join(diffs[:8]) + tail,
+        level="WARN",
+    )
+
+
 def _build_namolot_agg(label_date: date) -> _NamolotAgg:
     """Загружает и агрегирует Namolot один раз за прогон скрипта.
 
@@ -535,6 +642,9 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
         f"  [namolot] смена {day_start.strftime('%d.%m %H:%M')} — "
         f"{cutoff.strftime('%d.%m %H:%M')}, записей всего: {len(records)}, "
         f"комбинаций фирма/культура: {len(agg.season)}", flush=True,
+    )
+    _alert_if_namolot_differs_from_button(
+        records, agg, field_base_index, field_to_firm_map, day_start, cutoff,
     )
     _namolot_cache[label_date] = agg
     return agg

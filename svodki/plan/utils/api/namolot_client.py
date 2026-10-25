@@ -576,6 +576,20 @@ def _live_timeout() -> tuple[float, float]:
     return _connect_timeout_sec(), read
 
 
+def _alert_cache_fallback() -> None:
+    """1С не ответил, сводка читает кэш. Интерфейс показывает бордовое окно."""
+    message = (
+        "Нет ответа от 1С (Namolot). Сводка взяла данные из кэша. "
+        "Проверьте тонны: в кэше может не быть записей, проведённых задним числом."
+    )
+    try:
+        from report_alerts import alert
+
+        alert("namolot_cache_fallback", message, level="WARN")
+    except Exception:
+        print(f"REPORT_ALERT|WARN|namolot_cache_fallback|{message}", flush=True)
+
+
 def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
     """Сырые записи «Намолот»: живой GET за период, как кнопка. Кэш — если 1С молчит."""
     cached, meta, cache_path = _load_cache_payload()
@@ -597,6 +611,7 @@ def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
         records = _ensure_fresh_records(cached, meta, cache_path, date_begin, date_end)
         if records:
             records = _backfill_late_entries(records, meta, cache_path, date_end)
+            _alert_cache_fallback()
             return _filter_records_by_period(records, date_begin, date_end)
 
     # Кэш без покрытия смены: всё равно отдаём (нужен сезон), но не притворяемся
@@ -607,6 +622,7 @@ def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
                 "  [namolot] отдаём кэш без покрытия смены (сезон OK, сутки неполные)",
                 flush=True,
             )
+        _alert_cache_fallback()
         return _filter_records_by_period(cached, date_begin, date_end)
 
     print(

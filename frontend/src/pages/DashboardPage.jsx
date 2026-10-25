@@ -27,6 +27,7 @@ import ExpandLessRoundedIcon from "@mui/icons-material/ExpandLessRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import PdfSummaryPanel from "../components/PdfSummaryPanel";
+import NamolotNotices from "../components/NamolotNotices";
 import { sortCatalogAsc, sortCatalogDesc } from "../utils/reportSort";
 import ProverkaDialog from "../components/ProverkaDialog";
 import HarvestCheckDialog from "../components/HarvestCheckDialog";
@@ -519,6 +520,7 @@ export default function DashboardPage({
 
   return (
     <>
+      <NamolotNotices alertsByReport={alertsByReport} />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {info && <Alert severity="info" sx={{ mb: 2 }}>{info}</Alert>}
       {activeJobsForDate.length > 0 && (
