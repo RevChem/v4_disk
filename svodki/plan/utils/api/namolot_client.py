@@ -320,10 +320,12 @@ def _fetch_live(
     date_end: date,
     *,
     supplement: bool = False,
+    timeout: tuple[float, float] | None = None,
 ) -> list[dict]:
     base = (os.environ.get("NAMOLOT_BASE_URL") or "").strip() or NAMOLOT_BASE_URL
     params = {"date_begin": date_begin.isoformat(), "date_end": date_end.isoformat()}
-    timeout = _request_timeout(supplement=supplement)
+    if timeout is None:
+        timeout = _request_timeout(supplement=supplement)
     try:
         resp = requests.get(
             base,
@@ -559,22 +561,43 @@ def _backfill_late_entries(
     return merged
 
 
+def _live_timeout() -> tuple[float, float]:
+    """Как кнопка Namolot: чтение до 180 с. Короткий NAMOLOT_READ_TIMEOUT_SEC его не режет.
+
+    Сезонный ответ 1С не укладывается в 30 с. Обрыв отдавал кэш без записей,
+    проведённых задним числом, и сводка 10 теряла сутки (подсолнечник АФЧ
+    145 т вместо 264).
+    """
+    raw = (os.environ.get("NAMOLOT_BUTTON_READ_TIMEOUT_SEC") or "180").strip()
+    try:
+        read = max(1.0, float(raw))
+    except ValueError:
+        read = 180.0
+    return _connect_timeout_sec(), read
+
+
 def fetch_namolot_records(date_begin: date, date_end: date) -> list[dict]:
-    """Сырые записи «Намolot»: свежий кэш (быстро) или догрузка через live API."""
+    """Сырые записи «Намолот»: живой GET за период, как кнопка. Кэш — если 1С молчит."""
     cached, meta, cache_path = _load_cache_payload()
+
+    live = _fetch_live(date_begin, date_end, timeout=_live_timeout())
+    if live:
+        if cache_path is not None:
+            merged = _merge_records(cached, live) if cached else list(live)
+            _persist_cache(
+                cache_path,
+                merged,
+                date_begin=date_begin,
+                date_end=date_end,
+                meta=meta,
+            )
+        return live
 
     if cached and (_prefer_cache() or cache_path is not None):
         records = _ensure_fresh_records(cached, meta, cache_path, date_begin, date_end)
         if records:
             records = _backfill_late_entries(records, meta, cache_path, date_end)
             return _filter_records_by_period(records, date_begin, date_end)
-
-    live = _fetch_live(date_begin, date_end)
-    if live:
-        if cache_path is not None:
-            merged = _merge_records(cached, live)
-            _persist_cache(cache_path, merged, date_begin=date_begin, date_end=date_end, meta=meta)
-        return live
 
     # Кэш без покрытия смены: всё равно отдаём (нужен сезон), но не притворяемся
     # что сутки полные — это ловит 10_main_harvest (incomplete_day).
