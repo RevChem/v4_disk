@@ -112,11 +112,11 @@ def test_same_namolot_filters_narrow_every_operation():
         time_to="05:59",
     )
     assert [row["operation"] for row in spring] == ["1.1 Внесение минеральных удобрений"]
-    spraying = filter_record_rows(rows, operation="опрыскивание")
+    spraying = filter_record_rows(rows, operation="3.1 Опрыскивание")
     assert spraying == []
-    harvest = filter_record_rows(rows, operation="уборка")
+    harvest = filter_record_rows(rows, operation="5.0 Уборка")
     assert [row["task_id"] for row in harvest] == [11]
-    fertilizer = filter_record_rows(rows, operation="минеральных")
+    fertilizer = filter_record_rows(rows, operation="1.1 Внесение минеральных удобрений")
     assert [row["task_id"] for row in fertilizer] == [10]
 
 

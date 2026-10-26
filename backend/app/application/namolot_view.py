@@ -338,7 +338,7 @@ def filter_record_rows(
 ) -> list[dict]:
     """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают.
 
-    operation — фрагмент агрозадания, например «опрыскивание». Пустое значение не отсекает строки.
+    operation — точное агрозадание из списка, например «3.1 Опрыскивание». Пустое значение не отсекает строки.
     """
     firm_name = str(firm or "").strip()
     crop_name = str(crop or "").strip()
@@ -366,7 +366,7 @@ def filter_record_rows(
             continue
         if name_q and name_q not in _norm_text(f"{row.get('surname') or ''} {row.get('operator') or ''}"):
             continue
-        if operation_q and operation_q not in _norm_text(row.get("operation")):
+        if operation_q and _norm_text(row.get("operation")) != operation_q:
             continue
         picked.append(row)
     return picked

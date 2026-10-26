@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -37,7 +36,7 @@ import SendRoundedIcon from "@mui/icons-material/SendRounded";
 
 import { askTaskQuestions, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
-import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
+import { AGRO_TASKS, NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
 const EXAMPLES = [
   "Сколько гектаров по каждой операции?",
@@ -72,7 +71,7 @@ function joinList(values) {
 function narrowOperation(list, operation) {
   const query = normText(operation);
   if (!query) return list;
-  return list.filter((row) => normText(row.operation).includes(query));
+  return list.filter((row) => normText(row.operation) === query);
 }
 
 function sliceLabel(applied) {
@@ -172,11 +171,17 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   }, [answerHistory.length, askLoading]);
 
   const operationOptions = useMemo(() => {
-    const names = new Set();
+    const known = new Set(AGRO_TASKS);
+    const extra = [];
+    const seen = new Set();
     for (const row of rows) {
-      if (row.operation) names.add(row.operation);
+      const name = row.operation;
+      if (!name || name === "—" || known.has(name) || seen.has(name)) continue;
+      seen.add(name);
+      extra.push(name);
     }
-    return [...names].sort((a, b) => a.localeCompare(b, "ru"));
+    extra.sort((a, b) => a.localeCompare(b, "ru"));
+    return [...AGRO_TASKS, ...extra];
   }, [rows]);
 
   const visible = useMemo(() => {
@@ -336,7 +341,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
           <Typography variant="body2" color="text.secondary">
             Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00:
             внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, агрозадание,
-            даты, госномер и фамилия необязательны. Агрозадание ищется по фрагменту названия, например «опрыскивание».
+            даты, госномер и фамилия необязательны. Агрозадание выбирается из списка, как культура.
           </Typography>
           <TextField
             select
@@ -370,17 +375,22 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
               </MenuItem>
             ))}
             </TextField>
-          <Autocomplete
-            freeSolo
+          <TextField
+            select
+            label="Агрозадание"
             size="small"
-            options={operationOptions}
-            inputValue={operation}
-            onInputChange={(_event, value) => setOperation(value || "")}
+            fullWidth
+            value={operation}
+            onChange={(event) => setOperation(event.target.value)}
             disabled={loading}
-            renderInput={(params) => (
-              <TextField {...params} label="Агрозадание" placeholder="опрыскивание" />
-            )}
-          />
+          >
+            <MenuItem value="">Не выбрано</MenuItem>
+            {operationOptions.map((name) => (
+              <MenuItem key={name} value={name}>
+                {name}
+              </MenuItem>
+            ))}
+          </TextField>
             <Button variant="contained" onClick={() => void form().catch(() => {})} disabled={loading}>
             {loading ? "Запрос…" : "Сформировать"}
           </Button>
