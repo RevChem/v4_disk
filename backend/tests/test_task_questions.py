@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.adapters.outbound.proverka.service import _ensure_plan_path
 from app.application.namolot_view import filter_record_rows
-from app.application.task_slice import ask_rows, format_ask_table
+from app.application.task_slice import ask_rows, format_ask_table, name_unmapped_operations
 
 _TZ = timezone(timedelta(hours=3))
 
@@ -118,6 +118,18 @@ def test_same_namolot_filters_narrow_every_operation():
     assert [row["task_id"] for row in harvest] == [11]
     fertilizer = filter_record_rows(rows, operation="1.1 Внесение минеральных удобрений")
     assert [row["task_id"] for row in fertilizer] == [10]
+
+
+def test_work_type_label_comes_from_the_catalog():
+    rows = [
+        {"operation": "вид работ 147", "work_type_id": 147},
+        {"operation": "3.1 Опрыскивание", "work_type_id": 1},
+        {"operation": "вид работ 9", "work_type_id": 9},
+    ]
+    name_unmapped_operations(rows, {147: "6.8 Скашивание в валок", 1: "Опрыскивание"})
+    assert rows[0]["operation"] == "147: 6.8 Скашивание в валок"
+    assert rows[1]["operation"] == "1: Опрыскивание"
+    assert rows[2]["operation"] == "вид работ 9"
 
 
 def test_ask_table_totals_cover_hidden_operations():

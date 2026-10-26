@@ -48,6 +48,34 @@ def _apply_names(rows: list[dict[str, Any]]) -> str:
     return note
 
 
+def work_type_label(work_type_id: int, title: str) -> str:
+    """Как чип в «Группах работ»: номер справочника и его название."""
+    return f"{work_type_id}: {title}"
+
+
+def name_unmapped_operations(rows: list[dict[str, Any]], catalog: dict[int, str]) -> None:
+    """Подпись операции берётся из справочника work_types, а не «вид работ 147»."""
+    for row in rows:
+        work_type_id = row.get("work_type_id")
+        if not isinstance(work_type_id, int):
+            continue
+        title = str(catalog.get(work_type_id) or "").strip()
+        if title and not title.startswith("work_type_"):
+            row["operation"] = work_type_label(work_type_id, title)
+
+
+def _apply_work_titles(rows: list[dict[str, Any]]) -> None:
+    if not any(isinstance(row.get("work_type_id"), int) for row in rows):
+        return
+    from app.legacy.plans_editor import WorkTypesUnavailableError, fetch_work_types_catalog
+
+    try:
+        catalog = {int(item["id"]): str(item.get("name") or "") for item in fetch_work_types_catalog()}
+    except WorkTypesUnavailableError:
+        return
+    name_unmapped_operations(rows, catalog)
+
+
 def build_slice(report_date: date) -> dict[str, Any]:
     """Все операции с 1 января до 06:00 даты сводки. Повтор в пределах 15 минут берёт память."""
     global _cache
@@ -65,7 +93,9 @@ def build_slice(report_date: date) -> dict[str, Any]:
 
     payload = task_questions.load_rows(_store_dir(), report_date)
     if payload.get("available"):
-        payload["names_note"] = _fill_names(payload.get("rows") or [])
+        rows = payload.get("rows") or []
+        _apply_work_titles(rows)
+        payload["names_note"] = _fill_names(rows)
     else:
         payload["names_note"] = ""
     # Без ФИО фамилия в фильтре бесполезна: не запоминаем сбой справочника.

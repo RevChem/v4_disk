@@ -116,6 +116,7 @@ def label_rows(
                 "firm": (firms.get(fid) or "") if isinstance(fid, int) else "",
                 "crop": rec.get("crop") or "—",
                 "operation": operations.get(wt) or (f"вид работ {wt}" if wt else "—"),
+                "work_type_id": wt,
                 "plate": (plates.get(mid) or "") if isinstance(mid, int) else "",
                 "operator": "",
                 "surname": "",

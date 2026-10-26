@@ -34,9 +34,9 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 
-import { askTaskQuestions, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
+import { askTaskQuestions, fetchPlansEditorWorkTypes, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
-import { AGRO_TASKS, NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
+import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
 const EXAMPLES = [
   "Сколько гектаров по каждой операции?",
@@ -66,6 +66,12 @@ function fmtAt(at) {
 
 function joinList(values) {
   return values?.length ? values.join(", ") : "—";
+}
+
+function workTypeLabel(item) {
+  const title = String(item?.name || "").trim();
+  if (!title) return "";
+  return `${item.id}: ${title}`;
 }
 
 function narrowOperation(list, operation) {
@@ -114,6 +120,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [namesNote, setNamesNote] = useState("");
+  const [workTypes, setWorkTypes] = useState([]);
 
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
@@ -170,8 +177,24 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     feedEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [answerHistory.length, askLoading]);
 
+  useEffect(() => {
+    if (!active) return undefined;
+    let cancelled = false;
+    fetchPlansEditorWorkTypes()
+      .then((data) => {
+        if (!cancelled) setWorkTypes(Array.isArray(data?.items) ? data.items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkTypes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
   const operationOptions = useMemo(() => {
-    const known = new Set(AGRO_TASKS);
+    const fromCatalog = workTypes.map(workTypeLabel).filter(Boolean);
+    const known = new Set(fromCatalog);
     const extra = [];
     const seen = new Set();
     for (const row of rows) {
@@ -181,8 +204,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       extra.push(name);
     }
     extra.sort((a, b) => a.localeCompare(b, "ru"));
-    return [...AGRO_TASKS, ...extra];
-  }, [rows]);
+    return [...fromCatalog, ...extra];
+  }, [rows, workTypes]);
 
   const visible = useMemo(() => {
     if (!applied) return [];
@@ -341,7 +364,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
           <Typography variant="body2" color="text.secondary">
             Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00:
             внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, агрозадание,
-            даты, госномер и фамилия необязательны. Агрозадание выбирается из списка, как культура.
+            даты, госномер и фамилия необязательны. Агрозадание — номер и название из справочника work_types, как в редакторе планов.
           </Typography>
           <TextField
             select
