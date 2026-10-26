@@ -2099,11 +2099,79 @@ def _other_crops_area_from_cache(
     return round(fact_total, 1), round(fact_today, 2)
 
 
+def _transfer_field_ids() -> dict[int, str]:
+    """field_id полей из FIELD_FIRM_TRANSFERS. Остальные поля сюда не попадают."""
+    try:
+        from plans import FIELD_FIRM_TRANSFERS
+    except Exception:
+        return {}
+    wanted = set(FIELD_FIRM_TRANSFERS)
+    if not wanted:
+        return {}
+    out: dict[int, str] = {}
+    for field in _fields_for_namolot():
+        fid = field.get("id")
+        if fid is None:
+            continue
+        code = _field_base_code(field.get("name") or field.get("title") or "")
+        if code in wanted:
+            out[int(fid)] = code
+    return out
+
+
+def _area_slices_for_transferred_field(
+    item: dict,
+    code: str,
+    fallback_firm: str,
+    *,
+    cutoff: datetime,
+    day_start: datetime | None,
+    task_end: datetime | None,
+    booked_on_close: bool,
+) -> list[tuple[str, float]]:
+    """Площадь переданного поля по фирме на час работы, те же окна, что у обычного факта."""
+    if booked_on_close:
+        if task_end is None or day_start is None or not (day_start <= task_end < cutoff):
+            return []
+        lower = None
+    else:
+        lower = day_start
+
+    def firm_at(when: datetime | None) -> str:
+        moved = firm_override_for_field(code, when) if when is not None else None
+        return moved or fallback_firm
+
+    hourly = item.get("covered_area_hourly") or []
+    if not hourly:
+        if (
+            not booked_on_close
+            and task_end is not None
+            and day_start is not None
+            and not (day_start <= task_end < cutoff)
+        ):
+            return []
+        cov = float(item.get("covered_area") or 0.0)
+        if cov <= 0:
+            return []
+        return [(firm_at(task_end), cov)]
+
+    buckets: dict[str, float] = defaultdict(float)
+    for entry in hourly:
+        moment = parse_dt(entry[0])
+        if moment is None or moment >= cutoff:
+            continue
+        if lower is not None and moment < lower:
+            continue
+        buckets[firm_at(moment)] += float(entry[1] or 0.0)
+    return [(firm, cov) for firm, cov in buckets.items() if cov > 0]
+
+
 def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
     """Один проход mtfmi → таблицы площади (сходимость со сводкой 11)."""
     field_to_crop = get_field_to_crop()
     general_set = set(GENERAL_CROP_ORDER)
     machines_map = load_machines_map()
+    transfer_ids = _transfer_field_ids()
 
     season_fc: dict[tuple[str, str], float] = defaultdict(float)
     today_fc: dict[tuple[str, str], float] = defaultdict(float)
@@ -2151,7 +2219,8 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                     continue
                 fid_i = int(fid)
                 firm = cache.field_to_firm.get(fid_i)
-                if not firm:
+                transfer_code = transfer_ids.get(fid_i)
+                if not firm and not transfer_code:
                     continue
                 # Гектары — по заданию этих суток, не по карточке поля на сезон.
                 # «6.3 Скашивание» кукурузы даёт силос только у площади этого задания.
@@ -2169,58 +2238,70 @@ def _populate_harvest_cache_tables(cache: "HarvestDataCache") -> None:
                     crop = CORN_SILAGE_CROP
                 elif is_corn:
                     crop = CORN_GRAIN_CROP
-                # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
-                if (
-                    crop
-                    and crop not in VEGETABLE_FIELD_CROPS
-                    and is_crop_excluded_from_totals("5.0 Уборка", firm, crop)
-                ):
-                    continue
-                if day_start is not None:
-                    cov = harvest_area_booked_on_close(
-                        item, day_start=day_start, cutoff=t_to,
-                        task_end=task_end, parse_dt=parse_dt,
-                    )
-                else:
-                    cov = harvest_item_area_for_shift(
-                        item, t_to,
-                        day_start=None,
-                        work_type_id=wt_i,
-                        parse_dt=parse_dt,
+                if transfer_code:
+                    # Сезон: все часы до cutoff. Сутки: смена закрытия задания, как booked_on_close.
+                    slices = _area_slices_for_transferred_field(
+                        item, transfer_code, firm or "",
+                        cutoff=t_to,
+                        day_start=day_start,
                         task_end=task_end,
+                        booked_on_close=day_start is not None,
                     )
-                if cov <= 0:
-                    continue
-                firm_tot[firm] += cov
-                if crop in VEGETABLE_FIELD_CROPS:
-                    continue
-                if is_mowing:
-                    crop_key = CORN_SILAGE_CROP
                 else:
-                    crop_key = crop if crop in general_set else OTHER_CROP_KEY
-                fc[(firm, crop_key)] += cov
-                if _note is not None and count_machines:
-                    _note(
-                        group="5.0 Уборка",
-                        firm=firm,
-                        crop=str(crop_key or ""),
-                        field_id=fid_i,
-                        task_id=int(task["id"]) if task.get("id") is not None else None,
-                        machine_id=int(mid) if mid is not None else None,
-                        ha=cov,
-                        season=str(task.get("season") or ""),
-                    )
-                if count_machines and _is_harvest_combine(mid, machines_map):
-                    if is_mowing:
-                        machine_crop = CORN_SILAGE_CROP
-                    elif crop in general_set:
-                        machine_crop = crop
-                    elif crop:
-                        machine_crop = crop
+                    if day_start is not None:
+                        cov = harvest_area_booked_on_close(
+                            item, day_start=day_start, cutoff=t_to,
+                            task_end=task_end, parse_dt=parse_dt,
+                        )
                     else:
-                        machine_crop = None
-                    if machine_crop:
-                        machines_by_crop[machine_crop].add(int(mid))
+                        cov = harvest_item_area_for_shift(
+                            item, t_to,
+                            day_start=None,
+                            work_type_id=wt_i,
+                            parse_dt=parse_dt,
+                            task_end=task_end,
+                        )
+                    slices = [(firm, cov)] if firm and cov > 0 else []
+                for firm, cov in slices:
+                    if not firm or cov <= 0:
+                        continue
+                    # «Редактор планов»: «Не считать», ранг 0, скрытие по АФ — гектары в итоги не идут.
+                    if (
+                        crop
+                        and crop not in VEGETABLE_FIELD_CROPS
+                        and is_crop_excluded_from_totals("5.0 Уборка", firm, crop)
+                    ):
+                        continue
+                    firm_tot[firm] += cov
+                    if crop in VEGETABLE_FIELD_CROPS:
+                        continue
+                    if is_mowing:
+                        crop_key = CORN_SILAGE_CROP
+                    else:
+                        crop_key = crop if crop in general_set else OTHER_CROP_KEY
+                    fc[(firm, crop_key)] += cov
+                    if _note is not None and count_machines:
+                        _note(
+                            group="5.0 Уборка",
+                            firm=firm,
+                            crop=str(crop_key or ""),
+                            field_id=fid_i,
+                            task_id=int(task["id"]) if task.get("id") is not None else None,
+                            machine_id=int(mid) if mid is not None else None,
+                            ha=cov,
+                            season=str(task.get("season") or ""),
+                        )
+                    if count_machines and _is_harvest_combine(mid, machines_map):
+                        if is_mowing:
+                            machine_crop = CORN_SILAGE_CROP
+                        elif crop in general_set:
+                            machine_crop = crop
+                        elif crop:
+                            machine_crop = crop
+                        else:
+                            machine_crop = None
+                        if machine_crop:
+                            machines_by_crop[machine_crop].add(int(mid))
 
     process(
         cache.tasks_season, cache.season_start, cache.cutoff,
