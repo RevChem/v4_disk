@@ -69,7 +69,7 @@ function joinList(values) {
   return values?.length ? values.join(", ") : "—";
 }
 
-export default function NamolotDialog({ open, onClose, summaryDate }) {
+export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappings = null }) {
   const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
   const [rows, setRows] = useState([]);
   const [windows, setWindows] = useState(null);
@@ -475,6 +475,11 @@ export default function NamolotDialog({ open, onClose, summaryDate }) {
         ) : null}
       </DialogContent>
       <DialogActions>
+        {onOpenMappings ? (
+          <Button onClick={onOpenMappings} disabled={busy} sx={{ mr: "auto" }}>
+            Сопоставления
+          </Button>
+        ) : null}
         <Button onClick={() => void download()} disabled={busy || !loaded}>
           {downloading ? "Excel…" : "Скачать Excel"}
         </Button>

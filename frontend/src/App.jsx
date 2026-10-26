@@ -3,6 +3,7 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 
 import AiMenuDialog from "./components/AiMenuDialog";
 import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
+import FieldOwnershipDialog from "./components/FieldOwnershipDialog";
 import NamolotDialog from "./components/NamolotDialog";
 import PlateMappingsDialog from "./components/PlateMappingsDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
@@ -141,6 +142,7 @@ export default function App() {
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
   const [namolotOpen, setNamolotOpen] = useState(false);
   const [plateMappingsOpen, setPlateMappingsOpen] = useState(false);
+  const [fieldOwnershipOpen, setFieldOwnershipOpen] = useState(false);
   const [cropwiseSeasonOn, setCropwiseSeasonOn] = useState(
     () => window.localStorage.getItem("svodki.cropwiseSeasonCheck") === "1",
   );
@@ -694,7 +696,7 @@ export default function App() {
         }
         onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
         onNamolotOpen={canGenerate ? () => setNamolotOpen(true) : null}
-        onPlateMappingsOpen={canGenerate ? () => setPlateMappingsOpen(true) : null}
+        onFieldOwnershipOpen={canGenerate ? () => setFieldOwnershipOpen(true) : null}
         equipment={
           isDeveloper
             ? {
@@ -768,10 +770,15 @@ export default function App() {
         open={namolotOpen && canGenerate}
         onClose={() => setNamolotOpen(false)}
         summaryDate={summaryDate}
+        onOpenMappings={canGenerate ? () => setPlateMappingsOpen(true) : null}
       />
       <PlateMappingsDialog
         open={plateMappingsOpen && canGenerate}
         onClose={() => setPlateMappingsOpen(false)}
+      />
+      <FieldOwnershipDialog
+        open={fieldOwnershipOpen && canGenerate}
+        onClose={() => setFieldOwnershipOpen(false)}
       />
       <AiMenuDialog
         open={aiMenuOpen}

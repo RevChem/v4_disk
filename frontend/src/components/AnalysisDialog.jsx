@@ -7,6 +7,7 @@ import FactCheckOutlinedIcon from "@mui/icons-material/FactCheckOutlined";
 import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LocalGasStationOutlinedIcon from "@mui/icons-material/LocalGasStationOutlined";
 import QuestionAnswerOutlinedIcon from "@mui/icons-material/QuestionAnswerOutlined";
+import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 import QueryStatsRoundedIcon from "@mui/icons-material/QueryStatsRounded";
 
 import ChecksPanel from "./analysisChecks/ChecksPanel";
@@ -14,6 +15,7 @@ import AnalyticsPanel from "./AnalyticsPanel";
 import DriverWorkPanel from "./DriverWorkPanel";
 import FuelPanel from "./FuelPanel";
 import TaskFactsPanel from "./TaskFactsPanel";
+import TasksLookupPanel from "./TasksLookupPanel";
 
 const SECTIONS = [
   {
@@ -45,6 +47,12 @@ const SECTIONS = [
     title: "Проверки",
     hint: "19 срезов по людям, технике и полям",
     icon: FactCheckOutlinedIcon,
+  },
+  {
+    id: "tasks",
+    title: "Задания",
+    hint: "Карточка задания Cropwise по номеру",
+    icon: AssignmentOutlinedIcon,
   },
 ];
 
@@ -116,7 +124,7 @@ export default function AnalysisDialog({
           gap: 1.25,
           px: 2.5,
           pb: 1.75,
-          gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(3, minmax(0, 1fr))", xl: "repeat(5, minmax(0, 1fr))" },
+          gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(3, minmax(0, 1fr))", xl: "repeat(6, minmax(0, 1fr))" },
           borderBottom: 1,
           borderColor: "divider",
         }}
@@ -204,6 +212,7 @@ export default function AnalysisDialog({
               {id === "facts" && (
                 <TaskFactsPanel active={section === id} summaryDate={summaryDate} initialJobId={initialJobId} />
               )}
+              {id === "tasks" && <TasksLookupPanel />}
               {id === "checks" && (
                 <ChecksPanel
                   active={section === id}

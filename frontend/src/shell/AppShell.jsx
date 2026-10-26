@@ -74,7 +74,7 @@ export default function AppShell({
   dataErrors = null,
   onCookieOpen = null,
   onNamolotOpen = null,
-  onPlateMappingsOpen = null,
+  onFieldOwnershipOpen = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -179,7 +179,7 @@ export default function AppShell({
                       </Tooltip>
                     </Stack>
                   ) : null}
-                  {onCookieOpen || onNamolotOpen || onPlateMappingsOpen ? (
+                  {onCookieOpen || onNamolotOpen || onFieldOwnershipOpen ? (
                     <Stack spacing={0.5} alignItems="stretch">
                       {onCookieOpen ? (
                         <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">
@@ -219,12 +219,12 @@ export default function AppShell({
                           </Button>
                         </Tooltip>
                       ) : null}
-                      {onPlateMappingsOpen ? (
-                        <Tooltip title="Ручные пары госномеров Namolot и Cropwise для сводки 14">
+                      {onFieldOwnershipOpen ? (
+                        <Tooltip title="Поля, у которых с выбранной даты сменилась принадлежность агрофирме">
                           <Button
                             size="small"
                             variant="outlined"
-                            onClick={onPlateMappingsOpen}
+                            onClick={onFieldOwnershipOpen}
                             sx={{
                               minWidth: 0,
                               px: 1,
@@ -234,7 +234,7 @@ export default function AppShell({
                               textTransform: "none",
                             }}
                           >
-                            Сопоставления
+                            Принадлежность полей
                           </Button>
                         </Tooltip>
                       ) : null}

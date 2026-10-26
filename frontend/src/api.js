@@ -1021,6 +1021,29 @@ export async function fetchNamolot({ dateBegin, dateEnd }) {
   }
 }
 
+export async function fetchFieldOwnership({ since }) {
+  try {
+    const { data } = await api.get("/proverka/field-ownership", {
+      params: { since },
+      timeout: 600_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function fetchMachineTask(taskId) {
+  try {
+    const { data } = await api.get(`/proverka/machine-task/${encodeURIComponent(taskId)}`, {
+      timeout: 40_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchPlateMappings() {
   try {
     const { data } = await api.get("/proverka/plate-mappings");

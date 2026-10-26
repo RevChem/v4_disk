@@ -13,6 +13,8 @@ from app.adapters.inbound.api.deps import (
     require_generate_access,
     require_plans_access,
 )
+from app.application.field_ownership import ownership_report
+from app.application.machine_task_card import machine_task_card
 from app.application.task_links import task_page_urls
 from app.adapters.outbound.persistence import repositories as repo
 from app.adapters.inbound.celery.tasks import (
@@ -110,6 +112,36 @@ def get_task_links(
     """Страницы заданий Cropwise для номеров из текста ошибки данных."""
     nums = [int(x) for x in ids.split(",") if x.strip().isdigit()]
     return {"urls": task_page_urls(nums)}
+
+
+@router.get("/field-ownership")
+def get_field_ownership(
+    since: date = Query(..., description="С какой даты искать смену принадлежности"),
+    _: User = Depends(require_generate_access),
+):
+    """Поля, у которых с даты сменилась пометка фирмы или она разошлась с папкой Cropwise."""
+    today = date.today()
+    if since > today:
+        raise HTTPException(status_code=400, detail="Дата ещё не наступила")
+    if since.year < 2020:
+        raise HTTPException(status_code=400, detail="Слишком ранняя дата")
+    return ownership_report(since)
+
+
+@router.get("/machine-task/{task_id}")
+def get_machine_task_card(
+    task_id: int,
+    _: User = Depends(require_developer_access),
+):
+    """Карточка задания Cropwise и ссылка на его страницу."""
+    if task_id <= 0:
+        raise HTTPException(status_code=400, detail="Номер задания должен быть положительным")
+    try:
+        return machine_task_card(task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Задание не найдено") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/catalog", response_model=ProverkaCatalogOut)
