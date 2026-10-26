@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { Box, ButtonBase, Dialog, IconButton, Stack, Typography } from "@mui/material";
+import { Box, ButtonBase, Dialog, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import AgricultureOutlinedIcon from "@mui/icons-material/AgricultureOutlined";
+import CloseFullscreenRoundedIcon from "@mui/icons-material/CloseFullscreenRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
+import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 import FactCheckOutlinedIcon from "@mui/icons-material/FactCheckOutlined";
 import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LocalGasStationOutlinedIcon from "@mui/icons-material/LocalGasStationOutlined";
@@ -59,6 +61,10 @@ const SECTIONS = [
 /** Панели, которым нужна вся высота окна и собственная прокрутка внутри. */
 const FILL = new Set(["facts"]);
 
+function isComputerFullscreen() {
+  return document.fullscreenElement === document.documentElement;
+}
+
 export default function AnalysisDialog({
   open,
   onClose,
@@ -68,6 +74,48 @@ export default function AnalysisDialog({
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState(() => new Set([initialSection]));
   const [driverPreset, setDriverPreset] = useState(null);
+  const [fullScreen, setFullScreen] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setFullScreen(isComputerFullscreen());
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  useEffect(() => {
+    if (open) return undefined;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    return undefined;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !fullScreen) return undefined;
+    const onKey = (event) => {
+      if (event.key !== "Escape" || !isComputerFullscreen()) return;
+      const menuOpen = document.querySelector(".MuiMenu-root, .MuiPopover-root");
+      if (menuOpen) {
+        event.preventDefault();
+        return;
+      }
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, fullScreen]);
+
+  async function toggleComputerFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Браузер может запретить полноэкранный режим без жеста пользователя.
+    }
+  }
 
   // При каждом открытии начинаем с нужного раздела; панели грузят данные только после первого показа.
   useEffect(() => {
@@ -88,19 +136,32 @@ export default function AnalysisDialog({
     <Dialog
       open={open}
       onClose={onClose}
+      fullScreen={fullScreen}
       fullWidth
       maxWidth={false}
       scroll="paper"
       PaperProps={{
-        sx: {
-          width: "min(1600px, 97vw)",
-          height: "94vh",
-          maxHeight: "94vh",
-          m: { xs: 0.5, sm: 2 },
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        },
+        sx: fullScreen
+          ? {
+              display: "flex",
+              flexDirection: "column",
+              width: "100%",
+              height: "100%",
+              maxWidth: "100%",
+              maxHeight: "100%",
+              m: 0,
+              borderRadius: 0,
+              overflow: "hidden",
+            }
+          : {
+              width: "min(1600px, 97vw)",
+              height: "94vh",
+              maxHeight: "94vh",
+              m: { xs: 0.5, sm: 2 },
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            },
       }}
     >
       <Stack direction="row" alignItems="center" spacing={1.25} sx={{ px: 2.5, pt: 1.75, pb: 1.25 }}>
@@ -112,6 +173,14 @@ export default function AnalysisDialog({
           · {current.title}
         </Typography>
         <Box sx={{ flex: 1 }} />
+        <Tooltip title={fullScreen ? "Выйти из полноэкранного режима (Esc)" : "На весь экран компьютера"}>
+          <IconButton
+            aria-label={fullScreen ? "Выйти из полноэкранного режима" : "На весь экран компьютера"}
+            onClick={() => void toggleComputerFullscreen()}
+          >
+            {fullScreen ? <CloseFullscreenRoundedIcon /> : <OpenInFullRoundedIcon />}
+          </IconButton>
+        </Tooltip>
         <IconButton aria-label="Закрыть" onClick={onClose}>
           <CloseRoundedIcon />
         </IconButton>

@@ -334,12 +334,17 @@ def filter_record_rows(
     time_to: str = "",
     plate: str = "",
     surname: str = "",
+    operation: str = "",
 ) -> list[dict]:
-    """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают."""
+    """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают.
+
+    operation — фрагмент агрозадания, например «опрыскивание». Пустое значение не отсекает строки.
+    """
     firm_name = str(firm or "").strip()
     crop_name = str(crop or "").strip()
     plate_q = _norm_plate(plate)
     name_q = _norm_text(surname)
+    operation_q = _norm_text(operation)
     start = _range_stamp(date_from, time_from, "00:00")
     end = _range_stamp(date_to, time_to, "23:59")
     picked: list[dict] = []
@@ -360,6 +365,8 @@ def filter_record_rows(
         if plate_q and plate_q not in _norm_plate(row.get("plate")):
             continue
         if name_q and name_q not in _norm_text(f"{row.get('surname') or ''} {row.get('operator') or ''}"):
+            continue
+        if operation_q and operation_q not in _norm_text(row.get("operation")):
             continue
         picked.append(row)
     return picked

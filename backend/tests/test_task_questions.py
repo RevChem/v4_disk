@@ -112,6 +112,12 @@ def test_same_namolot_filters_narrow_every_operation():
         time_to="05:59",
     )
     assert [row["operation"] for row in spring] == ["1.1 Внесение минеральных удобрений"]
+    spraying = filter_record_rows(rows, operation="опрыскивание")
+    assert spraying == []
+    harvest = filter_record_rows(rows, operation="уборка")
+    assert [row["task_id"] for row in harvest] == [11]
+    fertilizer = filter_record_rows(rows, operation="минеральных")
+    assert [row["task_id"] for row in fertilizer] == [10]
 
 
 def test_ask_table_totals_cover_hidden_operations():

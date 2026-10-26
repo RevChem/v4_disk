@@ -842,6 +842,7 @@ class TaskQuestionsAskIn(BaseModel):
     time_to: str = Field(default="05:59", max_length=5)
     plate: str = Field(default="", max_length=40)
     surname: str = Field(default="", max_length=80)
+    operation: str = Field(default="", max_length=160)
     question: str = Field(default="", max_length=3000)
     use_llm: bool = True
 
@@ -873,6 +874,7 @@ def post_task_questions_ask(
         time_to=body.time_to,
         plate=body.plate,
         surname=body.surname,
+        operation=body.operation,
     )
 
 

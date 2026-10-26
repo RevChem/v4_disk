@@ -1136,6 +1136,7 @@ export async function askTaskQuestions({
   timeTo = "05:59",
   plate = "",
   surname = "",
+  operation = "",
   question = "",
   useLlm = true,
 }) {
@@ -1152,6 +1153,7 @@ export async function askTaskQuestions({
         time_to: timeTo || "05:59",
         plate: plate || "",
         surname: surname || "",
+        operation: operation || "",
         question: question || "",
         use_llm: Boolean(useLlm),
       },

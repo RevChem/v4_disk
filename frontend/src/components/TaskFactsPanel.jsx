@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -8,6 +9,7 @@ import {
   CircularProgress,
   FormControlLabel,
   IconButton,
+  Link,
   MenuItem,
   Paper,
   Stack,
@@ -34,7 +36,7 @@ import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 
 import { askTaskQuestions, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
-import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
+import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
 const EXAMPLES = [
@@ -67,9 +69,16 @@ function joinList(values) {
   return values?.length ? values.join(", ") : "—";
 }
 
+function narrowOperation(list, operation) {
+  const query = normText(operation);
+  if (!query) return list;
+  return list.filter((row) => normText(row.operation).includes(query));
+}
+
 function sliceLabel(applied) {
   if (!applied) return "весь сезон";
   const parts = [];
+  if (applied.operation) parts.push(applied.operation);
   if (applied.firm) parts.push(applied.firm);
   if (applied.crop) parts.push(applied.crop);
   if (applied.dateFrom || applied.dateTo) {
@@ -86,6 +95,7 @@ function emptySlice() {
   return {
     firm: "",
     crop: "",
+    operation: "",
     dateFrom: "",
     timeFrom: "06:00",
     dateTo: "",
@@ -108,6 +118,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
+  const [operation, setOperation] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [timeFrom, setTimeFrom] = useState("06:00");
   const [dateTo, setDateTo] = useState("");
@@ -160,28 +171,42 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     feedEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [answerHistory.length, askLoading]);
 
+  const operationOptions = useMemo(() => {
+    const names = new Set();
+    for (const row of rows) {
+      if (row.operation) names.add(row.operation);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, "ru"));
+  }, [rows]);
+
   const visible = useMemo(() => {
     if (!applied) return [];
-    const filtered = filterRows(rows, {
-      firms: applied.firm ? [applied.firm] : [],
-      crops: applied.crop ? [applied.crop] : [],
-      dateFrom: applied.dateFrom,
-      timeFrom: applied.timeFrom,
-      dateTo: applied.dateTo,
-      timeTo: applied.timeTo,
-      plate: applied.plate,
-      surname: applied.surname,
-    });
+    const filtered = narrowOperation(
+      filterRows(rows, {
+        firms: applied.firm ? [applied.firm] : [],
+        crops: applied.crop ? [applied.crop] : [],
+        dateFrom: applied.dateFrom,
+        timeFrom: applied.timeFrom,
+        dateTo: applied.dateTo,
+        timeTo: applied.timeTo,
+        plate: applied.plate,
+        surname: applied.surname,
+      }),
+      applied.operation,
+    );
     if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
     return rankRows(filtered, mode, sortDir);
   }, [rows, applied, mode, sortKey, sortDir]);
 
   const headed = useMemo(() => {
     if (!applied) return [];
-    return filterRows(rows, {
-      firms: applied.firm ? [applied.firm] : [],
-      crops: applied.crop ? [applied.crop] : [],
-    });
+    return narrowOperation(
+      filterRows(rows, {
+        firms: applied.firm ? [applied.firm] : [],
+        crops: applied.crop ? [applied.crop] : [],
+      }),
+      applied.operation,
+    );
   }, [rows, applied]);
 
   const dayRows = useMemo(() => {
@@ -202,7 +227,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const pageRows = visible.slice(page * pageSize, page * pageSize + pageSize);
 
   function draft() {
-    return { firm, crop, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
+    return { firm, crop, operation, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
   }
 
   async function form({ showTable = true } = {}) {
@@ -238,6 +263,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   function resetFilters() {
     setFirm("");
     setCrop("");
+    setOperation("");
     setDateFrom("");
     setTimeFrom("06:00");
     setDateTo("");
@@ -309,8 +335,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
           <Typography variant="body2" color="text.secondary">
             Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00:
-            внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, даты, госномер
-            и фамилия необязательны — те же поля, что у кнопки Namolot.
+            внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, агрозадание,
+            даты, госномер и фамилия необязательны. Агрозадание ищется по фрагменту названия, например «опрыскивание».
           </Typography>
           <TextField
             select
@@ -343,7 +369,18 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                 {name}
               </MenuItem>
             ))}
-          </TextField>
+            </TextField>
+          <Autocomplete
+            freeSolo
+            size="small"
+            options={operationOptions}
+            inputValue={operation}
+            onInputChange={(_event, value) => setOperation(value || "")}
+            disabled={loading}
+            renderInput={(params) => (
+              <TextField {...params} label="Агрозадание" placeholder="опрыскивание" />
+            )}
+          />
             <Button variant="contained" onClick={() => void form().catch(() => {})} disabled={loading}>
             {loading ? "Запрос…" : "Сформировать"}
           </Button>
@@ -618,7 +655,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                   </Box>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
-                    {applied.firm || applied.crop || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
+                    {applied.firm || applied.crop || applied.operation || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
                       ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
                       : "За этот период заданий с площадью нет."}
                   </Typography>
@@ -652,6 +689,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
           </Box>
         )}
 
+        {view === "answers" && (
         <Box sx={{ p: 1.5, borderTop: 1, borderColor: "divider", bgcolor: "background.paper" }}>
           <TextField
             placeholder="Например: сколько га внесения минеральных удобрений у Актая?"
@@ -683,6 +721,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
             </Button>
           </Stack>
         </Box>
+        )}
       </Paper>
     </Box>
   );
@@ -713,6 +752,7 @@ function RecordHead({ sortKey, sortDir, onSort }) {
       <TableCell>Госномер</TableCell>
       <TableCell>Механизатор</TableCell>
       <TableCell>Поле</TableCell>
+      <TableCell>Задание</TableCell>
       <TableCell align="right" sortDirection={sortKey === "tonnes" ? direction : false}>
         <TableSortLabel active={sortKey === "tonnes"} direction={sortKey === "tonnes" ? direction : "desc"} onClick={() => onSort("tonnes")}>
           Площадь, га
@@ -751,6 +791,15 @@ function RecordLine({ row, rank }) {
       <TableCell sx={{ whiteSpace: "nowrap" }}>{row.plate || "—"}</TableCell>
       <TableCell>{row.operator || "—"}</TableCell>
       <TableCell>{row.field || "—"}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>
+        {row.task_url ? (
+          <Link href={row.task_url} target="_blank" rel="noopener noreferrer">
+            {row.task_id}
+          </Link>
+        ) : (
+          row.task_id || "—"
+        )}
+      </TableCell>
       <TableCell align="right">{fmtHa(row.ha)}</TableCell>
     </TableRow>
   );
@@ -765,10 +814,10 @@ function csvCell(value) {
 function downloadTaskCsv(mode, rows) {
   const lines = [];
   if (mode === "rows") {
-    lines.push(["Дата", "Агрофирма", "Культура", "Операция", "Госномер", "Механизатор", "Поле", "га"].join(";"));
+    lines.push(["Дата", "Агрофирма", "Культура", "Операция", "Госномер", "Механизатор", "Поле", "Задание", "Ссылка", "га"].join(";"));
     for (const row of rows) {
       lines.push(
-        [fmtAt(row.at), row.firm, row.crop, row.operation, row.plate, row.operator, row.field, row.ha]
+        [fmtAt(row.at), row.firm, row.crop, row.operation, row.plate, row.operator, row.field, row.task_id, row.task_url, row.ha]
           .map(csvCell)
           .join(";"),
       );
