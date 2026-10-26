@@ -197,3 +197,103 @@ def test_table_excel_keeps_filtered_rows_and_columns():
     assert ws["C2"].value == "АгроРаздолье"
     assert ws["G2"].value == "АР-03-16 Соя 26г."
     assert ws["B2"].value == "15.10.2026 08:30"
+
+
+def test_filter_record_rows_uses_the_same_optional_fields_as_the_button():
+    rows = [
+        {
+            "at": "2026-08-01T07:15:00",
+            "firm": "Актай",
+            "crop": "Соя",
+            "plate": "А 2824 В",
+            "operator": "Пискеев Иван",
+            "surname": "Пискеев",
+            "tonnes": 12.5,
+            "field": "П1",
+        },
+        {
+            "at": "2026-08-02T04:00:00",
+            "firm": "Актай",
+            "crop": "Соя",
+            "plate": "1111",
+            "operator": "Иванов",
+            "surname": "Иванов",
+            "tonnes": 3,
+            "field": "П2",
+        },
+        {
+            "at": "2026-08-01T10:00:00",
+            "firm": "Аксу-Агро",
+            "crop": "Рапс яровой",
+            "plate": "2824",
+            "operator": "Пискеев",
+            "surname": "Пискеев",
+            "tonnes": 1,
+            "field": "П3",
+        },
+        {
+            "at": "2026-07-01T12:00:00",
+            "firm": "Актай",
+            "crop": "Соя",
+            "plate": "0000",
+            "operator": "Сидоров",
+            "surname": "Сидоров",
+            "tonnes": 9,
+            "field": "П0",
+        },
+    ]
+    assert namolot_view.filter_record_rows(rows) == rows
+    assert len(namolot_view.filter_record_rows(rows, firm="Актай", crop="Соя")) == 3
+    assert {row["field"] for row in namolot_view.filter_record_rows(rows, plate="2824")} == {"П1", "П3"}
+    assert len(namolot_view.filter_record_rows(rows, surname="пискеев")) == 2
+    window = namolot_view.filter_record_rows(
+        rows,
+        date_from="2026-08-01",
+        time_from="06:00",
+        date_to="2026-08-02",
+        time_to="05:59",
+    )
+    assert {row["field"] for row in window} == {"П1", "П2", "П3"}
+    assert namolot_view.filter_record_rows(rows, firm="Актай", surname="Иванов", plate="999") == []
+
+
+def test_format_ask_table_keeps_the_total_of_hidden_rows():
+    rows = [
+        {
+            "at": f"2026-08-01T06:{index:02d}:00",
+            "firm": "Актай",
+            "crop": "Соя",
+            "plate": str(index),
+            "operator": "Иванов",
+            "surname": "Иванов",
+            "field": "П",
+            "tonnes": float(index),
+        }
+        for index in range(5)
+    ]
+    text, meta = namolot_view.format_ask_table(rows, max_rows=2)
+    assert meta == {"rows_total": 5, "rows_sent": 2, "tonnes_total": 10.0, "truncated": True}
+    assert "Итого: 5 записей, 10.000 т" in text
+    assert "не показано 3" in text
+
+
+def test_ask_records_without_model_returns_the_table():
+    rows = [
+        {
+            "at": "2026-08-01T07:00:00",
+            "firm": "Актай",
+            "crop": "Соя",
+            "plate": "1",
+            "operator": "Иванов",
+            "surname": "Иванов",
+            "field": "П",
+            "tonnes": 1.5,
+        }
+    ]
+    out = namolot_view.ask_records(rows, "сколько тонн?", use_llm=False)
+    assert out["llm_used"] is False
+    assert out["rows_total"] == 1
+    assert "1.500" in out["answer"]
+    empty = namolot_view.ask_records([], "сколько тонн?", use_llm=True)
+    assert empty["llm_used"] is False
+    assert empty["answer"] == "По заданному фильтру данных нет."

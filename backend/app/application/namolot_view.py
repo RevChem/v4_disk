@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import threading
 import time
@@ -302,6 +303,176 @@ def record_rows(records: list[dict], index: dict[str, str] | None = None) -> lis
             }
         )
     return rows
+
+
+def _norm_plate(value: object) -> str:
+    """Как normPlate в frontend/src/utils/namolotFilter.js."""
+    return re.sub(r"[\s-]+", "", str(value or "").lower())
+
+
+def _norm_text(value: object) -> str:
+    """Как normText: нижний регистр и «ё» → «е»."""
+    return str(value or "").casefold().replace("ё", "е").strip()
+
+
+def _range_stamp(day: str, clock: str, empty_clock: str) -> str:
+    day = str(day or "").strip()
+    if not day:
+        return ""
+    clock = str(clock or "").strip() or empty_clock
+    return f"{day}T{clock}"[:16]
+
+
+def filter_record_rows(
+    rows: list[dict],
+    *,
+    firm: str = "",
+    crop: str = "",
+    date_from: str = "",
+    time_from: str = "",
+    date_to: str = "",
+    time_to: str = "",
+    plate: str = "",
+    surname: str = "",
+) -> list[dict]:
+    """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают."""
+    firm_name = str(firm or "").strip()
+    crop_name = str(crop or "").strip()
+    plate_q = _norm_plate(plate)
+    name_q = _norm_text(surname)
+    start = _range_stamp(date_from, time_from, "00:00")
+    end = _range_stamp(date_to, time_to, "23:59")
+    picked: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if firm_name and row.get("firm") != firm_name:
+            continue
+        if crop_name and row.get("crop") != crop_name:
+            continue
+        stamp = str(row.get("at") or "")[:16]
+        if (start or end) and not stamp:
+            continue
+        if start and stamp < start:
+            continue
+        if end and stamp > end:
+            continue
+        if plate_q and plate_q not in _norm_plate(row.get("plate")):
+            continue
+        if name_q and name_q not in _norm_text(f"{row.get('surname') or ''} {row.get('operator') or ''}"):
+            continue
+        picked.append(row)
+    return picked
+
+
+def _ask_max_rows() -> int:
+    try:
+        return max(1, int(os.environ.get("NAMOLOT_ASK_MAX_ROWS", "200")))
+    except ValueError:
+        return 200
+
+
+def _tonnes(row: dict) -> float:
+    try:
+        return float(row.get("tonnes") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _top_tonnes(rows: list[dict], key: str, limit: int = 12) -> str:
+    buckets: dict[str, float] = {}
+    for row in rows:
+        name = str(row.get(key) or "").strip() or "—"
+        buckets[name] = buckets.get(name, 0.0) + _tonnes(row)
+    ranked = sorted(buckets.items(), key=lambda item: item[1], reverse=True)
+    parts = [f"{name}={value:.3f}" for name, value in ranked[:limit]]
+    if len(ranked) > limit:
+        rest = sum(value for _name, value in ranked[limit:])
+        parts.append(f"…ещё {len(ranked) - limit}={rest:.3f}")
+    return "; ".join(parts)
+
+
+def format_ask_table(rows: list[dict], *, max_rows: int | None = None) -> tuple[str, dict]:
+    """TSV для вопроса. Итоги считаются по всем строкам среза, даже если таблица усечена."""
+    limit = _ask_max_rows() if max_rows is None else max(1, int(max_rows))
+    clean = [row for row in rows if isinstance(row, dict)]
+    total = round(sum(_tonnes(row) for row in clean), 3)
+    ordered = sorted(clean, key=lambda row: (_tonnes(row), str(row.get("at") or "")), reverse=True)
+    shown = ordered[:limit]
+    lines = ["дата\tагрофирма\tкультура\tгосномер\tмеханизатор\tполе\tтонны"]
+    for row in shown:
+        lines.append(
+            "\t".join(
+                [
+                    str(row.get("at") or "—"),
+                    str(row.get("firm") or "—"),
+                    str(row.get("crop") or "—"),
+                    str(row.get("plate") or "—"),
+                    str(row.get("operator") or "—"),
+                    str(row.get("field") or "—"),
+                    f"{_tonnes(row):.3f}",
+                ]
+            )
+        )
+    truncated = len(clean) > len(shown)
+    if truncated:
+        hidden = ordered[len(shown):]
+        hidden_t = round(sum(_tonnes(row) for row in hidden), 3)
+        lines.append(
+            f"… не показано {len(hidden)} записей на {hidden_t:.3f} т (мельче показанных)"
+        )
+    lines.append(f"Итого: {len(clean)} записей, {total:.3f} т")
+    if clean:
+        lines.append("По агрофирмам: " + _top_tonnes(clean, "firm"))
+        lines.append("По культурам: " + _top_tonnes(clean, "crop"))
+    return "\n".join(lines), {
+        "rows_total": len(clean),
+        "rows_sent": len(shown),
+        "tonnes_total": total,
+        "truncated": truncated,
+    }
+
+
+ASK_SYSTEM = (
+    "Ты помощник агронома. Отвечай только по таблице намолота Namolot: "
+    "каждая строка — одно взвешивание (дата, агрофирма, культура, госномер, механизатор, поле, тонны). "
+    "Не выдумывай числа, госномера и фамилии. Если таблица усечена, суммы бери из строк «Итого» и «По …» — "
+    "они посчитаны по всем строкам среза. Если данных недостаточно — так и скажи. Отвечай кратко, по-русски."
+)
+
+
+def ask_records(rows: list[dict], question: str, *, use_llm: bool = True) -> dict:
+    """Ответ по уже отфильтрованным строкам. Пустой срез и use_llm=False модель не вызывают."""
+    table, meta = format_ask_table(rows)
+    question = str(question or "").strip()
+    out = {
+        "ok": True,
+        "available": True,
+        "llm_used": False,
+        "question": question,
+        "answer": table if meta["rows_total"] else "По заданному фильтру данных нет.",
+        "usage": None,
+        "model": None,
+        "error": None,
+        **meta,
+    }
+    if not use_llm or not question or not meta["rows_total"]:
+        return out
+    from app.adapters.outbound.proverka.service import _ensure_plan_path
+
+    _ensure_plan_path()
+    from proverka.ai.facts_qa import answer_tsv
+
+    answered = answer_tsv(question, table, system=ASK_SYSTEM)
+    out.update(
+        ok=answered.get("ok", True),
+        llm_used=bool(answered.get("llm_used")),
+        answer=answered.get("answer") or out["answer"],
+        usage=answered.get("usage"),
+        model=answered.get("model"),
+        error=answered.get("error"),
+    )
+    return out
 
 
 def _auth_header(username: str, password: str) -> dict[str, str]:

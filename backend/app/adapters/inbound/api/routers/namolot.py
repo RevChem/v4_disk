@@ -38,6 +38,50 @@ def get_namolot_season(
     return _call(report_date, report_date, lambda _begin, _end: namolot_view.build_season(report_date))
 
 
+class NamolotAskIn(BaseModel):
+    """Те же необязательные поля, что у кнопки Namolot, плюс вопрос."""
+
+    report_date: date
+    firm: str = Field(default="", max_length=120)
+    crop: str = Field(default="", max_length=120)
+    date_from: str = Field(default="", max_length=10)
+    time_from: str = Field(default="06:00", max_length=5)
+    date_to: str = Field(default="", max_length=10)
+    time_to: str = Field(default="05:59", max_length=5)
+    plate: str = Field(default="", max_length=40)
+    surname: str = Field(default="", max_length=80)
+    question: str = Field(default="", max_length=3000)
+    use_llm: bool = True
+
+
+@router.post("/namolot/ask")
+def post_namolot_ask(body: NamolotAskIn, _: User = Depends(require_generate_access)):
+    """Вопрос по срезу сезона. Пустые опции — все записи, как «Сформировать» без фильтров."""
+    try:
+        season = namolot_view.build_season(body.report_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Namolot API недоступен. Проверьте сеть до 1С и NAMOLOT_PASSWORD.",
+        ) from exc
+    rows = namolot_view.filter_record_rows(
+        season.get("rows") or [],
+        firm=body.firm,
+        crop=body.crop,
+        date_from=body.date_from,
+        time_from=body.time_from,
+        date_to=body.date_to,
+        time_to=body.time_to,
+        plate=body.plate,
+        surname=body.surname,
+    )
+    answer = namolot_view.ask_records(rows, body.question, use_llm=body.use_llm)
+    answer["report_date"] = body.report_date.isoformat()
+    return answer
+
+
 @router.get("/namolot/brief")
 def get_namolot_brief(
     report_date: date = Query(..., alias="report_date"),

@@ -25,31 +25,7 @@ import {
 
 import { downloadNamolotExcel, fetchNamolotSeason } from "../api";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
-
-const FIRM_ORDER = [
-  "АФ Чистопольская",
-  "АгроРаздолье",
-  "Аксу-Агро",
-  "Актай",
-  "Дрожжаное Рассвет Агро",
-  "Лениногорская Птицефабрика",
-  "НурлатАгро",
-];
-
-const CROPS = [
-  "Рапс озимый",
-  "Рапс яровой",
-  "Пшеница озимая",
-  "Пшеница яровая",
-  "Тритикале озимая",
-  "Соя",
-  "Подсолнечник",
-  "Кукуруза на зерно",
-  "Кукуруза на силос",
-  "Картофель",
-  "Морковь",
-  "Свекла столовая",
-];
+import { NAMOLOT_CROPS as CROPS, NAMOLOT_FIRMS as FIRM_ORDER } from "../utils/namolotOptions";
 
 function fmtTonnes(value) {
   const n = Number(value);

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -9,12 +8,21 @@ import {
   CircularProgress,
   FormControlLabel,
   IconButton,
-  Link,
+  MenuItem,
   Paper,
   Stack,
   Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TablePagination,
+  TableRow,
+  TableSortLabel,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -23,115 +31,93 @@ import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
-import RefreshIcon from "@mui/icons-material/Refresh";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
-import TableChartOutlinedIcon from "@mui/icons-material/TableChartOutlined";
 
-import { askTaskFacts, fetchProverkaAiSettings, fetchTaskFactsOptions, queryTaskFacts } from "../api";
-import { POPPER_PROPS, SortableTable, downloadCsv, fmt } from "./analysis/common";
-
-const FILTERS_STORAGE_KEY = "svodki_task_facts_filters_v1";
-
-const EMPTY_FILTERS = {
-  reportIds: [],
-  group: "",
-  crop: "",
-  firm: "",
-  machine: "",
-  field: "",
-  minHa: "",
-  exact: false,
-};
-
-// Подстроки из operation_registry.py — совпадение без учёта регистра.
-const QUICK_GROUPS = [
-  { label: "МУ", value: "минеральных" },
-  { label: "Боронование", value: "боронование" },
-  { label: "Культивация", value: "культивация" },
-  { label: "Посев", value: "посев" },
-  { label: "Опрыскивание", value: "опрыскивание" },
-  { label: "Вспашка", value: "вспашка" },
-  { label: "Уборка", value: "уборка" },
-];
+import { askNamolotSeason, downloadNamolotExcel, fetchNamolotSeason, fetchProverkaAiSettings } from "../api";
+import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
+import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
 const EXAMPLES = [
-  "Сколько гектаров по каждой агрофирме?",
-  "Какие 10 заданий с наибольшей площадью?",
-  "Какие машины работали и сколько га у каждой?",
-  "Есть ли поля, где работали разные машины?",
+  "Сколько тонн по каждой агрофирме?",
+  "Какие 10 госномеров дали наибольший намолот?",
+  "Какая культура лидирует в этом срезе?",
+  "Сколько записей и тонн у выбранной фамилии?",
 ];
 
-const TABLE_COLUMNS = [
-  { key: "firm", label: "Фирма", wrap: true },
-  { key: "crop", label: "Культура", wrap: true },
-  { key: "field", label: "Поле", wrap: true },
-  { key: "machine", label: "Машина", wrap: true },
-  {
-    key: "task_id",
-    label: "Задание",
-    render: (r) =>
-      r.task_url ? (
-        <Link href={r.task_url} target="_blank" rel="noopener noreferrer">
-          #{r.task_id}
-        </Link>
-      ) : (
-        `#${r.task_id}`
-      ),
-    csv: (r) => r.task_url || r.task_id,
-  },
-  { key: "group", label: "Операция", wrap: true },
-  { key: "own", label: "Техника", render: (r) => (r.own === "" || r.own == null ? "—" : String(r.own)) },
-  { key: "ha", label: "Га", align: "right", render: (r) => fmt(r.ha, 2) },
-];
+function fmtTonnes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
 
-function loadStoredFilters() {
-  try {
-    const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return {
-      filters: { ...EMPTY_FILTERS, ...(parsed.filters || {}) },
-      useLlm: parsed.useLlm !== undefined ? Boolean(parsed.useLlm) : true,
-    };
-  } catch {
-    return null;
+function fmtAt(at) {
+  if (!at) return "—";
+  const [day, clock = ""] = String(at).split("T");
+  const [year, month, date] = day.split("-");
+  if (!year || !month || !date) return at;
+  return `${date}.${month}.${year} ${clock.slice(0, 5)}`.trim();
+}
+
+function joinList(values) {
+  return values?.length ? values.join(", ") : "—";
+}
+
+function sliceLabel(applied) {
+  if (!applied) return "весь сезон";
+  const parts = [];
+  if (applied.firm) parts.push(applied.firm);
+  if (applied.crop) parts.push(applied.crop);
+  if (applied.dateFrom || applied.dateTo) {
+    const from = [applied.dateFrom, applied.timeFrom].filter(Boolean).join(" ");
+    const to = [applied.dateTo, applied.timeTo].filter(Boolean).join(" ");
+    parts.push(`${from || "…"} — ${to || "…"}`);
   }
+  if (applied.plate) parts.push(`госномер ${applied.plate}`);
+  if (applied.surname) parts.push(applied.surname);
+  return parts.length ? parts.join(", ") : "весь сезон";
 }
 
-function formatWhen(iso) {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return iso;
-  }
+function emptySlice() {
+  return {
+    firm: "",
+    crop: "",
+    dateFrom: "",
+    timeFrom: "06:00",
+    dateTo: "",
+    timeTo: "05:59",
+    plate: "",
+    surname: "",
+  };
 }
 
-function SectionTitle({ children }) {
-  return (
-    <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.6, letterSpacing: 0.8 }}>
-      {children}
-    </Typography>
-  );
-}
+export default function TaskFactsPanel({ active = true, summaryDate }) {
+  const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
+  const [rows, setRows] = useState([]);
+  const [windows, setWindows] = useState(null);
+  const [applied, setApplied] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState("");
 
-export default function TaskFactsPanel({ active = true, summaryDate, initialJobId }) {
-  const [reportDate, setReportDate] = useState(summaryDate || "");
-  const [jobId, setJobId] = useState(initialJobId || "");
-  const [filters, setFilters] = useState(() => loadStoredFilters()?.filters || EMPTY_FILTERS);
+  const [firm, setFirm] = useState("");
+  const [crop, setCrop] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [timeFrom, setTimeFrom] = useState("06:00");
+  const [dateTo, setDateTo] = useState("");
+  const [timeTo, setTimeTo] = useState("05:59");
+  const [plate, setPlate] = useState("");
+  const [surname, setSurname] = useState("");
+  const [mode, setMode] = useState("rows");
+  const [sortKey, setSortKey] = useState("tonnes");
+  const [sortDir, setSortDir] = useState("desc");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+
   const [question, setQuestion] = useState("");
-  const [useLlm, setUseLlm] = useState(() => loadStoredFilters()?.useLlm ?? true);
+  const [useLlm, setUseLlm] = useState(true);
   const [view, setView] = useState("answers");
-
-  const [options, setOptions] = useState(null);
-  const [optionsLoading, setOptionsLoading] = useState(false);
-  const [optionsNote, setOptionsNote] = useState("");
   const [aiKeySet, setAiKeySet] = useState(true);
-
-  const [result, setResult] = useState(null);
-  const [queryLoading, setQueryLoading] = useState(false);
-  const [queryError, setQueryError] = useState("");
-
   const [answerHistory, setAnswerHistory] = useState([]);
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState("");
@@ -139,28 +125,14 @@ export default function TaskFactsPanel({ active = true, summaryDate, initialJobI
   const feedEnd = useRef(null);
 
   useEffect(() => {
-    setReportDate(summaryDate || "");
-  }, [summaryDate]);
-
-  useEffect(() => {
-    if (initialJobId) setJobId(initialJobId);
-  }, [initialJobId]);
-
-  // Дата или job_id сменились: старые результаты относятся к другому снимку.
-  useEffect(() => {
-    setResult(null);
-    setQueryError("");
+    setRows([]);
+    setWindows(null);
+    setApplied(null);
+    setLoaded(false);
+    setError("");
     setAnswerHistory([]);
     setAskError("");
-  }, [reportDate, jobId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ filters, useLlm }));
-    } catch {
-      // localStorage может быть недоступен — не критично
-    }
-  }, [filters, useLlm]);
+  }, [reportDate]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -177,137 +149,139 @@ export default function TaskFactsPanel({ active = true, summaryDate, initialJobI
     };
   }, [active]);
 
-  const loadOptions = useCallback(async () => {
-    if (!reportDate) return;
-    setOptionsLoading(true);
-    setOptionsNote("");
-    try {
-      const data = await fetchTaskFactsOptions({ reportDate, jobId });
-      setOptions(data);
-      if (!data.available) setOptionsNote(data.detail || "Факты по заданиям за эту дату не найдены.");
-    } catch (e) {
-      setOptions(null);
-      setOptionsNote(String(e.message || e));
-    } finally {
-      setOptionsLoading(false);
-    }
-  }, [reportDate, jobId]);
-
-  useEffect(() => {
-    if (active) loadOptions();
-  }, [active, loadOptions]);
-
   useEffect(() => {
     feedEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [answerHistory.length, askLoading]);
 
-  const setFilter = (key, value) => setFilters((f) => ({ ...f, [key]: value }));
+  const visible = useMemo(() => {
+    if (!applied) return [];
+    const filtered = filterRows(rows, {
+      firms: applied.firm ? [applied.firm] : [],
+      crops: applied.crop ? [applied.crop] : [],
+      dateFrom: applied.dateFrom,
+      timeFrom: applied.timeFrom,
+      dateTo: applied.dateTo,
+      timeTo: applied.timeTo,
+      plate: applied.plate,
+      surname: applied.surname,
+    });
+    if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
+    return rankRows(filtered, mode, sortDir);
+  }, [rows, applied, mode, sortKey, sortDir]);
 
-  const filtersActive = useMemo(
-    () =>
-      Boolean(
-        filters.group || filters.crop || filters.firm || filters.machine || filters.field ||
-          filters.minHa !== "" || filters.exact || (filters.reportIds && filters.reportIds.length > 0),
-      ),
-    [filters],
+  const headed = useMemo(() => {
+    if (!applied) return [];
+    return filterRows(rows, {
+      firms: applied.firm ? [applied.firm] : [],
+      crops: applied.crop ? [applied.crop] : [],
+    });
+  }, [rows, applied]);
+
+  const dayRows = useMemo(() => {
+    const from = windows?.day?.from;
+    const until = windows?.day?.until;
+    if (!from || !until) return [];
+    return headed.filter((row) => row.at && row.at >= from && row.at < until);
+  }, [headed, windows]);
+
+  const seasonTonnes = useMemo(
+    () => headed.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
+    [headed],
   );
-
-  const sessionStats = useMemo(() => {
-    let tokens = 0;
-    for (const e of answerHistory) {
-      const actual = (e.usage?.input_tokens || 0) + (e.usage?.output_tokens || 0);
-      tokens += actual || e.est_input_tokens || 0;
-    }
-    return { count: answerHistory.length, tokens };
-  }, [answerHistory]);
-
-  const factsUnavailable = options?.available === false;
-
-  const baseFilters = useMemo(
-    () => ({
-      reportDate,
-      jobId: jobId || undefined,
-      reportIds: filters.reportIds,
-      group: filters.group,
-      crop: filters.crop,
-      firm: filters.firm,
-      machine: filters.machine,
-      field: filters.field,
-      minHa: filters.minHa,
-      exact: filters.exact,
-    }),
-    [reportDate, jobId, filters],
+  const shownTonnes = useMemo(
+    () => visible.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
+    [visible],
   );
+  const pageRows = visible.slice(page * pageSize, page * pageSize + pageSize);
 
-  async function runQuery() {
-    setQueryLoading(true);
-    setQueryError("");
-    setResult(null);
+  function draft() {
+    return { firm, crop, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
+  }
+
+  async function form({ showTable = true } = {}) {
+    const next = draft();
+    setApplied(next);
+    setPage(0);
+    if (showTable) setView("table");
+    if (loaded || loading) return next;
+    setLoading(true);
+    setError("");
     try {
-      const data = await queryTaskFacts(baseFilters);
-      setResult(data);
-      if (data.available === false) setQueryError(data.detail || "Данных нет.");
-    } catch (e) {
-      setQueryError(String(e.message || e));
+      const data = await fetchNamolotSeason({ reportDate });
+      setWindows(data);
+      setRows(Array.isArray(data?.rows) ? data.rows : []);
+      setLoaded(true);
+      return next;
+    } catch (err) {
+      setRows([]);
+      setWindows(null);
+      setLoaded(false);
+      const message = String(err.message || err);
+      setError(message);
+      throw new Error(message);
     } finally {
-      setQueryLoading(false);
+      setLoading(false);
     }
   }
 
-  function showTable() {
-    setView("table");
-    runQuery();
+  function resetFilters() {
+    setFirm("");
+    setCrop("");
+    setDateFrom("");
+    setTimeFrom("06:00");
+    setDateTo("");
+    setTimeTo("05:59");
+    setPlate("");
+    setSurname("");
+    setPage(0);
+    if (loaded) setApplied(emptySlice());
+  }
+
+  function toggleSort(key) {
+    setPage(0);
+    if (sortKey === key) {
+      setSortDir((dir) => (dir === "desc" ? "asc" : "desc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDir("desc");
+  }
+
+  async function download() {
+    setDownloading(true);
+    setError("");
+    try {
+      await downloadNamolotExcel({ mode, rows: visible });
+    } catch (err) {
+      setError(String(err.message || err));
+    } finally {
+      setDownloading(false);
+    }
   }
 
   async function handleAsk(text) {
     const q = (text ?? question).trim();
-    if (askLoading || !reportDate || !q || factsUnavailable) return;
+    if (askLoading || loading || !q) return;
     setAskLoading(true);
     setAskError("");
     setView("answers");
     try {
-      const data = await askTaskFacts({ ...baseFilters, question: q, useLlm });
-      if (data.available === false) {
-        setAskError(data.detail || "Данных нет.");
-      } else {
-        setAnswerHistory((prev) => [...prev, { id: `${Date.now()}`, question: q, ts: Date.now(), ...data }]);
-        setQuestion("");
-      }
-    } catch (e) {
-      setAskError(String(e.message || e));
+      const slice = await form({ showTable: false });
+      const data = await askNamolotSeason({ reportDate, ...slice, question: q, useLlm });
+      setAnswerHistory((prev) => [
+        ...prev,
+        { id: `${Date.now()}`, question: q, ts: Date.now(), slice: sliceLabel(slice), ...data },
+      ]);
+      setQuestion("");
+    } catch (err) {
+      setAskError(String(err.message || err));
     } finally {
       setAskLoading(false);
     }
   }
 
-  function onQuestionKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey && (e.ctrlKey || e.metaKey || !e.nativeEvent.isComposing)) {
-      e.preventDefault();
-      handleAsk();
-    }
-  }
-
-  async function handleCopy(entry) {
-    try {
-      await navigator.clipboard.writeText(entry.answer || "");
-      setCopiedId(entry.id);
-      setTimeout(() => setCopiedId((c) => (c === entry.id ? null : c)), 1500);
-    } catch {
-      // буфер обмена недоступен — просто не подтверждаем
-    }
-  }
-
-  function exportCsv() {
-    if (!result?.rows?.length) return;
-    const jobPart = result.job_id ? `_${result.job_id}` : "";
-    downloadCsv(`task_facts_${reportDate}${jobPart}.csv`, TABLE_COLUMNS, result.rows);
-  }
-
-  const groupOptions = options?.values?.group || [];
-  const cropOptions = options?.values?.crop || [];
-  const firmOptions = options?.values?.firm || [];
-  const reportIdOptions = options?.values?.report_id || [];
-  const canAsk = !askLoading && Boolean(reportDate) && Boolean(question.trim()) && !factsUnavailable;
+  const busy = loading || downloading;
+  const canAsk = !askLoading && !loading && Boolean(question.trim());
 
   return (
     <Box
@@ -320,290 +294,463 @@ export default function TaskFactsPanel({ active = true, summaryDate, initialJobI
         overflow: { xs: "auto", md: "hidden" },
       }}
     >
-      {/* ───────── Фильтры ───────── */}
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between">
-            <SectionTitle>Срез данных</SectionTitle>
-            <Tooltip title="Обновить списки значений">
-              <span>
-                <IconButton size="small" onClick={loadOptions} disabled={optionsLoading || !reportDate}>
-                  {optionsLoading ? <CircularProgress size={16} /> : <RefreshIcon fontSize="small" />}
-                </IconButton>
-              </span>
-            </Tooltip>
-          </Stack>
-
+          <Typography variant="body2" color="text.secondary">
+            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все записи сезона.
+            Агрофирма, культура, даты, госномер и фамилия необязательны — те же поля, что у кнопки Namolot.
+          </Typography>
           <TextField
-            label="Дата сводки"
-            type="date"
+            select
+            label="Агрофирма"
             size="small"
             fullWidth
-            value={reportDate || ""}
-            onChange={(e) => setReportDate(e.target.value)}
-            slotProps={{ inputLabel: { shrink: true } }}
-          />
-          <TextField
-            label="job_id"
-            size="small"
-            fullWidth
-            value={jobId}
-            onChange={(e) => setJobId(e.target.value)}
-            placeholder="по умолчанию — самый свежий"
-          />
-
-          {!optionsLoading && optionsNote && <Alert severity="info" sx={{ py: 0.25 }}>{optionsNote}</Alert>}
-          {!optionsLoading && options?.available && (
-            <Typography variant="caption" color="text.secondary">
-              Снимок {formatWhen(options.generated_at)}: {fmt(options.rows, 0)} строк, {fmt(options.ha_total, 0)} га.
-            </Typography>
-          )}
-
-          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ pt: 0.5 }}>
-            <SectionTitle>Фильтры</SectionTitle>
-            <Button size="small" color="inherit" onClick={() => setFilters(EMPTY_FILTERS)} disabled={!filtersActive}>
-              Сбросить
-            </Button>
-          </Stack>
-
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-            {QUICK_GROUPS.map((g) => (
-              <Chip
-                key={g.value}
-                size="small"
-                variant={filters.group === g.value ? "filled" : "outlined"}
-                color={filters.group === g.value ? "primary" : "default"}
-                label={g.label}
-                onClick={() => setFilter("group", filters.group === g.value ? "" : g.value)}
-              />
+            value={firm}
+            onChange={(event) => setFirm(event.target.value)}
+            disabled={loading}
+          >
+            <MenuItem value="">Не выбрана</MenuItem>
+            {NAMOLOT_FIRMS.map((name) => (
+              <MenuItem key={name} value={name}>
+                {name}
+              </MenuItem>
             ))}
-          </Stack>
-
-          <Autocomplete
-            freeSolo size="small" fullWidth options={groupOptions}
-            inputValue={filters.group} onInputChange={(_, v) => setFilter("group", v)} slotProps={POPPER_PROPS}
-            renderInput={(params) => <TextField {...params} label="Операция" placeholder="напр. минеральных" />}
-          />
-          <Autocomplete
-            freeSolo size="small" fullWidth options={cropOptions}
-            inputValue={filters.crop} onInputChange={(_, v) => setFilter("crop", v)} slotProps={POPPER_PROPS}
-            renderInput={(params) => <TextField {...params} label="Культура" placeholder="напр. соя" />}
-          />
-          <Autocomplete
-            freeSolo size="small" fullWidth options={firmOptions}
-            inputValue={filters.firm} onInputChange={(_, v) => setFilter("firm", v)} slotProps={POPPER_PROPS}
-            renderInput={(params) => <TextField {...params} label="Агрофирма" />}
-          />
+          </TextField>
+          <TextField
+            select
+            label="Культура"
+            size="small"
+            fullWidth
+            value={crop}
+            onChange={(event) => setCrop(event.target.value)}
+            disabled={loading}
+          >
+            <MenuItem value="">Не выбрана</MenuItem>
+            {NAMOLOT_CROPS.map((name) => (
+              <MenuItem key={name} value={name}>
+                {name}
+              </MenuItem>
+            ))}
+          </TextField>
+            <Button variant="contained" onClick={() => void form().catch(() => {})} disabled={loading}>
+            {loading ? "Запрос…" : "Сформировать"}
+          </Button>
           <Stack direction="row" spacing={1}>
-            <TextField size="small" fullWidth label="Машина" value={filters.machine} onChange={(e) => setFilter("machine", e.target.value)} />
-            <TextField size="small" fullWidth label="Поле" value={filters.field} onChange={(e) => setFilter("field", e.target.value)} />
-          </Stack>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <TextField size="small" label="Мин. га" type="number" value={filters.minHa} onChange={(e) => setFilter("minHa", e.target.value)} sx={{ width: 110 }} />
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={<Checkbox size="small" checked={filters.exact} onChange={(e) => setFilter("exact", e.target.checked)} />}
-              label={<Typography variant="body2">точное совпадение</Typography>}
+            <TextField
+              label="Дата с"
+              type="date"
+              size="small"
+              fullWidth
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+              disabled={loading && !loaded}
+            />
+            <TextField
+              label="Время с"
+              type="time"
+              size="small"
+              fullWidth
+              value={timeFrom}
+              onChange={(event) => setTimeFrom(event.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+              disabled={loading && !loaded}
             />
           </Stack>
-          <Autocomplete
-            multiple size="small" options={reportIdOptions} value={filters.reportIds}
-            onChange={(_, v) => setFilter("reportIds", v)} slotProps={POPPER_PROPS}
-            renderTags={(value, getTagProps) =>
-              value.map((option, index) => {
-                const { key, ...tagProps } = getTagProps({ index });
-                return <Chip key={key} size="small" label={`сводка ${option}`} {...tagProps} />;
-              })
-            }
-            renderInput={(params) => <TextField {...params} label="Сводки (все, если пусто)" />}
-          />
-
-        </Stack>
-        <Box sx={{ p: 1.5, borderTop: 1, borderColor: "divider" }}>
-          <Button
+          <Stack direction="row" spacing={1}>
+            <TextField
+              label="Дата по"
+              type="date"
+              size="small"
+              fullWidth
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+              disabled={loading && !loaded}
+            />
+            <TextField
+              label="Время по"
+              type="time"
+              size="small"
+              fullWidth
+              value={timeTo}
+              onChange={(event) => setTimeTo(event.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+              disabled={loading && !loaded}
+            />
+          </Stack>
+          <TextField
+            label="Госномер"
+            size="small"
             fullWidth
-            variant="outlined"
-            startIcon={<TableChartOutlinedIcon />}
-            onClick={showTable}
-            disabled={queryLoading || !reportDate || factsUnavailable}
-          >
-            {queryLoading ? "Загрузка…" : "Показать таблицу · 0 токенов"}
+            value={plate}
+            placeholder="2824"
+            onChange={(event) => setPlate(event.target.value)}
+            disabled={loading && !loaded}
+          />
+          <TextField
+            label="Фамилия"
+            size="small"
+            fullWidth
+            value={surname}
+            placeholder="Пискеев"
+            onChange={(event) => setSurname(event.target.value)}
+            disabled={loading && !loaded}
+          />
+          <Button onClick={resetFilters} disabled={loading && !loaded}>
+            Сбросить фильтр
           </Button>
-        </Box>
+          {error ? <Alert severity="error">{error}</Alert> : null}
+        </Stack>
       </Paper>
 
-      {/* ───────── Ответы и таблица ───────── */}
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: { xs: 560, md: 0 }, overflow: "hidden" }}>
         <Stack direction="row" alignItems="center" sx={{ px: 1.5, borderBottom: 1, borderColor: "divider" }} spacing={1}>
-          <Tabs value={view} onChange={(_, v) => setView(v)} sx={{ minHeight: 44 }}>
+          <Tabs value={view} onChange={(_, next) => setView(next)} sx={{ minHeight: 44 }}>
             <Tab value="answers" label={`Ответы${answerHistory.length ? ` (${answerHistory.length})` : ""}`} sx={{ minHeight: 44 }} />
-            <Tab value="table" label={`Таблица${result?.available ? ` (${fmt(result.rows_total, 0)})` : ""}`} sx={{ minHeight: 44 }} />
+            <Tab value="table" label={`Таблица${applied && loaded ? ` (${visible.length.toLocaleString("ru-RU")})` : ""}`} sx={{ minHeight: 44 }} />
           </Tabs>
           <Box sx={{ flex: 1 }} />
-          {view === "answers" && answerHistory.length > 0 && (
-            <>
-              <Chip size="small" variant="outlined" label={`за сессию: ${sessionStats.count} · ~${fmt(sessionStats.tokens, 0)} ток.`} />
-              <Button size="small" color="inherit" onClick={() => setAnswerHistory([])}>Очистить</Button>
-            </>
+          {view === "table" && (
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={mode}
+              onChange={(_event, next) => {
+                if (!next) return;
+                setMode(next);
+                setSortKey("tonnes");
+                setSortDir("desc");
+                setPage(0);
+              }}
+            >
+              <ToggleButton value="rows">Записи</ToggleButton>
+              <ToggleButton value="plates">Госномера</ToggleButton>
+              <ToggleButton value="surnames">Фамилии</ToggleButton>
+            </ToggleButtonGroup>
           )}
-          {view === "table" && result?.rows?.length > 0 && (
-            <Button size="small" startIcon={<DownloadOutlinedIcon fontSize="small" />} onClick={exportCsv}>CSV</Button>
+          {view === "table" && loaded && (
+            <Button size="small" startIcon={<DownloadOutlinedIcon fontSize="small" />} onClick={() => void download()} disabled={busy}>
+              {downloading ? "Excel…" : "Excel"}
+            </Button>
+          )}
+          {view === "answers" && answerHistory.length > 0 && (
+            <Button size="small" color="inherit" onClick={() => setAnswerHistory([])}>
+              Очистить
+            </Button>
           )}
         </Stack>
 
         {view === "answers" && (
-          <>
-            <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", p: { xs: 1.5, md: 2.5 } }}>
-              {!aiKeySet && (
-                <Alert severity="warning" sx={{ mb: 2 }}>
-                  Ключ DeepSeek не задан: «Спросить» вернёт таблицу без ответа модели. Ключ задаётся в меню AI, раздел «DeepSeek».
-                </Alert>
-              )}
-              {!answerHistory.length && !askLoading && (
-                <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ minHeight: "100%", textAlign: "center", py: 4 }}>
-                  <AutoAwesomeOutlinedIcon color="primary" sx={{ fontSize: 44, opacity: 0.8 }} />
-                  <Box>
-                    <Typography variant="h6" fontWeight={700}>Спросите по заданиям</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520, mt: 0.5 }}>
-                      Сначала задайте срез слева (операция, культура, фирма), затем вопрос. Модель увидит только этот срез,
-                      поэтому чем уже срез, тем дешевле и точнее ответ.
-                    </Typography>
-                  </Box>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="center" sx={{ maxWidth: 640 }}>
-                    {EXAMPLES.map((ex) => (
-                      <Chip key={ex} variant="outlined" label={ex} onClick={() => setQuestion(ex)} />
-                    ))}
-                  </Stack>
+          <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", p: { xs: 1.5, md: 2.5 } }}>
+            {!aiKeySet && (
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                Ключ DeepSeek не задан: «Спросить» вернёт таблицу без ответа модели. Ключ задаётся в меню AI, раздел «DeepSeek».
+              </Alert>
+            )}
+            {!answerHistory.length && !askLoading && (
+              <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ minHeight: "100%", textAlign: "center", py: 4 }}>
+                <AutoAwesomeOutlinedIcon color="primary" sx={{ fontSize: 44, opacity: 0.8 }} />
+                <Box>
+                  <Typography variant="h6" fontWeight={700}>
+                    Спросите по сформированному срезу
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 560, mt: 0.5 }}>
+                    Можно сразу нажать «Сформировать» без опций. Либо сначала выберите агрофирму, культуру, даты, госномер или фамилию — и сформируйте этот срез.
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="center" sx={{ maxWidth: 640 }}>
+                  {EXAMPLES.map((ex) => (
+                    <Chip key={ex} variant="outlined" label={ex} onClick={() => setQuestion(ex)} />
+                  ))}
                 </Stack>
-              )}
-
-              <Stack spacing={2.5}>
-                {answerHistory.map((entry) => (
-                  <Box key={entry.id}>
-                    <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-                      <Box
-                        sx={(theme) => ({
-                          maxWidth: "80%",
-                          px: 1.75,
-                          py: 1,
-                          borderRadius: 2,
-                          borderTopRightRadius: 4,
-                          bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === "dark" ? 0.22 : 0.1),
-                        })}
-                      >
-                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>{entry.question}</Typography>
-                      </Box>
-                    </Box>
-                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderTopLeftRadius: 4 }}>
-                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-                        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65, flex: 1 }}>
-                          {entry.answer || "Пустой ответ"}
+              </Stack>
+            )}
+            <Stack spacing={2.5}>
+              {answerHistory.map((entry) => (
+                <Box key={entry.id}>
+                  <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+                    <Box
+                      sx={(theme) => ({
+                        maxWidth: "80%",
+                        px: 1.75,
+                        py: 1,
+                        borderRadius: 2,
+                        borderTopRightRadius: 4,
+                        bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === "dark" ? 0.22 : 0.1),
+                      })}
+                    >
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                        {entry.question}
+                      </Typography>
+                      {entry.slice ? (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                          {entry.slice}
                         </Typography>
-                        <Tooltip title={copiedId === entry.id ? "Скопировано" : "Скопировать ответ"}>
-                          <IconButton size="small" onClick={() => handleCopy(entry)}>
-                            {copiedId === entry.id ? <CheckRoundedIcon fontSize="small" color="success" /> : <ContentCopyOutlinedIcon fontSize="small" />}
-                          </IconButton>
-                        </Tooltip>
-                      </Stack>
-                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
-                        <Chip size="small" color={entry.llm_used ? "primary" : "default"} label={entry.llm_used ? `модель: ${entry.model}` : "без модели"} />
-                        <Chip size="small" variant="outlined" label={`строк ${entry.rows_sent ?? "—"}/${entry.rows_total ?? "—"}`} />
-                        <Chip size="small" variant="outlined" label={`${fmt(entry.ha_total, 1)} га`} />
-                        {entry.usage?.input_tokens != null ? (
-                          <Chip
-                            size="small"
-                            variant="outlined"
-                            label={`${entry.usage.input_tokens}/${entry.usage.output_tokens ?? "?"} токенов${entry.usage.cache_hit_tokens ? `, кэш ${entry.usage.cache_hit_tokens}` : ""}`}
-                          />
-                        ) : (
-                          entry.est_input_tokens != null && <Chip size="small" variant="outlined" label={`≈${entry.est_input_tokens} вх. токенов`} />
-                        )}
-                        {entry.error && <Chip size="small" color="warning" label={entry.error} />}
-                      </Stack>
-                    </Paper>
+                      ) : null}
+                    </Box>
                   </Box>
-                ))}
-                {askLoading && (
-                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
-                      <CircularProgress size={18} />
-                      <Typography variant="body2" color="text.secondary">Читаю срез и отвечаю…</Typography>
+                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderTopLeftRadius: 4 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                      <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65, flex: 1 }}>
+                        {entry.answer || "Пустой ответ"}
+                      </Typography>
+                      <Tooltip title={copiedId === entry.id ? "Скопировано" : "Скопировать ответ"}>
+                        <IconButton size="small" onClick={() => void handleCopy(entry, setCopiedId)}>
+                          {copiedId === entry.id ? (
+                            <CheckRoundedIcon fontSize="small" color="success" />
+                          ) : (
+                            <ContentCopyOutlinedIcon fontSize="small" />
+                          )}
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+                      <Chip size="small" color={entry.llm_used ? "primary" : "default"} label={entry.llm_used ? `модель: ${entry.model}` : "без модели"} />
+                      <Chip size="small" variant="outlined" label={`записей ${entry.rows_sent ?? "—"}/${entry.rows_total ?? "—"}`} />
+                      <Chip size="small" variant="outlined" label={`${fmtTonnes(entry.tonnes_total)} т`} />
+                      {entry.usage?.input_tokens != null ? (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`${entry.usage.input_tokens}/${entry.usage.output_tokens ?? "?"} токенов${entry.usage.cache_hit_tokens ? `, кэш ${entry.usage.cache_hit_tokens}` : ""}`}
+                        />
+                      ) : null}
+                      {entry.error ? <Chip size="small" color="warning" label={entry.error} /> : null}
                     </Stack>
                   </Paper>
-                )}
-                {askError && <Alert severity="warning">{askError}</Alert>}
-                <div ref={feedEnd} />
-              </Stack>
-            </Box>
-
-            <Box sx={{ p: 1.5, borderTop: 1, borderColor: "divider", bgcolor: "background.paper" }}>
-              <TextField
-                placeholder="Например: какие задания были по МУ на сое?"
-                multiline
-                minRows={2}
-                maxRows={6}
-                fullWidth
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={onQuestionKeyDown}
-                disabled={factsUnavailable}
-              />
-              <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mt: 1 }}>
-                <FormControlLabel
-                  sx={{ m: 0 }}
-                  control={<Checkbox size="small" checked={useLlm} onChange={(e) => setUseLlm(e.target.checked)} />}
-                  label={<Typography variant="body2">Использовать модель (иначе таблица)</Typography>}
-                />
-                <Box sx={{ flex: 1 }} />
-                <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>
-                  Enter — отправить, Shift+Enter — новая строка
-                </Typography>
-                <Button variant="contained" onClick={() => handleAsk()} disabled={!canAsk} endIcon={<SendRoundedIcon />}>
-                  {askLoading ? "Спрашиваю…" : "Спросить"}
-                </Button>
-              </Stack>
-            </Box>
-          </>
+                </Box>
+              ))}
+              {askLoading && (
+                <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                  <Stack direction="row" spacing={1.5} alignItems="center">
+                    <CircularProgress size={18} />
+                    <Typography variant="body2" color="text.secondary">
+                      Читаю срез и отвечаю…
+                    </Typography>
+                  </Stack>
+                </Paper>
+              )}
+              {askError ? <Alert severity="warning">{askError}</Alert> : null}
+              <div ref={feedEnd} />
+            </Stack>
+          </Box>
         )}
 
         {view === "table" && (
-          <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", p: { xs: 1.5, md: 2 }, gap: 1.5 }}>
-            {queryLoading && (
-              <Stack direction="row" spacing={1} alignItems="center">
-                <CircularProgress size={16} />
-                <Typography variant="body2" color="text.secondary">Загрузка…</Typography>
+          <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", p: { xs: 1.5, md: 2 }, gap: 1.5, overflow: "hidden" }}>
+            {loading ? (
+              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 2 }}>
+                <CircularProgress size={22} />
+                <Typography variant="body2" color="text.secondary">
+                  Запрос к Namolot…
+                </Typography>
               </Stack>
-            )}
-            {queryError && <Alert severity="warning">{queryError}</Alert>}
-            {!result && !queryLoading && !queryError && (
-              <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
-                Задайте срез слева и нажмите «Показать таблицу».
-              </Typography>
-            )}
-            {result?.available && (
+            ) : null}
+            {!loading && applied && loaded ? (
               <>
-                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center">
-                  <Chip color="primary" size="small" label={`${fmt(result.rows_total, 0)} строк · ${fmt(result.ha_total, 1)} га`} />
-                  {(result.by_firm || []).slice(0, 8).map((f) => (
-                    <Chip key={f.firm || "none"} size="small" variant="outlined" label={`${f.firm || "—"}: ${fmt(f.ha, 1)} га`} />
-                  ))}
-                  {result.truncated && <Chip size="small" color="warning" label={`показаны первые ${result.rows.length}`} />}
-                </Stack>
-                <Box sx={{ flex: 1, minHeight: 0 }}>
-                  <SortableTable
-                    fill
-                    columns={TABLE_COLUMNS}
-                    rows={result.rows}
-                    rowKey={(r, i) => `${r.task_id}-${r.field_id}-${i}`}
-                    defaultSort="ha"
-                    emptyText="По этому срезу строк нет"
-                  />
-                </Box>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Показатель</TableCell>
+                      <TableCell>Период</TableCell>
+                      <TableCell align="right">Намолот, т</TableCell>
+                      <TableCell align="right">Записей</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    <TableRow>
+                      <TableCell>За сутки</TableCell>
+                      <TableCell>{windows ? `${fmtAt(windows.day?.from)} — ${fmtAt(windows.day?.to)}` : "—"}</TableCell>
+                      <TableCell align="right">{fmtTonnes(dayRows.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0))}</TableCell>
+                      <TableCell align="right">{dayRows.length}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>За сезон</TableCell>
+                      <TableCell>{windows ? `${fmtAt(windows.season?.from)} — ${fmtAt(windows.season?.to)}` : "—"}</TableCell>
+                      <TableCell align="right">{fmtTonnes(seasonTonnes)}</TableCell>
+                      <TableCell align="right">{headed.length}</TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+                <Typography variant="body2">
+                  {mode === "rows" ? "Записей" : "Строк"} {visible.length.toLocaleString("ru-RU")}
+                  {" · "}
+                  {fmtTonnes(shownTonnes)} т
+                  {visible.length !== rows.length ? ` из ${rows.length.toLocaleString("ru-RU")}` : ""}. Срез: {sliceLabel(applied)}.
+                </Typography>
+                {visible.length ? (
+                  <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell width={48}>№</TableCell>
+                          {mode === "rows" ? (
+                            <RecordHead sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                          ) : (
+                            <GroupHead mode={mode} sortDir={sortDir} onSort={() => toggleSort("tonnes")} />
+                          )}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {pageRows.map((row, index) =>
+                          mode === "rows" ? (
+                            <RecordLine key={`${row.at}-${row.plate}-${row.operator}-${index}`} row={row} rank={page * pageSize + index + 1} />
+                          ) : (
+                            <GroupLine key={row.key} row={row} mode={mode} rank={page * pageSize + index + 1} />
+                          ),
+                        )}
+                      </TableBody>
+                    </Table>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    {applied.firm || applied.crop || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
+                      ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
+                      : "За сезон записей нет."}
+                  </Typography>
+                )}
+                <TablePagination
+                  component="div"
+                  count={visible.length}
+                  page={page}
+                  onPageChange={(_event, next) => setPage(next)}
+                  rowsPerPage={pageSize}
+                  onRowsPerPageChange={(event) => {
+                    setPageSize(Number(event.target.value));
+                    setPage(0);
+                  }}
+                  rowsPerPageOptions={[50, 100, 200]}
+                  labelRowsPerPage="На странице"
+                  labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`}
+                />
               </>
-            )}
+            ) : null}
+            {!loading && applied && !loaded ? (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
+                Сезон не загрузился. Нажмите «Сформировать» ещё раз.
+              </Typography>
+            ) : null}
+            {!loading && !applied ? (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
+                Таблица пустая, пока не нажато «Сформировать».
+              </Typography>
+            ) : null}
           </Box>
         )}
+
+        <Box sx={{ p: 1.5, borderTop: 1, borderColor: "divider", bgcolor: "background.paper" }}>
+          <TextField
+            placeholder="Например: сколько тонн по сое у Актая?"
+            multiline
+            minRows={2}
+            maxRows={6}
+            fullWidth
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void handleAsk();
+              }
+            }}
+          />
+          <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mt: 1 }}>
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Checkbox size="small" checked={useLlm} onChange={(event) => setUseLlm(event.target.checked)} />}
+              label={<Typography variant="body2">Использовать модель (иначе таблица)</Typography>}
+            />
+            <Box sx={{ flex: 1 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>
+              Enter — отправить, Shift+Enter — новая строка
+            </Typography>
+            <Button variant="contained" onClick={() => void handleAsk()} disabled={!canAsk} endIcon={<SendRoundedIcon />}>
+              {askLoading ? "Спрашиваю…" : "Спросить"}
+            </Button>
+          </Stack>
+        </Box>
       </Paper>
     </Box>
+  );
+}
+
+async function handleCopy(entry, setCopiedId) {
+  try {
+    await navigator.clipboard.writeText(entry.answer || "");
+    setCopiedId(entry.id);
+    setTimeout(() => setCopiedId((current) => (current === entry.id ? null : current)), 1500);
+  } catch {
+    // буфер обмена недоступен
+  }
+}
+
+function RecordHead({ sortKey, sortDir, onSort }) {
+  const direction = sortDir === "asc" ? "asc" : "desc";
+  return (
+    <>
+      <TableCell sortDirection={sortKey === "at" ? direction : false}>
+        <TableSortLabel active={sortKey === "at"} direction={sortKey === "at" ? direction : "desc"} onClick={() => onSort("at")}>
+          Дата
+        </TableSortLabel>
+      </TableCell>
+      <TableCell>Агрофирма</TableCell>
+      <TableCell>Культура</TableCell>
+      <TableCell>Госномер</TableCell>
+      <TableCell>Механизатор</TableCell>
+      <TableCell>Поле</TableCell>
+      <TableCell align="right" sortDirection={sortKey === "tonnes" ? direction : false}>
+        <TableSortLabel active={sortKey === "tonnes"} direction={sortKey === "tonnes" ? direction : "desc"} onClick={() => onSort("tonnes")}>
+          Намолот, т
+        </TableSortLabel>
+      </TableCell>
+    </>
+  );
+}
+
+function GroupHead({ mode, sortDir, onSort }) {
+  const direction = sortDir === "asc" ? "asc" : "desc";
+  return (
+    <>
+      <TableCell>{mode === "plates" ? "Госномер" : "Фамилия"}</TableCell>
+      <TableCell align="right" sortDirection={direction}>
+        <TableSortLabel active direction={direction} onClick={onSort}>
+          Намолот, т
+        </TableSortLabel>
+      </TableCell>
+      <TableCell align="right">Записей</TableCell>
+      <TableCell>{mode === "plates" ? "Фамилии" : "Госномера"}</TableCell>
+      <TableCell>Культуры</TableCell>
+      <TableCell>Агрофирмы</TableCell>
+    </>
+  );
+}
+
+function RecordLine({ row, rank }) {
+  return (
+    <TableRow>
+      <TableCell>{rank}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtAt(row.at)}</TableCell>
+      <TableCell>{row.firm}</TableCell>
+      <TableCell>{row.crop}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{row.plate || "—"}</TableCell>
+      <TableCell>{row.operator || "—"}</TableCell>
+      <TableCell>{row.field || "—"}</TableCell>
+      <TableCell align="right">{fmtTonnes(row.tonnes)}</TableCell>
+    </TableRow>
+  );
+}
+
+function GroupLine({ row, mode, rank }) {
+  return (
+    <TableRow>
+      <TableCell>{rank}</TableCell>
+      <TableCell sx={{ fontWeight: 600 }}>{row.key}</TableCell>
+      <TableCell align="right">{fmtTonnes(row.tonnes)}</TableCell>
+      <TableCell align="right">{row.records.toLocaleString("ru-RU")}</TableCell>
+      <TableCell>{joinList(mode === "plates" ? row.names : row.plates)}</TableCell>
+      <TableCell>{joinList(row.crops)}</TableCell>
+      <TableCell>{joinList(row.firms)}</TableCell>
+    </TableRow>
   );
 }

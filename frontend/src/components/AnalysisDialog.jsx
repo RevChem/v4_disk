@@ -39,7 +39,7 @@ const SECTIONS = [
   {
     id: "facts",
     title: "Вопросы по заданиям",
-    hint: "Таблица и ответы AI по срезу",
+    hint: "Сразу или с теми же фильтрами, что у Namolot",
     icon: QuestionAnswerOutlinedIcon,
   },
   {
@@ -64,7 +64,6 @@ export default function AnalysisDialog({
   onClose,
   initialSection = "analytics",
   summaryDate = "",
-  initialJobId = "",
 }) {
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState(() => new Set([initialSection]));
@@ -210,7 +209,7 @@ export default function AnalysisDialog({
               {id === "fuel" && <FuelPanel active={section === id} summaryDate={summaryDate} />}
               {id === "driver" && <DriverWorkPanel summaryDate={summaryDate} preset={driverPreset} />}
               {id === "facts" && (
-                <TaskFactsPanel active={section === id} summaryDate={summaryDate} initialJobId={initialJobId} />
+                <TaskFactsPanel active={section === id} summaryDate={summaryDate} />
               )}
               {id === "tasks" && <TasksLookupPanel />}
               {id === "checks" && (

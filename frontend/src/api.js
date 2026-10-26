@@ -1074,6 +1074,44 @@ export async function fetchNamolotSeason({ reportDate }) {
   }
 }
 
+/** Вопрос по срезу сезона Namolot. Пустые опции — все записи сезона. */
+export async function askNamolotSeason({
+  reportDate,
+  firm = "",
+  crop = "",
+  dateFrom = "",
+  timeFrom = "06:00",
+  dateTo = "",
+  timeTo = "05:59",
+  plate = "",
+  surname = "",
+  question = "",
+  useLlm = true,
+}) {
+  try {
+    const { data } = await api.post(
+      "/proverka/namolot/ask",
+      {
+        report_date: reportDate,
+        firm: firm || "",
+        crop: crop || "",
+        date_from: dateFrom || "",
+        time_from: timeFrom || "06:00",
+        date_to: dateTo || "",
+        time_to: timeTo || "05:59",
+        plate: plate || "",
+        surname: surname || "",
+        question: question || "",
+        use_llm: Boolean(useLlm),
+      },
+      { timeout: 180_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchNamolotBrief({ reportDate, firm, crop }) {
   try {
     const { data } = await api.get("/proverka/namolot/brief", {

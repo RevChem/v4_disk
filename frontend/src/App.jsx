@@ -89,7 +89,6 @@ export default function App() {
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analysisSection, setAnalysisSection] = useState("analytics");
-  const [taskFactsJobId, setTaskFactsJobId] = useState("");
   const [interfaceOpen, setInterfaceOpen] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -120,8 +119,7 @@ export default function App() {
   }, []);
 
   const isDeveloper = user?.role === "developer";
-  const openTaskFacts = useCallback((jobId) => {
-    setTaskFactsJobId(jobId || "");
+  const openTaskFacts = useCallback(() => {
     setAnalysisSection("facts");
     setAnalysisOpen(true);
   }, []);
@@ -853,7 +851,6 @@ export default function App() {
         onClose={() => setAnalysisOpen(false)}
         initialSection={analysisSection}
         summaryDate={summaryDate}
-        initialJobId={taskFactsJobId}
       />
     </ThemeProvider>
   );
