@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.adapters.inbound.api.deps import require_generate_access
-from app.application import namolot_view
+from app.application import namolot_view, plate_mappings
 from app.models import User
 
 router = APIRouter(prefix="/proverka", tags=["proverka"])
@@ -56,6 +56,34 @@ def get_namolot_view(
 ):
     """Тонны по агрофирме, организации и культуре. Источник — живой Namolot, не кэш сводок."""
     return _call(date_begin, date_end, namolot_view.build_view)
+
+
+class PlateMappingIn(BaseModel):
+    namolot: str = ""
+    cropwise: str = ""
+
+
+class PlateMappingsIn(BaseModel):
+    items: list[PlateMappingIn] = Field(default_factory=list, max_length=300)
+
+
+@router.get("/plate-mappings")
+def get_plate_mappings(_: User = Depends(require_generate_access)):
+    """Пары госномеров. Пока сайт не сохранял список, отдаётся файл по умолчанию."""
+    try:
+        return {"items": plate_mappings.load_items()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/plate-mappings")
+def put_plate_mappings(body: PlateMappingsIn, _: User = Depends(require_generate_access)):
+    """Сохранить пары. Следующая сводка 14 читает этот файл."""
+    try:
+        items = plate_mappings.save_items([item.model_dump() for item in body.items])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"items": items}
 
 
 class NamolotTableExcelIn(BaseModel):

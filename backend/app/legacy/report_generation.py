@@ -1244,6 +1244,7 @@ def _inject_namolot_env(env: dict[str, str]) -> None:
     env["NAMOLOT_PASSWORD"] = pwd
     upload_path = _upload_dir_path()
     env.setdefault("UPLOAD_DIR", str(upload_path))
+    env["PLATE_MAPPINGS_FILE"] = str(upload_path / "plate_mappings.json")
     cache = upload_path / ".namolot_cache" / "records.json"
     env["NAMOLOT_CACHE_FILE"] = str(cache)
     if cache.is_file():

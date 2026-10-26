@@ -74,6 +74,7 @@ export default function AppShell({
   dataErrors = null,
   onCookieOpen = null,
   onNamolotOpen = null,
+  onPlateMappingsOpen = null,
   children,
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -178,7 +179,7 @@ export default function AppShell({
                       </Tooltip>
                     </Stack>
                   ) : null}
-                  {onCookieOpen || onNamolotOpen ? (
+                  {onCookieOpen || onNamolotOpen || onPlateMappingsOpen ? (
                     <Stack spacing={0.5} alignItems="stretch">
                       {onCookieOpen ? (
                         <Tooltip title="Cookie Cropwise: записать в .env и использовать во всех проверках">
@@ -215,6 +216,25 @@ export default function AppShell({
                             }}
                           >
                             Namolot
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                      {onPlateMappingsOpen ? (
+                        <Tooltip title="Ручные пары госномеров Namolot и Cropwise для сводки 14">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={onPlateMappingsOpen}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Сопоставления
                           </Button>
                         </Tooltip>
                       ) : null}

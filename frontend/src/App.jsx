@@ -4,6 +4,7 @@ import { CssBaseline, ThemeProvider } from "@mui/material";
 import AiMenuDialog from "./components/AiMenuDialog";
 import CropwiseCookieDialog from "./components/CropwiseCookieDialog";
 import NamolotDialog from "./components/NamolotDialog";
+import PlateMappingsDialog from "./components/PlateMappingsDialog";
 import AiPromptsDialog from "./components/AiPromptsDialog";
 import AiReportDialog from "./components/AiReportDialog";
 import AnalysisDialog from "./components/AnalysisDialog";
@@ -139,6 +140,7 @@ export default function App() {
   );
   const [cookieDialogOpen, setCookieDialogOpen] = useState(false);
   const [namolotOpen, setNamolotOpen] = useState(false);
+  const [plateMappingsOpen, setPlateMappingsOpen] = useState(false);
   const [cropwiseSeasonOn, setCropwiseSeasonOn] = useState(
     () => window.localStorage.getItem("svodki.cropwiseSeasonCheck") === "1",
   );
@@ -692,6 +694,7 @@ export default function App() {
         }
         onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
         onNamolotOpen={canGenerate ? () => setNamolotOpen(true) : null}
+        onPlateMappingsOpen={canGenerate ? () => setPlateMappingsOpen(true) : null}
         equipment={
           isDeveloper
             ? {
@@ -765,6 +768,10 @@ export default function App() {
         open={namolotOpen && canGenerate}
         onClose={() => setNamolotOpen(false)}
         summaryDate={summaryDate}
+      />
+      <PlateMappingsDialog
+        open={plateMappingsOpen && canGenerate}
+        onClose={() => setPlateMappingsOpen(false)}
       />
       <AiMenuDialog
         open={aiMenuOpen}

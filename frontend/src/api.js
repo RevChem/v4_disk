@@ -1021,6 +1021,24 @@ export async function fetchNamolot({ dateBegin, dateEnd }) {
   }
 }
 
+export async function fetchPlateMappings() {
+  try {
+    const { data } = await api.get("/proverka/plate-mappings");
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+export async function savePlateMappings(items) {
+  try {
+    const { data } = await api.put("/proverka/plate-mappings", { items });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchNamolotSeason({ reportDate }) {
   try {
     const { data } = await api.get("/proverka/namolot/season", {

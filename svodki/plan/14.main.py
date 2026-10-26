@@ -22,11 +22,13 @@ field_groups, machine_region_mapping_items.
 
 import asyncio
 import base64
+import json
 import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pandas as pd
@@ -289,27 +291,11 @@ _LAT_TO_CYR_PLATE_LETTERS: dict[str, str] = {
     "U": "У",
 }
 
-# Ручное сопоставление: combine_harvester_id в Namolot → registration_number в Cropwise.
-# Используется, когда автоматическая нормализация не может связать записи:
-#   — серийный/внутренний номер в Namolot vs госномер в Cropwise (R0ACR5950331 → 3175);
-#   — разные госномера одной и той же машины (1114 АО → 2966АМ);
-#   — явное закрепление пары при нестандартном формате (АМ 2963 16 → 2963АМ и т.п.).
-NAMOLOT_TO_CROPWISE_REG: dict[str, str] = {
-    "R0ACR5950331": "3175",
-    "1114 АО": "2966АМ",
-    "АМ 2963 16": "2963АМ",
-    "АМ 2964 16": "2964АМ",
-    "ОУ 3156": "3156ОУ",
-    "74-80": "7480АЕ",
-    # Буквы в Namolot и Cropwise разные, модель и цифры — одной машины.
-    # Без явной пары сравнение по цифрам склеило бы чужой номер.
-    "АВ 8862 16": "8862АА",
-    "3515 АМ": "3515АЕ",
-    "0177 МА 09": "0177НА",
-    "6032 ОВ 23": "6032УВ",
-    "АЕ2119 16": "2119АЕ",
-    "АЕ 2121 16": "2121АЕ",
-}
+# Ручные пары Namolot → Cropwise. Источник — кнопка «Сопоставления» на сайте
+# (файл plate_mappings.json в каталоге загрузок). Пока сайт ничего не сохранил,
+# берётся список по умолчанию рядом с этим скриптом.
+NAMOLOT_TO_CROPWISE_REG: dict[str, str] = {}
+_PLATE_MAPPINGS_STAMP: tuple[str, float] | None = None
 
 
 def _normalize_plate_str(raw: str | None) -> str:
@@ -372,9 +358,54 @@ def _plate_lookup_key(raw: str | None) -> str:
     return re.sub(r"[\s\-]+", " ", s).strip()
 
 
-_PLATE_LOOKUP: dict[str, str] = {
-    _plate_lookup_key(k): v for k, v in NAMOLOT_TO_CROPWISE_REG.items()
-}
+_PLATE_LOOKUP: dict[str, str] = {}
+
+
+def _plate_mappings_file() -> Path:
+    """Файл сайта, если он уже сохранён, иначе список по умолчанию."""
+    explicit = (os.environ.get("PLATE_MAPPINGS_FILE") or "").strip()
+    if explicit and Path(explicit).is_file():
+        return Path(explicit)
+    upload = (os.environ.get("UPLOAD_DIR") or "").strip()
+    if upload:
+        override = Path(upload) / "plate_mappings.json"
+        if override.is_file():
+            return override
+    return Path(__file__).with_name("plate_mappings.json")
+
+
+def _reload_plate_mappings() -> None:
+    """Перечитать пары. Повторный вызов в том же процессе ничего не делает, пока файл не менялся."""
+    global NAMOLOT_TO_CROPWISE_REG, _PLATE_LOOKUP, _PLATE_MAPPINGS_STAMP
+    path = _plate_mappings_file()
+    try:
+        mtime = path.stat().st_mtime if path.is_file() else -1.0
+    except OSError:
+        mtime = -1.0
+    stamp = (str(path), mtime)
+    if stamp == _PLATE_MAPPINGS_STAMP:
+        return
+    loaded: dict[str, str] = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            items = raw.get("items") if isinstance(raw, dict) else None
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    namolot = str(item.get("namolot") or "").strip()
+                    cropwise = str(item.get("cropwise") or "").strip()
+                    if namolot and cropwise:
+                        loaded[namolot] = cropwise
+        except (OSError, json.JSONDecodeError) as exc:
+            _namolot_log(f"файл сопоставлений не прочитан ({path}): {exc}")
+            _PLATE_MAPPINGS_STAMP = stamp
+            return
+    NAMOLOT_TO_CROPWISE_REG = loaded
+    _PLATE_LOOKUP = {_plate_lookup_key(k): v for k, v in loaded.items()}
+    _PLATE_MAPPINGS_STAMP = stamp
+    _namolot_log(f"сопоставления госномеров: {len(loaded)} пар, файл {path}")
 
 
 def _cropwise_reg_for_namolot(raw_id: str | None) -> str | None:
@@ -382,6 +413,7 @@ def _cropwise_reg_for_namolot(raw_id: str | None) -> str | None:
 
     Сначала точный ключ, затем тот же номер с другими пробелами и раскладкой.
     """
+    _reload_plate_mappings()
     key = str(raw_id or "").strip()
     if not key:
         return None
@@ -700,6 +732,7 @@ def _build_namolot_signature_index(
     двух агрофирм, получает одну и ту же суммарную массу в обеих (масса
     задваивается на уровне отчёта).
     """
+    _reload_plate_mappings()
     if report_date in _namolot_signature_cache:
         return _namolot_signature_cache[report_date]
 
@@ -804,11 +837,14 @@ def _build_namolot_signature_index(
                 "digits": digits,
                 "tonnes": 0.0,
                 "crops": set(),
+                "crop_tonnes": {},
                 "fields": set(),
             })
             bucket["tonnes"] += qty_t
+            crop_tonnes = bucket.setdefault("crop_tonnes", {})
             if crop_name:
                 bucket["crops"].add(crop_name)
+                crop_tonnes[crop_name] = float(crop_tonnes.get(crop_name) or 0) + qty_t
             spp = str(r.get("spp") or "").strip()
             if spp:
                 bucket["fields"].add(spp)
@@ -897,6 +933,8 @@ def _build_namolot_signature_index(
     result.plate_mass = plate_mass
     result.cropwise_sigs = set()
     result.cropwise_digits = set()
+    result.harvest_sig_crops = set()
+    result.harvest_digit_crops = set()
     result.plate_alerted = False
     _namolot_signature_cache[report_date] = result
     return result
@@ -2488,6 +2526,42 @@ def _crop_listed(crop_name: str, catalog: frozenset[str] | set[str] | None) -> b
     return False
 
 
+def _harvest_covers(machine_key: str, crop_norm: str, pairs: set[tuple[str, str]]) -> bool:
+    """Есть строка уборки этой машины по той же культуре (или культура строки не определена)."""
+    rows = [crop for sig, crop in pairs if sig == machine_key]
+    if not rows:
+        return False
+    if not crop_norm or crop_norm == "—":
+        return True
+    if any(crop in ("", "—") for crop in rows):
+        return True
+    for crop in rows:
+        if crop == crop_norm:
+            return True
+        if len(crop) >= 4 and len(crop_norm) >= 4 and (crop in crop_norm or crop_norm in crop):
+            return True
+    return False
+
+
+def _note_harvest_row(index: _NamolotMassIndex, reg_num: str | None, crop_name: str | None) -> None:
+    """Машина реально попала в таблицу уборки с этой культурой."""
+    sig_pairs = getattr(index, "harvest_sig_crops", None)
+    digit_pairs = getattr(index, "harvest_digit_crops", None)
+    if sig_pairs is None:
+        index.harvest_sig_crops = set()
+        sig_pairs = index.harvest_sig_crops
+    if digit_pairs is None:
+        index.harvest_digit_crops = set()
+        digit_pairs = index.harvest_digit_crops
+    crop = _normalize_crop_name(crop_name)
+    sig = _reg_signature(reg_num)
+    if sig:
+        sig_pairs.add((sig, crop))
+    digits = _reg_main_digits(reg_num)
+    if digits:
+        digit_pairs.add((digits, crop))
+
+
 def _note_cropwise_plates(index: _NamolotMassIndex, machines: list[dict]) -> None:
     """Госномера Cropwise, с которыми Namolot вообще может совпасть."""
     sigs = getattr(index, "cropwise_sigs", None)
@@ -2515,31 +2589,58 @@ def _emit_unmatched_cropwise_plates() -> None:
         if not known_sigs and not known_digits:
             continue
         missed: list[dict] = []
-        for info in (getattr(index, "plate_mass", None) or {}).values():
-            plate = str(info.get("plate") or "—")
+        for key, info in (getattr(index, "plate_mass", None) or {}).items():
             digits = str(info.get("digits") or "")
-            sig = _reg_signature(plate)
-            if sig and sig in known_sigs:
-                continue
-            if digits and digits in known_digits:
+            if key in known_sigs or (digits and digits in known_digits):
                 continue
             missed.append(info)
-        if not missed:
-            continue
-        rows = [
-            (
-                float(info.get("tonnes") or 0),
-                str(info.get("plate") or "—"),
-                ", ".join(sorted(info.get("crops") or [])) or "—",
-                ", ".join(sorted(info.get("fields") or [])[:2]) or "—",
+        if missed:
+            rows = [
+                (
+                    float(info.get("tonnes") or 0),
+                    str(info.get("plate") or "—"),
+                    ", ".join(sorted(info.get("crops") or [])) or "—",
+                    ", ".join(sorted(info.get("fields") or [])[:2]) or "—",
+                )
+                for info in missed
+            ]
+            report_alert(
+                "namolot_plate_unmatched",
+                "Сводка 14: номер есть в Namolot, но нет у техники Cropwise. "
+                + _plate_alert_body(_ranked_plate_lines(rows)),
             )
-            for info in missed
-        ]
-        report_alert(
-            "namolot_plate_unmatched",
-            "Сводка 14: номер есть в Namolot, но нет у техники Cropwise. "
-            + _plate_alert_body(_ranked_plate_lines(rows)),
-        )
+        without_task: list[tuple] = []
+        harvest_sig = getattr(index, "harvest_sig_crops", None) or set()
+        harvest_digits = getattr(index, "harvest_digit_crops", None) or set()
+        for key, info in (getattr(index, "plate_mass", None) or {}).items():
+            digits = str(info.get("digits") or "")
+            by_sig = key in known_sigs
+            by_digits = bool(digits) and digits in known_digits and not by_sig
+            if not by_sig and not by_digits:
+                continue
+            pairs = harvest_sig if by_sig else harvest_digits
+            match_key = key if by_sig else digits
+            crop_tonnes = info.get("crop_tonnes") or {}
+            if not crop_tonnes and float(info.get("tonnes") or 0) > 0:
+                crop_tonnes = {"—": float(info.get("tonnes") or 0)}
+            fields = ", ".join(sorted(info.get("fields") or [])[:2]) or "—"
+            plate = str(info.get("plate") or "—")
+            for crop_name, tonnes in crop_tonnes.items():
+                try:
+                    tonnes_f = float(tonnes or 0)
+                except (TypeError, ValueError):
+                    tonnes_f = 0.0
+                if tonnes_f <= 0.01:
+                    continue
+                if _harvest_covers(match_key, _normalize_crop_name(crop_name), pairs):
+                    continue
+                without_task.append((tonnes_f, plate, str(crop_name or "—"), fields))
+        if without_task:
+            report_alert(
+                "namolot_plate_without_task",
+                "Сводка 14: в Namolot есть тонны, а задания на уборку этой культуры нет. "
+                + _plate_alert_body(_ranked_plate_lines(without_task)),
+            )
 
 
 import atexit
@@ -2742,6 +2843,7 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
         name = m.get("name", f"Машина {row.machine_id}")
         reg_num = m.get("registration_number", "—")
         crop_name = row.crop
+        _note_harvest_row(namolot_index, reg_num, crop_name)
         mass_raw, is_fallback = namolot_index.mass_for(reg_num, crop_name, firm_folder_id)
         mass_t = round(mass_raw, 2)
         if is_fallback and mass_t:
@@ -3208,7 +3310,8 @@ def main():
     # при read-only cwd падение на Writer обрывает запуск до первого build_own_table
     # и в консоли не появляется ни одной строки [namolot]. Прогреваем индекс заранее.
     _step("→ индекс Namolot за смену ...")
-    _build_namolot_signature_index(report_date, field_name_to_firm_folder)
+    namolot_index = _build_namolot_signature_index(report_date, field_name_to_firm_folder)
+    _note_cropwise_plates(namolot_index, all_machines)
 
     field_to_group = build_global_field_group_map(fmi_list, veg_fmi_list)
     print(

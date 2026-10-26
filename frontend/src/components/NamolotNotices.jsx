@@ -11,6 +11,10 @@ const TONES = {
     bg: "#c62828",
     title: "Госномер не сопоставлен",
   },
+  namolot_plate_without_task: {
+    bg: "#4a148c",
+    title: "Намолот без задания на уборку",
+  },
   namolot_cache_fallback: {
     bg: "#6d1230",
     title: "Нет ответа от 1С",
