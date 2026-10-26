@@ -1112,6 +1112,57 @@ export async function askNamolotSeason({
   }
 }
 
+/** Все операции заданий с 1 января до 06:00 даты сводки. */
+export async function fetchTaskQuestions({ reportDate }) {
+  try {
+    const { data } = await api.get("/proverka/task-questions", {
+      params: { report_date: reportDate },
+      timeout: 180_000,
+    });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
+/** Вопрос по срезу заданий. Пустые опции — все операции окна. */
+export async function askTaskQuestions({
+  reportDate,
+  firm = "",
+  crop = "",
+  dateFrom = "",
+  timeFrom = "06:00",
+  dateTo = "",
+  timeTo = "05:59",
+  plate = "",
+  surname = "",
+  question = "",
+  useLlm = true,
+}) {
+  try {
+    const { data } = await api.post(
+      "/proverka/task-questions/ask",
+      {
+        report_date: reportDate,
+        firm: firm || "",
+        crop: crop || "",
+        date_from: dateFrom || "",
+        time_from: timeFrom || "06:00",
+        date_to: dateTo || "",
+        time_to: timeTo || "05:59",
+        plate: plate || "",
+        surname: surname || "",
+        question: question || "",
+        use_llm: Boolean(useLlm),
+      },
+      { timeout: 180_000 }
+    );
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 export async function fetchNamolotBrief({ reportDate, firm, crop }) {
   try {
     const { data } = await api.get("/proverka/namolot/brief", {

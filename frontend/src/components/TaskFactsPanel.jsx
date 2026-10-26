@@ -33,18 +33,23 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 
-import { askNamolotSeason, downloadNamolotExcel, fetchNamolotSeason, fetchProverkaAiSettings } from "../api";
+import { askTaskQuestions, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
 const EXAMPLES = [
-  "Сколько тонн по каждой агрофирме?",
-  "Какие 10 госномеров дали наибольший намолот?",
-  "Какая культура лидирует в этом срезе?",
-  "Сколько записей и тонн у выбранной фамилии?",
+  "Сколько гектаров по каждой операции?",
+  "Сколько га внесения минеральных удобрений по агрофирмам?",
+  "Какая культура лидирует по площади в этом срезе?",
+  "Сколько гектаров у выбранной фамилии?",
 ];
 
-function fmtTonnes(value) {
+function withArea(row) {
+  const ha = Number(row?.ha) || 0;
+  return { ...row, ha, tonnes: ha };
+}
+
+function fmtHa(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -99,6 +104,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const [namesNote, setNamesNote] = useState("");
 
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
@@ -130,6 +136,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setApplied(null);
     setLoaded(false);
     setError("");
+    setNamesNote("");
     setAnswerHistory([]);
     setAskError("");
   }, [reportDate]);
@@ -184,12 +191,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     return headed.filter((row) => row.at && row.at >= from && row.at < until);
   }, [headed, windows]);
 
-  const seasonTonnes = useMemo(
-    () => headed.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
+  const seasonHa = useMemo(
+    () => headed.reduce((sum, row) => sum + (Number(row.ha) || 0), 0),
     [headed],
   );
-  const shownTonnes = useMemo(
-    () => visible.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0),
+  const shownHa = useMemo(
+    () => visible.reduce((sum, row) => sum + (Number(row.ha ?? row.tonnes) || 0), 0),
     [visible],
   );
   const pageRows = visible.slice(page * pageSize, page * pageSize + pageSize);
@@ -207,9 +214,13 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchNamolotSeason({ reportDate });
+      const data = await fetchTaskQuestions({ reportDate });
+      if (!data?.available) {
+        throw new Error(data?.detail || "Задания не прочитались.");
+      }
       setWindows(data);
-      setRows(Array.isArray(data?.rows) ? data.rows : []);
+      setNamesNote(String(data?.names_note || ""));
+      setRows((Array.isArray(data?.rows) ? data.rows : []).map(withArea));
       setLoaded(true);
       return next;
     } catch (err) {
@@ -251,7 +262,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setDownloading(true);
     setError("");
     try {
-      await downloadNamolotExcel({ mode, rows: visible });
+      downloadTaskCsv(mode, visible);
     } catch (err) {
       setError(String(err.message || err));
     } finally {
@@ -267,7 +278,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setView("answers");
     try {
       const slice = await form({ showTable: false });
-      const data = await askNamolotSeason({ reportDate, ...slice, question: q, useLlm });
+      const data = await askTaskQuestions({ reportDate, ...slice, question: q, useLlm });
       setAnswerHistory((prev) => [
         ...prev,
         { id: `${Date.now()}`, question: q, ts: Date.now(), slice: sliceLabel(slice), ...data },
@@ -297,8 +308,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
           <Typography variant="body2" color="text.secondary">
-            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все записи сезона.
-            Агрофирма, культура, даты, госномер и фамилия необязательны — те же поля, что у кнопки Namolot.
+            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00:
+            внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, даты, госномер
+            и фамилия необязательны — те же поля, что у кнопки Namolot.
           </Typography>
           <TextField
             select
@@ -431,7 +443,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
           )}
           {view === "table" && loaded && (
             <Button size="small" startIcon={<DownloadOutlinedIcon fontSize="small" />} onClick={() => void download()} disabled={busy}>
-              {downloading ? "Excel…" : "Excel"}
+              {downloading ? "CSV…" : "CSV"}
             </Button>
           )}
           {view === "answers" && answerHistory.length > 0 && (
@@ -508,7 +520,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                     <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
                       <Chip size="small" color={entry.llm_used ? "primary" : "default"} label={entry.llm_used ? `модель: ${entry.model}` : "без модели"} />
                       <Chip size="small" variant="outlined" label={`записей ${entry.rows_sent ?? "—"}/${entry.rows_total ?? "—"}`} />
-                      <Chip size="small" variant="outlined" label={`${fmtTonnes(entry.tonnes_total)} т`} />
+                      <Chip size="small" variant="outlined" label={`${fmtHa(entry.ha_total)} га`} />
                       {entry.usage?.input_tokens != null ? (
                         <Chip
                           size="small"
@@ -543,7 +555,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
               <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 2 }}>
                 <CircularProgress size={22} />
                 <Typography variant="body2" color="text.secondary">
-                  Запрос к Namolot…
+                  Читаю задания…
                 </Typography>
               </Stack>
             ) : null}
@@ -554,7 +566,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                     <TableRow>
                       <TableCell>Показатель</TableCell>
                       <TableCell>Период</TableCell>
-                      <TableCell align="right">Намолот, т</TableCell>
+                      <TableCell align="right">Площадь, га</TableCell>
                       <TableCell align="right">Записей</TableCell>
                     </TableRow>
                   </TableHead>
@@ -562,21 +574,22 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                     <TableRow>
                       <TableCell>За сутки</TableCell>
                       <TableCell>{windows ? `${fmtAt(windows.day?.from)} — ${fmtAt(windows.day?.to)}` : "—"}</TableCell>
-                      <TableCell align="right">{fmtTonnes(dayRows.reduce((sum, row) => sum + (Number(row.tonnes) || 0), 0))}</TableCell>
+                      <TableCell align="right">{fmtHa(dayRows.reduce((sum, row) => sum + (Number(row.ha) || 0), 0))}</TableCell>
                       <TableCell align="right">{dayRows.length}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell>За сезон</TableCell>
                       <TableCell>{windows ? `${fmtAt(windows.season?.from)} — ${fmtAt(windows.season?.to)}` : "—"}</TableCell>
-                      <TableCell align="right">{fmtTonnes(seasonTonnes)}</TableCell>
+                      <TableCell align="right">{fmtHa(seasonHa)}</TableCell>
                       <TableCell align="right">{headed.length}</TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
+                {namesNote ? <Alert severity="warning">{namesNote}</Alert> : null}
                 <Typography variant="body2">
                   {mode === "rows" ? "Записей" : "Строк"} {visible.length.toLocaleString("ru-RU")}
                   {" · "}
-                  {fmtTonnes(shownTonnes)} т
+                  {fmtHa(shownHa)} га
                   {visible.length !== rows.length ? ` из ${rows.length.toLocaleString("ru-RU")}` : ""}. Срез: {sliceLabel(applied)}.
                 </Typography>
                 {visible.length ? (
@@ -607,7 +620,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                   <Typography variant="body2" color="text.secondary">
                     {applied.firm || applied.crop || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
                       ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
-                      : "За сезон записей нет."}
+                      : "За этот период заданий с площадью нет."}
                   </Typography>
                 )}
                 <TablePagination
@@ -628,7 +641,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
             ) : null}
             {!loading && applied && !loaded ? (
               <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
-                Сезон не загрузился. Нажмите «Сформировать» ещё раз.
+                Задания не загрузились. Нажмите «Сформировать» ещё раз.
               </Typography>
             ) : null}
             {!loading && !applied ? (
@@ -641,7 +654,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
         <Box sx={{ p: 1.5, borderTop: 1, borderColor: "divider", bgcolor: "background.paper" }}>
           <TextField
-            placeholder="Например: сколько тонн по сое у Актая?"
+            placeholder="Например: сколько га внесения минеральных удобрений у Актая?"
             multiline
             minRows={2}
             maxRows={6}
@@ -696,12 +709,13 @@ function RecordHead({ sortKey, sortDir, onSort }) {
       </TableCell>
       <TableCell>Агрофирма</TableCell>
       <TableCell>Культура</TableCell>
+      <TableCell>Операция</TableCell>
       <TableCell>Госномер</TableCell>
       <TableCell>Механизатор</TableCell>
       <TableCell>Поле</TableCell>
       <TableCell align="right" sortDirection={sortKey === "tonnes" ? direction : false}>
         <TableSortLabel active={sortKey === "tonnes"} direction={sortKey === "tonnes" ? direction : "desc"} onClick={() => onSort("tonnes")}>
-          Намолот, т
+          Площадь, га
         </TableSortLabel>
       </TableCell>
     </>
@@ -715,7 +729,7 @@ function GroupHead({ mode, sortDir, onSort }) {
       <TableCell>{mode === "plates" ? "Госномер" : "Фамилия"}</TableCell>
       <TableCell align="right" sortDirection={direction}>
         <TableSortLabel active direction={direction} onClick={onSort}>
-          Намолот, т
+          Площадь, га
         </TableSortLabel>
       </TableCell>
       <TableCell align="right">Записей</TableCell>
@@ -733,12 +747,56 @@ function RecordLine({ row, rank }) {
       <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtAt(row.at)}</TableCell>
       <TableCell>{row.firm}</TableCell>
       <TableCell>{row.crop}</TableCell>
+      <TableCell>{row.operation || "—"}</TableCell>
       <TableCell sx={{ whiteSpace: "nowrap" }}>{row.plate || "—"}</TableCell>
       <TableCell>{row.operator || "—"}</TableCell>
       <TableCell>{row.field || "—"}</TableCell>
-      <TableCell align="right">{fmtTonnes(row.tonnes)}</TableCell>
+      <TableCell align="right">{fmtHa(row.ha)}</TableCell>
     </TableRow>
   );
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  if (/[;"\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function downloadTaskCsv(mode, rows) {
+  const lines = [];
+  if (mode === "rows") {
+    lines.push(["Дата", "Агрофирма", "Культура", "Операция", "Госномер", "Механизатор", "Поле", "га"].join(";"));
+    for (const row of rows) {
+      lines.push(
+        [fmtAt(row.at), row.firm, row.crop, row.operation, row.plate, row.operator, row.field, row.ha]
+          .map(csvCell)
+          .join(";"),
+      );
+    }
+  } else {
+    lines.push(["Ключ", "га", "Записей", mode === "plates" ? "Фамилии" : "Госномера", "Культуры", "Агрофирмы"].join(";"));
+    for (const row of rows) {
+      lines.push(
+        [
+          row.key,
+          row.tonnes,
+          row.records,
+          joinList(mode === "plates" ? row.names : row.plates),
+          joinList(row.crops),
+          joinList(row.firms),
+        ]
+          .map(csvCell)
+          .join(";"),
+      );
+    }
+  }
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "zadaniya.csv";
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function GroupLine({ row, mode, rank }) {
@@ -746,7 +804,7 @@ function GroupLine({ row, mode, rank }) {
     <TableRow>
       <TableCell>{rank}</TableCell>
       <TableCell sx={{ fontWeight: 600 }}>{row.key}</TableCell>
-      <TableCell align="right">{fmtTonnes(row.tonnes)}</TableCell>
+      <TableCell align="right">{fmtHa(row.tonnes)}</TableCell>
       <TableCell align="right">{row.records.toLocaleString("ru-RU")}</TableCell>
       <TableCell>{joinList(mode === "plates" ? row.names : row.plates)}</TableCell>
       <TableCell>{joinList(row.crops)}</TableCell>

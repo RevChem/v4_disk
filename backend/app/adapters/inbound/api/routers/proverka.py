@@ -14,6 +14,7 @@ from app.adapters.inbound.api.deps import (
     require_plans_access,
 )
 from app.application.field_ownership import ownership_report
+from app.application.task_slice import ask_slice, build_slice
 from app.application.machine_task_card import machine_task_card
 from app.application.task_links import task_page_urls
 from app.adapters.outbound.persistence import repositories as repo
@@ -827,6 +828,52 @@ def post_task_facts_ask(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class TaskQuestionsAskIn(BaseModel):
+    """Те же необязательные поля, что у кнопки Namolot. Пустые — все операции сезона."""
+
+    report_date: date
+    firm: str = Field(default="", max_length=120)
+    crop: str = Field(default="", max_length=120)
+    date_from: str = Field(default="", max_length=10)
+    time_from: str = Field(default="06:00", max_length=5)
+    date_to: str = Field(default="", max_length=10)
+    time_to: str = Field(default="05:59", max_length=5)
+    plate: str = Field(default="", max_length=40)
+    surname: str = Field(default="", max_length=80)
+    question: str = Field(default="", max_length=3000)
+    use_llm: bool = True
+
+
+@router.get("/task-questions")
+def get_task_questions(
+    report_date: date = Query(..., alias="report_date"),
+    _: User = Depends(require_developer_access),
+):
+    """Задания всех операций с 1 января до 06:00 даты сводки."""
+    return build_slice(report_date)
+
+
+@router.post("/task-questions/ask")
+def post_task_questions_ask(
+    body: TaskQuestionsAskIn,
+    _: User = Depends(require_developer_access),
+):
+    """Вопрос по срезу заданий. Пустые опции не отсекают операции."""
+    return ask_slice(
+        body.report_date,
+        body.question,
+        use_llm=body.use_llm,
+        firm=body.firm,
+        crop=body.crop,
+        date_from=body.date_from,
+        time_from=body.time_from,
+        date_to=body.date_to,
+        time_to=body.time_to,
+        plate=body.plate,
+        surname=body.surname,
+    )
 
 
 class CropwiseFilterIn(BaseModel):

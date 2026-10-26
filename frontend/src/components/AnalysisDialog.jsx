@@ -39,7 +39,7 @@ const SECTIONS = [
   {
     id: "facts",
     title: "Вопросы по заданиям",
-    hint: "Сразу или с теми же фильтрами, что у Namolot",
+    hint: "Все операции: сразу или с теми же фильтрами, что у Namolot",
     icon: QuestionAnswerOutlinedIcon,
   },
   {
