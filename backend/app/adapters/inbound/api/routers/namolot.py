@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.adapters.inbound.api.deps import require_developer_access
+from app.adapters.inbound.api.deps import require_generate_access
 from app.application import namolot_view
 from app.models import User
 
@@ -31,7 +31,7 @@ def _call(date_begin: date, date_end: date, builder):
 @router.get("/namolot/season")
 def get_namolot_season(
     report_date: date = Query(..., alias="report_date"),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_generate_access),
 ):
     """Весь сезон до 05:59 даты сводки. Агрофирма и культура не обязательны."""
     return _call(report_date, report_date, lambda _begin, _end: namolot_view.build_season(report_date))
@@ -42,7 +42,7 @@ def get_namolot_brief(
     report_date: date = Query(..., alias="report_date"),
     firm: str = Query(...),
     crop: str = Query(...),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_generate_access),
 ):
     """Тонны одной культуры и агрофирмы: смена 06:00–05:59 и сезон до 05:59."""
     return _call(report_date, report_date, lambda _begin, _end: namolot_view.build_brief(report_date, firm, crop))
@@ -52,7 +52,7 @@ def get_namolot_brief(
 def get_namolot_view(
     date_begin: date = Query(..., alias="date_begin"),
     date_end: date = Query(..., alias="date_end"),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_generate_access),
 ):
     """Тонны по агрофирме, организации и культуре. Источник — живой Namolot, не кэш сводок."""
     return _call(date_begin, date_end, namolot_view.build_view)
@@ -75,7 +75,7 @@ def _excel_response(payload: bytes, filename: str) -> Response:
 
 
 @router.post("/namolot/excel")
-def post_namolot_excel(body: NamolotTableExcelIn, _: User = Depends(require_developer_access)):
+def post_namolot_excel(body: NamolotTableExcelIn, _: User = Depends(require_generate_access)):
     """Уже отфильтрованная таблица с экрана: записи, госномера или фамилии."""
     mode = body.mode if body.mode in {"rows", "plates", "surnames"} else "rows"
     payload = namolot_view.table_excel(mode, body.rows)
@@ -89,7 +89,7 @@ def get_namolot_excel(
     report_date: date | None = Query(None, alias="report_date"),
     firm: str | None = Query(None),
     crop: str | None = Query(None),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_generate_access),
 ):
     """Полный период либо срез одной культуры и агрофирмы за сезон до 05:59."""
     if report_date and firm and crop:

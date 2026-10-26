@@ -691,7 +691,7 @@ export default function App() {
             : null
         }
         onCookieOpen={isDeveloper ? () => setCookieDialogOpen(true) : null}
-        onNamolotOpen={isDeveloper ? () => setNamolotOpen(true) : null}
+        onNamolotOpen={canGenerate ? () => setNamolotOpen(true) : null}
         equipment={
           isDeveloper
             ? {
@@ -762,7 +762,7 @@ export default function App() {
         onSaved={() => setCookieRevision((value) => value + 1)}
       />
       <NamolotDialog
-        open={namolotOpen && isDeveloper}
+        open={namolotOpen && canGenerate}
         onClose={() => setNamolotOpen(false)}
         summaryDate={summaryDate}
       />
