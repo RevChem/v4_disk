@@ -307,6 +307,7 @@ NAMOLOT_TO_CROPWISE_REG: dict[str, str] = {
     "3515 АМ": "3515АЕ",
     "0177 МА 09": "0177НА",
     "6032 ОВ 23": "6032УВ",
+    "АЕ2119 16": "2119АЕ",
 }
 
 
@@ -394,6 +395,46 @@ def _reg_source_for_namolot(raw_id: str | None) -> str:
     из словаря (Cropwise) или исходный combine_harvester_id."""
     mapped = _cropwise_reg_for_namolot(raw_id)
     return mapped if mapped is not None else str(raw_id or "")
+
+
+def _ranked_plate_lines(rows: list[tuple]) -> list[str]:
+    """Один госномер — одна строка: номер, тонны, культура, поле."""
+    grouped: dict[str, dict] = {}
+    for tonnes, plate, crop_name, spp in rows:
+        key = str(plate or "—").strip() or "—"
+        bucket = grouped.setdefault(key, {"tonnes": 0.0, "crops": set(), "fields": set()})
+        try:
+            bucket["tonnes"] += float(tonnes or 0)
+        except (TypeError, ValueError):
+            pass
+        crop_text = str(crop_name or "").strip()
+        if crop_text and crop_text != "—":
+            for part in crop_text.split(","):
+                name = part.strip()
+                if name:
+                    bucket["crops"].add(name)
+        field_text = str(spp or "").strip()
+        if field_text and field_text != "—":
+            for part in field_text.split(","):
+                name = part.strip()
+                if name:
+                    bucket["fields"].add(name)
+    ranked = sorted(grouped.items(), key=lambda item: item[1]["tonnes"], reverse=True)
+    lines: list[str] = []
+    for plate, info in ranked[:40]:
+        crops = ", ".join(sorted(info["crops"])) or "—"
+        fields = ", ".join(sorted(info["fields"])[:2]) or "—"
+        lines.append(f"{plate} — {info['tonnes']:.2f} т, {crops}, поле {fields}")
+    extra = len(ranked) - 40
+    if extra > 0:
+        lines.append(f"и ещё {extra}")
+    return lines
+
+
+def _plate_alert_body(lines: list[str]) -> str:
+    if not lines:
+        return "Госномера: —"
+    return "Госномера: " + "; ".join(lines)
 
 
 _FIELD_CODE_RE = re.compile(r"^[^\s(]+")
@@ -807,15 +848,11 @@ def _build_namolot_signature_index(
         shown = sorted(unmatched)[:20]
         more = "" if len(unmatched) <= 20 else f" (и ещё {len(unmatched) - 20})"
         _namolot_log(f"ВНИМАНИЕ: не распознан гос.номер ({len(unmatched)}): {shown}{more}")
-        ranked = sorted(unmatched_plate_rows, key=lambda item: item[0], reverse=True)
-        details = []
-        for tonnes, plate, crop_name, spp in ranked[:12]:
-            details.append(f"{plate} — {tonnes:.2f} т, {crop_name}, поле {spp}")
-        tail = "" if len(ranked) <= 12 else f" …и ещё {len(ranked) - 12}"
+        ranked = _ranked_plate_lines(unmatched_plate_rows)
         report_alert(
-            "namolot_plate_unmatched",
-            "Сводка 14: гос.номер из Namolot не разобран и не сопоставлен с техникой Cropwise. "
-            f"Масса не учтена ({len(unmatched)}): " + "; ".join(details) + tail,
+            "namolot_plate_unparsed",
+            "Сводка 14: номер не разобран, масса не учтена. "
+            + _plate_alert_body(ranked),
         )
     if undated:
         _namolot_log(f"ВНИМАНИЕ: записей без даты/времени (пропущены): {undated}")
@@ -2488,19 +2525,19 @@ def _emit_unmatched_cropwise_plates() -> None:
             missed.append(info)
         if not missed:
             continue
-        missed.sort(key=lambda item: float(item.get("tonnes") or 0), reverse=True)
-        parts = []
-        for info in missed[:12]:
-            crops = ", ".join(sorted(info.get("crops") or [])) or "—"
-            fields = ", ".join(sorted(info.get("fields") or [])[:2]) or "—"
-            parts.append(
-                f"{info.get('plate')} — {float(info.get('tonnes') or 0):.2f} т, {crops}, поле {fields}"
+        rows = [
+            (
+                float(info.get("tonnes") or 0),
+                str(info.get("plate") or "—"),
+                ", ".join(sorted(info.get("crops") or [])) or "—",
+                ", ".join(sorted(info.get("fields") or [])[:2]) or "—",
             )
-        tail = "" if len(missed) <= 12 else f" …и ещё {len(missed) - 12}"
+            for info in missed
+        ]
         report_alert(
             "namolot_plate_unmatched",
-            "Сводка 14: гос.номер из Namolot не найден у техники Cropwise. "
-            f"Масса этой машины в строки не попала ({len(missed)}): " + "; ".join(parts) + tail,
+            "Сводка 14: номер есть в Namolot, но нет у техники Cropwise. "
+            + _plate_alert_body(_ranked_plate_lines(rows)),
         )
 
 

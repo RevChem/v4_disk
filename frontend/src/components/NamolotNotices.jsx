@@ -3,6 +3,10 @@ import { Alert, Box, Typography } from "@mui/material";
 
 /** Код предупреждения генерации → цвет всплывающего окна. */
 const TONES = {
+  namolot_plate_unparsed: {
+    bg: "#c62828",
+    title: "Госномер не разобран",
+  },
   namolot_plate_unmatched: {
     bg: "#c62828",
     title: "Госномер не сопоставлен",
@@ -19,6 +23,20 @@ const TONES = {
 
 function noticeKey(reportId, alert) {
   return `${reportId}|${alert.code}|${alert.message}`;
+}
+
+function plateNotice(message) {
+  const text = String(message || "");
+  const mark = "Госномера:";
+  const at = text.indexOf(mark);
+  if (at < 0) return { intro: text, lines: [] };
+  const intro = text.slice(0, at).trim();
+  const lines = text
+    .slice(at + mark.length)
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return { intro, lines };
 }
 
 export default function NamolotNotices({ alertsByReport }) {
@@ -49,14 +67,16 @@ export default function NamolotNotices({ alertsByReport }) {
         top: 16,
         right: 16,
         zIndex: 1500,
-        width: "min(440px, calc(100vw - 32px))",
+        width: "min(520px, calc(100vw - 32px))",
         display: "flex",
         flexDirection: "column",
         gap: 1,
         pointerEvents: "none",
       }}
     >
-      {visible.map((item) => (
+      {visible.map((item) => {
+        const plates = item.alert.code.startsWith("namolot_plate_") ? plateNotice(item.alert.message) : null;
+        return (
         <Alert
           key={item.key}
           severity="error"
@@ -75,11 +95,29 @@ export default function NamolotNotices({ alertsByReport }) {
           <Typography fontWeight={700} sx={{ mb: 0.5 }}>
             {item.tone.title} · сводка {item.reportId}
           </Typography>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
-            {item.alert.message}
-          </Typography>
+          {plates?.lines.length ? (
+            <>
+              {plates.intro ? (
+                <Typography variant="body2" sx={{ mb: 0.75 }}>
+                  {plates.intro}
+                </Typography>
+              ) : null}
+              <Box component="ul" sx={{ m: 0, pl: 2.25, maxHeight: 280, overflow: "auto" }}>
+                {plates.lines.map((line) => (
+                  <Typography key={line} component="li" variant="body2" sx={{ fontWeight: 600 }}>
+                    {line}
+                  </Typography>
+                ))}
+              </Box>
+            </>
+          ) : (
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
+              {item.alert.message}
+            </Typography>
+          )}
         </Alert>
-      ))}
+        );
+      })}
     </Box>
   );
 }
