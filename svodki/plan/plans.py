@@ -94,6 +94,29 @@ _NAMOLOT_ORG_NUM_RE = re.compile(
 )
 
 
+# Передачи полей между агрофирмами посреди сезона.
+# Cropwise хранит только ТЕКУЩУЮ папку поля, поэтому записи Намолота ДО даты
+# передачи сводка иначе отдала бы новому владельцу.
+# Формат: базовый код поля -> [(дата передачи, фирма ДО, фирма С этой даты), ...]
+# Запись с временем строго раньше 00:00 МСК даты передачи — фирма «ДО».
+FIELD_FIRM_TRANSFERS: dict[str, list[tuple[str, str, str]]] = {
+    "РВ-01-61": [("2026-09-02", "АгроРаздолье", "АФ Чистопольская")],
+}
+
+
+def firm_override_for_field(code: str, rec_dt) -> str | None:
+    """Фирма поля на момент записи, если поле есть в FIELD_FIRM_TRANSFERS, иначе None."""
+    items = FIELD_FIRM_TRANSFERS.get(code or "")
+    if not items or rec_dt is None:
+        return None
+    day = rec_dt.date() if hasattr(rec_dt, "date") else rec_dt
+    for iso, before, after in sorted(items):
+        if day.isoformat() < iso:
+            return before
+        last_after = after
+    return last_after
+
+
 def firm_from_namolot_organization(text: object) -> str | None:
     """Агрофирма холдинга по строке organization из Намолота, если номер узнаваем."""
     raw = str(text or "").casefold().replace("ё", "е")

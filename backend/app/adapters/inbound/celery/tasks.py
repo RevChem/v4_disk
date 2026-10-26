@@ -295,6 +295,15 @@ def _run_mail_entry(db, entry: dict, now: datetime, today: date, results: dict) 
     results["mail"].append({"id": entry_id, "error": mail_result.get("error"), "will_retry": not last})
 
 
+@celery_app.task(name="app.adapters.inbound.celery.tasks.check_field_firm_mismatch")
+def check_field_firm_mismatch() -> dict:
+    """Раз в 3 часа: поля, у которых пометка фирмы в Namolot расходится с папкой Cropwise."""
+    from app.application.field_firm_check import run_check
+
+    state = run_check()
+    return {"status": state.get("status"), "items": len(state.get("items") or [])}
+
+
 @celery_app.task(name="app.adapters.inbound.celery.tasks.check_schedules")
 def check_schedules() -> dict:
     """Каждую минуту: автогенерация и рассылка по расписанию из БД."""

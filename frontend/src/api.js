@@ -1600,3 +1600,13 @@ export async function fetchHubOptions(kind, params = {}) {
   const data = await fetchAnalytics(`hub/options/${kind}`, params);
   return Array.isArray(data?.items) ? data.items : [];
 }
+
+export async function fetchFieldFirmAlerts() {
+  const { data } = await api.get("/proverka/field-firm-alerts", { timeout: 15_000 });
+  return data;
+}
+
+export async function ignoreFieldFirmAlert(key, note = "") {
+  const { data } = await api.post("/proverka/field-firm-alerts/ignore", { key, note }, { timeout: 15_000 });
+  return data;
+}

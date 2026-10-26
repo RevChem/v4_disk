@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.adapters.inbound.api.deps import require_generate_access
-from app.application import namolot_view, plate_mappings
+from app.adapters.inbound.api.deps import require_admin, require_generate_access
+from app.application import field_firm_check, namolot_view, plate_mappings
+from app.config import settings
 from app.models import User
 
 router = APIRouter(prefix="/proverka", tags=["proverka"])
@@ -133,3 +134,33 @@ def get_namolot_excel(
         payload = _call(date_begin, date_end, namolot_view.build_excel)
         filename = f"namolot_{date_begin.isoformat()}_{date_end.isoformat()}.xlsx"
     return _excel_response(payload, filename)
+
+
+@router.get("/field-firm-alerts")
+def get_field_firm_alerts(user: User = Depends(require_generate_access)):
+    """Результат последней проверки «пометка фирмы в поле Namolot ≠ папка Cropwise»."""
+    state = field_firm_check.read_state()
+    if settings.field_firm_alert_admin_only and not user.is_admin():
+        state["items"] = []
+    return state
+
+
+class FieldFirmIgnoreIn(BaseModel):
+    key: str = Field(min_length=3, max_length=300)
+    note: str = Field(default="", max_length=300)
+
+
+@router.post("/field-firm-alerts/ignore")
+def ignore_field_firm_alert(body: FieldFirmIgnoreIn, user: User = Depends(require_admin)):
+    """«Это не ошибка»: пара пометка/папка больше не вызывает окно."""
+    field_firm_check.add_ignored(body.key, user.email or f"user#{user.id}", body.note)
+    return field_firm_check.read_state()
+
+
+@router.post("/field-firm-alerts/run")
+def run_field_firm_alerts(_: User = Depends(require_admin)):
+    """Внеочередная проверка (не ждать 3 часа после правки в Cropwise)."""
+    from app.adapters.inbound.celery.tasks import check_field_firm_mismatch
+
+    check_field_firm_mismatch.delay()
+    return {"queued": True}

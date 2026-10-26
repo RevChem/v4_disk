@@ -127,6 +127,19 @@ def field_base_code(name: object) -> str:
     return code.translate(_FIELD_CODE_TRANSLATE)
 
 
+def _transfer_firm(code: str, rec: dict) -> str | None:
+    """Фирма поля на дату записи, если поле передавали между фирмами (plans.FIELD_FIRM_TRANSFERS)."""
+    if not code:
+        return None
+    try:
+        from plans import FIELD_FIRM_TRANSFERS, firm_override_for_field
+    except Exception:
+        return None
+    if code not in FIELD_FIRM_TRANSFERS:
+        return None
+    return firm_override_for_field(code, msk_wall(rec.get("date")))
+
+
 def record_firm(rec: dict, index: dict[str, str] | None = None) -> str | None:
     """Агрофирма записи: сначала код поля spp, затем узнаваемая организация.
 
@@ -135,6 +148,9 @@ def record_firm(rec: dict, index: dict[str, str] | None = None) -> str | None:
     """
     code = field_base_code(rec.get("spp"))
     catalog = index or {}
+    moved = _transfer_firm(code, rec)
+    if moved:
+        return moved
     if code and code in catalog:
         return catalog[code]
     firm = holding_firm(rec.get("organization"))

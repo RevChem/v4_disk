@@ -249,3 +249,9 @@ backend/tests/test_schedule_catchup.py.
 1. svodki/plan/report_catalog.py — сводка «27. Рейтинг механизаторов» скрыта из списка выбора (picker_visible=False).
    Запуск остался через кнопку «27·Excel — рейтинг за период» (в генерацию уходит id "27", видимость списка не влияет).
 2. DashboardPage.jsx — чипы с датами сгенерированных сводок перенесены выше списка выбора и кнопки «Создать выбранные сводки».
+
+## Проверка передачи полей между агрофирмами
+- svodki/plan/plans.py: FIELD_FIRM_TRANSFERS и firm_override_for_field — фирма поля на дату записи (РВ-01-61: АгроРаздолье до 02.09.2026). Применяется в сводке 10 и в кнопке Namolot (namolot_view.record_firm).
+- backend/app/application/field_firm_check.py + задача Celery check_field_firm_mismatch (раз в 3 часа): пометка «(АФ3)» в названии поля Namolot против папки Cropwise. Результат в uploads/.field_firm_check.json, «не ошибка» — uploads/.field_firm_ignore.json.
+- GET /proverka/field-firm-alerts, POST .../ignore (admin), POST .../run (admin). Окно FieldFirmNotices.jsx: белое, закрывается крестиком, возвращается после каждого прогона.
+- Тесты: backend/tests/test_field_firm_check.py.

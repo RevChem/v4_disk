@@ -28,6 +28,7 @@ import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import PdfSummaryPanel from "../components/PdfSummaryPanel";
 import NamolotNotices from "../components/NamolotNotices";
+import FieldFirmNotices from "../components/FieldFirmNotices";
 import { sortCatalogAsc, sortCatalogDesc } from "../utils/reportSort";
 import ProverkaDialog from "../components/ProverkaDialog";
 import HarvestCheckDialog from "../components/HarvestCheckDialog";
@@ -521,6 +522,7 @@ export default function DashboardPage({
   return (
     <>
       <NamolotNotices alertsByReport={alertsByReport} />
+      <FieldFirmNotices user={user} />
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {info && <Alert severity="info" sx={{ mb: 2 }}>{info}</Alert>}
       {activeJobsForDate.length > 0 && (

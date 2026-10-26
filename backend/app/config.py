@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     namolot_base_url: str = ""
     namolot_username: str = ""
     namolot_password: str = ""
+    # Проверка «пометка фирмы в поле Namolot ≠ папка Cropwise» (см. field_firm_check.py)
+    field_firm_check_interval_sec: int = 10800
+    field_firm_alert_admin_only: bool = False
     database_url: str = "postgresql+psycopg2://svodki:svodki@postgres:5432/svodki"
     log_level: str = "INFO"
     svodki_service: str = ""

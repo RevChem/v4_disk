@@ -72,6 +72,7 @@ from plans import (
     FIELD_NAME_FORCE_RULES,
     WORK_GROUPS,
     firm_from_namolot_organization,
+    firm_override_for_field,
     HIRED_GROUP_ID,
     plan_ha_for_report,
     is_crop_excluded_from_totals,
@@ -491,6 +492,7 @@ def _alert_if_namolot_differs_from_button(
         code = _field_base_code(rec.get("spp"))
         fid = field_code_to_id.get(code) if code else None
         firm = field_to_firm.get(fid) if fid is not None else None
+        firm = firm_override_for_field(code, _parse_namolot_datetime(rec.get("date"))) or firm
         if not firm:
             firm = _button_org_firm(rec.get("organization"))
         crop = _button_crop_name(rec.get("crop"))
@@ -583,6 +585,10 @@ def _build_namolot_agg(label_date: date) -> _NamolotAgg:
         spp = r.get("spp")
         fid = field_base_index.get(_field_base_code(spp))
         firm = field_to_firm_map.get(fid) if fid is not None else None
+        # Поле передано между фирмами в середине сезона: фирма — на дату записи.
+        firm = firm_override_for_field(
+            _field_base_code(spp), _parse_namolot_datetime(r.get("date"))
+        ) or firm
         # Код поля не совпал с Cropwise. «АГРОФИРМА 15 ООО» — это НурлатАгро
         # (группа полей уже в папке 11), но без кода поля тонны выпадали.
         if not firm:

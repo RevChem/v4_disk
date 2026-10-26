@@ -37,5 +37,9 @@ celery_app.conf.update(
             "task": "app.adapters.inbound.celery.tasks.check_schedules",
             "schedule": 60.0,
         },
+        "check-field-firm-mismatch": {
+            "task": "app.adapters.inbound.celery.tasks.check_field_firm_mismatch",
+            "schedule": float(max(settings.field_firm_check_interval_sec, 300)),
+        },
     },
 )
