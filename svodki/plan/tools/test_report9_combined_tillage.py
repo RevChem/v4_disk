@@ -1,7 +1,8 @@
 """Сводка 9: страница суммы вспашки и глубокорыхления.
 
-Факт строки — вспашка за сезоны «2.4» плюс глубокорыхление за сезоны «2.8»
-из редактора планов. Площадь — tillable_area полей культуры.
+Факт строки — вспашка и глубокорыхление за год урожая (сезон вспашки «2.4»).
+Глубокорыхление прошлого сезона на эту страницу не входит.
+Площадь — tillable_area полей культуры.
 Лист стоит перед разбивкой по машинам.
 """
 from __future__ import annotations
@@ -127,7 +128,8 @@ def test_combined_page_sums_plow_and_deep_for_season_year_only():
     assert ws.cell(carrot_row, 3).value is None
 
 
-def test_unmapped_field_stays_in_other_crops():
+def test_unmapped_field_is_not_a_row_on_the_combined_page():
+    """Гектары без культуры сезона не попадают на эталонную страницу."""
     r9 = _report9()
     tz = r9.TZ_MSK
     firm = r9.FIRM_ORDER[0]
@@ -146,21 +148,21 @@ def test_unmapped_field_stays_in_other_crops():
         field_to_firm={9: firm},
         field_to_crop={},
         plow_seasons={2027},
-        deep_seasons={2026, 2027},
+        deep_seasons={2027},
     )
+    assert work[r9.PLOW_FIELD_OTHER_CROP]["fact"][firm] == 12.4
     view = r9.build_combined_tillage_view(work, {})
-    assert [row["crop"] for row in view["wide"]] == ["Иные культуры"]
-    assert view["wide"][0]["fact"] == 12.4
-    assert view["field"][0]["crop"] == "Иные культуры"
+    assert view["wide"] == []
+    assert view["field"] == []
     assert view["veg"] == []
 
 
-def test_combined_page_uses_each_operation_editor_seasons():
-    """Вспашка и глубокорыхление берут свои сезоны из редактора, не один общий."""
+def test_combined_page_uses_harvest_year_for_both_operations():
+    """Страница суммы — год урожая. Глубокорыхление 2026 на неё не входит."""
     r9 = _report9()
     assert set(r9.PLOW_FACT_SEASONS) == {2027}
     assert set(r9.DEEP_FACT_SEASONS) == {2026, 2027}
-    assert r9.combined_season_label(r9.PLOW_FACT_SEASONS, r9.DEEP_FACT_SEASONS) == "2026+2027"
+    assert r9.SEASON_YEAR == 2027
 
     tz = r9.TZ_MSK
     firm = r9.FIRM_ORDER[0]
@@ -177,24 +179,26 @@ def test_combined_page_uses_each_operation_editor_seasons():
         }
 
     item = {"field_id": 1, "covered_area_hourly": [[_dt("2026-09-01T12:00:00", tz).isoformat(), 5]]}
+    tasks = [
+        task(1, 2026, plow_wt),
+        task(2, 2027, plow_wt),
+        task(3, 2026, deep_wt),
+        task(4, 2027, deep_wt),
+        task(5, 2028, plow_wt),
+    ]
+    mtfmi = {1: [item], 2: [item], 3: [item], 4: [item], 5: [item]}
     work = r9.accumulate_combined_tillage(
-        [
-            task(1, 2026, plow_wt),
-            task(2, 2027, plow_wt),
-            task(3, 2026, deep_wt),
-            task(4, 2027, deep_wt),
-            task(5, 2028, plow_wt),
-        ],
-        {1: [item], 2: [item], 3: [item], 4: [item], 5: [item]},
+        tasks,
+        mtfmi,
         today_task_ids=set(),
         cutoff=cutoff,
         field_to_firm={1: firm},
         field_to_crop={1: "Соя"},
-        plow_seasons=set(r9.PLOW_FACT_SEASONS),
-        deep_seasons=set(r9.DEEP_FACT_SEASONS),
+        plow_seasons={r9.SEASON_YEAR},
+        deep_seasons={r9.SEASON_YEAR},
     )
-    # Вспашка только 2027, глубокорыхление 2026 и 2027. Вспашка 2026 и 2028 — нет.
-    assert work["Соя"]["fact"][firm] == 15
+    # Вспашка 2027 и глубокорыхление 2027. Сезоны 2026 и 2028 — нет.
+    assert work["Соя"]["fact"][firm] == 10
 
 
 def teardown_module(_module):

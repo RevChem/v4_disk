@@ -3007,10 +3007,24 @@ def write_deep_all_firms_summary_sheet(
     return True
 
 
-# Свод вспашки и глубокорыхления по сезонам из редактора планов
-# (чипы «Сезоны» групп 2.4 и 2.8), не по одному зашитому году.
+# Свод вспашки и глубокорыхления за год урожая (колонка «Культура 2027 г.»).
+# Глубокорыхление 2026 остаётся на листе «Глубокорыхление» и сюда не входит:
+# иначе факт сои и рапса расходится с эталонной страницей.
 COMBINED_TILLAGE_SHEET = "Вспашка + Глубокорыхление"
 COMBINED_TILLAGE_TITLE = "Вспашка + Глубокорыхление - сводно по всем агрофирмам"
+# Строки эталонной страницы, в этом порядке. Озимый рапс, тритикале,
+# кукуруза на зерно и «Иные» остаются на листах вспашки и глубокорыхления.
+COMBINED_PAGE_CROPS: tuple[str, ...] = (
+    "Рапс яровой",
+    "Соя",
+    "Пшеница озимая",
+    "Картофель",
+    "Кукуруза на силос",
+    "Подсолнечник",
+    "Морковь",
+    "Свекла столовая",
+)
+_COMBINED_CROP_POS = {name: i for i, name in enumerate(COMBINED_PAGE_CROPS)}
 _COMBINED_HA_BLANK = 0.05
 
 
@@ -3093,12 +3107,12 @@ def accumulate_combined_tillage(
     plow_seasons: set[int],
     deep_seasons: set[int],
 ) -> dict[str, dict[str, dict[str, float]]]:
-    """Факт вспашки + глубокорыхления за сезоны редактора планов.
+    """Факт вспашки + глубокорыхления за переданные сезоны.
 
-    Вспашка входит по сезонам «2.4 Вспашка», глубокорыхление — по сезонам
-    «2.8 Глубокорыхление». Культура строки — культура поля года урожая.
-    Смены до даты отчёта входят в факт (включая сутки отчёта). Сутки
-    дополнительно копятся отдельно.
+    На странице суммы оба списка — год урожая (вспашка «2.4»). Сезон 2026
+    у глубокорыхления на эту страницу не входит. Культура строки — культура
+    поля года урожая. Смены до даты отчёта входят в факт (включая сутки
+    отчёта). Сутки дополнительно копятся отдельно.
     """
     plow_ok = {int(year) for year in plow_seasons}
     deep_ok = {int(year) for year in deep_seasons}
@@ -3192,7 +3206,7 @@ def build_combined_tillage_view(
     area_by_crop: dict[str, float],
 ) -> dict[str, Any]:
     """Три блока страницы: матрица по АФ, полевые культуры, овощи."""
-    names = set(area_by_crop) | set(work or {})
+    names = (set(area_by_crop) | set(work or {})) & set(COMBINED_PAGE_CROPS)
     rows: list[dict[str, Any]] = []
     for crop in names:
         bucket = (work or {}).get(crop) or {}
@@ -3212,14 +3226,7 @@ def build_combined_tillage_view(
             "veg": crop in PLOW_VEGETABLE_CROPS,
         })
 
-    def _wide_key(row: dict) -> tuple:
-        if row["crop"] == PLOW_FIELD_OTHER_CROP:
-            return (2, 0, "")
-        if row["fact"] >= 0.5:
-            return (0, -row["fact"], row["crop"])
-        return (1, *_crop_sort_key(row["crop"]))
-
-    wide = sorted(rows, key=_wide_key)
+    wide = sorted(rows, key=lambda row: _COMBINED_CROP_POS.get(row["crop"], 99))
     field = [row for row in wide if not row["veg"]]
     veg_pos = {name: i for i, name in enumerate(PLOW_VEGETABLE_SUMMARY)}
     veg = sorted(
@@ -3800,6 +3807,9 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     ):
         print("  Лист «Глубокорыхление»: сводно по всем агрофирмам")
     print("  Лист «Итого (все АФ)»: вспашка (полевые + овощи) сводно по всем агрофирмам")
+    # Эталонная страница подписана годом урожая. Глубокорыхление 2026
+    # уже есть на листе «Глубокорыхление» и в эту сумму не входит.
+    combined_years = {int(SEASON_YEAR)}
     combined_work = accumulate_combined_tillage(
         tasks_season,
         mtfmi_map,
@@ -3807,20 +3817,20 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         cutoff,
         field_to_firm,
         field_to_crop_plow,
-        plow_seasons=set(PLOW_FACT_SEASONS),
-        deep_seasons=set(DEEP_FACT_SEASONS),
+        plow_seasons=combined_years,
+        deep_seasons=combined_years,
     )
     combined_view = build_combined_tillage_view(
         combined_work,
         combined_area_by_crop(field_to_crop_plow, field_area_plow),
     )
-    season_label = combined_season_label(PLOW_FACT_SEASONS, DEEP_FACT_SEASONS)
+    season_label = str(SEASON_YEAR)
     if write_combined_tillage_sheet(
         wb, combined_view, season_label=season_label,
     ):
         combined_fact = sum(float(row["fact"] or 0.0) for row in combined_view["wide"])
         print(
-            f"  Лист «{COMBINED_TILLAGE_SHEET}»: сезоны редактора {season_label}, "
+            f"  Лист «{COMBINED_TILLAGE_SHEET}»: год урожая {season_label}, "
             f"культур={len(combined_view['wide'])}, факт={combined_fact:,.0f} га"
         )
     for firm_name in firm_names:
