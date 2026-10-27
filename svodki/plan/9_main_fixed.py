@@ -177,6 +177,7 @@ def _task_season_allowed(task: dict, allowed: set[int]) -> bool:
 
 
 # Факт вспашки и глубокорыхления (сутки и сезон): сезоны из редактора планов.
+# У каждой группы свой список, как во 2-й сводке: чипы «2.4» не подменяют «2.8».
 PLOW_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.4 Вспашка", REPORT_DATE))
 DEEP_FACT_SEASONS: frozenset[int] = frozenset(_group_fact_season_years("2.8 Глубокорыхление", REPORT_DATE))
 # Культура поля — год урожая (последний из выбранных), чтобы 2026 не затирал 2027.
@@ -3006,6 +3007,505 @@ def write_deep_all_firms_summary_sheet(
     return True
 
 
+# Свод вспашки и глубокорыхления по сезонам из редактора планов
+# (чипы «Сезоны» групп 2.4 и 2.8), не по одному зашитому году.
+COMBINED_TILLAGE_SHEET = "Вспашка + Глубокорыхление"
+COMBINED_TILLAGE_TITLE = "Вспашка + Глубокорыхление - сводно по всем агрофирмам"
+_COMBINED_HA_BLANK = 0.05
+
+
+def _tillable_area_by_id(field_ids: set[int]) -> dict[int, float]:
+    """tillable_area полей сезона. Нужна и для культур без факта (морковь, свёкла)."""
+    wanted = {int(fid) for fid in field_ids}
+    if not wanted:
+        return {}
+    areas: dict[int, float] = {}
+    for field in get_all_from_id("fields"):
+        fid = field.get("id")
+        if fid is None:
+            continue
+        try:
+            fid_i = int(fid)
+        except (TypeError, ValueError):
+            continue
+        if fid_i not in wanted:
+            continue
+        try:
+            areas[fid_i] = float(field.get("tillable_area") or field.get("calculated_area") or 0.0)
+        except (TypeError, ValueError):
+            areas[fid_i] = 0.0
+    print(
+        f"  Площадь полей сезона: {len(areas)} из {len(wanted)} "
+        f"(без площади {len(wanted) - len(areas)})"
+    )
+    return areas
+
+
+def combined_area_by_crop(
+    field_to_crop: dict[int, str],
+    field_area: dict[int, float],
+) -> dict[str, float]:
+    """Сумма tillable_area по культуре года урожая."""
+    out: dict[str, float] = defaultdict(float)
+    for fid, crop in (field_to_crop or {}).items():
+        name = str(crop or "").strip()
+        if not name:
+            continue
+        try:
+            fid_i = int(fid)
+        except (TypeError, ValueError):
+            continue
+        out[name] += float((field_area or {}).get(fid_i) or 0.0)
+    return {crop: round(area, 2) for crop, area in out.items() if abs(area) >= 0.005}
+
+
+def _combined_item_ha(cutoff_dt: datetime, item: dict) -> float:
+    hourly = item.get("covered_area_hourly") or []
+    cov = 0.0
+    for entry in hourly:
+        h = parse_dt(entry[0])
+        if h and h < cutoff_dt:
+            cov += float(entry[1] or 0.0)
+    if not hourly:
+        cov = float(item.get("covered_area") or 0.0)
+    return cov
+
+
+def _combined_crop_name(fid: int, item: dict, field_to_crop: dict[int, str]) -> str:
+    """Культура года урожая. Поле без культуры сезона остаётся в «Иных»."""
+    mapped = str((field_to_crop or {}).get(fid) or "").strip()
+    if mapped:
+        return mapped
+    from mtfmi_batch_fetch import crop_of_item
+
+    raw = str(crop_of_item(item, "") or "").strip()
+    return _map_plow_crop_name(raw) or PLOW_FIELD_OTHER_CROP
+
+
+def accumulate_combined_tillage(
+    tasks_season: list[dict],
+    mtfmi_map: dict[int, list[dict]],
+    today_task_ids: set[int],
+    cutoff: datetime,
+    field_to_firm: dict[int, str],
+    field_to_crop: dict[int, str],
+    *,
+    plow_seasons: set[int],
+    deep_seasons: set[int],
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Факт вспашки + глубокорыхления за сезоны редактора планов.
+
+    Вспашка входит по сезонам «2.4 Вспашка», глубокорыхление — по сезонам
+    «2.8 Глубокорыхление». Культура строки — культура поля года урожая.
+    Смены до даты отчёта входят в факт (включая сутки отчёта). Сутки
+    дополнительно копятся отдельно.
+    """
+    plow_ok = {int(year) for year in plow_seasons}
+    deep_ok = {int(year) for year in deep_seasons}
+    report_day = cutoff.date()
+    fact: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    today: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for task in tasks_season:
+        try:
+            wt = int(task.get("work_type_id"))
+        except (TypeError, ValueError):
+            continue
+        is_plow = wt in PLOW_WT_IDS
+        is_deep = wt in DEEP_WT_IDS
+        if is_plow:
+            if not _task_season_allowed(task, plow_ok):
+                continue
+        elif is_deep:
+            if not _task_season_allowed(task, deep_ok):
+                continue
+        else:
+            continue
+        end_dt = parse_dt(task.get("end_time"))
+        if end_dt is None:
+            continue
+        anchor = datetime(
+            end_dt.year, end_dt.month, end_dt.day,
+            DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK,
+        )
+        if end_dt < anchor:
+            shift_d = (end_dt - timedelta(days=1)).date()
+            shift_cutoff = anchor
+        else:
+            shift_d = end_dt.date()
+            shift_cutoff = anchor + timedelta(days=1)
+        in_season = shift_d < report_day
+        tid = task.get("id")
+        in_today = tid in today_task_ids
+        if not in_season and not in_today:
+            continue
+
+        for item in mtfmi_map.get(tid, []):
+            fid = item.get("field_id")
+            if not fid:
+                continue
+            try:
+                fid_i = int(fid)
+            except (TypeError, ValueError):
+                continue
+            firm = field_to_firm.get(fid_i)
+            if not firm or firm not in FIRM_ORDER:
+                continue
+            if is_plow and _plow_item_excluded(firm, item):
+                continue
+            crop = _combined_crop_name(fid_i, item, field_to_crop)
+            if is_deep and _plans.is_crop_user_excluded("2.8 Глубокорыхление", firm, crop):
+                continue
+            if in_season:
+                ha = _combined_item_ha(shift_cutoff, item)
+                if ha > 0:
+                    fact[crop][firm] += ha
+            if in_today:
+                ha_today = _combined_item_ha(cutoff, item)
+                if ha_today > 0:
+                    today[crop][firm] += ha_today
+
+    crops = set(fact) | set(today)
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for crop in crops:
+        out[crop] = {
+            "fact": {
+                firm: round(ha, 2)
+                for firm, ha in fact.get(crop, {}).items()
+                if abs(ha) >= 0.005
+            },
+            "today": {
+                firm: round(ha, 2)
+                for firm, ha in today.get(crop, {}).items()
+                if abs(ha) >= 0.005
+            },
+        }
+    return out
+
+
+def _combined_fact_total(by_firm: dict[str, float]) -> float:
+    return round(sum(float(v or 0.0) for v in (by_firm or {}).values()), 2)
+
+
+def build_combined_tillage_view(
+    work: dict[str, dict[str, dict[str, float]]],
+    area_by_crop: dict[str, float],
+) -> dict[str, Any]:
+    """Три блока страницы: матрица по АФ, полевые культуры, овощи."""
+    names = set(area_by_crop) | set(work or {})
+    rows: list[dict[str, Any]] = []
+    for crop in names:
+        bucket = (work or {}).get(crop) or {}
+        fact_by = dict(bucket.get("fact") or {})
+        today_by = dict(bucket.get("today") or {})
+        area = round(float(area_by_crop.get(crop) or 0.0), 2)
+        fact = _combined_fact_total(fact_by)
+        today = _combined_fact_total(today_by)
+        if abs(area) < 0.5 and abs(fact) < 0.5 and abs(today) < 0.5:
+            continue
+        rows.append({
+            "crop": crop,
+            "area": area,
+            "fact_by_firm": fact_by,
+            "fact": fact,
+            "today": today,
+            "veg": crop in PLOW_VEGETABLE_CROPS,
+        })
+
+    def _wide_key(row: dict) -> tuple:
+        if row["crop"] == PLOW_FIELD_OTHER_CROP:
+            return (2, 0, "")
+        if row["fact"] >= 0.5:
+            return (0, -row["fact"], row["crop"])
+        return (1, *_crop_sort_key(row["crop"]))
+
+    wide = sorted(rows, key=_wide_key)
+    field = [row for row in wide if not row["veg"]]
+    veg_pos = {name: i for i, name in enumerate(PLOW_VEGETABLE_SUMMARY)}
+    veg = sorted(
+        (row for row in rows if row["veg"]),
+        key=lambda row: veg_pos.get(row["crop"], 99),
+    )
+    firms = [
+        firm for firm in FIRM_ORDER
+        if any(abs(float(row["fact_by_firm"].get(firm) or 0.0)) >= _COMBINED_HA_BLANK for row in wide)
+    ]
+    if not firms:
+        firms = list(FIRM_ORDER)
+    return {"wide": wide, "field": field, "veg": veg, "firms": firms}
+
+
+def _combined_put(
+    ws,
+    styles: dict,
+    row: int,
+    col: int,
+    value,
+    *,
+    fill,
+    font,
+    align,
+    fmt: str | None = None,
+    blank_below: float | None = None,
+) -> None:
+    show = value
+    if (
+        blank_below is not None
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and abs(float(value)) < blank_below
+    ):
+        show = None
+    cell = ws.cell(row=row, column=col, value=show)
+    if fmt:
+        cell.number_format = fmt
+    _sc(cell, styles, fill=fill, font=font, align=align)
+
+
+def _write_combined_title(ws, styles, row: int, n_cols: int, title_rows: list[int]) -> int:
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+    _combined_put(
+        ws, styles, row, 1, COMBINED_TILLAGE_TITLE,
+        fill=styles["fill_hdr"],
+        font=Font(name="Calibri", size=11, bold=True, color="FFFFFF"),
+        align=Alignment(horizontal="center", vertical="center", wrap_text=False),
+    )
+    for col in range(2, n_cols + 1):
+        _combined_put(
+            ws, styles, row, col, None,
+            fill=styles["fill_hdr"],
+            font=Font(name="Calibri", size=11, bold=True, color="FFFFFF"),
+            align=Alignment(horizontal="center", vertical="center"),
+        )
+    title_rows.append(row)
+    ws.row_dimensions[row].height = 18
+    return row + 1
+
+
+def _write_combined_headers(
+    ws, styles, row: int, headers: list[str], header_rows: list[int],
+) -> int:
+    for col, name in enumerate(headers, start=1):
+        _combined_put(
+            ws, styles, row, col, name,
+            fill=styles["fill_hdr"],
+            font=Font(bold=True, color="FFFFFF", size=9),
+            align=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        )
+    header_rows.append(row)
+    ws.row_dimensions[row].height = 32
+    return row + 1
+
+
+def combined_season_label(
+    plow_seasons: set[int] | frozenset[int],
+    deep_seasons: set[int] | frozenset[int],
+) -> str:
+    """Подпись сезонов как в редакторе: «2027» или «2026+2027»."""
+    years = sorted({int(year) for year in plow_seasons} | {int(year) for year in deep_seasons})
+    if not years:
+        return str(SEASON_YEAR)
+    if len(years) == 1:
+        return str(years[0])
+    return "+".join(str(year) for year in years)
+
+
+def _combined_summary_headers(season_label: str) -> list[str]:
+    crop_col = f"Культура {season_label} г."
+    return [
+        crop_col,
+        "Площадь полей, га",
+        "Факт общий, га",
+        "Остаток к выполнению, га",
+        "Доля факта от\nплана",
+        "Факт за сутки,\nга",
+    ]
+
+
+def _write_combined_summary_block(
+    ws,
+    styles: dict,
+    row: int,
+    crop_rows: list[dict],
+    season_label: str,
+    *,
+    header_rows: list[int],
+    data_rows: list[int],
+    daily_fmt: str,
+) -> int:
+    headers = _combined_summary_headers(season_label)
+    row = _write_combined_headers(ws, styles, row, headers, header_rows)
+    data_font = Font(size=10)
+    data_fill = PatternFill("solid", fgColor="FFFFFF")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=False)
+    total_area = total_fact = total_today = 0.0
+    for crop_row in crop_rows:
+        area = float(crop_row["area"] or 0.0)
+        fact = float(crop_row["fact"] or 0.0)
+        today = float(crop_row["today"] or 0.0)
+        rem = area - fact
+        share = (fact / area) if area > 0 else 0.0
+        values = [crop_row["crop"], area, fact, rem, share, today]
+        formats = [None, "# ##0", "# ##0", "# ##0", "0.0%", daily_fmt]
+        blanks = [None, None, _COMBINED_HA_BLANK, None, None, _COMBINED_HA_BLANK]
+        for col, value in enumerate(values, start=1):
+            _combined_put(
+                ws, styles, row, col, value,
+                fill=data_fill, font=data_font,
+                align=left if col == 1 else center,
+                fmt=formats[col - 1],
+                blank_below=blanks[col - 1],
+            )
+        data_rows.append(row)
+        ws.row_dimensions[row].height = 16
+        total_area += area
+        total_fact += fact
+        total_today += today
+        row += 1
+
+    total_share = (total_fact / total_area) if total_area > 0 else 0.0
+    totals = [
+        "Итого",
+        total_area,
+        total_fact,
+        total_area - total_fact,
+        total_share,
+        total_today,
+    ]
+    formats = [None, "# ##0", "# ##0", "# ##0", "0.0%", daily_fmt]
+    total_font = Font(bold=True, size=10)
+    for col, value in enumerate(totals, start=1):
+        _combined_put(
+            ws, styles, row, col, value,
+            fill=styles["fill_total"], font=total_font,
+            align=left if col == 1 else center,
+            fmt=formats[col - 1],
+        )
+    data_rows.append(row)
+    ws.row_dimensions[row].height = 18
+    return row + 1
+
+
+def write_combined_tillage_sheet(
+    wb: openpyxl.Workbook,
+    view: dict[str, Any],
+    *,
+    season_label: str,
+    sheet_index: int | None = None,
+) -> bool:
+    """Страница суммы вспашки и глубокорыхления за сезон, перед листами АФ."""
+    wide = list(view.get("wide") or [])
+    if not wide:
+        return False
+    firms = list(view.get("firms") or FIRM_ORDER)
+    styles = _make_styles()
+    title = COMBINED_TILLAGE_SHEET
+    if title in wb.sheetnames:
+        title = f"{title} свод"[:31]
+    if sheet_index is None:
+        ws = wb.create_sheet(title=title)
+    else:
+        ws = wb.create_sheet(title=title, index=sheet_index)
+
+    n_wide = 2 + len(firms) + 1
+    crop_col = f"Культура {season_label} г."
+    wide_headers = [crop_col, "Площадь полей, га", *firms, "Факт общий, га"]
+    title_rows: list[int] = []
+    header_rows: list[int] = []
+    data_rows: list[int] = []
+    row = _write_combined_title(ws, styles, 1, n_wide, title_rows)
+    row = _write_combined_headers(ws, styles, row, wide_headers, header_rows)
+
+    data_font = Font(size=10)
+    data_fill = PatternFill("solid", fgColor="FFFFFF")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=False)
+    total_by_firm = {firm: 0.0 for firm in firms}
+    total_area = total_fact = 0.0
+    for crop_row in wide:
+        area = float(crop_row["area"] or 0.0)
+        fact = float(crop_row["fact"] or 0.0)
+        values: list = [crop_row["crop"], area]
+        for firm in firms:
+            ha = float(crop_row["fact_by_firm"].get(firm) or 0.0)
+            values.append(ha)
+            total_by_firm[firm] += ha
+        values.append(fact)
+        for col, value in enumerate(values, start=1):
+            blank = _COMBINED_HA_BLANK if col >= 3 else None
+            _combined_put(
+                ws, styles, row, col, value,
+                fill=data_fill, font=data_font,
+                align=left if col == 1 else center,
+                fmt=None if col == 1 else "# ##0",
+                blank_below=blank,
+            )
+        data_rows.append(row)
+        ws.row_dimensions[row].height = 16
+        total_area += area
+        total_fact += fact
+        row += 1
+
+    total_values: list = ["Итого", total_area]
+    total_values.extend(total_by_firm[firm] for firm in firms)
+    total_values.append(total_fact)
+    total_font = Font(bold=True, size=10)
+    for col, value in enumerate(total_values, start=1):
+        _combined_put(
+            ws, styles, row, col, value,
+            fill=styles["fill_total"], font=total_font,
+            align=left if col == 1 else center,
+            fmt=None if col == 1 else "# ##0",
+        )
+    data_rows.append(row)
+    ws.row_dimensions[row].height = 18
+    row += 1
+
+    field_rows = list(view.get("field") or [])
+    veg_rows = list(view.get("veg") or [])
+    if field_rows:
+        ws.row_dimensions[row].height = 10
+        row += 1
+        row = _write_combined_title(ws, styles, row, len(_combined_summary_headers(season_label)), title_rows)
+        row = _write_combined_summary_block(
+            ws, styles, row, field_rows, season_label,
+            header_rows=header_rows, data_rows=data_rows, daily_fmt="# ##0",
+        )
+    if veg_rows:
+        ws.row_dimensions[row].height = 10
+        row += 1
+        row = _write_combined_summary_block(
+            ws, styles, row, veg_rows, season_label,
+            header_rows=header_rows, data_rows=data_rows, daily_fmt="# ##0.00",
+        )
+
+    width_by_col = {1: 24, 2: 16}
+    for col in range(3, n_wide + 1):
+        width_by_col[col] = 14
+    for col, width in width_by_col.items():
+        ws.column_dimensions[get_column_letter(col)].width = width
+    end_letter = get_column_letter(n_wide)
+    last = max(int(ws.max_row or 1), 1)
+    ws.print_area = f"A1:{end_letter}{last}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.scale = None
+    ws.page_margins.left = 0.3
+    ws.page_margins.right = 0.3
+    ws.page_margins.top = 0.35
+    ws.page_margins.bottom = 0.3
+    ws.freeze_panes = "A3"
+    for r in title_rows:
+        ws.row_dimensions[r].height = 18
+    for r in header_rows:
+        ws.row_dimensions[r].height = 32
+    return True
+
+
 def write_tillage_combined_sheet(
     wb: openpyxl.Workbook,
     all_details: dict[str, dict],
@@ -3180,7 +3680,11 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
 
     print(f"Отчёт: {WORK_TYPE_TITLE}")
     plow_seasons = "+".join(str(y) for y in sorted(PLOW_FACT_SEASONS))
-    print(f"Дата: {report_date}  |  сезоны вспашки (task.season): {plow_seasons}  |  fix={SVODKA9_PLOW_SEASON_FIX}")
+    deep_seasons = "+".join(str(y) for y in sorted(DEEP_FACT_SEASONS))
+    print(
+        f"Дата: {report_date}  |  вспашка: {plow_seasons}  |  "
+        f"глубокорыхление: {deep_seasons}  |  fix={SVODKA9_PLOW_SEASON_FIX}"
+    )
     print(f"Период: с {SEASON_START}  |  смена {DAY_START_HOUR}:00–{DAY_END_HOUR}:00")
 
     day_start, cutoff = compute_time_range(report_date, DAY_START_HOUR, DAY_END_HOUR)
@@ -3195,18 +3699,20 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     period_start = date(report_date.year, 3, 1)
     firm_names = list(FIRM_ORDER)
 
-    def _sync_refs() -> tuple[dict, set, dict, dict, dict]:
+    def _sync_refs() -> tuple[dict, set, dict, dict, dict, dict]:
         ftc, avail = load_field_to_crop_and_available(report_date, period_start)
         crops_map = {
             c["id"]: c.get("name") or c.get("title", "")
             for c in get_all_from_id("crops")
         }
+        plow_map = _build_field_to_crop_plow(crops_map)
         return (
             ftc,
             avail,
             crops_map,
-            _build_field_to_crop_plow(crops_map),
+            plow_map,
             _build_field_to_crop_deep(crops_map, report_date),
+            _tillable_area_by_id(set(plow_map)),
         )
 
     async def _fetch_api() -> tuple[Any, list, dict, dict, dict, dict]:
@@ -3235,6 +3741,7 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
         _crops_map,
         field_to_crop_plow,
         field_to_crop_deep,
+        field_area_plow,
     ), api = (
         await run_parallel_refs_and_fetch(_sync_refs, _fetch_api, label="r9-plow")
     )
@@ -3293,6 +3800,29 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     ):
         print("  Лист «Глубокорыхление»: сводно по всем агрофирмам")
     print("  Лист «Итого (все АФ)»: вспашка (полевые + овощи) сводно по всем агрофирмам")
+    combined_work = accumulate_combined_tillage(
+        tasks_season,
+        mtfmi_map,
+        today_task_ids,
+        cutoff,
+        field_to_firm,
+        field_to_crop_plow,
+        plow_seasons=set(PLOW_FACT_SEASONS),
+        deep_seasons=set(DEEP_FACT_SEASONS),
+    )
+    combined_view = build_combined_tillage_view(
+        combined_work,
+        combined_area_by_crop(field_to_crop_plow, field_area_plow),
+    )
+    season_label = combined_season_label(PLOW_FACT_SEASONS, DEEP_FACT_SEASONS)
+    if write_combined_tillage_sheet(
+        wb, combined_view, season_label=season_label,
+    ):
+        combined_fact = sum(float(row["fact"] or 0.0) for row in combined_view["wide"])
+        print(
+            f"  Лист «{COMBINED_TILLAGE_SHEET}»: сезоны редактора {season_label}, "
+            f"культур={len(combined_view['wide'])}, факт={combined_fact:,.0f} га"
+        )
     for firm_name in firm_names:
         write_detail_sheet(wb, firm_name, report_date, day_start, cutoff, all_details[firm_name])
 

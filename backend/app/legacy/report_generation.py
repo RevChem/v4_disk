@@ -4960,7 +4960,7 @@ def _convert_report9_pdf_by_sheets(
     lo_profile_dir: Path,
     lo_timeout: float | None,
 ) -> None:
-    """Сводка 9: каждый лист Excel → отдельный PDF → склейка (сводка, культуры «Вспашка …», «Итого (все АФ)», затем АФ)."""
+    """Сводка 9: каждый лист Excel → отдельный PDF → склейка (сводка, культуры «Вспашка …», «Итого (все АФ)», «Вспашка + Глубокорыхление», затем АФ)."""
     from openpyxl import load_workbook
     from pypdf import PdfReader, PdfWriter
 
@@ -6312,6 +6312,8 @@ def _is_detail_sheet_without_data(ws, sheet_title: str) -> bool:
             return False
     if sn == "Глубокорыхление" or sn.startswith("Глубокорыхление"):
         return False
+    if sn == "Вспашка + Глубокорыхление" or sn.startswith("Вспашка + Глубокорыхление"):
+        return False
     if _is_harvest_holding_sheet(ws, sheet_title):
         return False
     return not _sheet_has_own_or_hired_section(ws)
@@ -6476,6 +6478,8 @@ def _report8_pdf_sheet_headers(sheet_name: str) -> tuple[str, str]:
 def _report9_plow_crop_from_sheet(sheet_name: str) -> str | None:
     """Лист культуры сводки 9: «Вспашка Рапс озимый», «Вспашка Соя (2)», … — не АФ."""
     sn = (sheet_name or "").strip()
+    if sn.startswith("Вспашка +"):
+        return None
     prefix = "Вспашка "
     if not sn.startswith(prefix):
         return None
@@ -6516,6 +6520,8 @@ def _report9_all_firms_work_line(sheet_name: str) -> str | None:
         return "ВИД РАБОТ: 2.4 Вспашка — Сводно по всем агрофирмам"
     if sn == "Глубокорыхление" or sn.startswith("Глубокорыхление"):
         return "ВИД РАБОТ: 2.8 Глубокорыхление — Сводно по всем агрофирмам"
+    if sn == "Вспашка + Глубокорыхление" or sn.startswith("Вспашка + Глубокорыхление"):
+        return "ВИД РАБОТ: 2.4 Вспашка + 2.8 Глубокорыхление — Сводно по всем агрофирмам"
     return None
 
 

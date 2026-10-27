@@ -72,6 +72,15 @@ def normalize_calendar_seasons(raw: Any, report_date: date | None = None) -> dic
     return out
 
 
+def _repo_data_season_ranges_path() -> Path:
+    """Тот же файл, что у API: v4_disk-main/data/season_ranges.json.
+
+    Локальный ``uv run`` не задаёт SVODKI_SEASON_RANGES_PATH, а контейнер
+    читает его как /app/data/season_ranges.json.
+    """
+    return Path(__file__).resolve().parents[4] / "data" / "season_ranges.json"
+
+
 def season_ranges_file_path() -> Path | None:
     configured = (os.environ.get("SVODKI_SEASON_RANGES_PATH") or "").strip()
     if configured:
@@ -79,6 +88,9 @@ def season_ranges_file_path() -> Path | None:
     upload = (os.environ.get("SVODKI_UPLOAD_DIR") or os.environ.get("UPLOAD_DIR") or "").strip()
     if upload:
         return Path(upload) / "season_ranges.json"
+    bundled = _repo_data_season_ranges_path()
+    if bundled.is_file():
+        return bundled
     return None
 
 

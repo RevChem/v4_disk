@@ -258,6 +258,9 @@ def _season_ranges_path() -> Path | None:
     upload = (os.environ.get("SVODKI_UPLOAD_DIR") or os.environ.get("UPLOAD_DIR") or "").strip()
     if upload:
         return Path(upload) / "season_ranges.json"
+    bundled = Path(__file__).resolve().parents[4] / "data" / "season_ranges.json"
+    if bundled.is_file():
+        return bundled
     return None
 
 
