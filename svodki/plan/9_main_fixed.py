@@ -264,6 +264,12 @@ PLOW_VEGETABLE_SUMMARY: tuple[str, ...] = (
     "Свекла столовая",
 )
 PLOW_VEGETABLE_CROPS: frozenset[str] = frozenset(PLOW_VEGETABLE_SUMMARY)
+# Только 9-я сводка: эти культуры не входят ни в листы, ни в итоги.
+REPORT9_EXCLUDED_CROPS: frozenset[str] = frozenset({
+    "рапс озимый",
+    "пшеница озимая",
+    "тритикале озимая",
+})
 PLOW_FIELD_SUMMARY_NAMED: tuple[str, ...] = (
     "Рапс яровой",
     "Соя",
@@ -278,6 +284,12 @@ _UNMAPPED_CROP = "Культура не указана"
 _PREFERRED_CROP_INDEX = {name.lower(): i for i, name in enumerate(PREFERRED_CROP_ORDER)}
 
 
+def _report9_crop_skipped(name: str) -> bool:
+    """Рапс озимый, пшеница озимая и тритикале озимая в 9-й сводке не учитываются."""
+    n = str(name or "").casefold().replace("ё", "е").strip()
+    return n in REPORT9_EXCLUDED_CROPS
+
+
 def _plow_report_crop(raw: str) -> str | None:
     """Культура вспашки после редактора планов.
 
@@ -287,7 +299,7 @@ def _plow_report_crop(raw: str) -> str | None:
     name = str(raw or "").strip()
     mapped = _map_plow_crop_name(name)
     candidate = mapped or name
-    if not candidate:
+    if not candidate or _report9_crop_skipped(candidate):
         return None
     code = crop_code_for_report("2.4 Вспашка", candidate)
     # «Не считать» и «Иные» не теряют имя: на сводной это строка «Иные»,
@@ -499,7 +511,7 @@ def _plow_crops_for_firm(firm: str, by_firm_crop: dict[str, dict[str, dict]]) ->
             names.append(extra)
     split_other = _plans.other_crops_as_rows("2.4 Вспашка")
     for crop in names:
-        if crop == "Иные культуры":
+        if crop == "Иные культуры" or _report9_crop_skipped(crop):
             continue
         cached = _plow_cached_other_crop(crop)
         # Одна строка: детализация в кэше, своей строкой культура не считается.
@@ -1409,7 +1421,9 @@ def build_all_firm_stats(
                         )
                 if wt in DEEP_WT_IDS and fid_i:
                     today_deep_by_field[firm][fid_i] += cov_h
-                    today_deep_by_crop[firm][_deep_crop_name(fid_i)] += cov_h
+                    deep_crop = _deep_crop_name(fid_i)
+                    if not _report9_crop_skipped(deep_crop):
+                        today_deep_by_crop[firm][deep_crop] += cov_h
                     if _note is not None:
                         from mtfmi_batch_fetch import crop_of_item
 
@@ -1561,19 +1575,25 @@ def build_all_firm_stats(
 
             season_fact_total[firm] += cov
             if wt in PLOW_WT_IDS:
-                season_fact_plow[firm] += cov
-                season_daily_area_plow[firm][shift_date] += cov
-                if mid is not None:
-                    season_daily_machines_plow[firm][shift_date].add(int(mid))
-                    season_mdc_plow[firm][shift_date][int(mid)] += cov
+                from mtfmi_batch_fetch import crop_of_item
+
+                plow_name = _map_plow_crop_name(crop_of_item(item, "")) or crop_of_item(item, "")
+                if not _report9_crop_skipped(plow_name):
+                    season_fact_plow[firm] += cov
+                    season_daily_area_plow[firm][shift_date] += cov
+                    if mid is not None:
+                        season_daily_machines_plow[firm][shift_date].add(int(mid))
+                        season_mdc_plow[firm][shift_date][int(mid)] += cov
             elif wt in DEEP_WT_IDS:
-                season_fact_deep[firm] += cov
-                season_daily_area_deep[firm][shift_date] += cov
-                if mid is not None:
-                    season_daily_machines_deep[firm][shift_date].add(int(mid))
-                    season_mdc_deep[firm][shift_date][int(mid)] += cov
-                if shift_d < report_day:
-                    season_deep_by_crop[firm][_deep_crop_name(fid_i)] += cov
+                deep_crop = _deep_crop_name(fid_i)
+                if not _report9_crop_skipped(deep_crop):
+                    season_fact_deep[firm] += cov
+                    season_daily_area_deep[firm][shift_date] += cov
+                    if mid is not None:
+                        season_daily_machines_deep[firm][shift_date].add(int(mid))
+                        season_mdc_deep[firm][shift_date][int(mid)] += cov
+                    if shift_d < report_day:
+                        season_deep_by_crop[firm][deep_crop] += cov
 
     # -------------------------------------------------------------------------
     # Собираем результат
@@ -2706,6 +2726,8 @@ def _deep_all_firms_rows(
     other_plan = other_fact = other_today = 0.0
     other_labels: set[str] = set()
     for crop in sorted(crops, key=lambda c: _crop_sort_key(c, "2.8 Глубокорыхление")):
+        if _report9_crop_skipped(crop):
+            continue
         plan = fact = today = 0.0
         for firm in FIRM_ORDER:
             plan += _deep_plan_ha(firm, crop)
@@ -2798,6 +2820,8 @@ def _deep_display_firm_maps(
             today_acc[display][firm] += float((st.get("deep_today_by_crop") or {}).get(crop) or 0.0)
 
     for crop in sorted(crops, key=lambda c: _crop_sort_key(c, "2.8 Глубокорыхление")):
+        if _report9_crop_skipped(crop):
+            continue
         plan = fact = today = 0.0
         for firm in FIRM_ORDER:
             plan += _deep_plan_ha(firm, crop)
@@ -3343,14 +3367,18 @@ def combined_view_from_plow_summary(
         deep_rows, _deep_note = _deep_all_firms_rows(all_details)
         deep_fact_firm, deep_today_firm = _deep_display_firm_maps(all_details)
         by_name = {row["crop"]: row for row in field}
+        by_veg = {row["crop"]: row for row in veg}
         for crop, _plan, fact, today in deep_rows:
+            if _report9_crop_skipped(crop):
+                continue
             extra_fact = round(float(fact), 2)
             extra_today = round(float(today), 2)
             if abs(extra_fact) < 0.005 and abs(extra_today) < 0.005:
                 continue
             firms_fact = dict(deep_fact_firm.get(crop) or {})
-            firms_today = dict(deep_today_firm.get(crop) or {})
-            existing = by_name.get(crop)
+            is_veg = crop in PLOW_VEGETABLE_CROPS
+            bucket = by_veg if is_veg else by_name
+            existing = bucket.get(crop)
             if existing is None:
                 existing = {
                     "crop": crop,
@@ -3358,13 +3386,17 @@ def combined_view_from_plow_summary(
                     "fact_by_firm": {},
                     "fact": 0.0,
                     "today": 0.0,
-                    "veg": False,
+                    "veg": is_veg,
                 }
-                field.append(existing)
-                by_name[crop] = existing
+                (veg if is_veg else field).append(existing)
+                bucket[crop] = existing
             existing["fact"] = round(float(existing["fact"]) + extra_fact, 2)
             existing["today"] = round(float(existing["today"]) + extra_today, 2)
             existing["fact_by_firm"] = _merge_firm_ha(existing["fact_by_firm"], firms_fact)
+    field = [
+        row for row in field
+        if row["crop"] not in PLOW_VEGETABLE_CROPS and not _report9_crop_skipped(row["crop"])
+    ]
     firms = [
         firm for firm in FIRM_ORDER
         if any(abs(float(row["fact_by_firm"].get(firm) or 0.0)) >= _COMBINED_HA_BLANK for row in field)

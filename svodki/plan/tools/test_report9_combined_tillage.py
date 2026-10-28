@@ -224,35 +224,42 @@ def test_combined_season_fact_matches_plow_all_firms_total():
     }
     view = r9.combined_view_from_plow_summary(by_firm, {"Рапс озимый": 40000, "Соя": 1000})
     field_rows, veg_rows, _note = r9._plow_all_firms_rows_field_and_veg(by_firm)
+    names = {row["crop"] for row in view["wide"]}
+    assert "Рапс озимый" not in names
+    assert "Пшеница озимая" not in names
+    assert "Тритикале озимая" not in names
+    assert "Картофель" not in names
+    assert "Морковь" not in names
+    assert "Свекла столовая" not in names
     assert [row["crop"] for row in view["wide"]] == [crop for crop, *_rest in field_rows]
-    assert "Картофель" not in {row["crop"] for row in view["wide"]}
     assert [row["crop"] for row in view["veg"]] == [crop for crop, *_rest in veg_rows]
-    assert round(sum(row["fact"] for row in view["field"]), 2) == round(
-        sum(fact for _crop, _plan, fact, _today in field_rows), 2
-    )
     by_name = {row["crop"]: row for row in view["field"]}
-    assert by_name["Рапс озимый"]["fact"] == 15000
-    assert by_name["Рапс озимый"]["fact_by_firm"][firm_a] == 10000
-    assert by_name["Рапс озимый"]["fact_by_firm"][firm_b] == 5000
+    assert by_name["Рапс яровой"]["fact"] == 2000
     assert by_name["Иные культуры"]["fact"] == 30
     veg = {row["crop"]: row for row in view["veg"]}
     assert veg["Картофель"]["fact"] == 80
     plow_total = round(sum(row["fact"] for row in view["field"]), 2)
     details = {
         firm_a: {
-            "deep_season_by_crop": {"Рапс яровой": 7.0, "Пар": 2.5},
+            "deep_season_by_crop": {"Рапс яровой": 7.0, "Пар": 2.5, "Картофель": 9.0, "Пшеница озимая": 40.0},
             "deep_today_by_crop": {"Рапс яровой": 1.0},
             "deep_today": 1.0,
         },
     }
     with_deep = r9.combined_view_from_plow_summary(by_firm, {"Рапс озимый": 40000}, details)
     deep_rows, _note = r9._deep_all_firms_rows(details)
-    assert round(sum(row["fact"] for row in with_deep["field"]), 2) == round(
-        plow_total + sum(fact for _crop, _plan, fact, _today in deep_rows), 2
+    deep_field = sum(
+        fact for crop, _plan, fact, _today in deep_rows
+        if crop not in r9.PLOW_VEGETABLE_CROPS
     )
+    assert round(sum(row["fact"] for row in with_deep["field"]), 2) == round(plow_total + deep_field, 2)
+    assert "Картофель" not in {row["crop"] for row in with_deep["field"]}
+    assert "Пшеница озимая" not in {row["crop"] for row in with_deep["wide"]}
     rape = {row["crop"]: row for row in with_deep["field"]}["Рапс яровой"]
     assert rape["fact"] == 2007
     assert rape["fact_by_firm"][firm_a] == 2007
+    veg_deep = {row["crop"]: row for row in with_deep["veg"]}
+    assert veg_deep["Картофель"]["fact"] == 89
 
 
 def teardown_module(_module):
