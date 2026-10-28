@@ -3201,6 +3201,75 @@ def _combined_fact_total(by_firm: dict[str, float]) -> float:
     return round(sum(float(v or 0.0) for v in (by_firm or {}).values()), 2)
 
 
+def _combined_firm_ha(by_crop_firm: dict[str, dict[str, float]], crops: list[str]) -> dict[str, float]:
+    out: dict[str, float] = defaultdict(float)
+    for crop in crops:
+        for firm, ha in (by_crop_firm.get(crop) or {}).items():
+            out[str(firm)] += float(ha or 0.0)
+    return {
+        firm: round(ha, 2)
+        for firm, ha in out.items()
+        if abs(ha) >= 0.005
+    }
+
+
+def combined_view_from_plow_summary(
+    by_firm_crop: dict[str, dict[str, dict]],
+    area_by_crop: dict[str, float],
+) -> dict[str, Any]:
+    """Факт сезона листа суммы — тот же, что «Итого» вспашки на «Итого (все АФ)».
+
+    Полевой блок включает рапс озимый, тритикале и «Иные культуры».
+    Овощи остаются отдельным блоком и в эти 68 596 га не входят.
+    """
+    fact_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    today_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for firm, firm_stats in (by_firm_crop or {}).items():
+        for crop, st in (firm_stats or {}).items():
+            name = str(crop)
+            fact_firm[name][str(firm)] += float((st or {}).get("season_plow") or 0.0)
+            today_firm[name][str(firm)] += float((st or {}).get("plow_today") or 0.0)
+
+    field_rows, veg_rows, _note = _plow_all_firms_rows_field_and_veg(by_firm_crop)
+    field_names = [crop for crop, _plan, _fact, _today in field_rows if crop != PLOW_FIELD_OTHER_CROP]
+    keep = set(field_names) | set(PLOW_VEGETABLE_CROPS)
+    other_crops = [
+        crop
+        for crop in set(fact_firm) | set(today_firm)
+        if crop not in keep and _plow_counts_as_other(crop)
+    ]
+
+    def _row(crop: str, fact: float, today: float, sources: list[str], veg: bool) -> dict[str, Any]:
+        return {
+            "crop": crop,
+            "area": round(float((area_by_crop or {}).get(crop) or 0.0), 2),
+            "fact_by_firm": _combined_firm_ha(fact_firm, sources),
+            "fact": round(float(fact), 2),
+            "today": round(float(today), 2),
+            "veg": veg,
+        }
+
+    field = [
+        _row(
+            crop, fact, today,
+            other_crops if crop == PLOW_FIELD_OTHER_CROP else [crop],
+            False,
+        )
+        for crop, _plan, fact, today in field_rows
+    ]
+    veg = [
+        _row(crop, fact, today, [crop], True)
+        for crop, _plan, fact, today in veg_rows
+    ]
+    firms = [
+        firm for firm in FIRM_ORDER
+        if any(abs(float(row["fact_by_firm"].get(firm) or 0.0)) >= _COMBINED_HA_BLANK for row in field)
+    ]
+    if not firms:
+        firms = list(FIRM_ORDER)
+    return {"wide": field, "field": field, "veg": veg, "firms": firms}
+
+
 def build_combined_tillage_view(
     work: dict[str, dict[str, dict[str, float]]],
     area_by_crop: dict[str, float],
@@ -3807,21 +3876,10 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     ):
         print("  Лист «Глубокорыхление»: сводно по всем агрофирмам")
     print("  Лист «Итого (все АФ)»: вспашка (полевые + овощи) сводно по всем агрофирмам")
-    # Эталонная страница подписана годом урожая. Глубокорыхление 2026
-    # уже есть на листе «Глубокорыхление» и в эту сумму не входит.
-    combined_years = {int(SEASON_YEAR)}
-    combined_work = accumulate_combined_tillage(
-        tasks_season,
-        mtfmi_map,
-        today_task_ids,
-        cutoff,
-        field_to_firm,
-        field_to_crop_plow,
-        plow_seasons=combined_years,
-        deep_seasons=combined_years,
-    )
-    combined_view = build_combined_tillage_view(
-        combined_work,
+    # Факт сезона — как «Итого» вспашки на листе «Итого (все АФ)»:
+    # все полевые культуры, включая рапс озимый. Овощи в этот итог не входят.
+    combined_view = combined_view_from_plow_summary(
+        plow_by_crop,
         combined_area_by_crop(field_to_crop_plow, field_area_plow),
     )
     season_label = str(SEASON_YEAR)

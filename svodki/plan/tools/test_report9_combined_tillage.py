@@ -201,5 +201,43 @@ def test_combined_page_uses_harvest_year_for_both_operations():
     assert work["Соя"]["fact"][firm] == 10
 
 
+def test_combined_season_fact_matches_plow_all_firms_total():
+    """Факт сезона листа суммы равен «Итого» вспашки, без овощей."""
+    r9 = _report9()
+    firm_a, firm_b = r9.FIRM_ORDER[0], r9.FIRM_ORDER[1]
+
+    def slot(fact: float, today: float = 0.0) -> dict:
+        return {"season_plow": fact, "plow_today": today}
+
+    by_firm = {
+        firm_a: {
+            "Рапс озимый": slot(10000),
+            "Рапс яровой": slot(2000, 10),
+            "Соя": slot(500),
+            "Многолетние травы": slot(30),
+            "Картофель": slot(80, 4),
+        },
+        firm_b: {
+            "Рапс озимый": slot(5000),
+            "Пшеница озимая": slot(100),
+        },
+    }
+    view = r9.combined_view_from_plow_summary(by_firm, {"Рапс озимый": 40000, "Соя": 1000})
+    field_rows, veg_rows, _note = r9._plow_all_firms_rows_field_and_veg(by_firm)
+    assert [row["crop"] for row in view["wide"]] == [crop for crop, *_rest in field_rows]
+    assert "Картофель" not in {row["crop"] for row in view["wide"]}
+    assert [row["crop"] for row in view["veg"]] == [crop for crop, *_rest in veg_rows]
+    assert round(sum(row["fact"] for row in view["field"]), 2) == round(
+        sum(fact for _crop, _plan, fact, _today in field_rows), 2
+    )
+    by_name = {row["crop"]: row for row in view["field"]}
+    assert by_name["Рапс озимый"]["fact"] == 15000
+    assert by_name["Рапс озимый"]["fact_by_firm"][firm_a] == 10000
+    assert by_name["Рапс озимый"]["fact_by_firm"][firm_b] == 5000
+    assert by_name["Иные культуры"]["fact"] == 30
+    veg = {row["crop"]: row for row in view["veg"]}
+    assert veg["Картофель"]["fact"] == 80
+
+
 def teardown_module(_module):
     importlib.reload(plans)
