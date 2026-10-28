@@ -301,6 +301,13 @@ def test_first_sheet_firm_table_uses_plow_plan_and_both_facts():
     assert ws.cell(total_row, 6).value == round(2.5 * len(r9.FIRM_ORDER), 2)
     assert ws.page_setup.fitToWidth == 1
     assert ws.page_setup.fitToHeight == 1
+    firm = r9.FIRM_ORDER[0]
+    full = plans.firm_group_plan_ha("2.4 Вспашка", firm)
+    assert r9._plow_season_plan(firm) == round(full - r9._report9_excluded_plan_ha("2.4 Вспашка", firm), 2)
+    assert r9._report9_excluded_plan_ha("2.4 Вспашка", firm) > 0
+    assert r9._plow_plan_ha(firm, "Рапс озимый") == 0
+    assert r9._plow_plan_ha(firm, "Пшеница озимая") == 0
+    assert r9._plow_plan_ha(firm, "Тритикале озимая") == 0
 
 
 def teardown_module(_module):

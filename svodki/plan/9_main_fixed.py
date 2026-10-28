@@ -235,10 +235,28 @@ DEEP_OWN_COUNT: dict[str, int] = dict(AVAILABLE_OWN["2.8 Глубокорыхл�
 PLAN_DAY_PLOW: float = PLAN_RATE_PER_GROUP.get("2.4 Вспашка", 40.0)
 PLAN_DAY_DEEP: float = PLAN_RATE_PER_GROUP.get("2.8 Глубокорыхление", 38.0)
 
-# План га сезон по фирме — из «Редактора планов» (plans.firm_group_plan_ha), как во 2-й сводке:
-# озимые входят, если не отмечены «Не считать»; «Иные культуры» — ячейка редактора и культуры режима «Иные».
+def _report9_excluded_plan_ha(group: str, firm: str) -> float:
+    """План рапса озимого, пшеницы озимой и тритикале озимой — в 9-й сводке его нет."""
+    dropped = 0.0
+    for crop, raw in _group_firm_plan(group, firm).items():
+        if not _report9_crop_skipped(crop):
+            continue
+        if _plans.is_crop_user_excluded(group, firm, crop):
+            continue
+        if _plans.crop_code_for_report(group, crop) is None:
+            continue
+        try:
+            dropped += float(raw or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return dropped
+
+
+# План га сезон по фирме — из «Редактора планов», без трёх озимых культур 9-й сводки.
 def _plow_season_plan(firm: str) -> float:
-    return firm_group_plan_ha("2.4 Вспашка", firm)
+    total = float(firm_group_plan_ha("2.4 Вспашка", firm) or 0.0)
+    total -= _report9_excluded_plan_ha("2.4 Вспашка", firm)
+    return round(max(total, 0.0), 2)
 
 
 # --- Вспашка по культурам (как 2_main_ideal_compact, раздел 2.4) ------------
@@ -431,7 +449,7 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
     отнесены к этой строке. Планы озимых и прочих культур из plans.py сюда
     не входят: в plans.py строки «Иные культуры» нет.
     """
-    if _plans.is_crop_user_excluded("2.4 Вспашка", firm, crop):
+    if _report9_crop_skipped(crop) or _plans.is_crop_user_excluded("2.4 Вспашка", firm, crop):
         return 0.0
     if crop == PLOW_FIELD_OTHER_CROP:
         return _other_plan_ha("2.4 Вспашка", firm)
@@ -440,7 +458,7 @@ def _plow_plan_ha(firm: str, crop: str) -> float:
 
 def _deep_plan_ha(firm: str, crop: str) -> float:
     """План глубокорыхления. «Иные культуры» — ячейка редактора и режим «Иные»."""
-    if _plans.is_crop_user_excluded("2.8 Глубокорыхление", firm, crop):
+    if _report9_crop_skipped(crop) or _plans.is_crop_user_excluded("2.8 Глубокорыхление", firm, crop):
         return 0.0
     if crop == _DEEP_OTHER_CROP:
         return _other_plan_ha("2.8 Глубокорыхление", firm)
@@ -3735,15 +3753,15 @@ def _write_firm_plow_plus_deep_table(
     all_details: dict[str, dict],
 ) -> int:
     """Свод по агрофирмам: факт вспашка+глубокорыхление, план только вспашки."""
-    header_font = Font(bold=True, color="FFFFFF", size=9)
-    data_font = Font(size=10)
-    total_font = Font(bold=True, size=10)
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    data_font = Font(size=11)
+    total_font = Font(bold=True, size=11)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", wrap_text=False)
     for ci, name in enumerate(_FIRM_PLOW_DEEP_COLS, start=1):
         cell = ws.cell(row=row, column=ci, value=name)
         _sc(cell, styles, fill=styles["fill_hdr"], font=header_font, align=center)
-    ws.row_dimensions[row].height = 28
+    ws.row_dimensions[row].height = 36
     row += 1
 
     fmt = {
@@ -3766,7 +3784,7 @@ def _write_firm_plow_plus_deep_table(
                 fill=fill, font=font,
                 align=left if ci == 1 else Alignment(horizontal="center", vertical="center"),
             )
-        ws.row_dimensions[row].height = 15
+        ws.row_dimensions[row].height = 20
 
     for firm in FIRM_ORDER:
         st = all_details.get(firm) or _empty_stats()
@@ -3811,11 +3829,11 @@ def write_tillage_combined_sheet(
         column=1,
         value=f"{WORK_TYPE_TITLE} — 2.4 Вспашка, 2.8 Глубокорыхление",
     )
-    c0.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    c0.font = Font(name="Calibri", size=12, bold=True, color="FFFFFF")
     c0.fill = styles["fill_hdr"]
     c0.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     c0.border = styles["border"]
-    ws.row_dimensions[row].height = 18
+    ws.row_dimensions[row].height = 22
     row += 1
 
     groups = [
@@ -3848,17 +3866,17 @@ def write_tillage_combined_sheet(
     for group_name, area_key, plan_day, mach_key, hired_key, own_count_dict, avg_key, engine_key in groups:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n)
         c = ws.cell(row=row, column=1, value=group_name)
-        c.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        c.font = Font(name="Calibri", size=12, bold=True, color="FFFFFF")
         c.fill = styles["fill_hdr"]
         c.alignment = Alignment(horizontal="left", vertical="center")
         c.border = styles["border"]
-        ws.row_dimensions[row].height = 16
+        ws.row_dimensions[row].height = 20
         row += 1
 
         for ci, col_name in enumerate(PERF_COLS, start=1):
             cc = ws.cell(row=row, column=ci, value=col_name)
-            _sc(cc, styles, fill=styles["fill_hdr"], font=Font(bold=True, color="FFFFFF", size=9), align=Alignment(horizontal="center", vertical="center", wrap_text=True))
-        ws.row_dimensions[row].height = 36
+            _sc(cc, styles, fill=styles["fill_hdr"], font=Font(bold=True, color="FFFFFF", size=11), align=Alignment(horizontal="center", vertical="center", wrap_text=True))
+        ws.row_dimensions[row].height = 52
         row += 1
 
         t_mach = t_area = t_hours = 0.0
@@ -3907,10 +3925,10 @@ def write_tillage_combined_sheet(
                     cell,
                     styles,
                     fill=PatternFill("solid", fgColor=bg),
-                    font=Font(size=10),
+                    font=Font(size=11),
                     align=Alignment(horizontal="left" if ci == 1 else "center", vertical="center", wrap_text=False),
                 )
-            ws.row_dimensions[row].height = 15
+            ws.row_dimensions[row].height = 20
             t_mach += n_mach
             t_area += area
             t_hours += hours
@@ -3944,16 +3962,16 @@ def write_tillage_combined_sheet(
                 cell,
                 styles,
                 fill=PatternFill("solid", fgColor=bg),
-                font=Font(bold=True, size=10),
+                font=Font(bold=True, size=11),
                 align=Alignment(
                     horizontal="left" if ci == 1 else "center",
                     vertical="center",
                     wrap_text=False,
                 ),
             )
-        ws.row_dimensions[row].height = 15
+        ws.row_dimensions[row].height = 20
         row += 1
-        ws.row_dimensions[row].height = 8
+        ws.row_dimensions[row].height = 10
         row += 1
 
     _write_firm_plow_plus_deep_table(ws, styles, row, all_details)
