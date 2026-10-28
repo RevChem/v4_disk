@@ -2770,6 +2770,74 @@ def _deep_all_firms_rows(
     return rows, footnote
 
 
+def _deep_display_firm_maps(
+    all_details: dict[str, dict],
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """Факт глубокорыхления по культурам листа «Глубокорыхление», в разрезе АФ.
+
+    Свёртка в «Иные культуры» та же, что у свода. Сумма по фирмам равна факту строки.
+    """
+    rows, _note = _deep_all_firms_rows(all_details or {})
+    fact_acc: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    today_acc: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    crops: set[str] = set()
+    for firm in FIRM_ORDER:
+        for crop, plan in _group_firm_plan("2.8 Глубокорыхление", firm).items():
+            if float(plan or 0.0) > 0:
+                crops.add(str(crop))
+        st = (all_details or {}).get(firm) or {}
+        for bucket in ("deep_today_by_crop", "deep_season_by_crop"):
+            for crop, area in (st.get(bucket) or {}).items():
+                if abs(float(area or 0.0)) >= 0.005:
+                    crops.add(str(crop))
+
+    def _take(display: str, crop: str) -> None:
+        for firm in FIRM_ORDER:
+            st = (all_details or {}).get(firm) or {}
+            fact_acc[display][firm] += float((st.get("deep_season_by_crop") or {}).get(crop) or 0.0)
+            today_acc[display][firm] += float((st.get("deep_today_by_crop") or {}).get(crop) or 0.0)
+
+    for crop in sorted(crops, key=lambda c: _crop_sort_key(c, "2.8 Глубокорыхление")):
+        plan = fact = today = 0.0
+        for firm in FIRM_ORDER:
+            plan += _deep_plan_ha(firm, crop)
+            st = (all_details or {}).get(firm) or {}
+            fact += float((st.get("deep_season_by_crop") or {}).get(crop) or 0.0)
+            today += float((st.get("deep_today_by_crop") or {}).get(crop) or 0.0)
+        plan, fact, today = round(plan, 2), round(fact, 2), round(today, 2)
+        if crop == _DEEP_OTHER_CROP:
+            _take(_DEEP_OTHER_CROP, crop)
+            continue
+        deep_mode = _plans.crop_report_mode("2.8 Глубокорыхление", crop)
+        deep_split = _plans.other_crops_as_rows("2.8 Глубокорыхление")
+        if deep_split and (
+            deep_mode == _plans.CROP_MODE_OTHER
+            or _deep_other_label(crop) is not None
+            or (abs(plan) < 0.005 and deep_mode != _plans.CROP_MODE_AS_IS)
+        ):
+            if abs(plan) >= 0.005 or abs(fact) >= 0.005 or abs(today) >= 0.005:
+                _take(crop, crop)
+            continue
+        other_label = _deep_other_label(crop)
+        fold = other_label is not None or abs(plan) < 0.005
+        if not fold:
+            _take(crop, crop)
+            continue
+        if abs(fact) < 0.005 and abs(today) < 0.005:
+            continue
+        _take(_DEEP_OTHER_CROP, crop)
+
+    fact_by = {
+        crop: _round_parts_to_total(fact_acc.get(crop) or {}, fact)
+        for crop, _plan, fact, _today in rows
+    }
+    today_by = {
+        crop: _round_parts_to_total(today_acc.get(crop) or {}, today)
+        for crop, _plan, _fact, today in rows
+    }
+    return fact_by, today_by
+
+
 def _write_all_firms_block(
     ws,
     styles: dict,
@@ -3213,14 +3281,24 @@ def _combined_firm_ha(by_crop_firm: dict[str, dict[str, float]], crops: list[str
     }
 
 
+def _merge_firm_ha(left: dict[str, float], right: dict[str, float]) -> dict[str, float]:
+    names = set(left) | set(right)
+    return {
+        firm: round(float(left.get(firm) or 0.0) + float(right.get(firm) or 0.0), 2)
+        for firm in names
+        if abs(float(left.get(firm) or 0.0) + float(right.get(firm) or 0.0)) >= 0.005
+    }
+
+
 def combined_view_from_plow_summary(
     by_firm_crop: dict[str, dict[str, dict]],
     area_by_crop: dict[str, float],
+    all_details: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
-    """Факт сезона листа суммы — тот же, что «Итого» вспашки на «Итого (все АФ)».
+    """Факт сезона — итог вспашки полевых культур плюс всё глубокорыхление.
 
-    Полевой блок включает рапс озимый, тритикале и «Иные культуры».
-    Овощи остаются отдельным блоком и в эти 68 596 га не входят.
+    68 595,67 га вспашки с листа «Итого (все АФ)» и 19 451,75 га глубокорыхления
+    складываются в одной таблице. Овощной блок вспашки остаётся отдельно.
     """
     fact_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     today_firm: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -3261,6 +3339,32 @@ def combined_view_from_plow_summary(
         _row(crop, fact, today, [crop], True)
         for crop, _plan, fact, today in veg_rows
     ]
+    if all_details:
+        deep_rows, _deep_note = _deep_all_firms_rows(all_details)
+        deep_fact_firm, deep_today_firm = _deep_display_firm_maps(all_details)
+        by_name = {row["crop"]: row for row in field}
+        for crop, _plan, fact, today in deep_rows:
+            extra_fact = round(float(fact), 2)
+            extra_today = round(float(today), 2)
+            if abs(extra_fact) < 0.005 and abs(extra_today) < 0.005:
+                continue
+            firms_fact = dict(deep_fact_firm.get(crop) or {})
+            firms_today = dict(deep_today_firm.get(crop) or {})
+            existing = by_name.get(crop)
+            if existing is None:
+                existing = {
+                    "crop": crop,
+                    "area": round(float((area_by_crop or {}).get(crop) or 0.0), 2),
+                    "fact_by_firm": {},
+                    "fact": 0.0,
+                    "today": 0.0,
+                    "veg": False,
+                }
+                field.append(existing)
+                by_name[crop] = existing
+            existing["fact"] = round(float(existing["fact"]) + extra_fact, 2)
+            existing["today"] = round(float(existing["today"]) + extra_today, 2)
+            existing["fact_by_firm"] = _merge_firm_ha(existing["fact_by_firm"], firms_fact)
     firms = [
         firm for firm in FIRM_ORDER
         if any(abs(float(row["fact_by_firm"].get(firm) or 0.0)) >= _COMBINED_HA_BLANK for row in field)
@@ -3876,11 +3980,11 @@ async def build_report_async(report_date: date = REPORT_DATE) -> None:
     ):
         print("  Лист «Глубокорыхление»: сводно по всем агрофирмам")
     print("  Лист «Итого (все АФ)»: вспашка (полевые + овощи) сводно по всем агрофирмам")
-    # Факт сезона — как «Итого» вспашки на листе «Итого (все АФ)»:
-    # все полевые культуры, включая рапс озимый. Овощи в этот итог не входят.
+    # Факт сезона — итог вспашки полевых культур плюс всё глубокорыхление.
     combined_view = combined_view_from_plow_summary(
         plow_by_crop,
         combined_area_by_crop(field_to_crop_plow, field_area_plow),
+        all_details,
     )
     season_label = str(SEASON_YEAR)
     if write_combined_tillage_sheet(

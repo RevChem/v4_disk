@@ -237,6 +237,22 @@ def test_combined_season_fact_matches_plow_all_firms_total():
     assert by_name["Иные культуры"]["fact"] == 30
     veg = {row["crop"]: row for row in view["veg"]}
     assert veg["Картофель"]["fact"] == 80
+    plow_total = round(sum(row["fact"] for row in view["field"]), 2)
+    details = {
+        firm_a: {
+            "deep_season_by_crop": {"Рапс яровой": 7.0, "Пар": 2.5},
+            "deep_today_by_crop": {"Рапс яровой": 1.0},
+            "deep_today": 1.0,
+        },
+    }
+    with_deep = r9.combined_view_from_plow_summary(by_firm, {"Рапс озимый": 40000}, details)
+    deep_rows, _note = r9._deep_all_firms_rows(details)
+    assert round(sum(row["fact"] for row in with_deep["field"]), 2) == round(
+        plow_total + sum(fact for _crop, _plan, fact, _today in deep_rows), 2
+    )
+    rape = {row["crop"]: row for row in with_deep["field"]}["Рапс яровой"]
+    assert rape["fact"] == 2007
+    assert rape["fact_by_firm"][firm_a] == 2007
 
 
 def teardown_module(_module):
