@@ -5474,7 +5474,10 @@ def _prepare_xlsx_for_pdf(src: Path, output_dir: Path) -> Path | None:
             # fitToHeight=1 заставляет Calc ужать лист до одной «логической» страницы по высоте
             # и конфликтует с нашими явными row breaks в сводках 3/6 → «размножаются»
             # шапки секций и «Итого» уезжает на отдельный лист. Оставляем естественный перенос.
-            ws.page_setup.fitToHeight = 0
+            # Первая страница сводки 9 — три таблицы на одном листе, её ужимаем целиком.
+            ws.page_setup.fitToHeight = (
+                1 if report_id == "9" and (ws.title or "").strip() == "Сводка" else 0
+            )
             ws.page_setup.scale = None
             ws.page_margins.left = 0.35
             ws.page_margins.right = 0.35

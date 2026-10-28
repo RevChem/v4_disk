@@ -262,5 +262,46 @@ def test_combined_season_fact_matches_plow_all_firms_total():
     assert veg_deep["Картофель"]["fact"] == 89
 
 
+def test_first_sheet_firm_table_uses_plow_plan_and_both_facts():
+    r9 = _report9()
+    details = {}
+    for i, firm in enumerate(r9.FIRM_ORDER):
+        st = r9._empty_stats()
+        st["season_plow"] = 100.0 + i
+        st["season_deep"] = 10.0
+        st["plow_today"] = 2.0
+        st["deep_today"] = 0.5
+        details[firm] = st
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    r9.write_tillage_combined_sheet(wb, details)
+    ws = wb["Сводка"]
+    header_row = next(
+        r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value == "Агрофирма"
+    )
+    assert [ws.cell(header_row, c).value for c in range(1, 7)] == r9._FIRM_PLOW_DEEP_COLS
+    total_plan = total_fact = 0.0
+    for i, firm in enumerate(r9.FIRM_ORDER):
+        row = header_row + 1 + i
+        plan = round(float(r9._plow_season_plan(firm) or 0.0), 2)
+        fact = round(110.0 + i, 2)
+        assert ws.cell(row, 1).value == firm
+        assert ws.cell(row, 2).value == plan
+        assert ws.cell(row, 3).value == fact
+        assert ws.cell(row, 4).value == round(plan - fact, 2)
+        expect_share = (fact / plan) if plan else 0.0
+        assert abs(ws.cell(row, 5).value - expect_share) < 1e-9
+        assert ws.cell(row, 6).value == 2.5
+        total_plan += plan
+        total_fact += fact
+    total_row = header_row + 1 + len(r9.FIRM_ORDER)
+    assert ws.cell(total_row, 1).value == "Итого"
+    assert ws.cell(total_row, 2).value == round(total_plan, 2)
+    assert ws.cell(total_row, 3).value == round(total_fact, 2)
+    assert ws.cell(total_row, 6).value == round(2.5 * len(r9.FIRM_ORDER), 2)
+    assert ws.page_setup.fitToWidth == 1
+    assert ws.page_setup.fitToHeight == 1
+
+
 def teardown_module(_module):
     importlib.reload(plans)

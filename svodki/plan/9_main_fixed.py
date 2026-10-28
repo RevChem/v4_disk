@@ -3718,13 +3718,87 @@ def write_combined_tillage_sheet(
     return True
 
 
+_FIRM_PLOW_DEEP_COLS = [
+    "Агрофирма",
+    "План, га",
+    "Факт общий, га",
+    "Остаток к выполнению",
+    "Доля факта\nот плана",
+    "Факт за сутки",
+]
+
+
+def _write_firm_plow_plus_deep_table(
+    ws,
+    styles: dict,
+    row: int,
+    all_details: dict[str, dict],
+) -> int:
+    """Свод по агрофирмам: факт вспашка+глубокорыхление, план только вспашки."""
+    header_font = Font(bold=True, color="FFFFFF", size=9)
+    data_font = Font(size=10)
+    total_font = Font(bold=True, size=10)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=False)
+    for ci, name in enumerate(_FIRM_PLOW_DEEP_COLS, start=1):
+        cell = ws.cell(row=row, column=ci, value=name)
+        _sc(cell, styles, fill=styles["fill_hdr"], font=header_font, align=center)
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    fmt = {
+        2: "# ##0.00",
+        3: "# ##0.00",
+        4: "# ##0.00",
+        5: "0.0%",
+        6: "# ##0.00",
+    }
+    total_plan = total_fact = total_today = 0.0
+
+    def _put_row(values: list, *, total: bool) -> None:
+        font = total_font if total else data_font
+        fill = styles["fill_total"] if total else PatternFill("solid", fgColor="FFFFFF")
+        for ci, value in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=ci, value=value)
+            cell.number_format = fmt.get(ci, "General")
+            _sc(
+                cell, styles,
+                fill=fill, font=font,
+                align=left if ci == 1 else Alignment(horizontal="center", vertical="center"),
+            )
+        ws.row_dimensions[row].height = 15
+
+    for firm in FIRM_ORDER:
+        st = all_details.get(firm) or _empty_stats()
+        plan = round(float(_plow_season_plan(firm) or 0.0), 2)
+        fact = round(float(st.get("season_plow") or 0.0) + float(st.get("season_deep") or 0.0), 2)
+        today = round(float(st.get("plow_today") or 0.0) + float(st.get("deep_today") or 0.0), 2)
+        rem = round(plan - fact, 2)
+        share = (fact / plan) if plan > 0 else 0.0
+        _put_row([firm, plan, fact, rem, share, today], total=False)
+        total_plan += plan
+        total_fact += fact
+        total_today += today
+        row += 1
+
+    total_plan = round(total_plan, 2)
+    total_fact = round(total_fact, 2)
+    total_today = round(total_today, 2)
+    total_share = (total_fact / total_plan) if total_plan > 0 else 0.0
+    _put_row(
+        ["Итого", total_plan, total_fact, round(total_plan - total_fact, 2), total_share, total_today],
+        total=True,
+    )
+    return row + 1
+
+
 def write_tillage_combined_sheet(
     wb: openpyxl.Workbook,
     all_details: dict[str, dict],
 ) -> None:
     """
     Первый лист 9-й сводки:
-    два отдельных блока как в 1-й сводке — 2.4 Вспашка и 2.8 Глубокорыхление.
+    два блока выработки (2.4 и 2.8) и свод по агрофирмам на одной странице.
     """
     ws = wb.create_sheet(title="Сводка", index=0)
     styles = _make_styles()
@@ -3737,11 +3811,11 @@ def write_tillage_combined_sheet(
         column=1,
         value=f"{WORK_TYPE_TITLE} — 2.4 Вспашка, 2.8 Глубокорыхление",
     )
-    c0.font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+    c0.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     c0.fill = styles["fill_hdr"]
     c0.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     c0.border = styles["border"]
-    ws.row_dimensions[row].height = 28
+    ws.row_dimensions[row].height = 18
     row += 1
 
     groups = [
@@ -3774,17 +3848,17 @@ def write_tillage_combined_sheet(
     for group_name, area_key, plan_day, mach_key, hired_key, own_count_dict, avg_key, engine_key in groups:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n)
         c = ws.cell(row=row, column=1, value=group_name)
-        c.font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+        c.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         c.fill = styles["fill_hdr"]
         c.alignment = Alignment(horizontal="left", vertical="center")
         c.border = styles["border"]
-        ws.row_dimensions[row].height = 22
+        ws.row_dimensions[row].height = 16
         row += 1
 
         for ci, col_name in enumerate(PERF_COLS, start=1):
             cc = ws.cell(row=row, column=ci, value=col_name)
-            _sc(cc, styles, fill=styles["fill_hdr"], font=Font(bold=True, color="FFFFFF", size=12), align=Alignment(horizontal="center", vertical="center", wrap_text=True))
-        ws.row_dimensions[row].height = 66
+            _sc(cc, styles, fill=styles["fill_hdr"], font=Font(bold=True, color="FFFFFF", size=9), align=Alignment(horizontal="center", vertical="center", wrap_text=True))
+        ws.row_dimensions[row].height = 36
         row += 1
 
         t_mach = t_area = t_hours = 0.0
@@ -3833,9 +3907,10 @@ def write_tillage_combined_sheet(
                     cell,
                     styles,
                     fill=PatternFill("solid", fgColor=bg),
-                    font=Font(size=12),
-                    align=Alignment(horizontal="left" if ci == 1 else "center", vertical="center", wrap_text=True),
+                    font=Font(size=10),
+                    align=Alignment(horizontal="left" if ci == 1 else "center", vertical="center", wrap_text=False),
                 )
+            ws.row_dimensions[row].height = 15
             t_mach += n_mach
             t_area += area
             t_hours += hours
@@ -3869,18 +3944,34 @@ def write_tillage_combined_sheet(
                 cell,
                 styles,
                 fill=PatternFill("solid", fgColor=bg),
-                font=Font(bold=True, size=12),
+                font=Font(bold=True, size=10),
                 align=Alignment(
                     horizontal="left" if ci == 1 else "center",
                     vertical="center",
                     wrap_text=False,
                 ),
             )
-        row += 2
+        ws.row_dimensions[row].height = 15
+        row += 1
+        ws.row_dimensions[row].height = 8
+        row += 1
+
+    _write_firm_plow_plus_deep_table(ws, styles, row, all_details)
 
     ws.column_dimensions["A"].width = 30
     for ci in range(2, n + 1):
-        ws.column_dimensions[get_column_letter(ci)].width = 18
+        ws.column_dimensions[get_column_letter(ci)].width = 16
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.scale = None
+    ws.page_margins.left = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top = 0.3
+    ws.page_margins.bottom = 0.25
+    ws.print_area = f"A1:{get_column_letter(n)}{ws.max_row}"
 
 
 # =============================================================================
