@@ -220,11 +220,97 @@ def ask_rows(rows: list[dict[str, Any]], question: str, *, use_llm: bool = True)
     return out
 
 
+def list_task_work_groups() -> list[dict[str, Any]]:
+    """Группы работ в том же составе и порядке, что WORK_GROUPS в plans.py."""
+    from app.adapters.outbound.proverka.service import _ensure_plan_path
+
+    _ensure_plan_path()
+    from plans import WORK_GROUPS
+
+    groups: list[dict[str, Any]] = []
+    for name, ids in WORK_GROUPS:
+        title = str(name or "").strip()
+        if not title:
+            continue
+        parsed: list[int] = []
+        for raw in ids:
+            try:
+                parsed.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        groups.append({"name": title, "ids": parsed})
+    return groups
+
+
+def _clean_texts(values: object, *, limit: int) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or len(text) > 160 or text in seen:
+            continue
+        seen.add(text)
+        found.append(text)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _clean_ids(values: object, *, limit: int) -> list[int]:
+    if not isinstance(values, list):
+        return []
+    found: list[int] = []
+    seen: set[int] = set()
+    for raw in values:
+        try:
+            number = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0 or number in seen:
+            continue
+        seen.add(number)
+        found.append(number)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def operation_bounds(
+    operations: object = None,
+    work_type_ids: object = None,
+    operation_labels: object = None,
+) -> dict[str, Any]:
+    """Границы среза: группы plans.WORK_GROUPS и, отдельно, конкретные виды работ."""
+    names = _clean_texts(operations, limit=40)
+    labels = _clean_texts(operation_labels, limit=80)
+    ids = _clean_ids(work_type_ids, limit=300)
+    bounds: dict[str, Any] = {}
+    if names:
+        known = {item["name"]: item["ids"] for item in list_task_work_groups()}
+        resolved: set[int] = set()
+        for name in names:
+            resolved.update(known.get(name) or [])
+        bounds["group_ids"] = resolved
+        bounds["group_names"] = names
+    if ids:
+        bounds["detail_ids"] = ids
+    if labels:
+        bounds["detail_labels"] = labels
+    return bounds
+
+
 def ask_slice(report_date: date, question: str, *, use_llm: bool = True, **filters: Any) -> dict[str, Any]:
     payload = build_slice(report_date)
     if not payload.get("available"):
         return payload
-    picked = filter_record_rows(payload.get("rows") or [], **filters)
+    bounds = operation_bounds(
+        filters.pop("operations", None),
+        filters.pop("work_type_ids", None),
+        filters.pop("operation_labels", None),
+    )
+    picked = filter_record_rows(payload.get("rows") or [], **filters, **bounds)
     answer = ask_rows(picked, question, use_llm=use_llm)
     answer["report_date"] = report_date.isoformat()
     return answer

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.adapters.outbound.proverka.service import _ensure_plan_path
 from app.application.namolot_view import filter_record_rows
-from app.application.task_slice import ask_rows, format_ask_table, name_unmapped_operations
+from app.application.task_slice import ask_rows, format_ask_table, list_task_work_groups, name_unmapped_operations, operation_bounds
 
 _TZ = timezone(timedelta(hours=3))
 
@@ -130,6 +130,45 @@ def test_work_type_label_comes_from_the_catalog():
     assert rows[0]["operation"] == "147: 6.8 Скашивание в валок"
     assert rows[1]["operation"] == "1: Опрыскивание"
     assert rows[2]["operation"] == "вид работ 9"
+
+
+def test_task_groups_follow_plans_work_groups():
+    _ensure_plan_path()
+    from plans import WORK_GROUPS
+
+    groups = list_task_work_groups()
+    assert [(item["name"], item["ids"]) for item in groups] == [
+        (str(name), [int(x) for x in ids]) for name, ids in WORK_GROUPS
+    ]
+
+
+def test_several_groups_cover_their_work_types():
+    _ensure_plan_path()
+    groups = {item["name"]: item["ids"] for item in list_task_work_groups()}
+    plow = groups["2.4 Вспашка"]
+    deep = groups["2.8 Глубокорыхление"]
+    fertilizer = groups["1.1 Внесение минеральных удобрений"]
+    plow_id = next(item for item in plow if item not in deep)
+    deep_id = next(item for item in deep if item not in plow)
+    other_id = next(item for item in fertilizer if item not in plow and item not in deep)
+    bounds = operation_bounds(["2.4 Вспашка", "2.8 Глубокорыхление"])
+    assert plow_id in bounds["group_ids"]
+    assert deep_id in bounds["group_ids"]
+    assert other_id not in bounds["group_ids"]
+    rows = [
+        {"operation": "вспашка", "work_type_id": plow_id},
+        {"operation": "глубокорыхление", "work_type_id": deep_id},
+        {"operation": "внесение", "work_type_id": other_id},
+        {"operation": "вид работ 9", "work_type_id": 9},
+    ]
+    picked = filter_record_rows(rows, **bounds)
+    assert {row["work_type_id"] for row in picked} == {plow_id, deep_id}
+    both = filter_record_rows(rows, **bounds, detail_ids=[plow_id])
+    assert [row["work_type_id"] for row in both] == [plow_id]
+    by_label = filter_record_rows(rows, detail_labels=["вид работ 9"])
+    assert [row["work_type_id"] for row in by_label] == [9]
+    legacy = filter_record_rows(rows, operation="внесение")
+    assert [row["work_type_id"] for row in legacy] == [other_id]
 
 
 def test_ask_table_totals_cover_hidden_operations():

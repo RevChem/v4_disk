@@ -14,7 +14,7 @@ from app.adapters.inbound.api.deps import (
     require_plans_access,
 )
 from app.application.field_ownership import ownership_report
-from app.application.task_slice import ask_slice, build_slice
+from app.application.task_slice import ask_slice, build_slice, list_task_work_groups
 from app.application.machine_task_card import machine_task_card
 from app.application.task_links import task_page_urls
 from app.adapters.outbound.persistence import repositories as repo
@@ -843,8 +843,17 @@ class TaskQuestionsAskIn(BaseModel):
     plate: str = Field(default="", max_length=40)
     surname: str = Field(default="", max_length=80)
     operation: str = Field(default="", max_length=160)
+    operations: list[str] = Field(default_factory=list, max_length=40)
+    work_type_ids: list[int] = Field(default_factory=list, max_length=300)
+    operation_labels: list[str] = Field(default_factory=list, max_length=80)
     question: str = Field(default="", max_length=3000)
     use_llm: bool = True
+
+
+@router.get("/task-questions/groups")
+def get_task_question_groups(_: User = Depends(require_developer_access)):
+    """Группы агроопераций из plans.WORK_GROUPS, уже с правками редактора планов."""
+    return {"groups": list_task_work_groups()}
 
 
 @router.get("/task-questions")
@@ -875,6 +884,9 @@ def post_task_questions_ask(
         plate=body.plate,
         surname=body.surname,
         operation=body.operation,
+        operations=body.operations,
+        work_type_ids=body.work_type_ids,
+        operation_labels=body.operation_labels,
     )
 
 

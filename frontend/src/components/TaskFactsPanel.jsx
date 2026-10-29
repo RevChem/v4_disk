@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -34,7 +35,13 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
 
-import { askTaskQuestions, fetchPlansEditorWorkTypes, fetchProverkaAiSettings, fetchTaskQuestions } from "../api";
+import {
+  askTaskQuestions,
+  fetchPlansEditorWorkTypes,
+  fetchProverkaAiSettings,
+  fetchTaskQuestionGroups,
+  fetchTaskQuestions,
+} from "../api";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
@@ -68,22 +75,52 @@ function joinList(values) {
   return values?.length ? values.join(", ") : "—";
 }
 
-function workTypeLabel(item) {
-  const title = String(item?.name || "").trim();
-  if (!title) return "";
-  return `${item.id}: ${title}`;
+const POPPER_PROPS = { popper: { sx: { zIndex: 1600 } } };
+
+function asGroups(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map((item) => ({
+      name: String(item?.name || "").trim(),
+      ids: (Array.isArray(item?.ids) ? item.ids : []).map(Number).filter((id) => Number.isFinite(id)),
+    }))
+    .filter((item) => item.name);
 }
 
-function narrowOperation(list, operation) {
-  const query = normText(operation);
-  if (!query) return list;
-  return list.filter((row) => normText(row.operation) === query);
+function sameDetail(a, b) {
+  if (a?.id != null && b?.id != null) return a.id === b.id;
+  return a?.label === b?.label;
+}
+
+function rowMatchesGroups(row, selected) {
+  if (!selected?.length) return true;
+  const id = row?.work_type_id;
+  const operation = normText(row?.operation);
+  return selected.some((group) => {
+    if (typeof id === "number" && group.ids.includes(id)) return true;
+    return normText(group.name) === operation;
+  });
+}
+
+function rowMatchesDetails(row, selected) {
+  if (!selected?.length) return true;
+  const id = row?.work_type_id;
+  const operation = normText(row?.operation);
+  return selected.some((item) => {
+    if (item.id != null && id === item.id) return true;
+    return normText(item.label) === operation;
+  });
+}
+
+function narrowTasks(list, applied) {
+  if (!applied?.operations?.length && !applied?.details?.length) return list;
+  return list.filter((row) => rowMatchesGroups(row, applied.operations) && rowMatchesDetails(row, applied.details));
 }
 
 function sliceLabel(applied) {
   if (!applied) return "весь сезон";
   const parts = [];
-  if (applied.operation) parts.push(applied.operation);
+  if (applied.operations?.length) parts.push(applied.operations.map((item) => item.name).join(", "));
+  if (applied.details?.length) parts.push(applied.details.map((item) => item.label).join(", "));
   if (applied.firm) parts.push(applied.firm);
   if (applied.crop) parts.push(applied.crop);
   if (applied.dateFrom || applied.dateTo) {
@@ -100,7 +137,8 @@ function emptySlice() {
   return {
     firm: "",
     crop: "",
-    operation: "",
+    operations: [],
+    details: [],
     dateFrom: "",
     timeFrom: "06:00",
     dateTo: "",
@@ -121,10 +159,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const [error, setError] = useState("");
   const [namesNote, setNamesNote] = useState("");
   const [workTypes, setWorkTypes] = useState([]);
+  const [groups, setGroups] = useState([]);
 
   const [firm, setFirm] = useState("");
   const [crop, setCrop] = useState("");
-  const [operation, setOperation] = useState("");
+  const [operations, setOperations] = useState([]);
+  const [details, setDetails] = useState([]);
   const [dateFrom, setDateFrom] = useState("");
   const [timeFrom, setTimeFrom] = useState("06:00");
   const [dateTo, setDateTo] = useState("");
@@ -187,29 +227,48 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       .catch(() => {
         if (!cancelled) setWorkTypes([]);
       });
+    fetchTaskQuestionGroups()
+      .then((data) => {
+        if (!cancelled) setGroups(asGroups(data?.groups));
+      })
+      .catch(() => {
+        if (!cancelled) setGroups([]);
+      });
     return () => {
       cancelled = true;
     };
   }, [active]);
 
-  const operationOptions = useMemo(() => {
-    const fromCatalog = workTypes.map(workTypeLabel).filter(Boolean);
-    const known = new Set(fromCatalog);
-    const extra = [];
-    const seen = new Set();
-    for (const row of rows) {
-      const name = row.operation;
-      if (!name || name === "—" || known.has(name) || seen.has(name)) continue;
-      seen.add(name);
-      extra.push(name);
+  const detailOptions = useMemo(() => {
+    const byId = new Map();
+    for (const item of workTypes) {
+      const id = Number(item?.id);
+      const title = String(item?.name || "").trim();
+      if (!Number.isFinite(id) || !title || title.startsWith("work_type_")) continue;
+      byId.set(id, { id, label: `${id}: ${title}` });
     }
-    extra.sort((a, b) => a.localeCompare(b, "ru"));
-    return [...fromCatalog, ...extra];
+    const extras = [];
+    const seenLabels = new Set([...byId.values()].map((item) => normText(item.label)));
+    for (const row of rows) {
+      const id = Number(row.work_type_id);
+      const name = String(row.operation || "").trim();
+      if (!name || name === "—") continue;
+      if (Number.isFinite(id)) {
+        if (!byId.has(id)) byId.set(id, { id, label: name });
+        continue;
+      }
+      if (seenLabels.has(normText(name))) continue;
+      seenLabels.add(normText(name));
+      extras.push({ id: null, label: name });
+    }
+    const catalog = [...byId.values()].sort((a, b) => a.label.localeCompare(b.label, "ru"));
+    extras.sort((a, b) => a.label.localeCompare(b.label, "ru"));
+    return [...catalog, ...extras];
   }, [rows, workTypes]);
 
   const visible = useMemo(() => {
     if (!applied) return [];
-    const filtered = narrowOperation(
+    const filtered = narrowTasks(
       filterRows(rows, {
         firms: applied.firm ? [applied.firm] : [],
         crops: applied.crop ? [applied.crop] : [],
@@ -220,7 +279,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
         plate: applied.plate,
         surname: applied.surname,
       }),
-      applied.operation,
+      applied,
     );
     if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
     return rankRows(filtered, mode, sortDir);
@@ -228,12 +287,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
   const headed = useMemo(() => {
     if (!applied) return [];
-    return narrowOperation(
+    return narrowTasks(
       filterRows(rows, {
         firms: applied.firm ? [applied.firm] : [],
         crops: applied.crop ? [applied.crop] : [],
       }),
-      applied.operation,
+      applied,
     );
   }, [rows, applied]);
 
@@ -255,7 +314,18 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const pageRows = visible.slice(page * pageSize, page * pageSize + pageSize);
 
   function draft() {
-    return { firm, crop, operation, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
+    return {
+      firm,
+      crop,
+      operations: operations.map((item) => ({ name: item.name, ids: [...item.ids] })),
+      details: details.map((item) => ({ id: item.id, label: item.label })),
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      plate,
+      surname,
+    };
   }
 
   async function form({ showTable = true } = {}) {
@@ -291,7 +361,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   function resetFilters() {
     setFirm("");
     setCrop("");
-    setOperation("");
+    setOperations([]);
+    setDetails([]);
     setDateFrom("");
     setTimeFrom("06:00");
     setDateTo("");
@@ -332,7 +403,22 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setView("answers");
     try {
       const slice = await form({ showTable: false });
-      const data = await askTaskQuestions({ reportDate, ...slice, question: q, useLlm });
+      const data = await askTaskQuestions({
+        reportDate,
+        firm: slice.firm,
+        crop: slice.crop,
+        dateFrom: slice.dateFrom,
+        timeFrom: slice.timeFrom,
+        dateTo: slice.dateTo,
+        timeTo: slice.timeTo,
+        plate: slice.plate,
+        surname: slice.surname,
+        operations: slice.operations.map((item) => item.name),
+        workTypeIds: slice.details.filter((item) => item.id != null).map((item) => item.id),
+        operationLabels: slice.details.filter((item) => item.id == null).map((item) => item.label),
+        question: q,
+        useLlm,
+      });
       setAnswerHistory((prev) => [
         ...prev,
         { id: `${Date.now()}`, question: q, ts: Date.now(), slice: sliceLabel(slice), ...data },
@@ -362,9 +448,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
           <Typography variant="body2" color="text.secondary">
-            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00:
-            внесение удобрений, посев, опрыскивание, уборку и остальные. Агрофирма, культура, агрозадание,
-            даты, госномер и фамилия необязательны. Агрозадание — номер и название из справочника work_types, как в редакторе планов.
+            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00.
+            Агрофирма, культура, даты, госномер и фамилия необязательны. Агрооперации — те же группы, что в планах,
+            можно выбрать несколько. Агрозадания ниже — отдельные виды работ, они необязательны: достаточно одного из списков.
           </Typography>
           <TextField
             select
@@ -398,22 +484,73 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
               </MenuItem>
             ))}
             </TextField>
-          <TextField
-            select
-            label="Агрозадание"
+          <Autocomplete
+            multiple
+            disableCloseOnSelect
             size="small"
-            fullWidth
-            value={operation}
-            onChange={(event) => setOperation(event.target.value)}
+            options={groups}
+            value={operations}
+            onChange={(_event, value) => setOperations(value)}
+            getOptionLabel={(option) => option.name}
+            isOptionEqualToValue={(a, b) => a.name === b.name}
+            limitTags={2}
             disabled={loading}
-          >
-            <MenuItem value="">Не выбрано</MenuItem>
-            {operationOptions.map((name) => (
-              <MenuItem key={name} value={name}>
-                {name}
-              </MenuItem>
-            ))}
-          </TextField>
+            slotProps={POPPER_PROPS}
+            renderOption={(props, option, { selected }) => {
+              const { key, ...rest } = props;
+              return (
+                <li key={key} {...rest}>
+                  <Checkbox size="small" checked={selected} sx={{ mr: 1, p: 0.5, pointerEvents: "none" }} />
+                  {option.name}
+                </li>
+              );
+            }}
+            renderTags={(value, getTagProps) =>
+              value.map((option, index) => {
+                const { key, ...tagProps } = getTagProps({ index });
+                return <Chip key={key} size="small" label={option.name} {...tagProps} />;
+              })
+            }
+            renderInput={(params) => (
+              <TextField {...params} label="Агрооперации" placeholder={operations.length ? "" : "Не выбраны"} />
+            )}
+          />
+          <Autocomplete
+            multiple
+            disableCloseOnSelect
+            size="small"
+            options={detailOptions}
+            value={details}
+            onChange={(_event, value) => setDetails(value)}
+            getOptionLabel={(option) => option.label}
+            isOptionEqualToValue={sameDetail}
+            limitTags={2}
+            disabled={loading}
+            slotProps={POPPER_PROPS}
+            renderOption={(props, option, { selected }) => {
+              const { key, ...rest } = props;
+              return (
+                <li key={key} {...rest}>
+                  <Checkbox size="small" checked={selected} sx={{ mr: 1, p: 0.5, pointerEvents: "none" }} />
+                  {option.label}
+                </li>
+              );
+            }}
+            renderTags={(value, getTagProps) =>
+              value.map((option, index) => {
+                const { key, ...tagProps } = getTagProps({ index });
+                return <Chip key={key} size="small" label={option.label} {...tagProps} />;
+              })
+            }
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Агрозадания"
+                placeholder={details.length ? "" : "Необязательно"}
+                helperText="Отдельные виды работ. Если выбрать и группы, и задания, останутся только совпадения."
+              />
+            )}
+          />
             <Button variant="contained" onClick={() => void form().catch(() => {})} disabled={loading}>
             {loading ? "Запрос…" : "Сформировать"}
           </Button>
@@ -688,7 +825,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                   </Box>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
-                    {applied.firm || applied.crop || applied.operation || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
+                    {applied.firm || applied.crop || applied.operations?.length || applied.details?.length || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
                       ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
                       : "За этот период заданий с площадью нет."}
                   </Typography>

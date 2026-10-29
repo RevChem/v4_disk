@@ -323,6 +323,25 @@ def _range_stamp(day: str, clock: str, empty_clock: str) -> str:
     return f"{day}T{clock}"[:16]
 
 
+def _id_set(value: object) -> set[int] | None:
+    if value is None:
+        return None
+    found: set[int] = set()
+    for item in value:  # type: ignore[union-attr]
+        try:
+            found.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def _label_set(value: object) -> set[str] | None:
+    if not value:
+        return None
+    found = {_norm_text(item) for item in value if _norm_text(item)}  # type: ignore[union-attr]
+    return found or None
+
+
 def filter_record_rows(
     rows: list[dict],
     *,
@@ -335,16 +354,30 @@ def filter_record_rows(
     plate: str = "",
     surname: str = "",
     operation: str = "",
+    group_ids: set[int] | list[int] | None = None,
+    group_names: list[str] | None = None,
+    detail_ids: set[int] | list[int] | None = None,
+    detail_labels: list[str] | None = None,
 ) -> list[dict]:
     """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают.
 
     operation — точное агрозадание из списка, например «3.1 Опрыскивание». Пустое значение не отсекает строки.
+    group_ids / group_names — группы из plans.WORK_GROUPS: строка подходит, если её work_type_id
+    входит в любую выбранную группу или подпись совпадает с названием группы.
+    detail_ids / detail_labels — отдельные виды работ. Если заданы и группы, и виды работ,
+    остаются строки, которые подходят под оба списка.
     """
     firm_name = str(firm or "").strip()
     crop_name = str(crop or "").strip()
     plate_q = _norm_plate(plate)
     name_q = _norm_text(surname)
     operation_q = _norm_text(operation)
+    group_id_set = _id_set(group_ids)
+    group_name_set = _label_set(group_names)
+    detail_id_set = _id_set(detail_ids)
+    detail_label_set = _label_set(detail_labels)
+    group_on = group_id_set is not None or group_name_set is not None
+    detail_on = detail_id_set is not None or detail_label_set is not None
     start = _range_stamp(date_from, time_from, "00:00")
     end = _range_stamp(date_to, time_to, "23:59")
     picked: list[dict] = []
@@ -368,6 +401,19 @@ def filter_record_rows(
             continue
         if operation_q and _norm_text(row.get("operation")) != operation_q:
             continue
+        work_type_id = row.get("work_type_id")
+        work_type_ok = isinstance(work_type_id, int)
+        operation_name = _norm_text(row.get("operation"))
+        if group_on:
+            in_group = bool(group_id_set is not None and work_type_ok and work_type_id in group_id_set)
+            named = bool(group_name_set and operation_name in group_name_set)
+            if not (in_group or named):
+                continue
+        if detail_on:
+            in_detail = bool(detail_id_set is not None and work_type_ok and work_type_id in detail_id_set)
+            labeled = bool(detail_label_set and operation_name in detail_label_set)
+            if not (in_detail or labeled):
+                continue
         picked.append(row)
     return picked
 

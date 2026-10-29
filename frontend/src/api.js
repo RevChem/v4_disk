@@ -1112,6 +1112,16 @@ export async function askNamolotSeason({
   }
 }
 
+/** Группы агроопераций из plans.WORK_GROUPS. */
+export async function fetchTaskQuestionGroups() {
+  try {
+    const { data } = await api.get("/proverka/task-questions/groups", { timeout: 30_000 });
+    return data;
+  } catch (e) {
+    throw new Error(formatError(e));
+  }
+}
+
 /** Все операции заданий с 1 января до 06:00 даты сводки. */
 export async function fetchTaskQuestions({ reportDate }) {
   try {
@@ -1137,6 +1147,9 @@ export async function askTaskQuestions({
   plate = "",
   surname = "",
   operation = "",
+  operations = [],
+  workTypeIds = [],
+  operationLabels = [],
   question = "",
   useLlm = true,
 }) {
@@ -1154,6 +1167,9 @@ export async function askTaskQuestions({
         plate: plate || "",
         surname: surname || "",
         operation: operation || "",
+        operations: operations || [],
+        work_type_ids: workTypeIds || [],
+        operation_labels: operationLabels || [],
         question: question || "",
         use_llm: Boolean(useLlm),
       },
