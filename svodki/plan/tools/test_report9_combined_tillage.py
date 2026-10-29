@@ -310,5 +310,46 @@ def test_first_sheet_firm_table_uses_plow_plan_and_both_facts():
     assert r9._plow_plan_ha(firm, "Тритикале озимая") == 0
 
 
+def test_deep_fact_follows_task_crop_not_field_crop():
+    """Глубокорыхление садится на культуру задания, а не на культуру поля 2027."""
+    r9 = _report9()
+    import mtfmi_batch_fetch as mb
+
+    firm = r9.FIRM_ORDER[0]
+    mb._HISTORY_CROP[501] = "Соя"
+    mb._HISTORY_FIELD[501] = 1
+    tz = r9.TZ_MSK
+    deep_wt = next(iter(r9.DEEP_WT_IDS))
+    task = {
+        "id": 1,
+        "season": 2027,
+        "work_type_id": deep_wt,
+        "end_time": "2026-09-02T12:00:00+03:00",
+        "machine_id": 1,
+    }
+    item = {
+        "id": 10,
+        "field_id": 1,
+        "history_item_id": 501,
+        "covered_area_hourly": [["2026-09-02T12:00:00+03:00", 243.0]],
+    }
+    details = r9.build_all_firm_stats(
+        set(),
+        [task],
+        {1: [item]},
+        _dt("2026-08-01T00:00:00", tz),
+        _dt("2026-10-27T06:00:00", tz),
+        _dt("2026-10-28T06:00:00", tz),
+        {1: firm},
+        {1: "Картофель"},
+        {},
+        field_to_crop_deep={1: "Картофель"},
+    )
+    by_crop = details[firm]["deep_season_by_crop"]
+    assert by_crop.get("Соя") == 243.0
+    assert "Картофель" not in by_crop
+    assert details[firm]["season_deep"] == 243.0
+
+
 def teardown_module(_module):
     importlib.reload(plans)

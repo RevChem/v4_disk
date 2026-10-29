@@ -1360,9 +1360,20 @@ def build_all_firm_stats(
         firm: defaultdict(float) for firm in FIRM_ORDER
     }
 
-    def _deep_crop_name(fid_i: int) -> str:
-        name = str((field_to_crop_deep or {}).get(fid_i) or "").strip()
-        return name or _UNMAPPED_CROP
+    def _deep_crop_name(fid_i: int, item: dict | None = None) -> str:
+        """Культура строки — history_item задания, как во 2-й сводке.
+
+        Карта поля 2027 года не заменяет культуру задания: иначе соя
+        оказывается на рапсе или картофеле этого поля.
+        """
+        from mtfmi_batch_fetch import crop_of_item
+
+        raw = ""
+        if item is not None:
+            raw = str(crop_of_item(item, "") or "").strip()
+        if not raw:
+            raw = str((field_to_crop_deep or {}).get(fid_i) or "").strip()
+        return _map_plow_crop_name(raw) or raw or _UNMAPPED_CROP
 
     _note = None
     try:
@@ -1402,7 +1413,7 @@ def build_all_firm_stats(
             if wt in PLOW_WT_IDS and _plow_item_excluded(firm, item):
                 continue
             if wt in DEEP_WT_IDS and _plans.is_crop_user_excluded(
-                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i)
+                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i, item)
             ):
                 continue
             cov_h = _item_cov_before(cutoff, item)
@@ -1439,7 +1450,7 @@ def build_all_firm_stats(
                         )
                 if wt in DEEP_WT_IDS and fid_i:
                     today_deep_by_field[firm][fid_i] += cov_h
-                    deep_crop = _deep_crop_name(fid_i)
+                    deep_crop = _deep_crop_name(fid_i, item)
                     if not _report9_crop_skipped(deep_crop):
                         today_deep_by_crop[firm][deep_crop] += cov_h
                     if _note is not None:
@@ -1575,7 +1586,7 @@ def build_all_firm_stats(
             if wt in PLOW_WT_IDS and _plow_item_excluded(firm, item):
                 continue
             if wt in DEEP_WT_IDS and _plans.is_crop_user_excluded(
-                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i)
+                "2.8 Глубокорыхление", firm, _deep_crop_name(fid_i, item)
             ):
                 continue
 
@@ -1603,7 +1614,7 @@ def build_all_firm_stats(
                         season_daily_machines_plow[firm][shift_date].add(int(mid))
                         season_mdc_plow[firm][shift_date][int(mid)] += cov
             elif wt in DEEP_WT_IDS:
-                deep_crop = _deep_crop_name(fid_i)
+                deep_crop = _deep_crop_name(fid_i, item)
                 if not _report9_crop_skipped(deep_crop):
                     season_fact_deep[firm] += cov
                     season_daily_area_deep[firm][shift_date] += cov
