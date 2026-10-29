@@ -113,6 +113,13 @@ def require_developer_access(user: User = Depends(get_current_active_user)) -> U
     return user
 
 
+def require_tasks_access(user: User = Depends(get_current_active_user)) -> User:
+    """Фильтрация заданий: разработчик и администратор."""
+    if user.role not in ("developer", "admin"):
+        raise _auth_error("forbidden", status.HTTP_403_FORBIDDEN)
+    return user
+
+
 def require_manage_users_access(user: User = Depends(get_current_active_user)) -> User:
     if not user.can_manage_users():
         raise _auth_error("forbidden", status.HTTP_403_FORBIDDEN)

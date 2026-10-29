@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { Alert, Box, Typography } from "@mui/material";
 
+import { TaskText, useTaskLinks } from "./TaskText";
+
+const NO_TASK = /нет задания|без задания/i;
+const LINK_SX = { color: "#fff", fontWeight: 700 };
+
 /** Код предупреждения генерации → цвет всплывающего окна. */
 const TONES = {
   namolot_plate_unparsed: {
@@ -43,6 +48,11 @@ function plateNotice(message) {
   return { intro, lines };
 }
 
+function noticeLinkable(item) {
+  if (item.alert.code === "namolot_plate_without_task") return false;
+  return !NO_TASK.test(`${item.tone.title} ${item.alert.message || ""}`);
+}
+
 export default function NamolotNotices({ alertsByReport }) {
   const [hidden, setHidden] = useState(() => new Set());
   const items = [];
@@ -54,6 +64,9 @@ export default function NamolotNotices({ alertsByReport }) {
     }
   }
   const visible = items.filter((item) => !hidden.has(item.key));
+  const taskUrls = useTaskLinks(
+    visible.filter(noticeLinkable).flatMap((item) => [item.alert.message, ...(item.alert.places || [])]),
+  );
   if (!visible.length) return null;
 
   function hide(key) {
@@ -79,6 +92,7 @@ export default function NamolotNotices({ alertsByReport }) {
       }}
     >
       {visible.map((item) => {
+        const linkable = noticeLinkable(item);
         const plates = item.alert.code.startsWith("namolot_plate_") ? plateNotice(item.alert.message) : null;
         return (
         <Alert
@@ -103,22 +117,31 @@ export default function NamolotNotices({ alertsByReport }) {
             <>
               {plates.intro ? (
                 <Typography variant="body2" sx={{ mb: 0.75 }}>
-                  {plates.intro}
+                  {linkable ? <TaskText text={plates.intro} urls={taskUrls} linkSx={LINK_SX} /> : plates.intro}
                 </Typography>
               ) : null}
               <Box component="ul" sx={{ m: 0, pl: 2.25, maxHeight: 280, overflow: "auto" }}>
                 {plates.lines.map((line) => (
                   <Typography key={line} component="li" variant="body2" sx={{ fontWeight: 600 }}>
-                    {line}
+                    {linkable ? <TaskText text={line} urls={taskUrls} linkSx={LINK_SX} /> : line}
                   </Typography>
                 ))}
               </Box>
             </>
           ) : (
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
-              {item.alert.message}
+            <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
+              {linkable ? <TaskText text={item.alert.message} urls={taskUrls} linkSx={LINK_SX} /> : item.alert.message}
             </Typography>
           )}
+          {linkable && item.alert.places?.some((line) => /задание=\d+/.test(line)) ? (
+            <Box component="ul" sx={{ m: 0, mt: 0.75, pl: 2.25, maxHeight: 160, overflow: "auto" }}>
+              {item.alert.places.filter((line) => /задание=\d+/.test(line)).map((line) => (
+                <Typography key={line} component="li" variant="body2">
+                  <TaskText text={line} urls={taskUrls} linkSx={LINK_SX} />
+                </Typography>
+              ))}
+            </Box>
+          ) : null}
         </Alert>
         );
       })}

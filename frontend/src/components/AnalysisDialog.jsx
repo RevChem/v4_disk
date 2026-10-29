@@ -40,8 +40,8 @@ const SECTIONS = [
   },
   {
     id: "facts",
-    title: "Вопросы по заданиям",
-    hint: "Все операции: сразу или с теми же фильтрами, что у Namolot",
+    title: "Фильтрация",
+    hint: "Срез заданий за смену: вчера 06:00 — сегодня 05:59",
     icon: QuestionAnswerOutlinedIcon,
   },
   {
@@ -61,6 +61,9 @@ const SECTIONS = [
 /** Панели, которым нужна вся высота окна и собственная прокрутка внутри. */
 const FILL = new Set(["facts"]);
 
+/** Разделы анализа, которые видит администратор. Аналитика и проверки остаются у разработчика. */
+const WORK_IDS = new Set(["fuel", "driver", "facts", "tasks"]);
+
 function isComputerFullscreen() {
   return document.fullscreenElement === document.documentElement;
 }
@@ -70,7 +73,9 @@ export default function AnalysisDialog({
   onClose,
   initialSection = "analytics",
   summaryDate = "",
+  scope = "all",
 }) {
+  const sections = scope === "all" ? SECTIONS : SECTIONS.filter((item) => WORK_IDS.has(item.id));
   const [section, setSection] = useState(initialSection);
   const [visited, setVisited] = useState(() => new Set([initialSection]));
   const [driverPreset, setDriverPreset] = useState(null);
@@ -120,17 +125,18 @@ export default function AnalysisDialog({
   // При каждом открытии начинаем с нужного раздела; панели грузят данные только после первого показа.
   useEffect(() => {
     if (!open) return;
-    setSection(initialSection);
-    setVisited(new Set([initialSection]));
+    const next = scope === "all" || WORK_IDS.has(initialSection) ? initialSection : "facts";
+    setSection(next);
+    setVisited(new Set([next]));
     setDriverPreset(null);
-  }, [open, initialSection]);
+  }, [open, initialSection, scope]);
 
   function pick(id) {
     setSection(id);
     setVisited((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }
 
-  const current = SECTIONS.find((s) => s.id === section) || SECTIONS[0];
+  const current = sections.find((s) => s.id === section) || sections[0];
 
   return (
     <Dialog
@@ -197,7 +203,7 @@ export default function AnalysisDialog({
           borderColor: "divider",
         }}
       >
-        {SECTIONS.map(({ id, title, hint, icon: Icon }) => {
+        {sections.map(({ id, title, hint, icon: Icon }) => {
           const on = id === section;
           return (
             <ButtonBase
@@ -261,7 +267,7 @@ export default function AnalysisDialog({
       </Box>
 
       <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {SECTIONS.map(({ id }) =>
+        {sections.map(({ id }) =>
           visited.has(id) ? (
             <Box
               key={id}

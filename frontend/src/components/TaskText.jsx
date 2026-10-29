@@ -43,7 +43,7 @@ export function useTaskLinks(texts) {
 }
 
 /** Текст ошибки, в котором «задание=…» открывает страницу задания в Cropwise. */
-export function TaskText({ text, urls }) {
+export function TaskText({ text, urls, linkSx }) {
   const source = String(text || "");
   const parts = [];
   let last = 0;
@@ -59,6 +59,7 @@ export function TaskText({ text, urls }) {
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
+          sx={linkSx}
         >
           задание={id}
         </Link>

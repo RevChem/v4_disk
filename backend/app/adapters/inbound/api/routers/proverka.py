@@ -11,6 +11,7 @@ from app.adapters.inbound.api.deps import (
     get_client_ip,
     require_developer_access,
     require_generate_access,
+    require_tasks_access,
     require_plans_access,
 )
 from app.application.field_ownership import ownership_report
@@ -132,7 +133,7 @@ def get_field_ownership(
 @router.get("/machine-task/{task_id}")
 def get_machine_task_card(
     task_id: int,
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_tasks_access),
 ):
     """Карточка задания Cropwise и ссылка на его страницу."""
     if task_id <= 0:
@@ -851,7 +852,7 @@ class TaskQuestionsAskIn(BaseModel):
 
 
 @router.get("/task-questions/groups")
-def get_task_question_groups(_: User = Depends(require_developer_access)):
+def get_task_question_groups(_: User = Depends(require_tasks_access)):
     """Группы агроопераций из plans.WORK_GROUPS, уже с правками редактора планов."""
     return {"groups": list_task_work_groups()}
 
@@ -859,7 +860,7 @@ def get_task_question_groups(_: User = Depends(require_developer_access)):
 @router.get("/task-questions")
 def get_task_questions(
     report_date: date = Query(..., alias="report_date"),
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_tasks_access),
 ):
     """Задания всех операций с 1 января до 06:00 даты сводки."""
     return build_slice(report_date)
@@ -868,7 +869,7 @@ def get_task_questions(
 @router.post("/task-questions/ask")
 def post_task_questions_ask(
     body: TaskQuestionsAskIn,
-    _: User = Depends(require_developer_access),
+    _: User = Depends(require_tasks_access),
 ):
     """Вопрос по срезу заданий. Пустые опции не отсекают операции."""
     return ask_slice(

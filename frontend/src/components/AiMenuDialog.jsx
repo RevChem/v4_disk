@@ -12,18 +12,15 @@ import {
   MenuItem,
   Select,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
-import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
+import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 import EditNoteOutlinedIcon from "@mui/icons-material/EditNoteOutlined";
 import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import QueryStatsRoundedIcon from "@mui/icons-material/QueryStatsRounded";
 
 import { fetchProverkaAiSettings, saveProverkaAiSettings } from "../api";
-import CropwiseAskPanel from "./CropwiseAskPanel";
 
 export default function AiMenuDialog({
   open,
@@ -32,7 +29,6 @@ export default function AiMenuDialog({
   onOpenPrompts,
   onOpenAnalysis,
   isDeveloper = true,
-  summaryDate = "",
 }) {
   const [settings, setSettings] = useState(null);
   const [model, setModel] = useState("deepseek-flash");
@@ -41,7 +37,6 @@ export default function AiMenuDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [tab, setTab] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,8 +54,8 @@ export default function AiMenuDialog({
   }, []);
 
   useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+    if (open && isDeveloper) load();
+  }, [open, isDeveloper, load]);
 
   async function handleSaveSettings() {
     setSaving(true);
@@ -81,31 +76,14 @@ export default function AiMenuDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth={tab === 1 ? "lg" : "sm"}
-      fullWidth
-      PaperProps={tab === 1 ? { sx: { minHeight: "min(88vh, 920px)" } } : undefined}
-    >
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1 }}>
-        <PsychologyOutlinedIcon color="primary" />
-        AI
+        <AssignmentOutlinedIcon color="primary" />
+        Задания
       </DialogTitle>
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        sx={{ px: 3, borderBottom: 1, borderColor: "divider" }}
-      >
-        <Tab label="Меню" />
-        <Tab label="Cropwise" />
-      </Tabs>
-      <DialogContent dividers sx={tab === 1 ? { pt: 1.5, pb: 2 } : undefined}>
-        <Box sx={{ display: tab === 1 ? "block" : "none", minHeight: tab === 1 ? 480 : undefined }}>
-          <CropwiseAskPanel summaryDate={summaryDate} open={open} />
-        </Box>
-        {tab === 0 && (
+      <DialogContent dividers>
         <Stack spacing={2}>
+          {isDeveloper ? (
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
             <Button
               variant="contained"
@@ -130,9 +108,9 @@ export default function AiMenuDialog({
               Промпты AI
             </Button>
           </Stack>
+          ) : null}
 
-          {isDeveloper && (
-            <Button
+          <Button
               variant="contained"
               color="secondary"
               fullWidth
@@ -146,8 +124,8 @@ export default function AiMenuDialog({
             >
               Анализ
             </Button>
-          )}
 
+          {isDeveloper ? (
           <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
               DeepSeek
@@ -189,8 +167,8 @@ export default function AiMenuDialog({
               </Button>
             </Stack>
           </Box>
+          ) : null}
         </Stack>
-        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Закрыть</Button>

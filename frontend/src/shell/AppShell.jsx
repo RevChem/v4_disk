@@ -14,7 +14,7 @@ import {
 import AccountCircleOutlinedIcon from "@mui/icons-material/AccountCircleOutlined";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import PaletteOutlinedIcon from "@mui/icons-material/PaletteOutlined";
-import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
+import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 
 import logoUrl from "../assets/logo.png";
 import UserProfileDialog from "../components/UserProfileDialog";
@@ -313,10 +313,10 @@ export default function AppShell({
                         size="small"
                         variant="contained"
                         color={aiStatus === "completed" ? "success" : "primary"}
-                        startIcon={<PsychologyOutlinedIcon />}
+                        startIcon={<AssignmentOutlinedIcon />}
                         onClick={onAiOpen}
                       >
-                        AI
+                        Задания
                       </Button>
                     </Badge>
                   )}

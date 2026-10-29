@@ -42,6 +42,7 @@ import {
   fetchTaskQuestionGroups,
   fetchTaskQuestions,
 } from "../api";
+import { ColumnFilter, EMPTY_COLUMNS, applyColumnFilters, distinctColumnValues } from "./ColumnFilter";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 
@@ -133,18 +134,37 @@ function sliceLabel(applied) {
   return parts.length ? parts.join(", ") : "весь сезон";
 }
 
-function emptySlice() {
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+/** Смена отчётной даты: вчера 06:00 — сегодня 05:59. */
+function shiftOf(iso) {
+  const day = String(iso || "").slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  const base = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date();
+  const prev = new Date(base);
+  prev.setDate(prev.getDate() - 1);
+  const stamp = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  return {
+    dateFrom: stamp(prev),
+    timeFrom: "06:00",
+    dateTo: stamp(base),
+    timeTo: "05:59",
+  };
+}
+
+function emptySlice(iso) {
   return {
     firm: "",
     crop: "",
     operations: [],
     details: [],
-    dateFrom: "",
-    timeFrom: "06:00",
-    dateTo: "",
-    timeTo: "05:59",
     plate: "",
     surname: "",
+    ...shiftOf(iso),
   };
 }
 
@@ -165,10 +185,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const [crop, setCrop] = useState("");
   const [operations, setOperations] = useState([]);
   const [details, setDetails] = useState([]);
-  const [dateFrom, setDateFrom] = useState("");
-  const [timeFrom, setTimeFrom] = useState("06:00");
-  const [dateTo, setDateTo] = useState("");
-  const [timeTo, setTimeTo] = useState("05:59");
+  const initialShift = shiftOf(reportDate);
+  const [dateFrom, setDateFrom] = useState(initialShift.dateFrom);
+  const [timeFrom, setTimeFrom] = useState(initialShift.timeFrom);
+  const [dateTo, setDateTo] = useState(initialShift.dateTo);
+  const [timeTo, setTimeTo] = useState(initialShift.timeTo);
+  const [columns, setColumns] = useState(EMPTY_COLUMNS);
   const [plate, setPlate] = useState("");
   const [surname, setSurname] = useState("");
   const [mode, setMode] = useState("rows");
@@ -188,6 +210,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const feedEnd = useRef(null);
 
   useEffect(() => {
+    const shift = shiftOf(reportDate);
+    setDateFrom(shift.dateFrom);
+    setTimeFrom(shift.timeFrom);
+    setDateTo(shift.dateTo);
+    setTimeTo(shift.timeTo);
+    setColumns(EMPTY_COLUMNS);
     setRows([]);
     setWindows(null);
     setApplied(null);
@@ -266,9 +294,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     return [...catalog, ...extras];
   }, [rows, workTypes]);
 
-  const visible = useMemo(() => {
+  const ranged = useMemo(() => {
     if (!applied) return [];
-    const filtered = narrowTasks(
+    return narrowTasks(
       filterRows(rows, {
         firms: applied.firm ? [applied.firm] : [],
         crops: applied.crop ? [applied.crop] : [],
@@ -281,9 +309,15 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       }),
       applied,
     );
-    if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
-    return rankRows(filtered, mode, sortDir);
-  }, [rows, applied, mode, sortKey, sortDir]);
+  }, [rows, applied]);
+
+  const columnOptions = useMemo(() => distinctColumnValues(ranged), [ranged]);
+
+  const visible = useMemo(() => {
+    const picked = applyColumnFilters(ranged, columns);
+    if (mode === "rows") return sortRecordRows(picked, sortKey, sortDir);
+    return rankRows(picked, mode, sortDir);
+  }, [ranged, columns, mode, sortKey, sortDir]);
 
   const headed = useMemo(() => {
     if (!applied) return [];
@@ -330,6 +364,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
   async function form({ showTable = true } = {}) {
     const next = draft();
+    setColumns(EMPTY_COLUMNS);
     setApplied(next);
     setPage(0);
     if (showTable) setView("table");
@@ -358,19 +393,26 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     }
   }
 
+  function pickColumn(key, value) {
+    setPage(0);
+    setColumns((current) => ({ ...current, [key]: value }));
+  }
+
   function resetFilters() {
+    const shift = shiftOf(reportDate);
     setFirm("");
     setCrop("");
     setOperations([]);
     setDetails([]);
-    setDateFrom("");
-    setTimeFrom("06:00");
-    setDateTo("");
-    setTimeTo("05:59");
+    setDateFrom(shift.dateFrom);
+    setTimeFrom(shift.timeFrom);
+    setDateTo(shift.dateTo);
+    setTimeTo(shift.timeTo);
     setPlate("");
     setSurname("");
+    setColumns(EMPTY_COLUMNS);
     setPage(0);
-    if (loaded) setApplied(emptySlice());
+    if (loaded) setApplied(emptySlice(reportDate));
   }
 
   function toggleSort(key) {
@@ -448,8 +490,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
           <Typography variant="body2" color="text.secondary">
-            Дата сводки {reportDate}. «Сформировать» без фильтров берёт все операции с 1 января до 06:00.
-            Агрофирма, культура, даты, госномер и фамилия необязательны. Агрооперации — те же группы, что в планах,
+            Дата сводки {reportDate}. По умолчанию стоит смена: вчера 06:00 — сегодня 05:59.
+            Агрофирма, культура, госномер и фамилия необязательны. Агрооперации — те же группы, что в планах,
             можно выбрать несколько. Агрозадания ниже — отдельные виды работ, они необязательны: достаточно одного из списков.
           </Typography>
           <TextField
@@ -664,7 +706,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
           <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", p: { xs: 1.5, md: 2.5 } }}>
             {!aiKeySet && (
               <Alert severity="warning" sx={{ mb: 2 }}>
-                Ключ DeepSeek не задан: «Спросить» вернёт таблицу без ответа модели. Ключ задаётся в меню AI, раздел «DeepSeek».
+                Ключ DeepSeek не задан: «Спросить» вернёт таблицу без ответа модели. Ключ задаётся в меню «Задания», раздел «DeepSeek».
               </Alert>
             )}
             {!answerHistory.length && !askLoading && (
@@ -806,9 +848,23 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                         <TableRow>
                           <TableCell width={48}>№</TableCell>
                           {mode === "rows" ? (
-                            <RecordHead sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                            <RecordHead
+                              sortKey={sortKey}
+                              sortDir={sortDir}
+                              onSort={toggleSort}
+                              columns={columns}
+                              options={columnOptions}
+                              onColumn={pickColumn}
+                            />
                           ) : (
-                            <GroupHead mode={mode} sortDir={sortDir} onSort={() => toggleSort("tonnes")} />
+                            <GroupHead
+                              mode={mode}
+                              sortDir={sortDir}
+                              onSort={() => toggleSort("tonnes")}
+                              columns={columns}
+                              options={columnOptions}
+                              onColumn={pickColumn}
+                            />
                           )}
                         </TableRow>
                       </TableHead>
@@ -907,7 +963,7 @@ async function handleCopy(entry, setCopiedId) {
   }
 }
 
-function RecordHead({ sortKey, sortDir, onSort }) {
+function RecordHead({ sortKey, sortDir, onSort, columns, options, onColumn }) {
   const direction = sortDir === "asc" ? "asc" : "desc";
   return (
     <>
@@ -917,11 +973,19 @@ function RecordHead({ sortKey, sortDir, onSort }) {
         </TableSortLabel>
       </TableCell>
       <TableCell>Агрофирма</TableCell>
-      <TableCell>Культура</TableCell>
+      <TableCell>
+        <ColumnFilter label="Культура" values={options.crop} selected={columns.crop} onSelect={(value) => onColumn("crop", value)} />
+      </TableCell>
       <TableCell>Операция</TableCell>
-      <TableCell>Госномер</TableCell>
-      <TableCell>Механизатор</TableCell>
-      <TableCell>Поле</TableCell>
+      <TableCell>
+        <ColumnFilter label="Госномер" values={options.plate} selected={columns.plate} onSelect={(value) => onColumn("plate", value)} />
+      </TableCell>
+      <TableCell>
+        <ColumnFilter label="Механизатор" values={options.operator} selected={columns.operator} onSelect={(value) => onColumn("operator", value)} />
+      </TableCell>
+      <TableCell>
+        <ColumnFilter label="Поле" values={options.field} selected={columns.field} onSelect={(value) => onColumn("field", value)} />
+      </TableCell>
       <TableCell>Задание</TableCell>
       <TableCell align="right" sortDirection={sortKey === "tonnes" ? direction : false}>
         <TableSortLabel active={sortKey === "tonnes"} direction={sortKey === "tonnes" ? direction : "desc"} onClick={() => onSort("tonnes")}>
@@ -932,11 +996,17 @@ function RecordHead({ sortKey, sortDir, onSort }) {
   );
 }
 
-function GroupHead({ mode, sortDir, onSort }) {
+function GroupHead({ mode, sortDir, onSort, columns, options, onColumn }) {
   const direction = sortDir === "asc" ? "asc" : "desc";
   return (
     <>
-      <TableCell>{mode === "plates" ? "Госномер" : "Фамилия"}</TableCell>
+      <TableCell>
+        {mode === "plates" ? (
+          <ColumnFilter label="Госномер" values={options.plate} selected={columns.plate} onSelect={(value) => onColumn("plate", value)} />
+        ) : (
+          "Фамилия"
+        )}
+      </TableCell>
       <TableCell align="right" sortDirection={direction}>
         <TableSortLabel active direction={direction} onClick={onSort}>
           Площадь, га

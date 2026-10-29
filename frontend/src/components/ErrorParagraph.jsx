@@ -50,6 +50,7 @@ export function ErrorParagraph({ message, places, placesByKey, urls }) {
   const stated = countMatch ? Number(countMatch[1]) : all.length;
   const complete = listed.length >= stated;
   const count = complete ? all.length : stated;
+  const noTask = /нет задания|без задания/i.test(summary);
   const summaryText = complete ? summary.replace(COUNT_RE, `${count} шт`) : summary;
   const preview = all.slice(0, 3);
   const shown = preview.length ? `${summaryText} | ${preview.join("; ")}` : summaryText;
@@ -57,8 +58,8 @@ export function ErrorParagraph({ message, places, placesByKey, urls }) {
 
   return (
     <>
-      <TaskText text={shown} urls={urls} />
-      {all.length > 0 ? (
+      {noTask ? shown : <TaskText text={shown} urls={urls} />}
+      {!noTask && all.length > 0 ? (
         <IconButton
           size="small"
           aria-label="Все задания с этой ошибкой"

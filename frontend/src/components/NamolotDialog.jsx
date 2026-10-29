@@ -24,6 +24,7 @@ import {
 } from "@mui/material";
 
 import { downloadNamolotExcel, fetchNamolotSeason } from "../api";
+import { ColumnFilter, EMPTY_COLUMNS, applyColumnFilters, distinctColumnValues } from "./ColumnFilter";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS as CROPS, NAMOLOT_FIRMS as FIRM_ORDER } from "../utils/namolotOptions";
 
@@ -62,6 +63,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
   const [timeTo, setTimeTo] = useState("05:59");
   const [plate, setPlate] = useState("");
   const [surname, setSurname] = useState("");
+  const [columns, setColumns] = useState(EMPTY_COLUMNS);
   const [mode, setMode] = useState("rows");
   const [sortKey, setSortKey] = useState("tonnes");
   const [sortDir, setSortDir] = useState("desc");
@@ -78,6 +80,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
     setTimeTo("05:59");
     setPlate("");
     setSurname("");
+    setColumns(EMPTY_COLUMNS);
     setMode("rows");
     setSortKey("tonnes");
     setSortDir("desc");
@@ -95,12 +98,13 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
     setWindows(null);
     setApplied(null);
     setLoaded(false);
+    setColumns(EMPTY_COLUMNS);
     setError("");
   }, [reportDate]);
 
-  const visible = useMemo(() => {
+  const ranged = useMemo(() => {
     if (!applied) return [];
-    const filtered = filterRows(rows, {
+    return filterRows(rows, {
       firms: applied.firm ? [applied.firm] : [],
       crops: applied.crop ? [applied.crop] : [],
       dateFrom: applied.dateFrom,
@@ -110,9 +114,15 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
       plate: applied.plate,
       surname: applied.surname,
     });
-    if (mode === "rows") return sortRecordRows(filtered, sortKey, sortDir);
-    return rankRows(filtered, mode, sortDir);
-  }, [rows, applied, mode, sortKey, sortDir]);
+  }, [rows, applied]);
+
+  const columnOptions = useMemo(() => distinctColumnValues(ranged), [ranged]);
+
+  const visible = useMemo(() => {
+    const picked = applyColumnFilters(ranged, columns);
+    if (mode === "rows") return sortRecordRows(picked, sortKey, sortDir);
+    return rankRows(picked, mode, sortDir);
+  }, [ranged, columns, mode, sortKey, sortDir]);
 
   const headed = useMemo(() => {
     if (!applied) return [];
@@ -134,8 +144,14 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
     [headed],
   );
 
+  function pickColumn(key, value) {
+    setPage(0);
+    setColumns((current) => ({ ...current, [key]: value }));
+  }
+
   async function form() {
     const next = { firm, crop, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
+    setColumns(EMPTY_COLUMNS);
     setApplied(next);
     setPage(0);
     if (loaded || loading) return;
@@ -182,6 +198,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
     setTimeTo("05:59");
     setPlate("");
     setSurname("");
+    setColumns(EMPTY_COLUMNS);
     setPage(0);
     if (loaded) {
       setApplied({
@@ -404,9 +421,23 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
                     <TableRow>
                       <TableCell width={48}>№</TableCell>
                       {mode === "rows" ? (
-                        <RecordHead sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                        <RecordHead
+                          sortKey={sortKey}
+                          sortDir={sortDir}
+                          onSort={toggleSort}
+                          columns={columns}
+                          options={columnOptions}
+                          onColumn={pickColumn}
+                        />
                       ) : (
-                        <GroupHead mode={mode} sortDir={sortDir} onSort={() => toggleSort("tonnes")} />
+                        <GroupHead
+                          mode={mode}
+                          sortDir={sortDir}
+                          onSort={() => toggleSort("tonnes")}
+                          columns={columns}
+                          options={columnOptions}
+                          onColumn={pickColumn}
+                        />
                       )}
                     </TableRow>
                   </TableHead>
@@ -467,7 +498,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
   );
 }
 
-function RecordHead({ sortKey, sortDir, onSort }) {
+function RecordHead({ sortKey, sortDir, onSort, columns, options, onColumn }) {
   const direction = sortDir === "asc" ? "asc" : "desc";
   return (
     <>
@@ -477,10 +508,18 @@ function RecordHead({ sortKey, sortDir, onSort }) {
         </TableSortLabel>
       </TableCell>
       <TableCell>Агрофирма</TableCell>
-      <TableCell>Культура</TableCell>
-      <TableCell>Госномер</TableCell>
-      <TableCell>Механизатор</TableCell>
-      <TableCell>Поле</TableCell>
+      <TableCell>
+        <ColumnFilter label="Культура" values={options.crop} selected={columns.crop} onSelect={(value) => onColumn("crop", value)} />
+      </TableCell>
+      <TableCell>
+        <ColumnFilter label="Госномер" values={options.plate} selected={columns.plate} onSelect={(value) => onColumn("plate", value)} />
+      </TableCell>
+      <TableCell>
+        <ColumnFilter label="Механизатор" values={options.operator} selected={columns.operator} onSelect={(value) => onColumn("operator", value)} />
+      </TableCell>
+      <TableCell>
+        <ColumnFilter label="Поле" values={options.field} selected={columns.field} onSelect={(value) => onColumn("field", value)} />
+      </TableCell>
       <TableCell align="right" sortDirection={sortKey === "tonnes" ? direction : false}>
         <TableSortLabel
           active={sortKey === "tonnes"}
@@ -494,11 +533,17 @@ function RecordHead({ sortKey, sortDir, onSort }) {
   );
 }
 
-function GroupHead({ mode, sortDir, onSort }) {
+function GroupHead({ mode, sortDir, onSort, columns, options, onColumn }) {
   const direction = sortDir === "asc" ? "asc" : "desc";
   return (
     <>
-      <TableCell>{mode === "plates" ? "Госномер" : "Фамилия"}</TableCell>
+      <TableCell>
+        {mode === "plates" ? (
+          <ColumnFilter label="Госномер" values={options.plate} selected={columns.plate} onSelect={(value) => onColumn("plate", value)} />
+        ) : (
+          "Фамилия"
+        )}
+      </TableCell>
       <TableCell align="right" sortDirection={direction}>
         <TableSortLabel active direction={direction} onClick={onSort}>
           Намолот, т

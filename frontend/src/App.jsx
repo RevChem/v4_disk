@@ -119,6 +119,7 @@ export default function App() {
   }, []);
 
   const isDeveloper = user?.role === "developer";
+  const canTasks = isDeveloper || user?.role === "admin";
   const openTaskFacts = useCallback(() => {
     setAnalysisSection("facts");
     setAnalysisOpen(true);
@@ -709,7 +710,7 @@ export default function App() {
             ? { active: dataErrorsOn, onToggle: toggleDataErrors }
             : null
         }
-        showAiButton={isDeveloper}
+        showAiButton={canTasks}
         onInterfaceOpen={() => setInterfaceOpen(true)}
         onAiOpen={() => setAiMenuOpen(true)}
         aiStatus={aiStatus}
@@ -738,7 +739,7 @@ export default function App() {
             setLogsFocus(focus);
             setLogsModalOpen(true);
           }}
-          onOpenTaskFacts={isDeveloper ? openTaskFacts : undefined}
+          onOpenTaskFacts={canTasks ? openTaskFacts : undefined}
           compareCropwise={cropwiseActive}
           compareCropwiseSeason={cropwiseSeasonActive}
           equipmentRequest={equipmentRequest}
@@ -847,10 +848,11 @@ export default function App() {
         onClose={() => setAiPromptsOpen(false)}
       />
       <AnalysisDialog
-        open={analysisOpen && isDeveloper}
+        open={analysisOpen && canTasks}
         onClose={() => setAnalysisOpen(false)}
         initialSection={analysisSection}
         summaryDate={summaryDate}
+        scope={isDeveloper ? "all" : "work"}
       />
     </ThemeProvider>
   );
