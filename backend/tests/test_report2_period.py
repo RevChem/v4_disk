@@ -43,7 +43,7 @@ def test_report2_period_options_keep_groups_and_seasons():
     assert opts["report2_date_from"] == "2025-02-14"
     assert opts["report2_date_to"] == "2026-09-24"
     assert opts["report2_time_from"] == "06:00"
-    assert opts["report2_cutoff"] == "06:00"
+    assert opts["report2_cutoff"] == "05:59"
     timed = _body(
         report2_date_from=date(2025, 2, 14),
         report2_date_to=date(2026, 9, 24),
@@ -87,6 +87,11 @@ def test_report2_window_includes_last_shift_day():
     )
     assert start_late == "2025-02-14T08:30:00"
     assert end_late == "2026-09-25T06:00:00"
+    start_shift, end_shift = _build_report2_period_window_iso(
+        date(2026, 10, 1), "06:00", date(2026, 11, 1), "05:59",
+    )
+    assert start_shift == "2026-10-01T06:00:00"
+    assert end_shift == "2026-11-01T06:00:00"
 
 
 def test_report2_env_key_matches_season_resolver():

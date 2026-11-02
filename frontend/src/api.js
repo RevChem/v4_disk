@@ -388,6 +388,10 @@ export async function generateReports(summaryDate, reportIds, options = {}) {
     if (typeof r2TimeFrom === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(r2TimeFrom.trim())) {
       payload.report2_time_from = r2TimeFrom.trim();
     }
+    const r2TimeTo = options?.report2TimeTo ?? options?.report2_cutoff;
+    if (typeof r2TimeTo === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(r2TimeTo.trim())) {
+      payload.report2_cutoff = r2TimeTo.trim();
+    }
     if (Array.isArray(options?.report2Groups) && options.report2Groups.length) {
       payload.report2_groups = options.report2Groups;
     } else if (Array.isArray(options?.report2_groups) && options.report2_groups.length) {

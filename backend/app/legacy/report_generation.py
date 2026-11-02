@@ -878,19 +878,25 @@ def _build_report2_period_window_iso(
     time_to: str | None,
 ) -> tuple[str | None, str | None]:
     """
-    Окно сводки 2 Excel за период. При срезе «до DD.MM 06:00» последняя смена — день DD.MM,
-    поэтому конец окна сдвигаем на +1 сутки 06:00 (как смена [D 06:00, D+1 06:00)).
+    Окно сводки 2 Excel за период.
+
+    «01.11 05:59» — конец в это утро: исключительная граница 01.11 06:00,
+    последняя смена — 31.10. «До 06:00» той же даты по-прежнему сдвигает
+    конец на следующие сутки.
     """
     start, end = _build_report22_window_iso(date_from, time_from, date_to, time_to)
     if not start or not end:
         return start, end
-    tt = _normalize_report22_cutoff(time_to) or "06:00"
-    if tt != "06:00":
-        return start, end
+    tt = _normalize_report22_cutoff(time_to) or "05:59"
     we = _parse_report_window_for_iso(end)
     if we is None:
         return start, end
-    we = we + timedelta(days=1)
+    if tt == "05:59":
+        we = we.replace(hour=6, minute=0, second=0, microsecond=0)
+    elif tt == "06:00":
+        we = we + timedelta(days=1)
+    else:
+        return start, end
     return start, we.strftime("%Y-%m-%dT%H:%M:%S")
 
 

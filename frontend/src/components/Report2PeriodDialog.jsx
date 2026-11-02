@@ -73,7 +73,6 @@ function defaultYears(choices, saved) {
 
 export default function Report2PeriodDialog({
   open,
-  summaryDate,
   onClose,
   onSubmit,
   generating,
@@ -82,6 +81,7 @@ export default function Report2PeriodDialog({
   const [dateFrom, setDateFrom] = useState("");
   const [timeFrom, setTimeFrom] = useState("06:00");
   const [dateTo, setDateTo] = useState("");
+  const [timeTo, setTimeTo] = useState("05:59");
   const [enabled, setEnabled] = useState(() => Object.fromEntries(REPORT2_GROUPS.map((name) => [name, true])));
   const [seasons, setSeasons] = useState({});
   const [loading, setLoading] = useState(false);
@@ -89,20 +89,18 @@ export default function Report2PeriodDialog({
 
   useEffect(() => {
     if (!open) return undefined;
-    const end = summaryDate || dayjs().format("YYYY-MM-DD");
-    const endDate = dayjs(end);
-    const start = endDate.month() >= 1
-      ? endDate.month(1).date(14).format("YYYY-MM-DD")
-      : endDate.subtract(1, "year").month(1).date(14).format("YYYY-MM-DD");
-    const initialFrom = dayjs(start).isAfter(endDate) ? end : start;
+    const monthStart = dayjs().startOf("month");
+    const initialFrom = monthStart.subtract(1, "month").format("YYYY-MM-DD");
+    const initialTo = monthStart.format("YYYY-MM-DD");
     setDateFrom(initialFrom);
     setTimeFrom("06:00");
-    setDateTo(end);
+    setDateTo(initialTo);
+    setTimeTo("05:59");
     setLoadError("");
     setEnabled(Object.fromEntries(REPORT2_GROUPS.map((name) => [name, true])));
     let cancelled = false;
     setLoading(true);
-    fetchPlansEditor(end)
+    fetchPlansEditor(initialTo)
       .then((data) => {
         if (cancelled) return;
         const byGroup = data?.season_meta?.by_group || {};
@@ -110,14 +108,14 @@ export default function Report2PeriodDialog({
         for (const name of REPORT2_GROUPS) {
           const meta = byGroup[name] || {};
           const saved = meta.season_years || meta.default_season_years || [];
-          const extra = yearChoices(initialFrom, end, saved);
+          const extra = yearChoices(initialFrom, initialTo, saved);
           next[name] = defaultYears(extra, saved);
         }
         setSeasons(next);
       })
       .catch((e) => {
         if (cancelled) return;
-        const choices = yearChoices(initialFrom, end);
+        const choices = yearChoices(initialFrom, initialTo);
         const next = {};
         for (const name of REPORT2_GROUPS) next[name] = defaultYears(choices, []);
         setSeasons(next);
@@ -129,7 +127,7 @@ export default function Report2PeriodDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, summaryDate]);
+  }, [open]);
 
   const choices = useMemo(
     () => yearChoices(dateFrom, dateTo, Object.values(seasons).flat()),
@@ -161,6 +159,7 @@ export default function Report2PeriodDialog({
       dateFrom,
       timeFrom: timeFrom || "06:00",
       dateTo,
+      timeTo: timeTo || "05:59",
       groups: selectedNames,
       seasons: seasonsPayload,
     });
@@ -181,11 +180,10 @@ export default function Report2PeriodDialog({
           {error ? <Alert severity="error">{error}</Alert> : null}
           {loadError ? <Alert severity="warning">{loadError}. Сезоны можно отметить вручную.</Alert> : null}
           <Typography variant="body2" color="text.secondary">
-            Колонки и «Выполнено» — смены с указанного времени первого дня до конца последнего.
-            Площадь внутри смены считается как в обычной сводке 2. PDF не создаётся.
-            Обычная сводка за дату не заменяется.
+            По умолчанию — прошлый месяц: с 06:00 1-го числа по 05:59 1-го числа текущего месяца.
+            Время можно поменять. PDF не создаётся. Обычная сводка за дату не заменяется.
           </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 720 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 860 }}>
             <TextField
               label="С"
               type="date"
@@ -197,12 +195,13 @@ export default function Report2PeriodDialog({
               disabled={generating}
             />
             <TextField
-              label="Время начала"
+              label="Время с"
               type="time"
-              value={timeFrom}
-              onChange={(e) => setTimeFrom(e.target.value)}
+              value={timeFrom || "06:00"}
+              onChange={(e) => setTimeFrom(e.target.value || "06:00")}
               InputLabelProps={{ shrink: true }}
-              sx={{ maxWidth: { sm: 160 } }}
+              inputProps={{ step: 60 }}
+              sx={{ maxWidth: { sm: 140 } }}
               size="small"
               disabled={generating}
             />
@@ -213,6 +212,17 @@ export default function Report2PeriodDialog({
               onChange={(e) => setDateTo(e.target.value)}
               InputLabelProps={{ shrink: true }}
               fullWidth
+              size="small"
+              disabled={generating}
+            />
+            <TextField
+              label="Время по"
+              type="time"
+              value={timeTo || "05:59"}
+              onChange={(e) => setTimeTo(e.target.value || "05:59")}
+              InputLabelProps={{ shrink: true }}
+              inputProps={{ step: 60 }}
+              sx={{ maxWidth: { sm: 140 } }}
               size="small"
               disabled={generating}
             />

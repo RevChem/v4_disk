@@ -52,6 +52,10 @@ class GenerateReportsIn(BaseModel):
         default=None,
         description="Сводка 2 за период: время начала первой смены, HH:MM. Пусто — 06:00.",
     )
+    report2_cutoff: str | None = Field(
+        default=None,
+        description="Сводка 2 за период: время конца последней смены, HH:MM. Пусто — 05:59.",
+    )
     report2_groups: list[str] | None = Field(default=None, description="Агрооперации сводки 2, которые попадут в файл.")
     report2_seasons: dict[str, list[int]] | None = Field(
         default=None,
@@ -101,6 +105,7 @@ class GenerateReportsIn(BaseModel):
                 self.report2_date_from,
                 self.report2_date_to,
                 self.report2_time_from,
+                self.report2_cutoff,
                 self.report2_groups,
                 self.report2_seasons,
             )
@@ -138,13 +143,16 @@ class GenerateReportsIn(BaseModel):
                 raise ValueError(f"Для «{name}» выберите хотя бы один сезон.")
             seasons[name] = years
         time_from = str(self.report2_time_from or "06:00").strip()
+        time_to = str(self.report2_cutoff or "05:59").strip()
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", time_from):
             raise ValueError("Время начала сводки 2 укажите как ЧЧ:ММ.")
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", time_to):
+            raise ValueError("Время конца сводки 2 укажите как ЧЧ:ММ.")
         return {
             "report2_date_from": self.report2_date_from.isoformat(),
             "report2_date_to": self.report2_date_to.isoformat(),
             "report2_time_from": time_from,
-            "report2_cutoff": "06:00",
+            "report2_cutoff": time_to,
             "report2_groups": groups,
             "report2_seasons": seasons,
         }
