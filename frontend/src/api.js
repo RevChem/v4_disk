@@ -376,6 +376,23 @@ export async function generateReports(summaryDate, reportIds, options = {}) {
     if (typeof r27DateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r27DateTo.trim())) {
       payload.report27_date_to = r27DateTo.trim();
     }
+    const r2DateFrom = options?.report2DateFrom ?? options?.report2_date_from;
+    if (typeof r2DateFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r2DateFrom.trim())) {
+      payload.report2_date_from = r2DateFrom.trim();
+    }
+    const r2DateTo = options?.report2DateTo ?? options?.report2_date_to;
+    if (typeof r2DateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r2DateTo.trim())) {
+      payload.report2_date_to = r2DateTo.trim();
+    }
+    if (Array.isArray(options?.report2Groups) && options.report2Groups.length) {
+      payload.report2_groups = options.report2Groups;
+    } else if (Array.isArray(options?.report2_groups) && options.report2_groups.length) {
+      payload.report2_groups = options.report2_groups;
+    }
+    const r2Seasons = options?.report2Seasons ?? options?.report2_seasons;
+    if (r2Seasons && typeof r2Seasons === "object") {
+      payload.report2_seasons = r2Seasons;
+    }
     if (options?.compareCropwise || options?.compare_cropwise) {
       payload.compare_cropwise = true;
     }

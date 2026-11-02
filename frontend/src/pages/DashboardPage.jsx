@@ -42,6 +42,7 @@ import Report1LayoutEditorDialog from "../components/Report1LayoutEditorDialog";
 import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
 import HarvestGrossDialog from "../components/HarvestGrossDialog";
 import Report27CustomDialog from "../components/Report27CustomDialog";
+import Report2PeriodDialog from "../components/Report2PeriodDialog";
 import {
   buildHarvestGrossPayload,
   loadHarvestGrossForm,
@@ -94,6 +95,7 @@ export default function DashboardPage({
   compareCropwise = false,
   compareCropwiseSeason = false,
   equipmentRequest = 0,
+  report2PeriodRequest = 0,
   showDataErrors = false,
 }) {
   const [summaryDateLocal, setSummaryDateLocal] = useState(todayIso());
@@ -134,11 +136,20 @@ export default function DashboardPage({
   const [report27CustomTimeTo, setReport27CustomTimeTo] = useState("06:00");
   const [report27CustomGenerating, setReport27CustomGenerating] = useState(false);
   const [report27CustomError, setReport27CustomError] = useState("");
+  const [report2PeriodOpen, setReport2PeriodOpen] = useState(false);
+  const [report2PeriodGenerating, setReport2PeriodGenerating] = useState(false);
+  const [report2PeriodError, setReport2PeriodError] = useState("");
 
   useEffect(() => {
     if (!equipmentRequest) return;
     setProverkaMachinesOpen(true);
   }, [equipmentRequest]);
+
+  useEffect(() => {
+    if (!report2PeriodRequest) return;
+    setReport2PeriodError("");
+    setReport2PeriodOpen(true);
+  }, [report2PeriodRequest]);
 
   const canPlans = user?.role === "developer" || user?.role === "admin" || user?.role === "user";
   const canProverka = user?.role === "developer";
@@ -519,6 +530,61 @@ export default function DashboardPage({
     }
   }
 
+  async function handleGenerateReport2Period({ dateFrom, dateTo, groups, seasons }) {
+    const from = String(dateFrom || "").trim();
+    const to = String(dateTo || "").trim();
+    const fromDt = dayjs(from);
+    const toDt = dayjs(to);
+    if (!fromDt.isValid() || !toDt.isValid()) {
+      setReport2PeriodError("Укажите даты начала и конца периода.");
+      return;
+    }
+    if (fromDt.isAfter(toDt)) {
+      setReport2PeriodError("Начало периода должно быть не позже конца.");
+      return;
+    }
+    if (toDt.diff(fromDt, "day") > 800) {
+      setReport2PeriodError("Период длиннее 800 дней.");
+      return;
+    }
+    if (!groups?.length) {
+      setReport2PeriodError("Выберите хотя бы одну агрооперацию.");
+      return;
+    }
+    const missing = groups.find((name) => !(seasons?.[name] || []).length);
+    if (missing) {
+      setReport2PeriodError(`Для «${missing}» выберите хотя бы один сезон.`);
+      return;
+    }
+    setReport2PeriodGenerating(true);
+    setReport2PeriodError("");
+    setError("");
+    setInfo("");
+    try {
+      const res = await generateReports(to, ["2"], {
+        report2DateFrom: from,
+        report2DateTo: to,
+        report2Groups: groups,
+        report2Seasons: seasons,
+      });
+      const fromLabel = fromDt.format("DD.MM.YYYY");
+      const toLabel = toDt.format("DD.MM.YYYY");
+      setInfo(
+        `Сводка 2 за ${fromLabel}–${toLabel} поставлена в очередь ` +
+          `(${res.job_id?.slice(0, 8) || "—"}…). Файл появится на ${toLabel}, кнопка «Скачать Excel».`
+      );
+      setReport2PeriodOpen(false);
+      setSummaryDate(to);
+      onGenerationQueued?.();
+    } catch (e) {
+      const msg = String(e.message || e || "Не удалось поставить сводку 2 в очередь.");
+      setReport2PeriodError(msg);
+      setError(msg);
+    } finally {
+      setReport2PeriodGenerating(false);
+    }
+  }
+
   return (
     <>
       <NamolotNotices alertsByReport={alertsByReport} />
@@ -823,6 +889,16 @@ export default function DashboardPage({
         generating={report27CustomGenerating}
         error={report27CustomError}
         onSubmit={() => void handleGenerateReport27Custom()}
+      />
+      <Report2PeriodDialog
+        open={report2PeriodOpen}
+        summaryDate={summaryDate}
+        onClose={() => {
+          if (!report2PeriodGenerating) setReport2PeriodOpen(false);
+        }}
+        generating={report2PeriodGenerating}
+        error={report2PeriodError}
+        onSubmit={(payload) => void handleGenerateReport2Period(payload)}
       />
       <PlansEditorDialog open={plansOpen} onClose={() => setPlansOpen(false)} summaryDate={summaryDate} />
       <ProverkaDialog

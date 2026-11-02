@@ -18,6 +18,26 @@ class ReportCatalogOut(BaseModel):
     items: list[ReportCatalogItemOut] = Field(default_factory=list)
 
 
+# Имена групп сводки 2 — тот же список, что WORK_GROUPS в plans.py.
+REPORT2_GROUP_NAMES = frozenset({
+    "1.1 Внесение минеральных удобрений",
+    "2.1 Боронование",
+    "2.9 Дискование",
+    "2.4 Вспашка",
+    "2.11 Культивация",
+    "4.0 Посев",
+    "4.1 Посев (овощи)",
+    "3.1 Опрыскивание",
+    "3.2 Опрыскивание (овощи)",
+    "2.12 Прикатывание",
+    "2.7 Гребнеобразование",
+    "2.6 Фрезерование",
+    "2.8 Глубокорыхление",
+    "5.0 Уборка",
+    "5.4 Уборка картофеля, лука",
+})
+
+
 class GenerateReportsIn(BaseModel):
     summary_date: date
     report_ids: list[str] | None = None
@@ -25,6 +45,13 @@ class GenerateReportsIn(BaseModel):
     report27_time_from: str | None = Field(default=None, description="Только для сводки 27: начало окна HH:MM.")
     report27_date_from: date | None = Field(default=None, description="Только для сводки 27: дата начала окна.")
     report27_date_to: date | None = Field(default=None, description="Только для сводки 27: дата конца окна.")
+    report2_date_from: date | None = Field(default=None, description="Сводка 2 за период: первый день.")
+    report2_date_to: date | None = Field(default=None, description="Сводка 2 за период: последний день.")
+    report2_groups: list[str] | None = Field(default=None, description="Агрооперации сводки 2, которые попадут в файл.")
+    report2_seasons: dict[str, list[int]] | None = Field(
+        default=None,
+        description="Сезоны Cropwise по каждой выбранной агрооперации сводки 2.",
+    )
     report_harvest_gross: dict[str, Any] | None = Field(
         default=None,
         description="Ручной валовый сбор для сводок 1 / 10 / 13 (crops / vegetables).",
@@ -63,11 +90,64 @@ class GenerateReportsIn(BaseModel):
             "report27_date_to": self.report27_date_to.isoformat() if self.report27_date_to else None,
         }
 
+    def report2_options(self) -> dict[str, Any] | None:
+        touched = any(
+            (
+                self.report2_date_from,
+                self.report2_date_to,
+                self.report2_groups,
+                self.report2_seasons,
+            )
+        )
+        if not touched:
+            return None
+        ids = [str(x).strip() for x in (self.report_ids or []) if str(x).strip()]
+        if ids != ["2"]:
+            raise ValueError('Поля report2_* разрешены только вместе с report_ids: ["2"].')
+        if not self.report2_date_from or not self.report2_date_to:
+            raise ValueError("Укажите начало и конец периода сводки 2.")
+        if self.report2_date_from > self.report2_date_to:
+            raise ValueError("Начало периода сводки 2 позже конца.")
+        if (self.report2_date_to - self.report2_date_from).days > 800:
+            raise ValueError("Период сводки 2 длиннее 800 дней.")
+        groups = [str(name).strip() for name in (self.report2_groups or []) if str(name).strip()]
+        if not groups:
+            raise ValueError("Выберите хотя бы одну агрооперацию сводки 2.")
+        unknown = [name for name in groups if name not in REPORT2_GROUP_NAMES]
+        if unknown:
+            raise ValueError(f"Неизвестная агрооперация сводки 2: {unknown[0]}")
+        raw_seasons = self.report2_seasons or {}
+        seasons: dict[str, list[int]] = {}
+        for name in groups:
+            years: list[int] = []
+            for item in raw_seasons.get(name) or []:
+                try:
+                    year = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if 1990 <= year <= 2100:
+                    years.append(year)
+            years = sorted(set(years))
+            if not years:
+                raise ValueError(f"Для «{name}» выберите хотя бы один сезон.")
+            seasons[name] = years
+        return {
+            "report2_date_from": self.report2_date_from.isoformat(),
+            "report2_date_to": self.report2_date_to.isoformat(),
+            "report2_time_from": "06:00",
+            "report2_cutoff": "06:00",
+            "report2_groups": groups,
+            "report2_seasons": seasons,
+        }
+
     def generation_job_options(self) -> dict[str, Any] | None:
         opts: dict[str, Any] = {}
         r27 = self.report27_options()
         if r27:
             opts.update(r27)
+        r2 = self.report2_options()
+        if r2:
+            opts.update(r2)
         if self.report_harvest_gross:
             opts["report_harvest_gross"] = self.report_harvest_gross
         if self.compare_cropwise:

@@ -469,7 +469,8 @@ def resolve_group_season_config(
 ) -> dict[str, Any]:
     """
     Итоговые сезоны и диапазон для одной группы работ.
-    Приоритет task/history: by_group[name] в run_override → season_ranges.json →
+    Приоритет task/history: SVODKI_FORCE_GROUP_SEASONS (разовый запуск сводки 2)
+    → by_group[name] в run_override → season_ranges.json →
     report-level run_override → env → defaults.
 
     Report-level task_season_years (часто один год по season_rule) не должен
@@ -492,7 +493,15 @@ def resolve_group_season_config(
     for key, val in env_ov.items():
         ov.setdefault(key, val)
 
-    if "history_years" in group_ov:
+    force_env = os.environ.get("SVODKI_FORCE_GROUP_SEASONS", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+    forced_history = _normalize_years(env_ov.get("history_years")) if force_env else []
+    forced_task = _normalize_years(env_ov.get("task_season_years")) if force_env else []
+
+    if forced_history:
+        history_years = forced_history
+    elif "history_years" in group_ov:
         history_years = _normalize_years(group_ov.get("history_years"))
     elif has_file_override:
         history_years = list(file_years)
@@ -510,7 +519,9 @@ def resolve_group_season_config(
     editor_sets_task_years = has_file_override and (
         applies_task_season_filter(name) or rule == "plow_year_plus_one"
     )
-    if "task_season_years" in group_ov:
+    if forced_task:
+        task_years = forced_task
+    elif "task_season_years" in group_ov:
         task_years = _normalize_years(group_ov.get("task_season_years"))
     elif editor_sets_task_years:
         task_years = merge_task_years_from_file(

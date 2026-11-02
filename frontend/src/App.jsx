@@ -135,6 +135,7 @@ export default function App() {
   );
   const [cropwiseCookie, setCropwiseCookie] = useState(false);
   const [equipmentRequest, setEquipmentRequest] = useState(0);
+  const [report2PeriodRequest, setReport2PeriodRequest] = useState(0);
   const [dataErrorsOn, setDataErrorsOn] = useState(
     () => window.localStorage.getItem("svodki.dataErrors") === "1",
   );
@@ -710,6 +711,11 @@ export default function App() {
             ? { active: dataErrorsOn, onToggle: toggleDataErrors }
             : null
         }
+        report2Period={
+          canGenerate
+            ? { onOpen: () => setReport2PeriodRequest((n) => n + 1) }
+            : null
+        }
         showAiButton={canTasks}
         onInterfaceOpen={() => setInterfaceOpen(true)}
         onAiOpen={() => setAiMenuOpen(true)}
@@ -743,6 +749,7 @@ export default function App() {
           compareCropwise={cropwiseActive}
           compareCropwiseSeason={cropwiseSeasonActive}
           equipmentRequest={equipmentRequest}
+          report2PeriodRequest={report2PeriodRequest}
           showDataErrors={dataErrorsOn}
         />
       </AppShell>

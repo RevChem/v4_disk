@@ -294,7 +294,15 @@ def _purge_same_report_files(
             path.unlink(missing_ok=True)
 
 
-def _save_artifact(src: Path, summary_date: date, title: str, ext: str, report_id: str = "") -> Path:
+def _save_artifact(
+    src: Path,
+    summary_date: date,
+    title: str,
+    ext: str,
+    report_id: str = "",
+    *,
+    purge_same_report: bool = True,
+) -> Path:
     folder = _output_folder(summary_date)
     rid = report_id or _report_id_from_title(title)
     dest = folder / _safe_filename(title, ext)
@@ -306,7 +314,8 @@ def _save_artifact(src: Path, summary_date: date, title: str, ext: str, report_i
         os.replace(part, dest)
     finally:
         part.unlink(missing_ok=True)
-    _purge_same_report_files(folder, rid, ext=ext, keep=dest)
+    if purge_same_report:
+        _purge_same_report_files(folder, rid, ext=ext, keep=dest)
     return dest
 
 
@@ -328,16 +337,35 @@ def _execute_single_report_to_disk(
     """Потокобезопасный запуск одной сводки (локальные логи, без общего списка)."""
     local_logs: list[str] = []
     cfg_id = _cfg_id_norm(cfg)
-    storage_title = _resolve_storage_title(cfg, summary_date)
-    report_temp = temp_root / f"{cfg_id}_{uuid.uuid4().hex}"
-    report_temp.mkdir(parents=True, exist_ok=True)
-    # 28 — только Excel: PDF не строим, файл не показываем на панели, его скачивает интерфейс.
-    excel_only = _is_report27_family(cfg_id) or cfg_id == "28"
     job_opts = load_job_options(generation_job_id) if generation_job_id else {}
     r27_cutoff = job_opts.get("report27_cutoff")
     r27_time_from = job_opts.get("report27_time_from")
     r27_date_from = _coerce_optional_date(job_opts.get("report27_date_from"))
     r27_date_to = _coerce_optional_date(job_opts.get("report27_date_to"))
+    r2_date_from = _coerce_optional_date(job_opts.get("report2_date_from"))
+    r2_date_to = _coerce_optional_date(job_opts.get("report2_date_to"))
+    r2_time_from = str(job_opts.get("report2_time_from") or "").strip() or None
+    r2_cutoff = str(job_opts.get("report2_cutoff") or "").strip() or None
+    r2_groups = job_opts.get("report2_groups") if isinstance(job_opts.get("report2_groups"), list) else None
+    r2_seasons = job_opts.get("report2_seasons") if isinstance(job_opts.get("report2_seasons"), dict) else None
+    report2_period = cfg_id == "2" and r2_date_from is not None and r2_date_to is not None
+    storage_title = _resolve_storage_title(
+        cfg,
+        summary_date,
+        report2_cutoff=r2_cutoff if report2_period else None,
+        report2_time_from=r2_time_from if report2_period else None,
+        report2_date_from=r2_date_from if report2_period else None,
+        report2_date_to=r2_date_to if report2_period else None,
+        report27_cutoff=r27_cutoff,
+        report27_time_from=r27_time_from,
+        report27_date_from=r27_date_from,
+        report27_date_to=r27_date_to,
+    )
+    report_temp = temp_root / f"{cfg_id}_{uuid.uuid4().hex}"
+    report_temp.mkdir(parents=True, exist_ok=True)
+    # 27/28 и сводка 2 за период — только Excel.
+    report27_excel = _is_report27_family(cfg_id) or cfg_id == "28"
+    excel_only = report27_excel or report2_period
 
     report_started = time.monotonic()
     try:
@@ -353,11 +381,17 @@ def _execute_single_report_to_disk(
             api_snapshot_read_only=api_snapshot_read_only,
             generation_job_id=generation_job_id,
             should_cancel=should_cancel,
-            r23_auto_report2=r23_auto_report2 and cfg_id == "2",
-            report27_cutoff=r27_cutoff if excel_only else None,
-            report27_time_from=r27_time_from if excel_only else None,
-            report27_date_from=r27_date_from if excel_only else None,
-            report27_date_to=r27_date_to if excel_only else None,
+            r23_auto_report2=r23_auto_report2 and cfg_id == "2" and not report2_period,
+            report2_cutoff=r2_cutoff if report2_period else None,
+            report2_time_from=r2_time_from if report2_period else None,
+            report2_date_from=r2_date_from if report2_period else None,
+            report2_date_to=r2_date_to if report2_period else None,
+            report2_groups=r2_groups if report2_period else None,
+            report2_seasons=r2_seasons if report2_period else None,
+            report27_cutoff=r27_cutoff if report27_excel else None,
+            report27_time_from=r27_time_from if report27_excel else None,
+            report27_date_from=r27_date_from if report27_excel else None,
+            report27_date_to=r27_date_to if report27_excel else None,
             report_harvest_gross=job_opts.get("report_harvest_gross"),
         )
         local_logs.append(
@@ -387,7 +421,14 @@ def _execute_single_report_to_disk(
             if " (Excel)" not in storage_title:
                 storage_title = f"{storage_title} (Excel)"
             local_logs.append(f"[{cfg.title}] Сохраняем только Excel, без PDF.")
-            saved_xlsx = _save_artifact(xlsx_path, summary_date, storage_title, ".xlsx", report_id=cfg_id)
+            saved_xlsx = _save_artifact(
+                xlsx_path,
+                summary_date,
+                storage_title,
+                ".xlsx",
+                report_id=cfg_id,
+                purge_same_report=not report2_period,
+            )
             if cfg_id == "28":
                 _purge_same_report_files(_output_folder(summary_date), cfg_id, ext=".pdf")
             local_logs.append(f"[{cfg.title}] XLSX: {saved_xlsx.name}")

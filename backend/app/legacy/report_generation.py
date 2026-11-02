@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -892,6 +892,57 @@ def _build_report2_period_window_iso(
         return start, end
     we = we + timedelta(days=1)
     return start, we.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+REPORT2_PERIOD_SCRIPT = "2_main_period.py"
+
+
+def _report2_group_env_key(group_name: str, suffix: str) -> str:
+    """Тот же ключ, что season_unified.group_env_key: SVODKI_GRP_<группа>_<suffix>."""
+    slug = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", str(group_name or "").strip()).strip("_")[:96]
+    return f"SVODKI_GRP_{slug}_{suffix}"
+
+
+def _apply_report2_selection_env(
+    env: dict[str, str],
+    groups: list[str] | None,
+    seasons: dict | None,
+) -> None:
+    """Разовый выбор операций и сезонов сводки 2. Редактор планов не меняется."""
+    names = [str(name).strip() for name in (groups or []) if str(name).strip()]
+    if names:
+        env["SVODKI_REPORT2_GROUPS"] = "|".join(names)
+    cleaned: dict[str, list[int]] = {}
+    for name, raw_years in (seasons or {}).items():
+        group = str(name).strip()
+        if not group:
+            continue
+        years: list[int] = []
+        items = raw_years if isinstance(raw_years, (list, tuple, set)) else [raw_years]
+        for item in items:
+            try:
+                year = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 1990 <= year <= 2100:
+                years.append(year)
+        years = sorted(set(years))
+        if years:
+            cleaned[group] = years
+    if not cleaned:
+        return
+    env["SVODKI_FORCE_GROUP_SEASONS"] = "1"
+    for group, years in cleaned.items():
+        text = ",".join(str(year) for year in years)
+        env[_report2_group_env_key(group, "HISTORY_YEARS")] = text
+        env[_report2_group_env_key(group, "TASK_SEASON_YEARS")] = text
+
+
+def _report2_period_storage_title(base_title: str, date_from: date, date_to: date) -> str:
+    suffix = f" с {date_from.strftime('%d.%m.%Y')} по {date_to.strftime('%d.%m.%Y')}"
+    if suffix in base_title:
+        return base_title
+    return f"{base_title}{suffix}"
 
 
 def _parse_report_window_for_iso(raw: str) -> datetime | None:
@@ -3241,6 +3292,8 @@ def _run_report_script(
     report2_time_from: str | None = None,
     report2_date_from: date | None = None,
     report2_date_to: date | None = None,
+    report2_groups: list[str] | None = None,
+    report2_seasons: dict | None = None,
     report27_cutoff: str | None = None,
     report27_time_from: str | None = None,
     report27_date_from: date | None = None,
@@ -3253,6 +3306,14 @@ def _run_report_script(
     r23_work_data_bundle_path: Path | None = None,
     r23_auto_report2: bool = False,
 ) -> tuple[Path, str]:
+    report2_date_from = _coerce_optional_date(report2_date_from)
+    report2_date_to = _coerce_optional_date(report2_date_to)
+    if (
+        _cfg_id_norm(cfg) == "2"
+        and report2_date_from is not None
+        and report2_date_to is not None
+    ):
+        cfg = replace(cfg, script=REPORT2_PERIOD_SCRIPT)
     script_dir = cfg.script_dir
     script_path = script_dir / cfg.script
     if not script_path.exists():
@@ -3307,6 +3368,14 @@ def _run_report_script(
         env["SVODKI_COMBINE_SEASON_START"] = _harvest_iso
         env["SVODKI_SEASON_START_DATE"] = _harvest_iso
         env["SEASON_START_DATE"] = _harvest_iso
+    env.pop("SVODKI_FORCE_GROUP_SEASONS", None)
+    env.pop("SVODKI_REPORT2_GROUPS", None)
+    env.pop("SVODKI_REPORT2_EXCEL_PERIOD_ALL", None)
+    report2_date_from = _coerce_optional_date(report2_date_from)
+    report2_date_to = _coerce_optional_date(report2_date_to)
+    if cfg_id == "2" and report2_date_from is not None and report2_date_to is not None:
+        _apply_report2_selection_env(env, report2_groups, report2_seasons)
+        env["SVODKI_REPORT2_EXCEL_PERIOD_ALL"] = "1"
     # Не использовать унаследованный SVODKI_API_CACHE_PATH из процесса web: иначе
     # возможен «липкий» снимок с прошлых запусков/другой даты.
     env.pop(API_SNAPSHOT_ENV_VAR, None)
@@ -3352,7 +3421,8 @@ def _run_report_script(
     if r25_mode:
         env[REPORT25_MODE_ENV] = r25_mode
     donor_bundle = r23_work_data_from_report2_bundle_path(report_date)
-    if cfg_id == "2":
+    report2_period = cfg_id == "2" and report2_date_from is not None and report2_date_to is not None
+    if cfg_id == "2" and not report2_period:
         env[R23_WORK_DATA_BUNDLE_OUT_ENV] = str(donor_bundle)
         if r23_auto_report2:
             env[R23_BUNDLE_ONLY_ENV] = "1"
@@ -3736,9 +3806,12 @@ def _resolve_storage_title(
             base_title, r22_cutoff, r22_time_from, r22_date_from, r22_date_to
         )
     elif cfg_id == "2" and (r2_cutoff or r2_time_from or r2_date_from or r2_date_to):
-        storage_title = _report22_storage_title(
-            base_title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
-        )
+        if r2_date_from and r2_date_to:
+            storage_title = _report2_period_storage_title(base_title, r2_date_from, r2_date_to)
+        else:
+            storage_title = _report22_storage_title(
+                base_title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
+            )
     elif _is_report27_family(cfg_id) and (r27_cutoff or r27_time_from or r27_date_from or r27_date_to):
         storage_title = _report22_storage_title(
             base_title, r27_cutoff, r27_time_from, r27_date_from, r27_date_to

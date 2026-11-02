@@ -72,6 +72,7 @@ export default function AppShell({
   cropwise = null,
   equipment = null,
   dataErrors = null,
+  report2Period = null,
   onCookieOpen = null,
   onNamolotOpen = null,
   onFieldOwnershipOpen = null,
@@ -240,25 +241,27 @@ export default function AppShell({
                       ) : null}
                     </Stack>
                   ) : null}
-                  {equipment ? (
+                  {equipment || dataErrors || report2Period ? (
                     <Stack spacing={0.5} alignItems="stretch">
-                      <Tooltip title={equipment.caption}>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={equipment.onClick}
-                          sx={{
-                            minWidth: 0,
-                            px: 1,
-                            py: 0.2,
-                            fontSize: "0.75rem",
-                            lineHeight: 1.5,
-                            textTransform: "none",
-                          }}
-                        >
-                          Оборудование
-                        </Button>
-                      </Tooltip>
+                      {equipment ? (
+                        <Tooltip title={equipment.caption}>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={equipment.onClick}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Оборудование
+                          </Button>
+                        </Tooltip>
+                      ) : null}
                       {dataErrors ? (
                         <Tooltip title={dataErrors.active ? "Ошибки данных включены" : "Показать ошибки данных в сводках"}>
                           <Button
@@ -276,6 +279,25 @@ export default function AppShell({
                             }}
                           >
                             Ошибки
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                      {report2Period ? (
+                        <Tooltip title="Сводка 2 за период: даты, агрооперации и сезоны">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={report2Period.onOpen}
+                            sx={{
+                              minWidth: 0,
+                              px: 1,
+                              py: 0.2,
+                              fontSize: "0.75rem",
+                              lineHeight: 1.5,
+                              textTransform: "none",
+                            }}
+                          >
+                            Сводка 2
                           </Button>
                         </Tooltip>
                       ) : null}
