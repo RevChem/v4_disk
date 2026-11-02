@@ -567,7 +567,8 @@ export default function DashboardPage({
     setError("");
     setInfo("");
     try {
-      const res = await generateReports(to, ["2"], {
+      const panelDate = summaryDate || todayIso();
+      const res = await generateReports(panelDate, ["2"], {
         report2DateFrom: from,
         report2TimeFrom: startTime,
         report2DateTo: to,
@@ -577,12 +578,12 @@ export default function DashboardPage({
       });
       const fromLabel = fromDt.format("DD.MM.YYYY");
       const toLabel = toDt.format("DD.MM.YYYY");
+      const panelLabel = dayjs(panelDate).format("DD.MM.YYYY");
       setInfo(
         `Сводка 2 с ${fromLabel} ${startTime} по ${toLabel} ${endTime} поставлена в очередь ` +
-          `(${res.job_id?.slice(0, 8) || "—"}…). Файл появится на ${toLabel}, кнопка «Скачать Excel».`
+          `(${res.job_id?.slice(0, 8) || "—"}…). Excel появится на панели за ${panelLabel}.`
       );
       setReport2PeriodOpen(false);
-      setSummaryDate(to);
       onGenerationQueued?.();
     } catch (e) {
       const msg = String(e.message || e || "Не удалось поставить сводку 2 в очередь.");
