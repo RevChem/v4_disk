@@ -379,6 +379,22 @@ def _last_shift_date_before(window_end: datetime, day_start_hour: int = 6) -> da
     return _shift_date_from_dt(window_end - timedelta(seconds=1), day_start_hour)
 
 
+def _clip_task_fetch_window(season_start_str: str, cutoff_dt: datetime) -> tuple[str, datetime]:
+    """Задания вне выбранного окна не выгружаем.
+
+    Иначе закрытые до начала периода смены попадают в запасной список
+    и их covered_area целиком садится на дату отчёта.
+    """
+    if CUSTOM_WINDOW_START is None or CUSTOM_WINDOW_END is None:
+        return season_start_str, cutoff_dt
+    start = parse_dt(season_start_str)
+    if start is None or start < CUSTOM_WINDOW_START:
+        season_start_str = CUSTOM_WINDOW_START.strftime("%Y-%m-%dT%H:%M:%S")
+    if cutoff_dt > CUSTOM_WINDOW_END:
+        cutoff_dt = CUSTOM_WINDOW_END
+    return season_start_str, cutoff_dt
+
+
 def _date_in_period_total(d: date) -> bool:
     """День входит в «Выполнено»: выбранное окно, иначе все смены до даты отчёта."""
     if CUSTOM_SHIFT_DATE_MIN is not None and CUSTOM_SHIFT_DATE_MAX is not None:
@@ -2738,6 +2754,7 @@ def _prepare_group_selection(
             )
             season_start_str = season_start_dt.strftime("%Y-%m-%dT%H:%M:%S")
             cutoff_dt = report_day_cutoff + timedelta(days=1)
+        season_start_str, cutoff_dt = _clip_task_fetch_window(season_start_str, cutoff_dt)
         print(
             f"    период группы: {group_period_start}–{group_period_end} "
             f"(tasks from {season_start_str[:10]})"
@@ -2793,7 +2810,12 @@ def _prepare_group_selection(
                     filtered_tasks.append(t)
                     harvest_late += 1
                     continue
-            no_shift_tasks.append(t)   # не выбрасываем, берём covered_area напрямую
+            if CUSTOM_WINDOW_START is not None and parse_dt(t.get("end_time")) is not None:
+                # Смена известна и она вне окна. В ежедневной сводке такое
+                # задание ещё может сесть на TODAY; здесь это прибавляло бы
+                # к «Выполнено» гектары до выбранной даты (боронование 77267).
+                continue
+            no_shift_tasks.append(t)   # нет end_time — covered_area, как в ежедневной сводке
         all_tasks = filtered_tasks
         if is_harvest_grain and harvest_late:
             print(
@@ -4228,6 +4250,12 @@ def write_report_sheet(
         row += 1
 
         season_y = season_label_for_group(group_name, TODAY)
+        range_note = ""
+        if CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None:
+            range_note = (
+                f"Диапазон: {CUSTOM_WINDOW_START.strftime('%d.%m.%Y %H:%M')}"
+                f" — {CUSTOM_WINDOW_END.strftime('%d.%m.%Y %H:%M')}"
+            )
         _merge_row_bar(
             ws, row, 1, 3, f"Сезон: {season_y}", s,
             fill=s["fill_season"],
@@ -4235,7 +4263,7 @@ def write_report_sheet(
             align=s["align_l"],
         )
         _merge_row_bar(
-            ws, row, 4, n_cols, "", s,
+            ws, row, 4, n_cols, range_note, s,
             fill=s["fill_season"],
             font=s["font_season"],
             align=s["align_l"],
@@ -4251,7 +4279,7 @@ def write_report_sheet(
             "Культура",
             "Площадь культуры\nучётная, га",
             "План",
-            "Выполнено работ\nв Га",
+            "Выполнено за диапазон",
             "в %",
         ]
         for ci, col_name in enumerate(headers_crops, start=1):
@@ -4435,7 +4463,7 @@ def write_report_sheet(
         ws.row_dimensions[row].height = 18
         row += 1
 
-        headers_svod = ["Агрофирма", "План, га", "Выполнено, га", "%"]
+        headers_svod = ["Агрофирма", "План, га", "Выполнено за диапазон", "%"]
         for ci, col_name in enumerate(headers_svod, start=1):
             c = ws.cell(row=row, column=ci, value=col_name)
             sc(c, s, fill=s["fill_hdr"], font=s["font_hdr"], align=s["align_hdr"])
@@ -4670,7 +4698,7 @@ def write_report_sheet(
         # Ширина колонок
         # Поджимаем "Агрофирма" для более компактной пропорции шапки.
         # Колонки: Агрофирма, Культура, Площадь культуры, План, Выполнено, %
-        widths = [20, 26, 26, 11, 18, 10] if excel_period else [18, 24, 20, 9, 15, 9]
+        widths = [20, 26, 26, 11, 26, 10] if excel_period else [18, 24, 20, 9, 15, 9]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
         date_col_w = 14 if excel_period else 12
