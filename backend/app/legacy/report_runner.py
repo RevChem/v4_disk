@@ -418,7 +418,7 @@ def _execute_single_report_to_disk(
         saved_pdf: Path | None = None
         saved_xlsx: Path | None = None
         if excel_only:
-            if " (Excel)" not in storage_title:
+            if not report2_period and " (Excel)" not in storage_title:
                 storage_title = f"{storage_title} (Excel)"
             local_logs.append(f"[{cfg.title}] Сохраняем только Excel, без PDF.")
             saved_xlsx = _save_artifact(
@@ -1140,6 +1140,10 @@ def _display_title_from_filename(filename: str, summary_date: date | None = None
         stem = stem.split("_", 1)[1]
     if stem.lower().endswith(".pdf"):
         stem = stem[:-4]
+    elif stem.lower().endswith(".xlsx"):
+        stem = stem[:-5]
+    if "excel" in stem.casefold():
+        return stem
     rid = _report_id_from_title(stem)
     if rid:
         short = _artifact_title_for_report_id(rid, f"{rid}.Сводка")
@@ -1179,6 +1183,7 @@ def list_generated_files(summary_date: date) -> list[dict[str, str]]:
         if rid == "28":
             continue
         if suffix == ".xlsx":
+            visible_excel = "excel" in path.name.casefold()
             pdf_twins = [
                 p
                 for p in folder.iterdir()
@@ -1186,7 +1191,7 @@ def list_generated_files(summary_date: date) -> list[dict[str, str]]:
                 and p.suffix.lower() == ".pdf"
                 and _report_id_from_filename(p.name) == rid
             ]
-            if pdf_twins and not _is_report27_family(rid or ""):
+            if pdf_twins and not visible_excel and not _is_report27_family(rid or ""):
                 continue
         stat = path.stat()
         row = {

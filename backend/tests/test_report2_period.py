@@ -84,7 +84,7 @@ def test_report2_env_key_matches_season_resolver():
 
 def test_report2_title_uses_full_dates():
     title = _report2_period_storage_title("2. Сводка ХК Детальная", date(2025, 2, 14), date(2026, 9, 24))
-    assert title == "2. Сводка ХК Детальная с 14.02.2025 по 24.09.2026"
+    assert title == "2.Сводка ХК Детальная excel с 14.02.2025 по 24.09.2026"
 
 
 def test_forced_seasons_beat_editor_file(tmp_path, monkeypatch):

@@ -939,10 +939,11 @@ def _apply_report2_selection_env(
 
 
 def _report2_period_storage_title(base_title: str, date_from: date, date_to: date) -> str:
-    suffix = f" с {date_from.strftime('%d.%m.%Y')} по {date_to.strftime('%d.%m.%Y')}"
-    if suffix in base_title:
-        return base_title
-    return f"{base_title}{suffix}"
+    """Как имя PDF сводки 2, со словом excel и границами периода."""
+    pattern = PDF_DOWNLOAD_BASENAMES.get("2") or base_title
+    return (
+        f"{pattern} excel с {date_from.strftime('%d.%m.%Y')} по {date_to.strftime('%d.%m.%Y')}"
+    )
 
 
 def _parse_report_window_for_iso(raw: str) -> datetime | None:
@@ -3807,11 +3808,10 @@ def _resolve_storage_title(
         )
     elif cfg_id == "2" and (r2_cutoff or r2_time_from or r2_date_from or r2_date_to):
         if r2_date_from and r2_date_to:
-            storage_title = _report2_period_storage_title(base_title, r2_date_from, r2_date_to)
-        else:
-            storage_title = _report22_storage_title(
-                base_title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
-            )
+            return _report2_period_storage_title(base_title, r2_date_from, r2_date_to)
+        storage_title = _report22_storage_title(
+            base_title, r2_cutoff, r2_time_from, r2_date_from, r2_date_to
+        )
     elif _is_report27_family(cfg_id) and (r27_cutoff or r27_time_from or r27_date_from or r27_date_to):
         storage_title = _report22_storage_title(
             base_title, r27_cutoff, r27_time_from, r27_date_from, r27_date_to

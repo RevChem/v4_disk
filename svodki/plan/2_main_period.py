@@ -3836,39 +3836,21 @@ def dates_with_activity_for_firm(gd: dict, firm: str) -> list[date]:
 
 
 def compute_display_dates(work_data: dict) -> list[date]:
+    """Все сменные дни выбранного периода, по колонке на каждый день.
+
+    Потолка компактной сводки (5 дней) и обрезки длинного периода здесь нет.
     """
-    Список дат для колонок Excel: не больше max_n последних дней.
-    Если only_nonempty: последние max_n дней среди дней с данными.
-    Иначе: последние max_n календарных дней до даты отчёта (без неё), не раньше START_DATE.
-    Excel за период: все сменные дни от даты начала до даты конца включительно.
-    """
-    if CUSTOM_SHIFT_DATE_MIN is not None and CUSTOM_SHIFT_DATE_MAX is not None:
-        lower = max(CUSTOM_SHIFT_DATE_MIN, START_DATE)
-        upper = CUSTOM_SHIFT_DATE_MAX
-        out: list[date] = []
-        d = lower
-        while d <= upper:
-            out.append(d)
-            d += timedelta(days=1)
-        if _parse_bool_env("SVODKI_REPORT2_EXCEL_PERIOD_ALL", False):
-            return out
-        period_cap = _parse_int_env("SVODKI_REPORT2_EXCEL_PERIOD_MAX_DAYS", 31, 1, 800)
-        if len(out) > period_cap:
-            out = out[-period_cap:]
-        return out
-    max_n = _parse_int_env("SVODKI_HK_COMPACT_MAX_DAYS", 5, 1, 31)
-    only_nonempty = _parse_bool_env("SVODKI_HK_COMPACT_ONLY_NONEMPTY", True)
-    if only_nonempty:
-        cand = dates_with_any_activity(work_data)
-        if len(cand) <= max_n:
-            return cand
-        return cand[-max_n:]
+    del work_data
+    if CUSTOM_SHIFT_DATE_MIN is None or CUSTOM_SHIFT_DATE_MAX is None:
+        raise RuntimeError(
+            "2_main_period.py: нет окна REPORT_WINDOW_START/END, "
+            "нельзя собрать колонки по всем дням."
+        )
     out: list[date] = []
-    d = TODAY - timedelta(days=1)
-    while len(out) < max_n and d >= START_DATE:
-        out.append(d)
-        d -= timedelta(days=1)
-    out.reverse()
+    day = CUSTOM_SHIFT_DATE_MIN
+    while day <= CUSTOM_SHIFT_DATE_MAX:
+        out.append(day)
+        day += timedelta(days=1)
     return out
 
 
@@ -4759,15 +4741,13 @@ def build_report() -> None:
         except Exception as exc:
             print(f"  [r23←2] Не удалось записать снимок для сводки 23: {exc}")
 
-    n_full = (TODAY - START_DATE).days + 1
-    max_n = _parse_int_env("SVODKI_HK_COMPACT_MAX_DAYS", 5, 1, 31)
-    only_n = _parse_bool_env("SVODKI_HK_COMPACT_ONLY_NONEMPTY", True)
     with_data_days = len(dates_with_any_activity(work_data))
     display_dates = compute_display_dates(work_data)
     print(
-        f"\nДней в календарном периоде: {n_full}; дней с данными (всего): {with_data_days}; "
-        f"макс. колонок с датами: {max_n}; только непустые дни: {only_n}; "
-        f"выведено колонок: {len(display_dates)}"
+        f"\nКолонок по дням: {len(display_dates)} "
+        f"({display_dates[0] if display_dates else '—'} — "
+        f"{display_dates[-1] if display_dates else '—'}); "
+        f"дней с данными: {with_data_days}"
     )
 
     wb = openpyxl.Workbook()
