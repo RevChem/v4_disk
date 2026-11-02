@@ -170,7 +170,7 @@ export default function Report2PeriodDialog({
         if (!generating) onClose?.();
       }}
       fullWidth
-      maxWidth="md"
+      maxWidth="xl"
     >
       <DialogTitle>Сводка 2 за период</DialogTitle>
       <DialogContent>
@@ -182,7 +182,7 @@ export default function Report2PeriodDialog({
             по 06:00 следующего дня после конца, только отмеченные агрооперации и их сезоны.
             PDF не создаётся — появится кнопка «Скачать Excel». Обычная сводка за дату не заменяется.
           </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 520 }}>
             <TextField
               label="С"
               type="date"
@@ -227,7 +227,18 @@ export default function Report2PeriodDialog({
               <CircularProgress size={28} />
             </Box>
           ) : (
-            <Stack spacing={1.25}>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: {
+                  xs: "1fr",
+                  sm: "repeat(2, minmax(0, 1fr))",
+                  lg: "repeat(5, minmax(0, 1fr))",
+                },
+                gap: 1.25,
+                alignItems: "start",
+              }}
+            >
               {REPORT2_GROUPS.map((name) => (
                 <Box
                   key={name}
@@ -272,7 +283,7 @@ export default function Report2PeriodDialog({
                   ) : null}
                 </Box>
               ))}
-            </Stack>
+            </Box>
           )}
         </Stack>
       </DialogContent>
