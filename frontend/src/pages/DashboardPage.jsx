@@ -530,9 +530,10 @@ export default function DashboardPage({
     }
   }
 
-  async function handleGenerateReport2Period({ dateFrom, dateTo, groups, seasons }) {
+  async function handleGenerateReport2Period({ dateFrom, timeFrom, dateTo, groups, seasons }) {
     const from = String(dateFrom || "").trim();
     const to = String(dateTo || "").trim();
+    const startTime = String(timeFrom || "06:00").trim();
     const fromDt = dayjs(from);
     const toDt = dayjs(to);
     if (!fromDt.isValid() || !toDt.isValid()) {
@@ -541,6 +542,10 @@ export default function DashboardPage({
     }
     if (fromDt.isAfter(toDt)) {
       setReport2PeriodError("Начало периода должно быть не позже конца.");
+      return;
+    }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) {
+      setReport2PeriodError("Время начала укажите как ЧЧ:ММ.");
       return;
     }
     if (toDt.diff(fromDt, "day") > 800) {
@@ -563,6 +568,7 @@ export default function DashboardPage({
     try {
       const res = await generateReports(to, ["2"], {
         report2DateFrom: from,
+        report2TimeFrom: startTime,
         report2DateTo: to,
         report2Groups: groups,
         report2Seasons: seasons,
@@ -570,7 +576,7 @@ export default function DashboardPage({
       const fromLabel = fromDt.format("DD.MM.YYYY");
       const toLabel = toDt.format("DD.MM.YYYY");
       setInfo(
-        `Сводка 2 за ${fromLabel}–${toLabel} поставлена в очередь ` +
+        `Сводка 2 с ${fromLabel} ${startTime} по ${toLabel} поставлена в очередь ` +
           `(${res.job_id?.slice(0, 8) || "—"}…). Файл появится на ${toLabel}, кнопка «Скачать Excel».`
       );
       setReport2PeriodOpen(false);

@@ -2,7 +2,8 @@
 Сводка 2 за выбранный период. Основа — 2_main_ideal_compact.py, ежедневная сводка его не использует.
 
 Отличия этого запуска:
-- окно REPORT_WINDOW_START/END — все смены периода, не последние N дней;
+- колонки Excel — все дни REPORT_WINDOW_*, без потолка в 5 дней;
+- «Выполнено» — весь выбранный сезон до даты отчёта, как в ежедневной сводке 2;
 - SVODKI_REPORT2_GROUPS — только отмеченные агрооперации;
 - SVODKI_FORCE_GROUP_SEASONS — сезоны этого запуска, без правки редактора планов.
 """
@@ -383,6 +384,51 @@ def _shift_overlaps_window(day_start: datetime, cutoff: datetime) -> bool:
     return day_start < CUSTOM_WINDOW_END and cutoff > CUSTOM_WINDOW_START
 
 
+def _shift_cut_by_window(day_start: datetime, cutoff: datetime) -> bool:
+    """Смена пересекает границу времени начала или конца, но не лежит в окне целиком."""
+    if not _shift_overlaps_window(day_start, cutoff):
+        return False
+    if CUSTOM_WINDOW_START is None or CUSTOM_WINDOW_END is None:
+        return False
+    return CUSTOM_WINDOW_START > day_start or CUSTOM_WINDOW_END < cutoff
+
+
+def _item_cov_like_daily(
+    item: dict,
+    day_start: datetime,
+    cutoff: datetime,
+    hourly_cutoff: datetime,
+    *,
+    use_report3: bool,
+    use_boron: bool,
+) -> float:
+    """Площадь строки как в ежедневной сводке 2.
+
+    Полная смена: все hourly до конца смены, без нижней границы day_start.
+    У удобрений нет отката на covered_area, если почасовых нет.
+    Только смена, разрезанная временем начала, берёт пересечение с окном.
+    """
+    if use_boron:
+        return float(item.get("covered_area") or 0)
+    if _shift_cut_by_window(day_start, cutoff):
+        clipped = _cov_from_hourly(item, day_start, cutoff)
+        hourly = item.get("covered_area_hourly") or []
+        if clipped > 0 or hourly:
+            return clipped
+        if not use_report3:
+            return float(item.get("covered_area") or 0)
+        return 0.0
+    hourly = item.get("covered_area_hourly") or []
+    cov = 0.0
+    for entry in hourly:
+        h = parse_dt(entry[0])
+        if h and h < hourly_cutoff:
+            cov += float(entry[1] or 0)
+    if not hourly and not use_report3:
+        cov = float(item.get("covered_area") or 0)
+    return float(cov or 0)
+
+
 def _init_custom_window() -> None:
     global CUSTOM_WINDOW_START, CUSTOM_WINDOW_END, CUSTOM_SHIFT_DATE_MIN, CUSTOM_SHIFT_DATE_MAX
     global TODAY, OUTPUT_FILE, START_DATE
@@ -403,10 +449,8 @@ def _init_custom_window() -> None:
             f"Неверное окно сводки 2: нет ни одной смены между "
             f"{REPORT_WINDOW_START_RAW} и {REPORT_WINDOW_END_RAW}"
         )
-    # cal_date < TODAY: включаем смены до CUSTOM_SHIFT_DATE_MAX включительно
-    TODAY = CUSTOM_SHIFT_DATE_MAX + timedelta(days=1)
-    if CUSTOM_SHIFT_DATE_MIN < START_DATE:
-        START_DATE = CUSTOM_SHIFT_DATE_MIN
+    # TODAY и START_DATE остаются как у ежедневной сводки (REPORT_DATE).
+    # Иначе «Выполнено» за сезон обрезается концом колонок.
     OUTPUT_FILE = (
         f"2. ХК Детальная за {CUSTOM_SHIFT_DATE_MIN.strftime('%d.%m.%Y')}"
         f"—{CUSTOM_SHIFT_DATE_MAX.strftime('%d.%m.%Y')}.xlsx"
@@ -2540,8 +2584,7 @@ def _prepare_group_selection(
             pe = period_end if period_end is not None else TODAY
             if not (period_start <= cal_date <= pe):
                 return None
-        if not _shift_overlaps_window(day_start, cutoff):
-            return None
+        # Смены сезона вне колонок периода остаются в «Выполнено».
         return cal_date, day_start, cutoff
 
     with _stage("задания: индекс machine_tasks (prefetch/live)"):
@@ -2643,9 +2686,6 @@ def _prepare_group_selection(
         # смены до даты отчёта. Иначе «только 2026» в сентябре даёт нули.
         if not own_ranges:
             group_period_end = fact_window_end(group_period_end, TODAY)
-        if CUSTOM_SHIFT_DATE_MIN is not None and CUSTOM_SHIFT_DATE_MAX is not None:
-            group_period_start = min(group_period_start, CUSTOM_SHIFT_DATE_MIN)
-            group_period_end = max(group_period_end, CUSTOM_SHIFT_DATE_MAX)
         # Дискование — площадь как в сводках 1 и 7: без is_skip_crop, только поля с культурой в сезоне.
         use_report17_area_logic = group_name == DISK_GROUP_NAME
         # Запрашиваем с запасом: от START_DATE 06:00 до (TODAY+1) 06:00
@@ -2654,10 +2694,7 @@ def _prepare_group_selection(
             TODAY.year, TODAY.month, TODAY.day,
             DAY_START_HOUR, 0, 0, tzinfo=TZ_MSK,
         )
-        if CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None:
-            season_start_str = CUSTOM_WINDOW_START.strftime("%Y-%m-%dT%H:%M:%S")
-            cutoff_dt = CUSTOM_WINDOW_END
-        elif use_report4_boron_logic:
+        if use_report4_boron_logic:
             # Боронование: с 01.01 года отчёта, либо period_start из редактора.
             if resolve_group_season_config(group_name, TODAY).get("history_years"):
                 season_start_str = f"{group_period_start.strftime('%Y-%m-%d')}T00:00:00"
@@ -3355,11 +3392,15 @@ def collect_work_data(
                             active_firm_map, field_to_firm_all, active_available_ids,
                         ) or ""
 
+                    spray_start, spray_cutoff = day_start, cutoff
+                    if _shift_cut_by_window(day_start, cutoff):
+                        spray_start = max(day_start, CUSTOM_WINDOW_START)
+                        spray_cutoff = min(cutoff, CUSTOM_WINDOW_END)
                     firm_cov = task_cov_by_firm(
                         task,
                         items,
-                        cutoff=cutoff,
-                        window_start=day_start,
+                        cutoff=spray_cutoff,
+                        window_start=spray_start,
                         field_ok=_spray_field_ok,
                         firm_for_field=_spray_firm_for_field,
                         parse_dt=parse_dt,
@@ -3374,8 +3415,8 @@ def collect_work_data(
                             items,
                             firm_s,
                             cov_for_firm,
-                            cutoff=cutoff,
-                            window_start=day_start,
+                            cutoff=spray_cutoff,
+                            window_start=spray_start,
                             field_ok=_spray_field_ok,
                             firm_for_field=_spray_firm_for_field,
                             crop_for_field=lambda fid: _crop_for_task_field(tid, fid, "Не определена"),
@@ -3513,20 +3554,14 @@ def collect_work_data(
                             )
                         continue
 
-                    if use_report4_boron_logic:
-                        # Как 4_main_fixed (сезонный проход): covered_area, не hourly.
-                        cov = float(item.get("covered_area") or 0)
-                    elif CUSTOM_WINDOW_START is not None and CUSTOM_WINDOW_END is not None:
-                        cov = _cov_from_hourly(item, day_start, cutoff)
-                    else:
-                        hourly = item.get("covered_area_hourly") or []
-                        cov = 0.0
-                        for entry in hourly:
-                            h = parse_dt(entry[0])
-                            if h and h < hourly_cutoff:
-                                cov += entry[1] or 0
-                        if not hourly and not use_report3_coverage_logic:
-                            cov = item.get("covered_area") or 0
+                    cov = _item_cov_like_daily(
+                        item,
+                        day_start,
+                        cutoff,
+                        hourly_cutoff,
+                        use_report3=use_report3_coverage_logic,
+                        use_boron=use_report4_boron_logic,
+                    )
 
                     if cov <= 0:
                         continue
@@ -3773,14 +3808,7 @@ def collect_work_data(
             for crop, by_date in agg.get(firm, {}).items():
                 fields_set = firm_crop_fields[firm][crop]
                 area_ha    = sum(field_area.get(fid, 0) for fid in fields_set)
-                if CUSTOM_SHIFT_DATE_MIN is not None and CUSTOM_SHIFT_DATE_MAX is not None:
-                    total_ha = sum(
-                        v
-                        for d, v in by_date.items()
-                        if CUSTOM_SHIFT_DATE_MIN <= d <= CUSTOM_SHIFT_DATE_MAX
-                    )
-                else:
-                    total_ha = sum(v for d, v in by_date.items() if d < TODAY)
+                total_ha = sum(v for d, v in by_date.items() if d < TODAY)
                 crop_digits = 2 if _is_harvest_veg_group(group_name) else 1
                 data[group_name]["crops"][firm][crop] = {
                     "area_ha":  round(area_ha, 1),
@@ -4649,8 +4677,9 @@ def build_report() -> None:
             f"{CUSTOM_WINDOW_END.strftime('%d.%m.%Y %H:%M')}"
         )
         print(
-            f"Сменные дни в отчёте: {CUSTOM_SHIFT_DATE_MIN.strftime('%d.%m.%Y')} — "
-            f"{CUSTOM_SHIFT_DATE_MAX.strftime('%d.%m.%Y')}"
+            f"Колонки: {CUSTOM_SHIFT_DATE_MIN.strftime('%d.%m.%Y')} — "
+            f"{CUSTOM_SHIFT_DATE_MAX.strftime('%d.%m.%Y')}; "
+            f"«Выполнено» — сезон до {TODAY.strftime('%d.%m.%Y')}, как в ежедневной сводке"
         )
     print(f"Сводка 2, правка 5.4: {SVODKA2_VEG54_FIX}")
     print(f"Сводка 2, уборка как 10_main: {SVODKA2_HARVEST10_FIX}")

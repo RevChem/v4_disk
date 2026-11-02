@@ -44,6 +44,14 @@ def test_report2_period_options_keep_groups_and_seasons():
     assert opts["report2_date_to"] == "2026-09-24"
     assert opts["report2_time_from"] == "06:00"
     assert opts["report2_cutoff"] == "06:00"
+    timed = _body(
+        report2_date_from=date(2025, 2, 14),
+        report2_date_to=date(2026, 9, 24),
+        report2_time_from="08:30",
+        report2_groups=["1.1 Внесение минеральных удобрений"],
+        report2_seasons={"1.1 Внесение минеральных удобрений": [2027]},
+    ).generation_job_options()
+    assert timed["report2_time_from"] == "08:30"
     assert opts["report2_groups"] == ["2.4 Вспашка", "4.0 Посев"]
     assert opts["report2_seasons"]["2.4 Вспашка"] == [2025, 2026]
     assert opts["report2_seasons"]["4.0 Посев"] == [2026]
@@ -74,6 +82,11 @@ def test_report2_window_includes_last_shift_day():
     )
     assert start == "2025-02-14T06:00:00"
     assert end == "2026-09-25T06:00:00"
+    start_late, end_late = _build_report2_period_window_iso(
+        date(2025, 2, 14), "08:30", date(2026, 9, 24), "06:00",
+    )
+    assert start_late == "2025-02-14T08:30:00"
+    assert end_late == "2026-09-25T06:00:00"
 
 
 def test_report2_env_key_matches_season_resolver():

@@ -80,6 +80,7 @@ export default function Report2PeriodDialog({
   error,
 }) {
   const [dateFrom, setDateFrom] = useState("");
+  const [timeFrom, setTimeFrom] = useState("06:00");
   const [dateTo, setDateTo] = useState("");
   const [enabled, setEnabled] = useState(() => Object.fromEntries(REPORT2_GROUPS.map((name) => [name, true])));
   const [seasons, setSeasons] = useState({});
@@ -95,6 +96,7 @@ export default function Report2PeriodDialog({
       : endDate.subtract(1, "year").month(1).date(14).format("YYYY-MM-DD");
     const initialFrom = dayjs(start).isAfter(endDate) ? end : start;
     setDateFrom(initialFrom);
+    setTimeFrom("06:00");
     setDateTo(end);
     setLoadError("");
     setEnabled(Object.fromEntries(REPORT2_GROUPS.map((name) => [name, true])));
@@ -157,6 +159,7 @@ export default function Report2PeriodDialog({
     }
     onSubmit?.({
       dateFrom,
+      timeFrom: timeFrom || "06:00",
       dateTo,
       groups: selectedNames,
       seasons: seasonsPayload,
@@ -178,11 +181,11 @@ export default function Report2PeriodDialog({
           {error ? <Alert severity="error">{error}</Alert> : null}
           {loadError ? <Alert severity="warning">{loadError}. Сезоны можно отметить вручную.</Alert> : null}
           <Typography variant="body2" color="text.secondary">
-            Разовая сводка 2 за выбранные дни. В файл попадают смены с 06:00 первого дня
-            по 06:00 следующего дня после конца, только отмеченные агрооперации и их сезоны.
-            PDF не создаётся — появится кнопка «Скачать Excel». Обычная сводка за дату не заменяется.
+            Колонки — каждый день с указанного времени первого дня до конца последнего.
+            «Выполнено» считается как в обычной сводке 2 на дату конца: весь отмеченный сезон,
+            а не только видимые дни. PDF не создаётся. Обычная сводка за дату не заменяется.
           </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 520 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 720 }}>
             <TextField
               label="С"
               type="date"
@@ -190,6 +193,16 @@ export default function Report2PeriodDialog({
               onChange={(e) => setDateFrom(e.target.value)}
               InputLabelProps={{ shrink: true }}
               fullWidth
+              size="small"
+              disabled={generating}
+            />
+            <TextField
+              label="Время начала"
+              type="time"
+              value={timeFrom}
+              onChange={(e) => setTimeFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ maxWidth: { sm: 160 } }}
               size="small"
               disabled={generating}
             />

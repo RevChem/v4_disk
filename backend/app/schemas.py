@@ -1,6 +1,7 @@
 """Схемы API: редактор планов и генерация отчётов."""
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Literal
 
@@ -47,6 +48,10 @@ class GenerateReportsIn(BaseModel):
     report27_date_to: date | None = Field(default=None, description="Только для сводки 27: дата конца окна.")
     report2_date_from: date | None = Field(default=None, description="Сводка 2 за период: первый день.")
     report2_date_to: date | None = Field(default=None, description="Сводка 2 за период: последний день.")
+    report2_time_from: str | None = Field(
+        default=None,
+        description="Сводка 2 за период: время начала первой смены, HH:MM. Пусто — 06:00.",
+    )
     report2_groups: list[str] | None = Field(default=None, description="Агрооперации сводки 2, которые попадут в файл.")
     report2_seasons: dict[str, list[int]] | None = Field(
         default=None,
@@ -95,6 +100,7 @@ class GenerateReportsIn(BaseModel):
             (
                 self.report2_date_from,
                 self.report2_date_to,
+                self.report2_time_from,
                 self.report2_groups,
                 self.report2_seasons,
             )
@@ -131,10 +137,13 @@ class GenerateReportsIn(BaseModel):
             if not years:
                 raise ValueError(f"Для «{name}» выберите хотя бы один сезон.")
             seasons[name] = years
+        time_from = str(self.report2_time_from or "06:00").strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", time_from):
+            raise ValueError("Время начала сводки 2 укажите как ЧЧ:ММ.")
         return {
             "report2_date_from": self.report2_date_from.isoformat(),
             "report2_date_to": self.report2_date_to.isoformat(),
-            "report2_time_from": "06:00",
+            "report2_time_from": time_from,
             "report2_cutoff": "06:00",
             "report2_groups": groups,
             "report2_seasons": seasons,
