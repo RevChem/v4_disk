@@ -3,7 +3,8 @@
 
 Отличия этого запуска:
 - колонки Excel — все дни REPORT_WINDOW_*, без потолка в 5 дней;
-- «Выполнено» — весь выбранный сезон до даты отчёта, как в ежедневной сводке 2;
+- «Выполнено» — те же дни и то же правило площади, что у ежедневной сводки,
+  но только смены внутри выбранного окна;
 - SVODKI_REPORT2_GROUPS — только отмеченные агрооперации;
 - SVODKI_FORCE_GROUP_SEASONS — сезоны этого запуска, без правки редактора планов.
 """
@@ -376,6 +377,13 @@ def _last_shift_date_before(window_end: datetime, day_start_hour: int = 6) -> da
     else:
         window_end = window_end.astimezone(TZ_MSK)
     return _shift_date_from_dt(window_end - timedelta(seconds=1), day_start_hour)
+
+
+def _date_in_period_total(d: date) -> bool:
+    """День входит в «Выполнено»: выбранное окно, иначе все смены до даты отчёта."""
+    if CUSTOM_SHIFT_DATE_MIN is not None and CUSTOM_SHIFT_DATE_MAX is not None:
+        return CUSTOM_SHIFT_DATE_MIN <= d <= CUSTOM_SHIFT_DATE_MAX
+    return d < TODAY
 
 
 def _shift_overlaps_window(day_start: datetime, cutoff: datetime) -> bool:
@@ -2578,13 +2586,19 @@ def _prepare_group_selection(
             cutoff = cutoff + timedelta(days=1)
         day_start = cutoff - timedelta(days=1)
         if use_plan_today_bound:
-            if not (period_start <= cal_date < TODAY):
+            # Конец выбранного периода включает последнюю смену, даже если
+            # это сама дата отчёта (ежедневная сводка её ещё не закрыла).
+            upper = TODAY
+            if CUSTOM_SHIFT_DATE_MAX is not None:
+                upper = max(TODAY, CUSTOM_SHIFT_DATE_MAX + timedelta(days=1))
+            if not (period_start <= cal_date < upper):
                 return None
         else:
             pe = period_end if period_end is not None else TODAY
             if not (period_start <= cal_date <= pe):
                 return None
-        # Смены сезона вне колонок периода остаются в «Выполнено».
+        if not _shift_overlaps_window(day_start, cutoff):
+            return None
         return cal_date, day_start, cutoff
 
     with _stage("задания: индекс machine_tasks (prefetch/live)"):
@@ -3767,7 +3781,7 @@ def collect_work_data(
                 firm: sum(
                     area
                     for t_date, area in data[group_name]["area_by_firm_date"][firm].items()
-                    if t_date < TODAY
+                    if _date_in_period_total(t_date)
                 )
                 for firm in FIRM_ORDER
             }
@@ -3779,7 +3793,7 @@ def collect_work_data(
                 data[group_name]["area_by_firm_total"][firm] = sum(
                     area
                     for t_date, area in data[group_name]["area_by_firm_date"][firm].items()
-                    if t_date < TODAY
+                    if _date_in_period_total(t_date)
                 )
 
         data[group_name]["machine_day_area"] = {
@@ -3808,7 +3822,7 @@ def collect_work_data(
             for crop, by_date in agg.get(firm, {}).items():
                 fields_set = firm_crop_fields[firm][crop]
                 area_ha    = sum(field_area.get(fid, 0) for fid in fields_set)
-                total_ha = sum(v for d, v in by_date.items() if d < TODAY)
+                total_ha = sum(v for d, v in by_date.items() if _date_in_period_total(d))
                 crop_digits = 2 if _is_harvest_veg_group(group_name) else 1
                 data[group_name]["crops"][firm][crop] = {
                     "area_ha":  round(area_ha, 1),
@@ -4679,7 +4693,7 @@ def build_report() -> None:
         print(
             f"Колонки: {CUSTOM_SHIFT_DATE_MIN.strftime('%d.%m.%Y')} — "
             f"{CUSTOM_SHIFT_DATE_MAX.strftime('%d.%m.%Y')}; "
-            f"«Выполнено» — сезон до {TODAY.strftime('%d.%m.%Y')}, как в ежедневной сводке"
+            f"«Выполнено» — только эти смены, площадь как в ежедневной сводке"
         )
     print(f"Сводка 2, правка 5.4: {SVODKA2_VEG54_FIX}")
     print(f"Сводка 2, уборка как 10_main: {SVODKA2_HARVEST10_FIX}")

@@ -181,9 +181,9 @@ export default function Report2PeriodDialog({
           {error ? <Alert severity="error">{error}</Alert> : null}
           {loadError ? <Alert severity="warning">{loadError}. Сезоны можно отметить вручную.</Alert> : null}
           <Typography variant="body2" color="text.secondary">
-            Колонки — каждый день с указанного времени первого дня до конца последнего.
-            «Выполнено» считается как в обычной сводке 2 на дату конца: весь отмеченный сезон,
-            а не только видимые дни. PDF не создаётся. Обычная сводка за дату не заменяется.
+            Колонки и «Выполнено» — смены с указанного времени первого дня до конца последнего.
+            Площадь внутри смены считается как в обычной сводке 2. PDF не создаётся.
+            Обычная сводка за дату не заменяется.
           </Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ maxWidth: 720 }}>
             <TextField
