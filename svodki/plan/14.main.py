@@ -232,8 +232,10 @@ FORAGE_SECTION_CROPS: frozenset[str] = frozenset({
     "Кукуруза на силос",
     "Тритикале озимая",
 })
-# Задания скашивания кукурузы на силос (wt 74/83/84/147/149, в т.ч. «6.3 Скашивание с
-# измельчением кукурузы» = 84) в текущем прогоне: кукуруза в них всегда «на силос».
+# Задания скашивания (wt 74/83/84/147/149, в т.ч. «6.3 Скашивание с
+# измельчением кукурузы» = 84) в текущем прогоне. В площадь входят только
+# если культура — кукуруза (тогда «на силос»). Травы и прочие культуры
+# отсекаются, как в сводках 10, 11 и 13.
 _SILAGE_TASK_IDS: set[int] = set()
 
 # Овощной блок 14.2: только культуры группы «5.4 Уборка картофеля, лука».
@@ -2231,6 +2233,94 @@ async def _apply_fmi_history_and_agro_crops(
     return grain_crops, veg_crops
 
 
+def _fmi_row_crop(
+    row,
+    field_to_crop_general: dict,
+    task_crop_via_operation: dict | None,
+) -> str:
+    """Культура строки FMI: history_item, затем карта поля, затем AgroOperation."""
+    from mtfmi_batch_fetch import crop_of_item
+
+    hid = None
+    raw_hid = row.get("history_item_id")
+    if raw_hid is not None:
+        try:
+            if raw_hid == raw_hid:
+                hid = int(raw_hid)
+        except (TypeError, ValueError):
+            hid = None
+    if hid is not None:
+        named = crop_of_item({"history_item_id": hid}, "")
+        if named:
+            return named
+    fid = row.get("field_id")
+    crop = None
+    if field_to_crop_general and fid is not None:
+        crop = field_to_crop_general.get(fid)
+        if not crop:
+            try:
+                crop = field_to_crop_general.get(int(fid))
+            except (TypeError, ValueError):
+                crop = None
+    if crop:
+        return str(crop)
+    task_crop_via_operation = task_crop_via_operation or {}
+    tid = row.get("machine_task_id")
+    try:
+        tid_i = int(tid) if tid is not None and tid == tid else None
+    except (TypeError, ValueError):
+        tid_i = None
+    if tid_i is not None:
+        named = task_crop_via_operation.get(tid_i) or task_crop_via_operation.get(tid)
+        if named:
+            return str(named)
+    return "—"
+
+
+def _is_corn_crop(name: object) -> bool:
+    return "кукуруз" in str(name or "").casefold()
+
+
+def drop_non_corn_mowing(
+    fmi_list: list[dict],
+    field_to_crop_general: dict,
+    task_crop_via_operation: dict | None = None,
+) -> list[dict]:
+    """Скашивание остаётся в площади только у кукурузы.
+
+    Виды работ 74/83/84/147/149. Травы, прочие культуры и строка без культуры
+    не входят — та же отсечка, что в сводках 10, 11 и 13, до правил редактора.
+    """
+    if not fmi_list or not _SILAGE_TASK_IDS:
+        return fmi_list
+    kept: list[dict] = []
+    dropped_n = 0
+    dropped_ha = 0.0
+    for row in fmi_list:
+        tid = row.get("machine_task_id")
+        try:
+            mowing = int(tid) in _SILAGE_TASK_IDS
+        except (TypeError, ValueError):
+            mowing = False
+        if mowing and not _is_corn_crop(
+            _fmi_row_crop(row, field_to_crop_general, task_crop_via_operation)
+        ):
+            dropped_n += 1
+            try:
+                dropped_ha += float(row.get("covered_area") or 0)
+            except (TypeError, ValueError):
+                pass
+            continue
+        kept.append(row)
+    if dropped_n:
+        print(
+            f"  Скашивание не кукурузы исключено: {dropped_n} записей, "
+            f"{dropped_ha:.2f} га",
+            flush=True,
+        )
+    return kept
+
+
 def fetch_fmi(task_ids: set[int], report_date: date) -> list[dict]:
     """
     FMI пачками по machine_task_id (см. _fetch_fmi_batch_async) — вместо
@@ -2724,36 +2814,18 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
         if firm_fmi.empty:
             return pd.DataFrame(columns=OWN_COLUMNS), []
 
-    # Культура каждой FMI-записи: по полю (как 10_main_harvest), AgroOperation — запасной
-    # путь, если для field_id культуры нет. Раньше приоритет был у AgroOperation на всё
-    # задание — тогда одна культура «перекрывала» другое поле того же machine_task
-    # (в т.ч. ошибочная «Соя» с year+1).
-    if task_crop_via_operation or field_to_crop_general:
-        def _row_crop(r) -> str:
-            hid = None
-            if "history_item_id" in r.index and pd.notna(r["history_item_id"]):
-                try:
-                    hid = int(r["history_item_id"])
-                except (TypeError, ValueError):
-                    hid = None
-            if hid is not None:
-                from mtfmi_batch_fetch import crop_of_item
-
-                named = crop_of_item({"history_item_id": hid}, "")
-                if named:
-                    return named
-            crop = field_to_crop_general.get(r["field_id"])
-            if crop:
-                return crop
-            return task_crop_via_operation.get(r["machine_task_id"]) or "—"
-        firm_fmi = firm_fmi.copy()
-        firm_fmi["crop"] = firm_fmi.apply(_row_crop, axis=1)
-    else:
-        firm_fmi = firm_fmi.copy()
-        firm_fmi["crop"] = "—"
+    # Культура каждой FMI-записи: history_item, затем поле, затем AgroOperation.
+    # Раньше приоритет был у AgroOperation на всё задание — тогда одна культура
+    # «перекрывала» другое поле того же machine_task (в т.ч. ошибочная «Соя» с year+1).
+    firm_fmi = firm_fmi.copy()
+    firm_fmi["crop"] = firm_fmi.apply(
+        lambda r: _fmi_row_crop(r, field_to_crop_general, task_crop_via_operation),
+        axis=1,
+    )
 
     # Гектары — по заданию этих суток, не по карточке поля на сезон.
-    # «6.3 Скашивание» кукурузы даёт силос только у площади этого задания.
+    # Скашивание кукурузы даёт силос только у площади этого задания.
+    # Скашивание трав и прочих культур в площадь не входит (как 10/11/13).
     # «5.3 Уборка кукурузы на зерно» остаётся зерном, даже если на поле
     # есть запланированное скашивание. Тонны Namolot к силосу не переносятся:
     # масса ищется по подписи строки, а в 1С кукуруза только «на зерно».
@@ -2764,9 +2836,13 @@ def build_own_table(firm_folder_id: int, report_date: date, harvesters: list[dic
             return False
 
     _silage_mask = firm_fmi["machine_task_id"].map(_is_silage_task)
-    _is_corn = firm_fmi["crop"].map(lambda c: "кукуруз" in str(c).casefold())
-    _unknown = firm_fmi["crop"].map(lambda c: str(c).strip() in ("", "—"))
-    firm_fmi.loc[_silage_mask & (_is_corn | _unknown), "crop"] = CORN_SILAGE_CROP
+    _is_corn = firm_fmi["crop"].map(_is_corn_crop)
+    firm_fmi = firm_fmi.loc[~(_silage_mask & ~_is_corn)].copy()
+    if firm_fmi.empty:
+        return pd.DataFrame(columns=OWN_COLUMNS), []
+    _silage_mask = firm_fmi["machine_task_id"].map(_is_silage_task)
+    _is_corn = firm_fmi["crop"].map(_is_corn_crop)
+    firm_fmi.loc[_silage_mask & _is_corn, "crop"] = CORN_SILAGE_CROP
     firm_fmi.loc[~_silage_mask & _is_corn, "crop"] = CORN_GRAIN_CROP
 
     if allowed_crops is not None or excluded_crops is not None:
@@ -3264,6 +3340,10 @@ def main():
             f"{len(veg_task_crop_via_operation)} из {len(veg_task_ids)} заданий",
             flush=True,
         )
+
+    fmi_list = drop_non_corn_mowing(
+        fmi_list, field_to_crop_general, task_crop_via_operation,
+    )
 
     _step("данные загружены, переходим к построению отчётов")
 
