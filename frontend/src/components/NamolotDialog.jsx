@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -8,6 +8,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
+  MenuItem,
   Stack,
   Table,
   TableBody,
@@ -17,16 +19,23 @@ import {
   TableRow,
   TableSortLabel,
   TextField,
-  MenuItem,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
+import CloseFullscreenRoundedIcon from "@mui/icons-material/CloseFullscreenRounded";
+import OpenInFullRoundedIcon from "@mui/icons-material/OpenInFullRounded";
 
 import { downloadNamolotExcel, fetchNamolotSeason } from "../api";
 import { ColumnFilter, EMPTY_COLUMNS, applyColumnFilters, distinctColumnValues } from "./ColumnFilter";
 import { filterRows, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS as CROPS, NAMOLOT_FIRMS as FIRM_ORDER } from "../utils/namolotOptions";
+import { readView, useViewSnapshot } from "../utils/viewMemory";
+
+function isComputerFullscreen() {
+  return document.fullscreenElement === document.documentElement;
+}
 
 function fmtTonnes(value) {
   const n = Number(value);
@@ -48,59 +57,144 @@ function joinList(values) {
 
 export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappings = null }) {
   const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
-  const [rows, setRows] = useState([]);
-  const [windows, setWindows] = useState(null);
-  const [applied, setApplied] = useState(null);
-  const [loaded, setLoaded] = useState(false);
+  const bootRef = useRef(undefined);
+  if (bootRef.current === undefined) {
+    bootRef.current = readView(`namolot:${reportDate}`) || {};
+  }
+  const boot = bootRef.current;
+  const [rows, setRows] = useState(() => (Array.isArray(boot.rows) ? boot.rows : []));
+  const [windows, setWindows] = useState(boot.windows || null);
+  const [applied, setApplied] = useState(boot.applied ?? null);
+  const [loaded, setLoaded] = useState(Boolean(boot.loaded));
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [error, setError] = useState("");
-  const [firm, setFirm] = useState("");
-  const [crop, setCrop] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [timeFrom, setTimeFrom] = useState("06:00");
-  const [dateTo, setDateTo] = useState("");
-  const [timeTo, setTimeTo] = useState("05:59");
-  const [plate, setPlate] = useState("");
-  const [surname, setSurname] = useState("");
-  const [columns, setColumns] = useState(EMPTY_COLUMNS);
-  const [mode, setMode] = useState("rows");
-  const [sortKey, setSortKey] = useState("tonnes");
-  const [sortDir, setSortDir] = useState("desc");
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  const [error, setError] = useState(boot.error || "");
+  const [firm, setFirm] = useState(boot.firm || "");
+  const [crop, setCrop] = useState(boot.crop || "");
+  const [dateFrom, setDateFrom] = useState(boot.dateFrom || "");
+  const [timeFrom, setTimeFrom] = useState(boot.timeFrom ?? "06:00");
+  const [dateTo, setDateTo] = useState(boot.dateTo || "");
+  const [timeTo, setTimeTo] = useState(boot.timeTo ?? "05:59");
+  const [plate, setPlate] = useState(boot.plate || "");
+  const [surname, setSurname] = useState(boot.surname || "");
+  const [columns, setColumns] = useState(boot.columns || EMPTY_COLUMNS);
+  const [mode, setMode] = useState(boot.mode || "rows");
+  const [sortKey, setSortKey] = useState(boot.sortKey || "tonnes");
+  const [sortDir, setSortDir] = useState(boot.sortDir || "desc");
+  const [page, setPage] = useState(Number.isFinite(boot.page) ? boot.page : 0);
+  const [pageSize, setPageSize] = useState(boot.pageSize || 50);
+  const [fullScreen, setFullScreen] = useState(false);
+
+  function restore(saved) {
+    const data = saved || {};
+    setRows(Array.isArray(data.rows) ? data.rows : []);
+    setWindows(data.windows || null);
+    setApplied(data.applied ?? null);
+    setLoaded(Boolean(data.loaded));
+    setError(data.error || "");
+    setFirm(data.firm || "");
+    setCrop(data.crop || "");
+    setDateFrom(data.dateFrom || "");
+    setTimeFrom(data.timeFrom ?? "06:00");
+    setDateTo(data.dateTo || "");
+    setTimeTo(data.timeTo ?? "05:59");
+    setPlate(data.plate || "");
+    setSurname(data.surname || "");
+    setColumns(data.columns || EMPTY_COLUMNS);
+    setMode(data.mode || "rows");
+    setSortKey(data.sortKey || "tonnes");
+    setSortDir(data.sortDir || "desc");
+    setPage(Number.isFinite(data.page) ? data.page : 0);
+    setPageSize(data.pageSize || 50);
+  }
+
+  const memoryKey = `namolot:${reportDate}`;
+  const snapshot = useMemo(
+    () => ({
+      rows,
+      windows,
+      applied,
+      loaded,
+      error,
+      firm,
+      crop,
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      plate,
+      surname,
+      columns,
+      mode,
+      sortKey,
+      sortDir,
+      page,
+      pageSize,
+    }),
+    [
+      rows,
+      windows,
+      applied,
+      loaded,
+      error,
+      firm,
+      crop,
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      plate,
+      surname,
+      columns,
+      mode,
+      sortKey,
+      sortDir,
+      page,
+      pageSize,
+    ],
+  );
+  useViewSnapshot(memoryKey, snapshot, restore);
+
+  useEffect(() => {
+    const sync = () => setFullScreen(isComputerFullscreen());
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
 
   useEffect(() => {
     if (open) return undefined;
-    setFirm("");
-    setCrop("");
-    setDateFrom("");
-    setTimeFrom("06:00");
-    setDateTo("");
-    setTimeTo("05:59");
-    setPlate("");
-    setSurname("");
-    setColumns(EMPTY_COLUMNS);
-    setMode("rows");
-    setSortKey("tonnes");
-    setSortDir("desc");
-    setPage(0);
-    setRows([]);
-    setWindows(null);
-    setApplied(null);
-    setLoaded(false);
-    setError("");
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
     return undefined;
   }, [open]);
 
   useEffect(() => {
-    setRows([]);
-    setWindows(null);
-    setApplied(null);
-    setLoaded(false);
-    setColumns(EMPTY_COLUMNS);
-    setError("");
-  }, [reportDate]);
+    if (!open || !fullScreen) return undefined;
+    const onKey = (event) => {
+      if (event.key !== "Escape" || !isComputerFullscreen()) return;
+      const menuOpen = document.querySelector(".MuiMenu-root, .MuiPopover-root");
+      if (menuOpen) {
+        event.preventDefault();
+        return;
+      }
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, fullScreen]);
+
+  async function toggleComputerFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Браузер может запретить полноэкранный режим без жеста пользователя.
+    }
+  }
 
   const ranged = useMemo(() => {
     if (!applied) return [];
@@ -149,12 +243,15 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
     setColumns((current) => ({ ...current, [key]: value }));
   }
 
-  async function form() {
+  async function form({ force = false } = {}) {
     const next = { firm, crop, dateFrom, timeFrom, dateTo, timeTo, plate, surname };
     setColumns(EMPTY_COLUMNS);
     setApplied(next);
     setPage(0);
-    if (loaded || loading) return;
+    // Сохранённая таблица только на экране. «Сформировать» снова запрашивает Namolot.
+    if (loading) return;
+    if (!force && loaded) return;
+    const hadRows = loaded;
     setLoading(true);
     setError("");
     try {
@@ -163,9 +260,11 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
       setRows(Array.isArray(data?.rows) ? data.rows : []);
       setLoaded(true);
     } catch (err) {
-      setRows([]);
-      setWindows(null);
-      setLoaded(false);
+      if (!hadRows) {
+        setRows([]);
+        setWindows(null);
+        setLoaded(false);
+      }
       setError(String(err.message || err));
     } finally {
       setLoading(false);
@@ -229,9 +328,43 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
   const busy = loading || downloading;
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="lg">
-      <DialogTitle>Namolot</DialogTitle>
-      <DialogContent>
+    <Dialog
+      open={open}
+      onClose={busy ? undefined : onClose}
+      fullScreen={fullScreen}
+      fullWidth
+      maxWidth="lg"
+      scroll="paper"
+      slotProps={{
+        paper: {
+          sx: fullScreen
+            ? {
+                display: "flex",
+                flexDirection: "column",
+                width: "100%",
+                height: "100%",
+                maxWidth: "100%",
+                maxHeight: "100%",
+                m: 0,
+                borderRadius: 0,
+              }
+            : undefined,
+        },
+      }}
+    >
+      <DialogTitle sx={{ py: 1.25, pr: 7, position: "relative" }}>
+        Namolot
+        <Tooltip title={fullScreen ? "Выйти из полноэкранного режима (Esc)" : "На весь экран компьютера"}>
+          <IconButton
+            aria-label={fullScreen ? "Выйти из полноэкранного режима" : "На весь экран компьютера"}
+            onClick={() => void toggleComputerFullscreen()}
+            sx={{ position: "absolute", right: 8, top: 6 }}
+          >
+            {fullScreen ? <CloseFullscreenRoundedIcon /> : <OpenInFullRoundedIcon />}
+          </IconButton>
+        </Tooltip>
+      </DialogTitle>
+      <DialogContent sx={fullScreen ? { flex: 1, minHeight: 0 } : undefined}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Дата сводки {reportDate}. Нажмите «Сформировать»: без фильтров придут все записи сезона.
           Агрофирма, культура, даты, госномер и фамилия необязательны и применяются по кнопке.
@@ -271,7 +404,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
               </MenuItem>
             ))}
           </TextField>
-          <Button variant="contained" onClick={() => void form()} disabled={loading}>
+          <Button variant="contained" onClick={() => void form({ force: true })} disabled={loading}>
             {loading ? "Запрос…" : "Сформировать"}
           </Button>
         </Stack>
@@ -405,7 +538,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
             </Typography>
           </Stack>
         ) : null}
-        {!loading && applied && loaded ? (
+        {applied && loaded ? (
           <>
             <Typography variant="body2" sx={{ mb: 1 }}>
               {mode === "rows" ? "Записей" : "Строк"} {visible.length.toLocaleString("ru-RU")}
@@ -415,7 +548,7 @@ export default function NamolotDialog({ open, onClose, summaryDate, onOpenMappin
               . Сортировка по намолоту {sortDir === "desc" ? "убывает" : "растёт"}.
             </Typography>
             {visible.length ? (
-              <Box sx={{ maxHeight: 460, overflow: "auto" }}>
+              <Box sx={{ maxHeight: fullScreen ? "calc(100vh - 460px)" : 460, overflow: "auto" }}>
                 <Table size="small" stickyHeader>
                   <TableHead>
                     <TableRow>

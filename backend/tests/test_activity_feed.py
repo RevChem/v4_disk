@@ -179,6 +179,31 @@ def test_unknown_audit_areas_get_their_own_tab(db, dev):
     assert "area:Интерфейс" in [t["id"] for t in page["tabs"]]
 
 
+def test_successful_login_is_visible_on_users_tab(db, dev):
+    _user(db, 2, "anna", "user")
+    _audit(db, 1, "auth.login.success", 2)
+    _audit(db, 2, "auth.logout", 2)
+    _audit(db, 3, "auth.login.success", 1)
+    db.commit()
+
+    page = al.build_activity_page(db, viewer=dev, tab="users")
+    assert page["total"] == 3
+    assert [ev["action"] for ev in page["items"]] == [
+        "auth.login.success",
+        "auth.logout",
+        "auth.login.success",
+    ]
+    assert page["items"][0]["username"] == "dev"
+    assert "вошёл в систему" in page["items"][0]["message"]
+    assert page["items"][2]["username"] == "anna"
+
+    from app.adapters.outbound.persistence import repositories as repo
+
+    stamps = repo.last_success_logins(db)
+    assert set(stamps) == {1, 2}
+    assert stamps[1] > stamps[2]
+
+
 def test_messages_are_human_readable():
     from app.application.audit_activity import format_action_message as fmt
 

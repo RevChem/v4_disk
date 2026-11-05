@@ -23,14 +23,14 @@ from app.application.audit_activity import (
 from app.models import AuditLog, GenerationJob, User
 
 
-# Записи аудита, которые не показываем в ленте «Логи».
-# Вход в систему остаётся в audit_logs — по нему строится профиль пользователя.
+# Записи аудита, которые не показываем в ленте «Логи»:
+# итог генерации уже есть в карточке задания.
+# Вход (auth.login.success) остаётся и в профиле, и на вкладке «Пользователи».
 HIDDEN_FEED_ACTIONS: tuple[str, ...] = (
     "reports.generation.requested",
     "reports.generation.completed",
     "reports.generation.failed",
     "reports.generation.cancelled",  # то же самое видно в карточке задания (статус «отменено»)
-    "auth.login.success",
 )
 
 _FINISHED_JOB_STATUSES = ("completed", "failed", "cancelled")

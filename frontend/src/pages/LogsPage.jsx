@@ -237,6 +237,7 @@ function UserEventList({ events, emptyText, onOpenReport }) {
           <LogEventLine
             when={formatWhen(ev.created_at)}
             username={ev.username}
+            extra={ev.action === "auth.login.success" && ev.ip ? ev.ip : undefined}
             message={displayMessage(ev)}
             reports={ev.reports}
             durationSeconds={ev.duration_seconds}

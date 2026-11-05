@@ -17,8 +17,11 @@ from app.schemas_auth import UserAdminCreateIn, UserAdminUpdateIn, UserListOut, 
 router = APIRouter(prefix="/users/manage", tags=["users"])
 
 
-def _user_read(user: User) -> UserRead:
-    return UserRead.model_validate(user)
+def _user_read(user: User, *, last_login_at=None) -> UserRead:
+    item = UserRead.model_validate(user)
+    if last_login_at is None:
+        return item
+    return item.model_copy(update={"last_login_at": last_login_at})
 
 
 @router.get("", response_model=UserListOut)
@@ -26,7 +29,10 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_manage_users_access),
 ):
-    return UserListOut(items=[_user_read(u) for u in repo.list_users(db)])
+    logins = repo.last_success_logins(db)
+    return UserListOut(
+        items=[_user_read(u, last_login_at=logins.get(u.id)) for u in repo.list_users(db)]
+    )
 
 
 @router.post("", response_model=UserRead, status_code=status.HTTP_201_CREATED)

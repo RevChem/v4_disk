@@ -127,7 +127,8 @@ export default function AnalysisDialog({
     if (!open) return;
     const next = scope === "all" || WORK_IDS.has(initialSection) ? initialSection : "facts";
     setSection(next);
-    setVisited(new Set([next]));
+    // Уже открытые разделы не размонтируем: «Фильтрация» хранит последний срез.
+    setVisited((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
     setDriverPreset(null);
   }, [open, initialSection, scope]);
 

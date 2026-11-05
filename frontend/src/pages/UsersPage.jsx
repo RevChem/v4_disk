@@ -45,6 +45,21 @@ function roleLabel(role) {
   return ROLE_OPTIONS.find((r) => r.id === role)?.label || role;
 }
 
+function formatLoginAt(iso) {
+  if (!iso) return "не входил";
+  try {
+    return new Date(iso).toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 function errorText(err) {
   const detail = err?.response?.data?.detail;
   const code = Array.isArray(detail)
@@ -368,6 +383,7 @@ export default function UsersPage({
                   <TableCell sx={COMPACT_CELL}>Логин</TableCell>
                   <TableCell sx={COMPACT_CELL}>ФИО</TableCell>
                   <TableCell sx={COMPACT_CELL}>Роль</TableCell>
+                  <TableCell sx={COMPACT_CELL}>Последний вход</TableCell>
                   <TableCell sx={COMPACT_CELL}>Активен</TableCell>
                   <TableCell align="right" sx={COMPACT_CELL}>
                     Профиль
@@ -399,6 +415,7 @@ export default function UsersPage({
                           </Select>
                         </FormControl>
                       </TableCell>
+                      <TableCell sx={COMPACT_CELL}>{formatLoginAt(row.last_login_at)}</TableCell>
                       <TableCell sx={COMPACT_CELL}>
                         <Switch
                           checked={row.is_active}

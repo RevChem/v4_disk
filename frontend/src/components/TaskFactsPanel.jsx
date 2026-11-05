@@ -45,6 +45,7 @@ import {
 import { ColumnFilter, EMPTY_COLUMNS, applyColumnFilters, distinctColumnValues } from "./ColumnFilter";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
+import { readView, useViewSnapshot } from "../utils/viewMemory";
 
 const EXAMPLES = [
   "Сколько гектаров по каждой операции?",
@@ -170,61 +171,144 @@ function emptySlice(iso) {
 
 export default function TaskFactsPanel({ active = true, summaryDate }) {
   const reportDate = summaryDate || new Date().toISOString().slice(0, 10);
-  const [rows, setRows] = useState([]);
-  const [windows, setWindows] = useState(null);
-  const [applied, setApplied] = useState(null);
-  const [loaded, setLoaded] = useState(false);
+  const bootRef = useRef(undefined);
+  if (bootRef.current === undefined) {
+    bootRef.current = readView(`facts:${reportDate}`) || {};
+  }
+  const boot = bootRef.current;
+  const shift0 = shiftOf(reportDate);
+  const [rows, setRows] = useState(() => (Array.isArray(boot.rows) ? boot.rows : []));
+  const [windows, setWindows] = useState(boot.windows || null);
+  const [applied, setApplied] = useState(boot.applied ?? null);
+  const [loaded, setLoaded] = useState(Boolean(boot.loaded));
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [error, setError] = useState("");
-  const [namesNote, setNamesNote] = useState("");
+  const [error, setError] = useState(boot.error || "");
+  const [namesNote, setNamesNote] = useState(boot.namesNote || "");
   const [workTypes, setWorkTypes] = useState([]);
   const [groups, setGroups] = useState([]);
 
-  const [firm, setFirm] = useState("");
-  const [crop, setCrop] = useState("");
-  const [operations, setOperations] = useState([]);
-  const [details, setDetails] = useState([]);
-  const initialShift = shiftOf(reportDate);
-  const [dateFrom, setDateFrom] = useState(initialShift.dateFrom);
-  const [timeFrom, setTimeFrom] = useState(initialShift.timeFrom);
-  const [dateTo, setDateTo] = useState(initialShift.dateTo);
-  const [timeTo, setTimeTo] = useState(initialShift.timeTo);
-  const [columns, setColumns] = useState(EMPTY_COLUMNS);
-  const [plate, setPlate] = useState("");
-  const [surname, setSurname] = useState("");
-  const [mode, setMode] = useState("rows");
-  const [sortKey, setSortKey] = useState("tonnes");
-  const [sortDir, setSortDir] = useState("desc");
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  const [firm, setFirm] = useState(boot.firm || "");
+  const [crop, setCrop] = useState(boot.crop || "");
+  const [operations, setOperations] = useState(() => (Array.isArray(boot.operations) ? boot.operations : []));
+  const [details, setDetails] = useState(() => (Array.isArray(boot.details) ? boot.details : []));
+  const [dateFrom, setDateFrom] = useState(boot.dateFrom ?? shift0.dateFrom);
+  const [timeFrom, setTimeFrom] = useState(boot.timeFrom ?? shift0.timeFrom);
+  const [dateTo, setDateTo] = useState(boot.dateTo ?? shift0.dateTo);
+  const [timeTo, setTimeTo] = useState(boot.timeTo ?? shift0.timeTo);
+  const [columns, setColumns] = useState(boot.columns || EMPTY_COLUMNS);
+  const [plate, setPlate] = useState(boot.plate || "");
+  const [surname, setSurname] = useState(boot.surname || "");
+  const [mode, setMode] = useState(boot.mode || "rows");
+  const [sortKey, setSortKey] = useState(boot.sortKey || "tonnes");
+  const [sortDir, setSortDir] = useState(boot.sortDir || "desc");
+  const [page, setPage] = useState(Number.isFinite(boot.page) ? boot.page : 0);
+  const [pageSize, setPageSize] = useState(boot.pageSize || 50);
 
-  const [question, setQuestion] = useState("");
-  const [useLlm, setUseLlm] = useState(true);
-  const [view, setView] = useState("answers");
+  const [question, setQuestion] = useState(boot.question || "");
+  const [useLlm, setUseLlm] = useState(boot.useLlm !== false);
+  const [view, setView] = useState(boot.view || "answers");
   const [aiKeySet, setAiKeySet] = useState(true);
-  const [answerHistory, setAnswerHistory] = useState([]);
+  const [answerHistory, setAnswerHistory] = useState(() =>
+    Array.isArray(boot.answerHistory) ? boot.answerHistory : [],
+  );
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState("");
   const [copiedId, setCopiedId] = useState(null);
   const feedEnd = useRef(null);
 
-  useEffect(() => {
+  function restore(saved) {
     const shift = shiftOf(reportDate);
-    setDateFrom(shift.dateFrom);
-    setTimeFrom(shift.timeFrom);
-    setDateTo(shift.dateTo);
-    setTimeTo(shift.timeTo);
-    setColumns(EMPTY_COLUMNS);
-    setRows([]);
-    setWindows(null);
-    setApplied(null);
-    setLoaded(false);
-    setError("");
-    setNamesNote("");
-    setAnswerHistory([]);
+    const data = saved || {};
+    setRows(Array.isArray(data.rows) ? data.rows : []);
+    setWindows(data.windows || null);
+    setApplied(data.applied ?? null);
+    setLoaded(Boolean(data.loaded));
+    setError(data.error || "");
+    setNamesNote(data.namesNote || "");
+    setFirm(data.firm || "");
+    setCrop(data.crop || "");
+    setOperations(Array.isArray(data.operations) ? data.operations : []);
+    setDetails(Array.isArray(data.details) ? data.details : []);
+    setDateFrom(data.dateFrom ?? shift.dateFrom);
+    setTimeFrom(data.timeFrom ?? shift.timeFrom);
+    setDateTo(data.dateTo ?? shift.dateTo);
+    setTimeTo(data.timeTo ?? shift.timeTo);
+    setColumns(data.columns || EMPTY_COLUMNS);
+    setPlate(data.plate || "");
+    setSurname(data.surname || "");
+    setMode(data.mode || "rows");
+    setSortKey(data.sortKey || "tonnes");
+    setSortDir(data.sortDir || "desc");
+    setPage(Number.isFinite(data.page) ? data.page : 0);
+    setPageSize(data.pageSize || 50);
+    setQuestion(data.question || "");
+    setUseLlm(data.useLlm !== false);
+    setView(data.view || "answers");
+    setAnswerHistory(Array.isArray(data.answerHistory) ? data.answerHistory : []);
     setAskError("");
-  }, [reportDate]);
+  }
+
+  const memoryKey = `facts:${reportDate}`;
+  const snapshot = useMemo(
+    () => ({
+      rows,
+      windows,
+      applied,
+      loaded,
+      error,
+      namesNote,
+      firm,
+      crop,
+      operations,
+      details,
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      columns,
+      plate,
+      surname,
+      mode,
+      sortKey,
+      sortDir,
+      page,
+      pageSize,
+      question,
+      useLlm,
+      view,
+      answerHistory,
+    }),
+    [
+      rows,
+      windows,
+      applied,
+      loaded,
+      error,
+      namesNote,
+      firm,
+      crop,
+      operations,
+      details,
+      dateFrom,
+      timeFrom,
+      dateTo,
+      timeTo,
+      columns,
+      plate,
+      surname,
+      mode,
+      sortKey,
+      sortDir,
+      page,
+      pageSize,
+      question,
+      useLlm,
+      view,
+      answerHistory,
+    ],
+  );
+  useViewSnapshot(memoryKey, snapshot, restore);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -362,13 +446,16 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     };
   }
 
-  async function form({ showTable = true } = {}) {
+  async function form({ showTable = true, force = false } = {}) {
     const next = draft();
     setColumns(EMPTY_COLUMNS);
     setApplied(next);
     setPage(0);
     if (showTable) setView("table");
-    if (loaded || loading) return next;
+    // Сохранённый срез только на экране. «Сформировать» снова читает задания.
+    if (loading) return next;
+    if (!force && loaded) return next;
+    const hadRows = loaded;
     setLoading(true);
     setError("");
     try {
@@ -382,9 +469,12 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       setLoaded(true);
       return next;
     } catch (err) {
-      setRows([]);
-      setWindows(null);
-      setLoaded(false);
+      if (!hadRows) {
+        setRows([]);
+        setWindows(null);
+        setLoaded(false);
+        setNamesNote("");
+      }
       const message = String(err.message || err);
       setError(message);
       throw new Error(message);
@@ -593,7 +683,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
               />
             )}
           />
-            <Button variant="contained" onClick={() => void form().catch(() => {})} disabled={loading}>
+            <Button variant="contained" onClick={() => void form({ force: true }).catch(() => {})} disabled={loading}>
             {loading ? "Запрос…" : "Сформировать"}
           </Button>
           <Stack direction="row" spacing={1}>
@@ -808,7 +898,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                 </Typography>
               </Stack>
             ) : null}
-            {!loading && applied && loaded ? (
+            {applied && loaded ? (
               <>
                 <Table size="small">
                   <TableHead>

@@ -49,6 +49,7 @@ class UserRead(BaseModel):
     is_active: bool
     email_verified: bool
     mfa_enabled: bool
+    last_login_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

@@ -5,6 +5,7 @@ import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.adapters.outbound.auth.security import hash_token
@@ -39,6 +40,34 @@ def count_users(db: Session) -> int:
 
 def list_users(db: Session) -> list[User]:
     return db.query(User).order_by(User.id.asc()).all()
+
+
+def _as_utc(stamp: datetime | str) -> datetime:
+    """SQLite отдаёт max(datetime) строкой, PostgreSQL — datetime."""
+    if isinstance(stamp, str):
+        text = stamp.strip().replace("Z", "+00:00")
+        if " " in text and "T" not in text.split("+", 1)[0]:
+            text = text.replace(" ", "T", 1)
+        stamp = datetime.fromisoformat(text)
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
+def last_success_logins(db: Session) -> dict[int, datetime]:
+    """Последний успешный вход каждого пользователя (для списка «Пользователи»)."""
+    rows = (
+        db.query(AuditLog.user_id, func.max(AuditLog.created_at))
+        .filter(AuditLog.action == "auth.login.success", AuditLog.user_id.isnot(None))
+        .group_by(AuditLog.user_id)
+        .all()
+    )
+    found: dict[int, datetime] = {}
+    for user_id, stamp in rows:
+        if user_id is None or stamp is None:
+            continue
+        found[int(user_id)] = _as_utc(stamp)
+    return found
 
 
 def create_user(
