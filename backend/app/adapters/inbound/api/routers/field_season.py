@@ -55,6 +55,7 @@ def get_field_season_state(_: User = Depends(require_generate_access)):
         "fields": cache.get("fields", []) if cache else [],
         "running": bool(status.get("running")),
         "error": str(status.get("error") or ""),
+        "warnings": [str(item) for item in (cache.get("warnings") or [])] if cache else [],
     }
 
 
@@ -77,6 +78,7 @@ def generate_field_season(
         "fields": cache.get("fields", []) if cache else [],
         "running": bool(status.get("running")),
         "error": str(status.get("error") or ""),
+        "warnings": [str(item) for item in (cache.get("warnings") or [])] if cache else [],
     }
 
 

@@ -343,6 +343,9 @@ export default function WorksSummaryDialog({ open, onClose, onError, onInfo }) {
               {tableError}
             </Alert>
           ) : null}
+          {worksState?.warnings?.length ? (
+            <Alert severity="warning">{worksState.warnings.join(" ")}</Alert>
+          ) : null}
           <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
             <Typography variant="body2" color="text.secondary">
               {worksState?.running ? "Формирование сводки… · " : ""}

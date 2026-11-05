@@ -702,6 +702,7 @@ class FieldSeasonStateOut(BaseModel):
     fields: list[FieldSeasonFieldOut] = Field(default_factory=list)
     running: bool = False
     error: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class FieldSeasonTableOut(BaseModel):
@@ -734,6 +735,7 @@ class WorksSummaryStateOut(BaseModel):
     firms: list[str] = Field(default_factory=list)
     running: bool = False
     error: str = ""
+    warnings: list[str] = Field(default_factory=list)
     queue_job_id: str | None = None
 
 

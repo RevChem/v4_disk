@@ -16,6 +16,7 @@ import httpx
 import requests
 
 from app.config import MISSING_CROPWISE_TOKEN_DETAIL, get_cropwise_token, settings
+from app.legacy.json_store_io import atomic_write_json, read_json_dict
 
 # Как в svodki/plan/plans.py и desktop works (2).py — фиксированное смещение МСК для смен и срезов API.
 TZ_MSK = timezone(timedelta(hours=3))
@@ -32,25 +33,13 @@ MTFMI_SEMAPHORE_LIMIT = 40  # как в works (2).py
 # см. apiary "Changed objects" / "Changed records ids" / "Mass Request").
 CHANGES_PAGE_LIMIT = 1000
 MASS_REQUEST_BATCH_SIZE = 500
-CACHE_SCHEMA_VERSION = 2  # v2 = кэш хранит вклад по задачам (tasks) + last_synced_at
+# v3: календарные подписи годов, группы из plans.py (вид работ может входить
+# в несколько групп), культура строки по history_item_id, площадь задания
+# масштабируется к covered_area, в кэше окно дат и отпечаток групп.
+CACHE_SCHEMA_VERSION = 3
 
-WORK_GROUPS: tuple[tuple[str, tuple[int, ...]], ...] = (
-    # Синхронизировано с рабочими скриптами в svodki/plan/plans.py.
-    ("1.1 Внесение минеральных удобрений", (55,)),
-    ("2.1 Боронование", (103, 81, 97, 12)),
-    ("2.9 Дискование", (60,)),
-    ("2.4 Вспашка", (49, 57, 171)),
-    ("2.11 Культивация", (10, 50, 63, 96)),
-    ("4.0 Посев", (3, 4, 69, 70, 71, 72, 119, 120)),
-    ("4.1 Посев (овощи)", (68, 148, 172)),
-    ("3.1 Опрыскивание", (1, 64, 65, 66, 153)),
-    ("2.12 Прикатывание", (13, 67, 142)),
-    ("2.7 Гребнеобразование", (62,)),
-    ("2.6 Фрезерование", (73,)),
-    ("2.8 Глубокорыхление", (11, 106, 121, 150)),
-    ("5.0 Уборка", (6, 7, 75, 76, 77, 111, 118, 125, 126, 145)),
-    ("5.4 Уборка картофеля, лука", (76,)),
-)
+# Строка площади без своей культуры. Гектары остаются в итоге.
+UNDEFINED_CROP = "Культура не определена"
 
 SKIP_CROPS: set[str] = {
     "Залежь, лес", "Залежь", "Введение в оборот 2026 год",
@@ -83,6 +72,55 @@ FIELD_NAME_FORCE_RULES: tuple[tuple[str, str], ...] = (
 _state_lock = Lock()
 _is_running = False
 _last_error = ""
+
+
+def effective_work_groups() -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Группы работ из plans.WORK_GROUPS, уже с правками редактора планов.
+
+    Один work_type_id может стоять в двух группах (уборка и уборка картофеля).
+    Обе группы получают гектары: порядок plans.py сохраняется.
+    """
+    from app.application.task_slice import list_task_work_groups
+
+    groups: list[tuple[str, tuple[int, ...]]] = []
+    for item in list_task_work_groups():
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        ids: list[int] = []
+        for raw in item.get("ids") or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        groups.append((name, tuple(dict.fromkeys(ids))))
+    if not groups:
+        raise RuntimeError("Список групп работ пуст")
+    return tuple(groups)
+
+
+def _groups_fingerprint(groups: tuple[tuple[str, tuple[int, ...]], ...] | None = None) -> str:
+    chosen = groups if groups is not None else effective_work_groups()
+    return json.dumps(chosen, ensure_ascii=False)
+
+
+def _work_type_groups(
+    groups: tuple[tuple[str, tuple[int, ...]], ...],
+) -> dict[int, tuple[str, ...]]:
+    out: dict[int, list[str]] = {}
+    for name, ids in groups:
+        for wt_id in ids:
+            bucket = out.setdefault(int(wt_id), [])
+            if name not in bucket:
+                bucket.append(name)
+    return {wt_id: tuple(names) for wt_id, names in out.items()}
+
+
+def _replace_year(d: date, year: int) -> date:
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return date(year, 2, 28)
 
 
 def _cache_path() -> Path:
@@ -173,7 +211,10 @@ def _get_all(session: requests.Session, base_url: str, endpoint: str, params: di
         last_id = meta.get("last_record_id")
         if not last_id or meta.get("obtained_records", 0) < 100:
             break
-        from_id = int(last_id) + 1
+        next_id = int(last_id) + 1
+        if next_id <= from_id:
+            break
+        from_id = next_id
     return results
 
 
@@ -484,84 +525,205 @@ def _fetch_machine_tasks_batched(
     return list(by_id.values())
 
 
-def _load_field_crop(
+def crop_of_mapping_item(
+    item: dict,
+    history_crop: dict[int, str],
+    history_field: dict[int, int],
+) -> str:
+    """Культура строки площади по history_item_id.
+
+    Пустая ссылка и запись чужого поля остаются «Культура не определена»:
+    культура с карты поля не подставляется, гектары не выбрасываются.
+    """
+    hid = item.get("history_item_id")
+    if hid is None:
+        return UNDEFINED_CROP
+    try:
+        hid_i = int(hid)
+    except (TypeError, ValueError):
+        return UNDEFINED_CROP
+    owned = history_field.get(hid_i)
+    fid = item.get("field_id")
+    if owned and fid is not None:
+        try:
+            if int(fid) != int(owned):
+                return UNDEFINED_CROP
+        except (TypeError, ValueError):
+            return UNDEFINED_CROP
+    name = str(history_crop.get(hid_i) or "").strip()
+    return name or UNDEFINED_CROP
+
+
+def _history_maps_for_items(
     session: requests.Session,
     base_url: str,
-    season_year: int,
+    items_by_task: dict[int, list[dict]],
     crop_map: dict[int, str],
-) -> dict[int, str]:
-    his = _get_all(session, base_url, "history_items", {"year": str(season_year)})
-    out: dict[int, str] = {}
-    for hi in his:
-        fid = hi.get("field_id")
-        cid = hi.get("crop_id")
-        if not (fid and cid and hi.get("active")):
+) -> tuple[dict[int, str], dict[int, int], list[str]]:
+    """HistoryItem только для строк этой выборки. Сбой загрузки не подменяет культуру поля."""
+    ids: list[int] = []
+    seen: set[int] = set()
+    for items in items_by_task.values():
+        for item in items:
+            hid = item.get("history_item_id")
+            if hid is None:
+                continue
+            try:
+                hid_i = int(hid)
+            except (TypeError, ValueError):
+                continue
+            if hid_i in seen:
+                continue
+            seen.add(hid_i)
+            ids.append(hid_i)
+    if not ids:
+        return {}, {}, []
+    try:
+        rows = _mass_request(session, base_url, "history_items", ids)
+    except Exception as exc:
+        logger.warning("works_summary: history_items не загружены", exc_info=True)
+        return {}, {}, [f"культура history_item не загружена: {exc}"]
+    crops: dict[int, str] = {}
+    fields: dict[int, int] = {}
+    for hi in rows:
+        if hi.get("id") is None:
             continue
-        crop = crop_map.get(int(cid), "")
-        if crop and crop not in SKIP_CROPS:
-            out[int(fid)] = crop
-    return out
+        try:
+            hid_i = int(hi["id"])
+        except (TypeError, ValueError):
+            continue
+        if hi.get("field_id") is not None:
+            try:
+                fields[hid_i] = int(hi["field_id"])
+            except (TypeError, ValueError):
+                pass
+        cid = hi.get("crop_id")
+        if cid is None:
+            continue
+        try:
+            name = str(crop_map.get(int(cid)) or "").strip()
+        except (TypeError, ValueError):
+            name = ""
+        if name:
+            crops[hid_i] = name
+    return crops, fields, []
+
+
+def _item_area_before_cutoff(item: dict, cutoff: datetime) -> tuple[float, bool]:
+    """Площадь строки до конца смены.
+
+    Почасовые данные, даже нулевые, не заменяются полной covered_area строки.
+    Полная площадь строки — только если почасового списка нет.
+    """
+    hourly = item.get("covered_area_hourly") or []
+    if hourly:
+        total = 0.0
+        for entry in hourly:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                continue
+            dt_h = _parse_dt_msk(entry[0])
+            if dt_h is None or dt_h >= cutoff:
+                continue
+            try:
+                total += float(entry[1] or 0)
+            except (TypeError, ValueError):
+                continue
+        return total, True
+    try:
+        return float(item.get("covered_area") or 0), False
+    except (TypeError, ValueError):
+        return 0.0, False
 
 
 def _task_contributions(
     task: dict,
     mtfmi_items: list[dict],
     field_firm: dict[int, str],
-    field_crop: dict[int, str],
-    wt_to_group: dict[int, str],
+    history_crop: dict[int, str],
+    history_field: dict[int, int],
+    wt_to_groups: dict[int, tuple[str, ...]],
     year: int,
     d_from: date,
     d_to: date,
 ) -> list[dict]:
-    """Вклад одной задачи (machine_task) в сводку — список {year,date,group,crop,firm,area}.
+    """Вклад одной задачи — список {year,date,group,crop,firm,area}.
 
-    Общая логика для полного построения кэша (_collect_contribs_for_tasks) и для инкрементального
-    обновления по одной изменившейся задаче (update_cache_incremental) — не должна расходиться,
-    иначе полный пересчёт и точечное обновление после /changes дадут разные цифры.
+    Одна и та же функция для полного кэша и для инкремента. Вид работ,
+    который входит в несколько групп, даёт полный вклад в каждую.
+    Веса строк внутри смены масштабируются к task.covered_area.
+    Куски меньше 0,5 га сохраняются. Залежь и прочие SKIP_CROPS выпадают.
     """
     if str(task.get("status") or "").strip().lower() == "canceled":
         return []
     wt_id = task.get("work_type_id")
-    group = wt_to_group.get(int(wt_id)) if wt_id is not None else None
-    if not group:
+    try:
+        groups = wt_to_groups.get(int(wt_id), ()) if wt_id is not None else ()
+    except (TypeError, ValueError):
+        groups = ()
+    if not groups:
         return []
     info = _get_shift(task.get("end_time"), d_from, d_to)
     if not info:
         return []
     t_date, cutoff = info
+    try:
+        official = float(task.get("covered_area") or 0)
+    except (TypeError, ValueError):
+        official = 0.0
+    if official <= 0:
+        return []
 
-    out: list[dict] = []
+    buckets: dict[tuple[str, str], float] = defaultdict(float)
+    saw_hourly = False
+    firms_without_weight: list[str] = []
     for item in mtfmi_items:
         fid = item.get("field_id")
         if not fid:
             continue
-        fid_i = int(fid)
+        try:
+            fid_i = int(fid)
+        except (TypeError, ValueError):
+            continue
         firm = field_firm.get(fid_i)
         if not firm:
             continue
-        crop = field_crop.get(fid_i, "")
-        if not crop or crop in SKIP_CROPS:
+        crop = crop_of_mapping_item(item, history_crop, history_field)
+        if crop in SKIP_CROPS:
             continue
-        hourly = item.get("covered_area_hourly") or []
-        cov = 0.0
-        for e in hourly:
-            dt_h = _parse_dt_msk(e[0])
-            if dt_h and dt_h < cutoff:
-                cov += float(e[1] or 0)
-        if not hourly:
-            cov = float(item.get("covered_area") or 0)
-        if cov < 0.5:
+        area, hourly = _item_area_before_cutoff(item, cutoff)
+        if hourly:
+            saw_hourly = True
+        if area > 0:
+            buckets[(firm, crop)] += area
+        elif firm not in firms_without_weight:
+            firms_without_weight.append(firm)
+
+    if not buckets:
+        if saw_hourly or not firms_without_weight:
+            return []
+        share = official / len(firms_without_weight)
+        buckets = {(firm, UNDEFINED_CROP): share for firm in firms_without_weight}
+
+    raw_total = sum(buckets.values())
+    if raw_total <= 0:
+        return []
+    scale = official / raw_total
+    out: list[dict] = []
+    for (firm, crop), raw in buckets.items():
+        area = raw * scale
+        if area <= 0:
             continue
-        out.append(
-            {
-                "year": int(year),
-                "date": t_date.isoformat(),
-                "group": group,
-                "crop": crop,
-                "firm": firm,
-                "area": round(float(cov), 2),
-            }
-        )
+        for group in groups:
+            out.append(
+                {
+                    "year": int(year),
+                    "date": t_date.isoformat(),
+                    "group": group,
+                    "crop": crop,
+                    "firm": firm,
+                    "area": round(float(area), 4),
+                }
+            )
     return out
 
 
@@ -592,9 +754,10 @@ def _in_period_tasks_for_year(
 def _collect_contribs_for_tasks(
     in_period: list[dict],
     mtfmi: dict[int, list[dict]],
-    field_crop: dict[int, str],
     field_firm: dict[int, str],
-    wt_to_group: dict[int, str],
+    history_crop: dict[int, str],
+    history_field: dict[int, int],
+    wt_to_groups: dict[int, tuple[str, ...]],
     season_year: int,
     d_from: date,
     d_to: date,
@@ -603,19 +766,29 @@ def _collect_contribs_for_tasks(
     for task in in_period:
         tid = int(task["id"])
         task_contribs[tid] = _task_contributions(
-            task, mtfmi.get(tid, []), field_firm, field_crop, wt_to_group, season_year, d_from, d_to
+            task,
+            mtfmi.get(tid, []),
+            field_firm,
+            history_crop,
+            history_field,
+            wt_to_groups,
+            season_year,
+            d_from,
+            d_to,
         )
     return task_contribs
 
 
 def _works_bounds(season_year: int) -> tuple[date, date, date, date]:
-    """Как build_report() в works (2).py: WORKS_DATE_FROM/TO или 1 янв — сегодня; прошлый период — год − 1.
+    """Как build_report() в works.py: WORKS_DATE_FROM/TO или 1 января — сегодня.
 
-    season_year с июля уже следующий календарный год. Окно дат остаётся
-    в календарном году отчёта, иначе с июля выборка начиналась бы 1 января будущего года.
+    Подпись года — календарный год этого окна (5 ноября 2026 → 2026 против 2025).
+    season_year с июля уже следующий сезон Cropwise. Если он больше календарного
+    года, окно остаётся в календарном году, иначе выборка начиналась бы 1 января
+    будущего года. 29 февраля при сдвиге на прошлый год становится 28 февраля.
     """
     today = date.today()
-    window_year = today.year if season_year > today.year else season_year
+    window_year = today.year if int(season_year) > today.year else int(season_year)
     df_s = os.environ.get("WORKS_DATE_FROM", "").strip()
     dt_s = os.environ.get("WORKS_DATE_TO", "").strip()
     try:
@@ -626,10 +799,12 @@ def _works_bounds(season_year: int) -> tuple[date, date, date, date]:
         d_to = date.fromisoformat(dt_s) if dt_s else today
     except ValueError:
         d_to = today
+    if window_year != today.year and not dt_s:
+        d_to = _replace_year(today, window_year)
     if d_to < d_from:
         d_to = d_from
-    d_from_prev = d_from.replace(year=d_from.year - 1)
-    d_to_prev = d_to.replace(year=d_to.year - 1)
+    d_from_prev = _replace_year(d_from, d_from.year - 1)
+    d_to_prev = _replace_year(d_to, d_to.year - 1)
     return d_from, d_to, d_from_prev, d_to_prev
 
 
@@ -661,21 +836,69 @@ def _aggregate_rows_from_tasks(
     return rows, sorted(groups_set), sorted(crops_set), sorted(firms_set)
 
 
+def _payload_from_tasks(
+    tasks_map: dict[int, list[dict]],
+    *,
+    created_at: str,
+    updated_at: str,
+    last_synced_at: str,
+    label_year: int,
+    prev_label: int,
+    d_from: date,
+    d_to: date,
+    d_from_prev: date,
+    d_to_prev: date,
+    groups_fp: str,
+    warnings: list[str],
+) -> dict:
+    rows, groups, crops, firms = _aggregate_rows_from_tasks(tasks_map)
+    return {
+        "cache_version": CACHE_SCHEMA_VERSION,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "last_synced_at": last_synced_at,
+        "season_year": int(label_year),
+        "prev_year": int(prev_label),
+        "window_from": d_from.isoformat(),
+        "window_to": d_to.isoformat(),
+        "window_from_prev": d_from_prev.isoformat(),
+        "window_to_prev": d_to_prev.isoformat(),
+        "groups_fp": groups_fp,
+        "warnings": warnings,
+        "tasks": {str(k): v for k, v in tasks_map.items()},
+        "rows": rows,
+        "groups": groups,
+        "crops": crops,
+        "firms": firms,
+    }
+
+
+def _write_cache(payload: dict) -> None:
+    atomic_write_json(_cache_path(), payload)
+
+
 def _build_rows() -> dict:
     token = get_cropwise_token()
     if not token:
         raise ValueError(MISSING_CROPWISE_TOKEN_DETAIL)
     base_url = (settings.cropwise_base_url or "").strip() or "https://operations.cropwise.com/api/v3"
-    season_year = int(settings.cropwise_season_year or date.today().year)
-    prev_year = season_year - 1
+    agro_season = int(settings.cropwise_season_year or date.today().year)
+    work_groups = effective_work_groups()
+    groups_fp = _groups_fingerprint(work_groups)
+    wt_to_groups = _work_type_groups(work_groups)
+    all_wt_ids = set(wt_to_groups)
 
-    d_from, d_to, d_from_prev, d_to_prev = _works_bounds(season_year)
+    d_from, d_to, d_from_prev, d_to_prev = _works_bounds(agro_season)
+    label_year = d_from.year
+    prev_label = d_from_prev.year
     logger.info(
-        "works_summary: period current=%s..%s prev=%s..%s (env WORKS_DATE_FROM/WORKS_DATE_TO как в works.py)",
+        "works_summary: period current=%s..%s prev=%s..%s labels=%s/%s",
         d_from,
         d_to,
         d_from_prev,
         d_to_prev,
+        prev_label,
+        label_year,
     )
 
     session = requests.Session()
@@ -699,72 +922,68 @@ def _build_rows() -> dict:
         for c in crops_raw
         if c.get("id") is not None
     }
-    field_crop_curr = _load_field_crop(session, base_url, season_year, crop_map)
-    field_crop_prev = _load_field_crop(session, base_url, prev_year, crop_map)
-
-    wt_to_group: dict[int, str] = {wt_id: name for name, ids in WORK_GROUPS for wt_id in ids}
-    all_wt_ids: set[int] = {wt_id for _, ids in WORK_GROUPS for wt_id in ids}
-
-    logger.info("works_summary: collect current season=%s", season_year)
+    logger.info("works_summary: collect current year=%s", label_year)
     curr_in_period = _in_period_tasks_for_year(
-        session, base_url, season_year, d_from, d_to, all_wt_ids
+        session, base_url, label_year, d_from, d_to, all_wt_ids
     )
-    logger.info("works_summary: collect previous season=%s", prev_year)
+    logger.info("works_summary: collect previous year=%s", prev_label)
     prev_in_period = _in_period_tasks_for_year(
-        session, base_url, prev_year, d_from_prev, d_to_prev, all_wt_ids
+        session, base_url, prev_label, d_from_prev, d_to_prev, all_wt_ids
     )
     all_task_ids = sorted(
         {int(t["id"]) for t in curr_in_period} | {int(t["id"]) for t in prev_in_period}
     )
     mtfmi = asyncio.run(_mtfmi_async(base_url, token, all_task_ids)) if all_task_ids else {}
+    history_crop, history_field, warnings = _history_maps_for_items(session, base_url, mtfmi, crop_map)
     task_contribs_curr = _collect_contribs_for_tasks(
-        curr_in_period, mtfmi, field_crop_curr, field_firm, wt_to_group, season_year, d_from, d_to
+        curr_in_period, mtfmi, field_firm, history_crop, history_field, wt_to_groups, label_year, d_from, d_to
     )
     task_contribs_prev = _collect_contribs_for_tasks(
-        prev_in_period, mtfmi, field_crop_prev, field_firm, wt_to_group, prev_year, d_from_prev, d_to_prev
+        prev_in_period, mtfmi, field_firm, history_crop, history_field, wt_to_groups, prev_label, d_from_prev, d_to_prev
     )
 
-    # id задач в Cropwise глобальны (не привязаны к сезону) — пересечений между двумя
-    # словарями не бывает, поэтому просто объединяем.
+    # id задач в Cropwise глобальны. Окно текущего года и окно прошлого не пересекаются,
+    # поэтому одна задача попадает только в один словарь.
     tasks_map: dict[int, list[dict]] = {}
     tasks_map.update(task_contribs_curr)
     tasks_map.update(task_contribs_prev)
 
-    rows, groups, crops, firms = _aggregate_rows_from_tasks(tasks_map)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = _payload_from_tasks(
+        tasks_map,
+        created_at=now_iso,
+        updated_at=now_iso,
+        last_synced_at=last_synced_at,
+        label_year=label_year,
+        prev_label=prev_label,
+        d_from=d_from,
+        d_to=d_to,
+        d_from_prev=d_from_prev,
+        d_to_prev=d_to_prev,
+        groups_fp=groups_fp,
+        warnings=warnings,
+    )
     logger.info(
         "works_summary: rows_ready=%s tasks=%s groups=%s crops=%s firms=%s",
-        len(rows),
+        len(payload["rows"]),
         len(tasks_map),
-        len(groups),
-        len(crops),
-        len(firms),
+        len(payload["groups"]),
+        len(payload["crops"]),
+        len(payload["firms"]),
     )
-    now_iso = datetime.now(timezone.utc).isoformat()
-    return {
-        "cache_version": CACHE_SCHEMA_VERSION,
-        "created_at": now_iso,
-        "updated_at": now_iso,
-        "last_synced_at": last_synced_at,
-        "season_year": season_year,
-        "prev_year": prev_year,
-        "tasks": {str(k): v for k, v in tasks_map.items()},
-        "rows": rows,
-        "groups": groups,
-        "crops": crops,
-        "firms": firms,
-    }
+    return payload
 
 
 def load_cache() -> dict | None:
-    p = _cache_path()
-    if not p.exists():
+    data = read_json_dict(_cache_path(), label="works_summary")
+    if not data.get("cache_version") and data.get("season_year") is None:
         return None
-    return json.loads(p.read_text(encoding="utf-8"))
+    return data
 
 
 def generate_cache() -> dict:
     payload = _build_rows()
-    _cache_path().write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _write_cache(payload)
     return payload
 
 
@@ -788,13 +1007,64 @@ def run_generate_cache_blocking() -> dict:
             _is_running = False
 
 
-def _cache_is_incremental_ready(cache: dict | None) -> bool:
+def _cache_is_incremental_ready(cache: dict | None, *, label_year: int, groups_fp: str) -> bool:
     return bool(
         cache
         and int(cache.get("cache_version") or 0) >= CACHE_SCHEMA_VERSION
         and cache.get("last_synced_at")
         and isinstance(cache.get("tasks"), dict)
+        and int(cache.get("season_year") or 0) == int(label_year)
+        and str(cache.get("groups_fp") or "") == groups_fp
+        and cache.get("window_to")
+        and cache.get("window_to_prev")
     )
+
+
+def _endpoint_has_changes(
+    session: requests.Session,
+    base_url: str,
+    endpoint: str,
+    from_time: str,
+    to_time: str | None,
+) -> bool:
+    params: dict = {"from_time": from_time, "limit": 1}
+    if to_time:
+        params["to_time"] = to_time
+    r = session.get(f"{base_url}/{endpoint}/changes", params=params, timeout=120)
+    r.raise_for_status()
+    return bool((r.json() or {}).get("data"))
+
+
+def _reference_data_changed(
+    session: requests.Session,
+    base_url: str,
+    from_time: str,
+    to_time: str | None,
+) -> bool:
+    """Культура, фирма или название культуры изменились — старые вклады задач уже неверны."""
+    for endpoint in ("history_items", "fields", "field_groups", "group_folders", "crops"):
+        if _endpoint_has_changes(session, base_url, endpoint, from_time, to_time):
+            logger.info("works_summary: изменился справочник %s — полный пересчёт", endpoint)
+            return True
+    return False
+
+
+def _gap_tasks(
+    session: requests.Session,
+    base_url: str,
+    cached_to: str,
+    live_to: date,
+    wt_ids: set[int],
+) -> list[dict]:
+    """Задания, чья смена попала в окно только потому, что наступил новый день."""
+    try:
+        previous = date.fromisoformat(str(cached_to)[:10])
+    except ValueError:
+        return []
+    if previous >= live_to:
+        return []
+    start = previous + timedelta(days=1)
+    return _in_period_tasks_for_year(session, base_url, live_to.year, start, live_to, wt_ids)
 
 
 def update_cache_incremental() -> dict:
@@ -817,17 +1087,21 @@ def update_cache_incremental() -> dict:
        не трогаем. rows/groups/crops/firms пересобираем из tasks_map — чистая агрегация в памяти.
     """
     cache = load_cache()
-    if not _cache_is_incremental_ready(cache):
-        logger.info("works_summary: инкрементальное обновление недоступно (нет совместимого кэша) — полный пересчёт")
+    agro_season = int(settings.cropwise_season_year or date.today().year)
+    d_from, d_to, d_from_prev, d_to_prev = _works_bounds(agro_season)
+    label_year = d_from.year
+    prev_label = d_from_prev.year
+    work_groups = effective_work_groups()
+    groups_fp = _groups_fingerprint(work_groups)
+    if not _cache_is_incremental_ready(cache, label_year=label_year, groups_fp=groups_fp):
+        logger.info("works_summary: инкрементальное обновление недоступно — полный пересчёт")
         return generate_cache()
+    assert cache is not None
 
     token = get_cropwise_token()
     if not token:
         raise ValueError(MISSING_CROPWISE_TOKEN_DETAIL)
     base_url = (settings.cropwise_base_url or "").strip() or "https://operations.cropwise.com/api/v3"
-    season_year = int(cache.get("season_year") or settings.cropwise_season_year or date.today().year)
-    prev_year = int(cache.get("prev_year") or (season_year - 1))
-    d_from, d_to, d_from_prev, d_to_prev = _works_bounds(season_year)
 
     session = requests.Session()
     session.headers.update({"X-User-Api-Token": token})
@@ -835,8 +1109,15 @@ def update_cache_incremental() -> dict:
     from_time = str(cache.get("last_synced_at"))
     logger.info("works_summary: инкрементальное обновление since=%s", from_time)
 
+    try:
+        if _reference_data_changed(session, base_url, from_time, None):
+            return generate_cache()
+    except Exception:
+        logger.warning("works_summary: не удалось проверить справочники, полный пересчёт", exc_info=True)
+        return generate_cache()
+
     tasks_changed, server_time_tasks = _changes_since(session, base_url, "machine_tasks", from_time)
-    to_time = server_time_tasks  # общая верхняя граница окна для второго запроса
+    to_time = server_time_tasks
     mtfmi_changed, _server_time_mtfmi = _changes_since(
         session, base_url, "machine_task_field_mapping_items", from_time, to_time=to_time
     )
@@ -852,71 +1133,85 @@ def update_cache_incremental() -> dict:
         if tid is not None:
             changed_ids.add(int(tid))
 
+    wt_to_groups = _work_type_groups(work_groups)
+    gap_current = _gap_tasks(session, base_url, str(cache.get("window_to")), d_to, set(wt_to_groups))
+    gap_prev = _gap_tasks(session, base_url, str(cache.get("window_to_prev")), d_to_prev, set(wt_to_groups))
+    for task in gap_current + gap_prev:
+        tid = task.get("id")
+        if tid is not None:
+            changed_ids.add(int(tid))
+
     if not changed_ids:
         logger.info("works_summary: инкрементальное обновление — изменений нет")
         updated = dict(cache)
         updated["last_synced_at"] = new_synced_at
         updated["updated_at"] = datetime.now(timezone.utc).isoformat()
-        _cache_path().write_text(json.dumps(updated, ensure_ascii=False), encoding="utf-8")
+        updated["window_from"] = d_from.isoformat()
+        updated["window_to"] = d_to.isoformat()
+        updated["window_from_prev"] = d_from_prev.isoformat()
+        updated["window_to_prev"] = d_to_prev.isoformat()
+        _write_cache(updated)
         return updated
 
     logger.info("works_summary: инкрементальное обновление — затронуто задач: %s", len(changed_ids))
 
-    # Справочники — всегда свежие полными списками, это дёшево (не по id, не на каждую задачу).
     fields = _get_all(session, base_url, "fields")
     fgs = _get_all(session, base_url, "field_groups")
     gfs = _get_all(session, base_url, "group_folders") or _get_all_page(session, base_url, "group_folders")
     field_firm = _build_field_firm(fields, fgs, gfs)
     crops_raw = _get_all(session, base_url, "crops")
     crop_map = {int(c["id"]): str(c.get("name") or c.get("title") or "") for c in crops_raw if c.get("id") is not None}
-    field_crop_curr = _load_field_crop(session, base_url, season_year, crop_map)
-    field_crop_prev = _load_field_crop(session, base_url, prev_year, crop_map)
-
-    wt_to_group: dict[int, str] = {wt_id: name for name, ids in WORK_GROUPS for wt_id in ids}
 
     changed_id_list = sorted(changed_ids)
     fresh_tasks = _mass_request(session, base_url, "machine_tasks", changed_id_list)
     task_by_id = {int(t["id"]): t for t in fresh_tasks if t.get("id") is not None}
+    # Задания нового дня уже скачаны фильтром end_time. mass_request мог их не вернуть.
+    for task in gap_current + gap_prev:
+        tid = task.get("id")
+        if tid is not None and int(tid) not in task_by_id:
+            task_by_id[int(tid)] = task
 
     mtfmi_by_task = asyncio.run(_mtfmi_async(base_url, token, changed_id_list)) if changed_id_list else {}
+    history_crop, history_field, warnings = _history_maps_for_items(session, base_url, mtfmi_by_task, crop_map)
 
     tasks_map: dict[int, list[dict]] = {int(k): v for k, v in (cache.get("tasks") or {}).items()}
     for tid in changed_id_list:
         task = task_by_id.get(tid)
         if task is None:
-            # сервер больше не отдаёт эту задачу (удалена) — убираем её вклад
             tasks_map.pop(tid, None)
             continue
         items = mtfmi_by_task.get(tid, [])
-        contribs = _task_contributions(task, items, field_firm, field_crop_curr, wt_to_group, season_year, d_from, d_to)
+        contribs = _task_contributions(
+            task, items, field_firm, history_crop, history_field, wt_to_groups, label_year, d_from, d_to
+        )
         if not contribs:
             contribs = _task_contributions(
-                task, items, field_firm, field_crop_prev, wt_to_group, prev_year, d_from_prev, d_to_prev
+                task, items, field_firm, history_crop, history_field, wt_to_groups, prev_label, d_from_prev, d_to_prev
             )
         if contribs:
             tasks_map[tid] = contribs
         else:
             tasks_map.pop(tid, None)
 
-    rows, groups, crops, firms = _aggregate_rows_from_tasks(tasks_map)
     now_iso = datetime.now(timezone.utc).isoformat()
-    payload = {
-        "cache_version": CACHE_SCHEMA_VERSION,
-        "created_at": cache.get("created_at") or now_iso,
-        "updated_at": now_iso,
-        "last_synced_at": new_synced_at,
-        "season_year": season_year,
-        "prev_year": prev_year,
-        "tasks": {str(k): v for k, v in tasks_map.items()},
-        "rows": rows,
-        "groups": groups,
-        "crops": crops,
-        "firms": firms,
-    }
-    _cache_path().write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    payload = _payload_from_tasks(
+        tasks_map,
+        created_at=str(cache.get("created_at") or now_iso),
+        updated_at=now_iso,
+        last_synced_at=new_synced_at,
+        label_year=label_year,
+        prev_label=prev_label,
+        d_from=d_from,
+        d_to=d_to,
+        d_from_prev=d_from_prev,
+        d_to_prev=d_to_prev,
+        groups_fp=groups_fp,
+        warnings=list(cache.get("warnings") or []) + warnings,
+    )
+    _write_cache(payload)
     logger.info(
         "works_summary: инкрементальное обновление завершено rows=%s tasks=%s changed=%s",
-        len(rows),
+        len(payload["rows"]),
         len(tasks_map),
         len(changed_id_list),
     )
@@ -1104,7 +1399,7 @@ def aggregate_works_for_excel_layout(
     if not pairs:
         raise ValueError("Для выбранных фильтров нет данных для Excel.")
 
-    group_order = {name: i for i, (name, _) in enumerate(WORK_GROUPS)}
+    group_order = {name: i for i, (name, _) in enumerate(effective_work_groups())}
     sorted_pairs = sorted(pairs, key=lambda gc: (group_order.get(gc[0], 999), gc[1]))
     return dates_curr, dates_prev, sorted_pairs, curr, prev, eff_from, eff_to
 

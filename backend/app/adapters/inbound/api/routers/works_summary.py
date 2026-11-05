@@ -17,10 +17,8 @@ from app.config import MISSING_CROPWISE_TOKEN_DETAIL, get_cropwise_token
 from app.database import get_db
 from app.legacy.works_summary import (
     build_works_excel,
-    build_works_excel_via_script,
     build_works_grid_view,
     filter_rows as filter_works_rows,
-    generate_cache as generate_works_cache_sync,
     generate_cache_async as generate_works_cache_async,
     load_cache as load_works_cache,
     works_generation_status,
@@ -76,6 +74,7 @@ def _works_state_payload() -> dict:
         "firms": firms,
         "running": bool(status.get("running")),
         "error": state_error,
+        "warnings": [str(item) for item in (cache.get("warnings") or [])] if cache else [],
         "queue_job_id": None,
     }
 
@@ -117,10 +116,7 @@ def get_works_summary_table(
     if not cache:
         if not get_cropwise_token():
             raise HTTPException(status_code=400, detail=MISSING_CROPWISE_TOKEN_DETAIL)
-        try:
-            cache = generate_works_cache_sync()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Не удалось сформировать сводку по работам: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Сводка по работам ещё не создана.")
     rows = filter_works_rows(
         cache,
         years=_parse_years(years),
@@ -157,10 +153,7 @@ def get_works_summary_grid(
     if not cache:
         if not get_cropwise_token():
             raise HTTPException(status_code=400, detail=MISSING_CROPWISE_TOKEN_DETAIL)
-        try:
-            cache = generate_works_cache_sync()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Не удалось сформировать сводку по работам: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Сводка по работам ещё не создана.")
     rows = filter_works_rows(
         cache,
         years=_parse_years(years),
@@ -197,25 +190,7 @@ def download_works_summary_excel(
 ):
     cache = load_works_cache()
     if not cache:
-        try:
-            cache = generate_works_cache_sync()
-        except Exception:
-            cache = None
-    if not cache:
-        try:
-            path, name = build_works_excel_via_script(
-                groups=groups,
-                crops=crops,
-                date_from=date_from,
-                date_to=date_to,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return FileResponse(
-            path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"{name}.xlsx",
-        )
+        raise HTTPException(status_code=404, detail="Сводка по работам ещё не создана.")
     rows = filter_works_rows(
         cache,
         years=_parse_years(years),
@@ -226,20 +201,7 @@ def download_works_summary_excel(
         date_to=date_to,
     )
     if not rows:
-        try:
-            path, name = build_works_excel_via_script(
-                groups=groups,
-                crops=crops,
-                date_from=date_from,
-                date_to=date_to,
-            )
-            return FileResponse(
-                path,
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                filename=f"{name}.xlsx",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="Для выбранных фильтров нет данных.")
     try:
         path, name = build_works_excel(
             rows,

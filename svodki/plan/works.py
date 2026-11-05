@@ -132,10 +132,15 @@ ALL_WT_IDS: set[int] = {
     for wt_id in ids
 }
 
+WT_TO_GROUPS: dict[int, list[str]] = {}
+for _name, _ids in WORK_GROUPS:
+    for _wt_id in _ids:
+        _bucket = WT_TO_GROUPS.setdefault(int(_wt_id), [])
+        if _name not in _bucket:
+            _bucket.append(_name)
+
 WT_TO_GROUP: dict[int, str] = {
-    wt_id: name
-    for name, ids in WORK_GROUPS
-    for wt_id in ids
+    wt_id: names[0] for wt_id, names in WT_TO_GROUPS.items() if names
 }
 
 session = requests.Session()
@@ -416,38 +421,57 @@ def collect(
     data: dict[str, dict[str, dict[str, dict[date, float]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     )
+    from mtfmi_batch_fetch import UNDEFINED_CROP, crop_of_item
+
     for task in in_period:
         tid            = task["id"]
         t_date, cutoff = task_shift[tid]
         wt_id          = task.get("work_type_id")
-        group          = WT_TO_GROUP.get(wt_id)
-        if group is None:
+        try:
+            groups = WT_TO_GROUPS.get(int(wt_id), [])
+        except (TypeError, ValueError):
+            groups = []
+        if not groups:
             continue
+        try:
+            official = float(task.get("covered_area") or 0)
+        except (TypeError, ValueError):
+            official = 0.0
+        if official <= 0:
+            continue
+        buckets: dict[tuple[str, str], float] = defaultdict(float)
         for item in mtfmi.get(tid, []):
             fid = item.get("field_id")
             if not fid:
                 continue
-            fid_i = int(fid)
-            firm  = field_firm.get(fid_i)
+            firm = field_firm.get(int(fid))
             if not firm:
                 continue
-            crop = field_crop.get(fid_i, "")
-            if not crop or crop in SKIP_CROPS:
+            crop = crop_of_item(item, "") or UNDEFINED_CROP
+            if crop in SKIP_CROPS:
                 continue
             if filter_crops is not None and crop not in filter_crops:
                 continue
-
             hourly = item.get("covered_area_hourly") or []
-            cov = sum(
-                float(e[1] or 0) for e in hourly
-                if parse_dt(e[0]) and parse_dt(e[0]) < cutoff
-            )
-            if not hourly:
+            if hourly:
+                cov = sum(
+                    float(e[1] or 0) for e in hourly
+                    if parse_dt(e[0]) and parse_dt(e[0]) < cutoff
+                )
+            else:
                 cov = float(item.get("covered_area") or 0)
-            if cov < 0.5:
+            if cov <= 0:
                 continue
-
-            data[group][crop][firm][t_date] += cov
+            buckets[(firm, crop)] += cov
+        if not buckets:
+            continue
+        scale = official / sum(buckets.values())
+        for (firm, crop), raw in buckets.items():
+            area = raw * scale
+            if area <= 0:
+                continue
+            for group in groups:
+                data[group][crop][firm][t_date] += area
 
     return data
 

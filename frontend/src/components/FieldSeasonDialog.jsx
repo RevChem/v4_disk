@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Autocomplete,
   Box,
   Button,
@@ -35,6 +36,7 @@ function fieldSeasonStatePayloadEqual(prev, next) {
   if (String(p.season_year ?? "") !== String(n.season_year ?? "")) return false;
   if (String(p.created_at ?? "") !== String(n.created_at ?? "")) return false;
   if (String(p.error ?? "") !== String(n.error ?? "")) return false;
+  if (JSON.stringify(p.warnings || []) !== JSON.stringify(n.warnings || [])) return false;
   return JSON.stringify(p.fields || []) === JSON.stringify(n.fields || []);
 }
 
@@ -178,6 +180,9 @@ export default function FieldSeasonDialog({ open, onClose, accessToken = "", onE
       <DialogTitle>Сводка поля с начала сезона</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={1.5}>
+          {state?.warnings?.length ? (
+            <Alert severity="warning">{state.warnings.join(" ")}</Alert>
+          ) : null}
           <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
             <Typography variant="body2" color="text.secondary">
               {state?.running ? "Формирование сводки… · " : ""}

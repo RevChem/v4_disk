@@ -1,15 +1,30 @@
 from __future__ import annotations
 
-import json
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
 import re
 
+import logging
+
 import requests
 
 from app.config import MISSING_CROPWISE_TOKEN_DETAIL, get_cropwise_token, settings
+from app.legacy.json_store_io import atomic_write_json, read_json_dict
+from app.legacy.works_summary import (
+    UNDEFINED_CROP,
+    _build_field_firm,
+    _capture_server_time,
+    _changes_since,
+    _endpoint_has_changes,
+    _fmt_dt_param,
+    _mass_request,
+    crop_of_mapping_item,
+)
+
+logger = logging.getLogger(__name__)
+CACHE_SCHEMA_VERSION = 1
 
 # Excel «Поля с начала сезона» — как в standalone field.py (заголовки, стили, порядок колонок)
 _FIELD_EXCEL_HEADERS: list[str] = [
@@ -37,16 +52,6 @@ SKIP_CROPS: set[str] = {
     "Луговые травы", "Обмен", "В пользовании у фермера",
     "Введение в оборот 2027 год", "Введение в оборот",
     "Передано в аренду", "Дороги/лесополосы", "Овраги/неудобия", "crop_None",
-}
-
-AGROFIRMS_BY_FOLDER: dict[int, str] = {
-    3: "Аф Чистопольская",
-    4: "Агрораздолье",
-    5: "Аксу-Агро",
-    11: "Нурлат Агро",
-    6: "Дрожжаное Рассвет Агро",
-    7: "Актай",
-    9: "Лениногорская Птицефабрика",
 }
 
 _state_lock = Lock()
@@ -221,9 +226,12 @@ def _mix_material_rows(op: dict, material_map: dict[str, dict[int, str]]) -> lis
             fact = _to_float(item.get(k))
             if fact is not None:
                 break
-        # field.py: mat_area = custom_fact_area or completed_area or None
-        raw_area = item.get("custom_fact_area") or completed_area or None
-        covered = _to_float(raw_area) if raw_area not in (None, "") else None
+        # 0 в custom_fact_area — это ноль гектаров, а не «поля нет, бери всю операцию».
+        custom_area = item.get("custom_fact_area")
+        if custom_area not in (None, ""):
+            covered = _to_float(custom_area)
+        else:
+            covered = completed_area
         out.append(
             {
                 "material_name": str(material_name or ""),
@@ -239,10 +247,11 @@ def _normalize_firm_name(raw: str) -> str:
     s = " ".join(str(raw or "").strip().split())
     key = s.lower().replace("ё", "е")
     mapping = {
-        "аф чистопольская": "Аф Чистопольская",
-        "агрораздолье": "Агрораздолье",
+        "аф чистопольская": "АФ Чистопольская",
+        "агрораздолье": "АгроРаздолье",
         "аксу-агро": "Аксу-Агро",
-        "нурлат агро": "Нурлат Агро",
+        "нурлат агро": "НурлатАгро",
+        "нурлатагро": "НурлатАгро",
         "дрожжаное рассвет агро": "Дрожжаное Рассвет Агро",
         "актай": "Актай",
         "лениногорская птицефабрика": "Лениногорская Птицефабрика",
@@ -271,7 +280,7 @@ def _excel_dir() -> Path:
 def _get_all(session: requests.Session, base_url: str, endpoint: str, params: dict | None = None) -> list[dict]:
     p = dict(params or {})
     results, from_id = [], 0
-    while True:
+    for _ in range(500):
         r = session.get(
             f"{base_url}/{endpoint}",
             params={**p, "from_id": from_id, "limit": 1000},
@@ -287,7 +296,10 @@ def _get_all(session: requests.Session, base_url: str, endpoint: str, params: di
         last_id = meta.get("last_record_id")
         if not last_id or meta.get("obtained_records", 0) < 100:
             break
-        from_id = last_id + 1
+        next_id = int(last_id) + 1
+        if next_id <= from_id:
+            break
+        from_id = next_id
     return results
 
 
@@ -295,7 +307,7 @@ def _get_all_page(session: requests.Session, base_url: str, endpoint: str, param
     p = dict(params or {})
     p.setdefault("per_page", 1000)
     results, page = [], 1
-    while True:
+    for _ in range(500):
         r = session.get(f"{base_url}/{endpoint}", params={**p, "page": page}, timeout=90)
         r.raise_for_status()
         body = r.json()
@@ -305,6 +317,195 @@ def _get_all_page(session: requests.Session, base_url: str, endpoint: str, param
             break
         page += 1
     return results
+
+
+def _operation_count(rows: list[dict]) -> int:
+    ids: list[int] = []
+    for row in rows:
+        oid = row.get("operation_id")
+        if oid is None:
+            continue
+        try:
+            ids.append(int(oid))
+        except (TypeError, ValueError):
+            continue
+    return len(set(ids)) if ids else len(rows)
+
+
+def _op_dates(op: dict) -> tuple[str, str]:
+    start = str(op.get("actual_start_datetime") or op.get("planned_start_date") or "")[:10]
+    end = str(op.get("completed_date") or op.get("planned_end_date") or "")[:10]
+    return start, end
+
+
+def _load_material_map(session: requests.Session, base_url: str) -> tuple[dict[str, dict[int, str]], list[str]]:
+    material_map: dict[str, dict[int, str]] = {"Fertilizer": {}, "Chemical": {}, "Seed": {}}
+    warnings: list[str] = []
+    for ep, type_key in (("fertilizers", "Fertilizer"), ("chemicals", "Chemical"), ("seeds", "Seed")):
+        try:
+            items = _get_all(session, base_url, ep) or _get_all_page(session, base_url, ep)
+        except Exception as exc:
+            logger.warning("field_season: справочник %s не загружен", ep, exc_info=True)
+            warnings.append(f"справочник {ep} не загружен: {exc}")
+            items = []
+        for item in items:
+            try:
+                mid = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            material_map[type_key][mid] = str(item.get("name") or item.get("title") or f"{ep}_{mid}")
+    return material_map, warnings
+
+
+def _history_for_operations(
+    session: requests.Session,
+    base_url: str,
+    operations: list[dict],
+    crop_map: dict[int, str],
+) -> tuple[dict[int, str], dict[int, int], list[str]]:
+    packed = [
+        {"history_item_id": op.get("history_item_id"), "field_id": op.get("field_id")}
+        for op in operations
+    ]
+    return _history_from_items(session, base_url, packed, crop_map)
+
+
+def _history_from_items(
+    session: requests.Session,
+    base_url: str,
+    items: list[dict],
+    crop_map: dict[int, str],
+) -> tuple[dict[int, str], dict[int, int], list[str]]:
+    from app.legacy.works_summary import _history_maps_for_items
+
+    return _history_maps_for_items(session, base_url, {0: items}, crop_map)
+
+
+def _rows_for_operations(
+    operations: list[dict],
+    *,
+    field_name_map: dict[int, str],
+    field_area_map: dict[int, float],
+    field_firm: dict[int, str],
+    work_type_map: dict[int, str],
+    material_map: dict[str, dict[int, str]],
+    history_crop: dict[int, str],
+    history_field: dict[int, int],
+) -> dict[int, list[dict]]:
+    by_field: dict[int, list[dict]] = defaultdict(list)
+    for op in operations:
+        fid = op.get("field_id")
+        if not fid:
+            continue
+        try:
+            fid_i = int(fid)
+        except (TypeError, ValueError):
+            continue
+        crop = crop_of_mapping_item(op, history_crop, history_field)
+        if crop in SKIP_CROPS:
+            continue
+        op = dict(op)
+        op["_crop"] = crop
+        by_field[fid_i].append(op)
+
+    rows_by_field: dict[int, list[dict]] = defaultdict(list)
+    for fid, ops in by_field.items():
+        ops.sort(key=lambda o: (_date_sort_key(_op_dates(o)[0]), _date_sort_key(_op_dates(o)[1]), int(o.get("id") or 0)))
+        for op in ops:
+            start, end = _op_dates(op)
+            wt_id = op.get("work_type_id")
+            try:
+                oid = int(op["id"]) if op.get("id") is not None else None
+            except (TypeError, ValueError):
+                oid = None
+            hid = op.get("history_item_id")
+            try:
+                hid_i = int(hid) if hid is not None else None
+            except (TypeError, ValueError):
+                hid_i = None
+            covered_raw = op.get("covered_area")
+            if covered_raw in (None, ""):
+                covered_raw = op.get("completed_area")
+            own_yield = _yield_from_operation(op)
+            base_row = {
+                "operation_id": oid,
+                "history_item_id": hid_i,
+                "field_id": fid,
+                "field_name": field_name_map.get(fid, f"field_{fid}"),
+                "field_area": field_area_map.get(fid, 0.0),
+                "crop": str(op.get("_crop") or UNDEFINED_CROP),
+                "work_type": work_type_map.get(int(wt_id), f"wt_{wt_id}") if wt_id else "",
+                "yield_value": 0.0,
+                "op_yield": float(own_yield) if own_yield else 0.0,
+                "firm_name": field_firm.get(fid) or "Без фирмы",
+                "completed_area": float(op.get("completed_area") or 0.0),
+                "covered_area": float(covered_raw or 0.0),
+                "date_start": start,
+                "date_end": end,
+                "folder_id": None,
+            }
+            mix_rows = _mix_material_rows(op, material_map)
+            if mix_rows:
+                for mix_row in mix_rows:
+                    row = dict(base_row)
+                    row.update(mix_row)
+                    rows_by_field[fid].append(row)
+            else:
+                row = dict(base_row)
+                row["material_name"] = _material_name_from_operation(op)
+                row["fact_rate"] = _pick_float(
+                    op,
+                    ("fact_rate", "actual_rate", "actual_application_rate", "application_rate_fact"),
+                    0.0,
+                )
+                row["planned_rate"] = _pick_float(
+                    op,
+                    (
+                        "planned_rate",
+                        "norm_rate",
+                        "application_rate_norm",
+                        "application_rate_plan",
+                        "rate",
+                        "dosage",
+                        "norm",
+                    ),
+                    0.0,
+                )
+                rows_by_field[fid].append(row)
+        _restamp_field_yield(rows_by_field[fid])
+    return rows_by_field
+
+
+def _restamp_field_yield(rows: list[dict]) -> None:
+    """Одна урожайность поля: первая по дате начала среди операций с урожайностью > 0."""
+    ordered = sorted(
+        rows,
+        key=lambda row: (_date_sort_key(row.get("date_start")), _date_sort_key(row.get("date_end"))),
+    )
+    found = 0.0
+    for row in ordered:
+        try:
+            y = float(row.get("op_yield") or 0)
+        except (TypeError, ValueError):
+            y = 0.0
+        if y > 0:
+            found = y
+            break
+    for row in rows:
+        row["yield_value"] = found
+
+
+def _field_catalog(fields_all: list[dict]) -> tuple[dict[int, str], dict[int, float]]:
+    names: dict[int, str] = {}
+    areas: dict[int, float] = {}
+    for field in fields_all:
+        try:
+            fid = int(field["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        names[fid] = field.get("name") or field.get("title") or f"field_{fid}"
+        areas[fid] = float(field.get("tillable_area") or field.get("calculated_area") or 0.0)
+    return names, areas
 
 
 def _build_rows() -> dict:
@@ -318,164 +519,226 @@ def _build_rows() -> dict:
     session = requests.Session()
     session.headers.update({"X-User-Api-Token": token})
 
+    from datetime import datetime as _dt
+
+    last_synced_at = _capture_server_time(session, base_url, _fmt_dt_param(_dt.now(timezone.utc)))
     fields_all = _get_all(session, base_url, "fields")
-    fgs_all = _get_all_page(session, base_url, "field_groups")
-    crops_raw = _get_all_page(session, base_url, "crops")
-    his_all = _get_all(session, base_url, "history_items", {"year": str(season_year)})
+    fgs_all = _get_all(session, base_url, "field_groups")
+    gfs_all = _get_all(session, base_url, "group_folders") or _get_all_page(session, base_url, "group_folders")
+    crops_raw = _get_all(session, base_url, "crops") or _get_all_page(session, base_url, "crops")
     wt_raw = _get_all(session, base_url, "work_types") or _get_all_page(session, base_url, "work_types")
-    material_map: dict[str, dict[int, str]] = {
-        "Fertilizer": {},
-        "Chemical":   {},
-        "Seed":       {},
-    }
-    for ep, type_key in (("fertilizers", "Fertilizer"), ("chemicals", "Chemical"), ("seeds", "Seed")):
-        try:
-            items = _get_all(session, base_url, ep) or _get_all_page(session, base_url, ep)
-        except Exception:
-            items = []
-        for item in items:
-            try:
-                mid = int(item.get("id"))
-            except Exception:
-                continue
-            material_map[type_key][mid] = str(item.get("name") or item.get("title") or f"{ep}_{mid}")
+    material_map, warnings = _load_material_map(session, base_url)
     all_ops_raw = _get_all(session, base_url, "agro_operations", {"season": str(season_year)})
     all_ops = [op for op in all_ops_raw if str(op.get("status") or "").strip().lower() != "canceled"]
 
-    field_name_map: dict[int, str] = {}
-    field_area_map: dict[int, float] = {}
-    field_to_fg: dict[int, int | None] = {}
-    for f in fields_all:
-        fid = int(f["id"])
-        field_name_map[fid] = f.get("name") or f.get("title") or f"field_{fid}"
-        field_area_map[fid] = float(f.get("tillable_area") or f.get("calculated_area") or 0.0)
-        field_to_fg[fid] = f.get("field_group_id")
-
-    fg_to_folder: dict[int, int | None] = {int(fg["id"]): fg.get("group_folder_id") for fg in fgs_all}
-    fg_to_name: dict[int, str] = {
-        int(fg["id"]): _normalize_firm_name(fg.get("name") or fg.get("title") or "")
-        for fg in fgs_all
+    field_name_map, field_area_map = _field_catalog(fields_all)
+    field_firm = _build_field_firm(fields_all, fgs_all, gfs_all)
+    crop_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "")
+        for c in crops_raw
+        if c.get("id") is not None
     }
-
-    crop_map = {int(c["id"]): (c.get("name") or c.get("title") or "") for c in crops_raw}
-    field_crop_map: dict[int, str] = {}
-    for hi in his_all:
-        fid, cid = hi.get("field_id"), hi.get("crop_id")
-        if not (fid and cid):
-            continue
-        cname = crop_map.get(int(cid), "")
-        if not cname or cname in SKIP_CROPS:
-            continue
-        if hi.get("active"):
-            field_crop_map[int(fid)] = cname
-
+    history_crop, history_field, history_warnings = _history_for_operations(session, base_url, all_ops, crop_map)
+    warnings.extend(history_warnings)
     work_type_map: dict[int, str] = {
         int(w["id"]): (w.get("name") or w.get("title") or f"wt_{w['id']}")
         for w in wt_raw
+        if w.get("id") is not None
     }
-
-    by_field: dict[int, list[dict]] = defaultdict(list)
-    for op in all_ops:
-        fid = op.get("field_id")
-        if not fid:
-            continue
-        fid = int(fid)
-        crop = field_crop_map.get(fid, "")
-        if not crop:
-            continue
-        by_field[fid].append(op)
-
-    rows_by_field: dict[int, list[dict]] = defaultdict(list)
-    for fid in sorted(by_field.keys(), key=lambda f: field_name_map.get(f, f"zzz_{f}")):
-        ops = sorted(by_field[fid], key=lambda o: str(o.get("planned_start_date") or ""))
-        crop = field_crop_map.get(fid, "")
-
-        field_yield_val: float | None = None
-        for op in ops:
-            y = _yield_from_operation(op)
-            if y is not None and y > 0:
-                field_yield_val = y
-                break
-        y_store = float(field_yield_val) if field_yield_val is not None else 0.0
-
-        for op in ops:
-            wt_id = op.get("work_type_id")
-            folder_id = fg_to_folder.get(int(field_to_fg.get(fid) or 0))
-            mapped_firm = AGROFIRMS_BY_FOLDER.get(int(folder_id)) if folder_id not in (None, "") else None
-            op_fact_rate = _pick_float(
-                op,
-                (
-                    "fact_rate",
-                    "actual_rate",
-                    "actual_application_rate",
-                    "application_rate_fact",
-                ),
-                0.0,
-            )
-            op_planned_rate = _pick_float(
-                op,
-                (
-                    "planned_rate",
-                    "norm_rate",
-                    "application_rate_norm",
-                    "application_rate_plan",
-                    "rate",
-                    "dosage",
-                    "norm",
-                ),
-                0.0,
-            )
-            base_row = {
-                "field_id": fid,
-                "field_name": field_name_map.get(fid, f"field_{fid}"),
-                "field_area": field_area_map.get(fid, 0.0),
-                "crop": crop,
-                "work_type": work_type_map.get(int(wt_id), f"wt_{wt_id}") if wt_id else "",
-                "yield_value": y_store,
-                "firm_name": mapped_firm or fg_to_name.get(int(field_to_fg.get(fid) or 0), "Без фирмы"),
-                "completed_area": float(op.get("completed_area") or 0.0),
-                "covered_area": float(op.get("covered_area") or op.get("completed_area") or 0.0),
-                "date_start": (op.get("actual_start_datetime") or op.get("planned_start_date") or "")[:10],
-                "date_end": (op.get("completed_date") or op.get("planned_end_date") or "")[:10],
-                "folder_id": folder_id,
-            }
-
-            mix_rows = _mix_material_rows(op, material_map)
-            if mix_rows:
-                for mix_row in mix_rows:
-                    row = dict(base_row)
-                    row.update(mix_row)
-                    rows_by_field[fid].append(row)
-            else:
-                row = dict(base_row)
-                row["material_name"] = _material_name_from_operation(op)
-                row["fact_rate"] = op_fact_rate
-                row["planned_rate"] = op_planned_rate
-                rows_by_field[fid].append(row)
-
+    rows_by_field = _rows_for_operations(
+        all_ops,
+        field_name_map=field_name_map,
+        field_area_map=field_area_map,
+        field_firm=field_firm,
+        work_type_map=work_type_map,
+        material_map=material_map,
+        history_crop=history_crop,
+        history_field=history_field,
+    )
     fields = [
         {"field_id": fid, "field_name": field_name_map.get(fid, f"field_{fid}")}
         for fid in sorted(rows_by_field.keys(), key=lambda x: field_name_map.get(x, ""))
     ]
     return {
+        "cache_version": CACHE_SCHEMA_VERSION,
         "created_at": date.today().isoformat(),
         "season_year": season_year,
+        "last_synced_at": last_synced_at,
+        "warnings": warnings,
         "fields": fields,
-        "rows_by_field": rows_by_field,
+        "rows_by_field": {str(fid): rows for fid, rows in rows_by_field.items()},
     }
 
 
 def load_cache() -> dict | None:
-    p = _cache_path()
-    if not p.exists():
+    data = read_json_dict(_cache_path(), label="field_season")
+    if data.get("season_year") is None and not data.get("rows_by_field"):
         return None
-    return json.loads(p.read_text(encoding="utf-8"))
+    return data
 
 
 def generate_cache() -> dict:
     payload = _build_rows()
-    p = _cache_path()
-    p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(_cache_path(), payload)
+    return payload
+
+
+def _field_reference_changed(session: requests.Session, base_url: str, from_time: str) -> bool:
+    for endpoint in (
+        "history_items",
+        "fields",
+        "field_groups",
+        "group_folders",
+        "crops",
+        "fertilizers",
+        "chemicals",
+        "seeds",
+        "work_types",
+    ):
+        if _endpoint_has_changes(session, base_url, endpoint, from_time, None):
+            logger.info("field_season: изменился справочник %s — полный пересчёт", endpoint)
+            return True
+    return False
+
+
+def update_cache_incremental() -> dict:
+    """Обновляет агрооперации по /changes. Смена культуры, фирмы или справочника ТМЦ
+    пересобирает кэш целиком: эти правки не отмечены на самой операции."""
+    cache = load_cache()
+    season_year = int(settings.cropwise_season_year or date.today().year)
+    ready = bool(
+        cache
+        and int(cache.get("cache_version") or 0) >= CACHE_SCHEMA_VERSION
+        and cache.get("last_synced_at")
+        and int(cache.get("season_year") or 0) == season_year
+        and isinstance(cache.get("rows_by_field"), dict)
+    )
+    if not ready:
+        return generate_cache()
+    assert cache is not None
+
+    token = get_cropwise_token()
+    if not token:
+        raise ValueError(MISSING_CROPWISE_TOKEN_DETAIL)
+    base_url = (settings.cropwise_base_url or "").strip() or "https://operations.cropwise.com/api/v3"
+    session = requests.Session()
+    session.headers.update({"X-User-Api-Token": token})
+    from_time = str(cache.get("last_synced_at"))
+    try:
+        if _field_reference_changed(session, base_url, from_time):
+            return generate_cache()
+    except Exception:
+        logger.warning("field_season: проверка справочников не удалась, полный пересчёт", exc_info=True)
+        return generate_cache()
+
+    changed, server_time = _changes_since(session, base_url, "agro_operations", from_time)
+    new_synced = server_time or from_time
+    changed_ids: set[int] = set()
+    for op in changed:
+        oid = op.get("id")
+        if oid is not None:
+            try:
+                changed_ids.add(int(oid))
+            except (TypeError, ValueError):
+                continue
+    if not changed_ids:
+        updated = dict(cache)
+        updated["last_synced_at"] = new_synced
+        atomic_write_json(_cache_path(), updated)
+        return updated
+
+    fresh = _mass_request(session, base_url, "agro_operations", sorted(changed_ids))
+    fresh_by_id = {}
+    for op in fresh:
+        if op.get("id") is None:
+            continue
+        try:
+            fresh_by_id[int(op["id"])] = op
+        except (TypeError, ValueError):
+            continue
+    live_ops = []
+    for op in fresh_by_id.values():
+        if str(op.get("status") or "").strip().lower() == "canceled":
+            continue
+        season = op.get("season")
+        if season not in (None, "") and str(season) != str(season_year):
+            continue
+        live_ops.append(op)
+    fields_all = _get_all(session, base_url, "fields")
+    fgs_all = _get_all(session, base_url, "field_groups")
+    gfs_all = _get_all(session, base_url, "group_folders") or _get_all_page(session, base_url, "group_folders")
+    crops_raw = _get_all(session, base_url, "crops") or _get_all_page(session, base_url, "crops")
+    wt_raw = _get_all(session, base_url, "work_types") or _get_all_page(session, base_url, "work_types")
+    material_map, warnings = _load_material_map(session, base_url)
+    field_name_map, field_area_map = _field_catalog(fields_all)
+    field_firm = _build_field_firm(fields_all, fgs_all, gfs_all)
+    crop_map = {
+        int(c["id"]): str(c.get("name") or c.get("title") or "")
+        for c in crops_raw
+        if c.get("id") is not None
+    }
+    history_crop, history_field, history_warnings = _history_for_operations(session, base_url, live_ops, crop_map)
+    warnings.extend(history_warnings)
+    work_type_map = {
+        int(w["id"]): (w.get("name") or w.get("title") or f"wt_{w['id']}")
+        for w in wt_raw
+        if w.get("id") is not None
+    }
+    replacement = _rows_for_operations(
+        live_ops,
+        field_name_map=field_name_map,
+        field_area_map=field_area_map,
+        field_firm=field_firm,
+        work_type_map=work_type_map,
+        material_map=material_map,
+        history_crop=history_crop,
+        history_field=history_field,
+    )
+    kept: dict[str, list[dict]] = {}
+    for key, rows in (cache.get("rows_by_field") or {}).items():
+        if not isinstance(rows, list):
+            continue
+        stayed = []
+        for row in rows:
+            try:
+                oid = int(row.get("operation_id"))
+            except (TypeError, ValueError):
+                stayed.append(row)
+                continue
+            if oid not in changed_ids:
+                fid = row.get("field_id")
+                try:
+                    fid_i = int(fid)
+                except (TypeError, ValueError):
+                    stayed.append(row)
+                    continue
+                row = dict(row)
+                row["firm_name"] = field_firm.get(fid_i) or row.get("firm_name") or "Без фирмы"
+                if fid_i in field_name_map:
+                    row["field_name"] = field_name_map[fid_i]
+                    row["field_area"] = field_area_map.get(fid_i, row.get("field_area"))
+                stayed.append(row)
+        if stayed:
+            kept[str(key)] = stayed
+    for fid, rows in replacement.items():
+        kept.setdefault(str(fid), []).extend(rows)
+    for rows in kept.values():
+        _restamp_field_yield(rows)
+    fields = [
+        {"field_id": int(fid), "field_name": field_name_map.get(int(fid), f"field_{fid}")}
+        for fid in sorted(kept.keys(), key=lambda x: field_name_map.get(int(x), ""))
+        if str(fid).isdigit()
+    ]
+    payload = {
+        "cache_version": CACHE_SCHEMA_VERSION,
+        "created_at": cache.get("created_at") or date.today().isoformat(),
+        "season_year": season_year,
+        "last_synced_at": new_synced,
+        "warnings": list(cache.get("warnings") or []) + warnings,
+        "fields": fields,
+        "rows_by_field": kept,
+    }
+    atomic_write_json(_cache_path(), payload)
     return payload
 
 
@@ -601,7 +864,7 @@ def build_field_pdf(field_id: int | None = None, field_ids: list[int] | None = N
     n_fields = len({int(r.get("field_id") or 0) for r in rows if int(r.get("field_id") or 0) > 0})
     if n_fields == 0:
         n_fields = len({str(r.get("field_name") or "") for r in rows if str(r.get("field_name") or "").strip()})
-    n_ops = len(rows)
+    n_ops = _operation_count(rows)
 
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A3, landscape
@@ -876,7 +1139,7 @@ def build_field_excel(field_id: int | None = None, field_ids: list[int] | None =
         )
         if n_fields == 0:
             n_fields = len({str(r.get("field_name") or "") for r in sheet_rows if str(r.get("field_name") or "").strip()})
-        n_ops = len(sorted_rows)
+        n_ops = _operation_count(sorted_rows)
 
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_hdr)
         _cell(
@@ -934,7 +1197,7 @@ def generate_cache_async() -> None:
     def _worker() -> None:
         global _is_running, _last_error
         try:
-            generate_cache()
+            update_cache_incremental()
         except Exception as exc:
             with _state_lock:
                 _last_error = str(exc)
