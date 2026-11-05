@@ -78,6 +78,116 @@ def relocate_comments_below_table(pdf_path: Path, comments: list[dict[str, Any]]
     return moved
 
 
+def _norm_comment_text(value: Any) -> str:
+    return " ".join(str(value or "").replace("\u00a0", " ").split())
+
+
+def _span_star_anchor(span: dict[str, Any]) -> tuple[float, float] | None:
+    """Точка звёздочки так же, как её считает редактор: 96% ширины фрагмента и 52% его высоты.
+
+    Высота — кегль от базовой линии вверх, как у pdf.js, а не рамка чернил.
+    """
+    bbox = span.get("bbox") or (0, 0, 0, 0)
+    origin = span.get("origin") or (bbox[0], bbox[3])
+    try:
+        x0 = float(bbox[0])
+        x1 = float(bbox[2])
+        baseline = float(origin[1])
+        size = float(span.get("size") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    width = x1 - x0
+    if width <= 0.2 or size < 1.0:
+        return None
+    return (x0 + 0.96 * width, baseline - 0.48 * size)
+
+
+def snap_comment_stars(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
+    """Подтянуть звёздочку к концу той же цифры.
+
+    В файле хранится точка с прошлого сохранения. Если она уехала на несколько
+    пунктов, печать повторяет этот зазор. Здесь точка заново берётся из текста
+    страницы. Чужой фрагмент с другим текстом не трогаем: одинаковый текст
+    выбирается ближайший к сохранённой точке.
+    """
+    if not pdf_path.is_file() or not comments:
+        return 0
+    try:
+        import pymupdf
+    except Exception:
+        return 0
+    try:
+        doc = pymupdf.open(str(pdf_path))
+    except Exception:
+        return 0
+    moved = 0
+    try:
+        by_page: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in comments:
+            if not isinstance(row, dict):
+                continue
+            text = _norm_comment_text(row.get("cell_text"))
+            if not text:
+                continue
+            try:
+                page_no = int(row.get("page", 1))
+            except (TypeError, ValueError):
+                page_no = 1
+            if page_no < 1:
+                page_no = 1
+            by_page[page_no].append(row)
+
+        for page_no, rows in by_page.items():
+            if page_no > doc.page_count:
+                continue
+            page = doc[page_no - 1]
+            width = float(page.rect.width) or 1.0
+            height = float(page.rect.height) or 1.0
+            spans: list[tuple[str, float, float]] = []
+            for block in page.get_text("dict").get("blocks") or []:
+                if int(block.get("type", 0) or 0) != 0:
+                    continue
+                for line in block.get("lines") or []:
+                    for span in line.get("spans") or []:
+                        raw = str(span.get("text") or "")
+                        if set(raw.strip()) <= {"*"}:
+                            continue
+                        norm = _norm_comment_text(raw)
+                        if not norm:
+                            continue
+                        anchor = _span_star_anchor(span)
+                        if anchor is None:
+                            continue
+                        spans.append((norm, anchor[0], anchor[1]))
+            if not spans:
+                continue
+            for row in rows:
+                wanted = _norm_comment_text(row.get("cell_text"))
+                try:
+                    stored_x = float(row.get("x", 0.0)) * width
+                    stored_y = float(row.get("y", 0.0)) * height
+                except (TypeError, ValueError):
+                    stored_x, stored_y = 0.0, 0.0
+                best: tuple[float, float, float] | None = None
+                for norm, ax, ay in spans:
+                    if norm != wanted:
+                        continue
+                    dist = (ax - stored_x) ** 2 + (ay - stored_y) ** 2
+                    if best is None or dist < best[0]:
+                        best = (dist, ax, ay)
+                if best is None:
+                    continue
+                ax, ay = best[1], best[2]
+                if (ax - stored_x) ** 2 + (ay - stored_y) ** 2 < 0.36:
+                    continue
+                row["x"] = round(max(0.0, min(1.0, ax / width)), 6)
+                row["y"] = round(max(0.0, min(1.0, ay / height)), 6)
+                moved += 1
+    finally:
+        doc.close()
+    return moved
+
+
 def _wrap_lines(text: str, *, max_width: float, font_name: str, font_size: float, canvas_obj: Any) -> list[str]:
     words = str(text or "").split()
     if not words:
@@ -108,6 +218,9 @@ def apply_comments_to_pdf(
         shutil.copy2(base_pdf_path, tmp_copy)
         tmp_copy.replace(target_pdf_path)
         return
+
+    # Точка в JSON могла отойти от цифры. Печатаем по текущему тексту страницы.
+    snap_comment_stars(base_pdf_path, comments)
 
     try:
         from pypdf import PdfReader, PdfWriter

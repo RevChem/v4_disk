@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pymupdf
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 
@@ -11,6 +12,7 @@ from app.application.summary_comments_hooks import apply_comments_after_generati
 from app.application.summary_pdf_layers import rebuild_summary_pdf_layers
 from app.legacy.cell_edits_store import load_cell_edits_store, save_cell_edits_store
 from app.legacy.comments_store import load_comments_store, save_comments_store
+from app.legacy.pdf_comments import apply_comments_to_pdf
 
 
 def _write_pdf(path, label: str) -> None:
@@ -145,3 +147,91 @@ def test_regeneration_moves_comment_below_grown_table(tmp_path, monkeypatch):
     assert "row 0 value" in text
     assert "Приписка про дождь" in text
     assert any("сдвинуты под таблицу" in line for line in logs)
+
+
+def _number_spans(path):
+    doc = pymupdf.open(str(path))
+    try:
+        spans = []
+        for block in doc[0].get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    if set(str(span["text"]).strip()) <= {"*"}:
+                        continue
+                    spans.append(span)
+        return doc[0].rect.width, doc[0].rect.height, spans
+    finally:
+        doc.close()
+
+
+def _star_origins(path):
+    doc = pymupdf.open(str(path))
+    try:
+        out = []
+        for block in doc[0].get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    if set(str(span["text"]).strip()) <= {"*"} and "Helvetica" in span["font"]:
+                        out.append(span["origin"])
+        return out
+    finally:
+        doc.close()
+
+
+def test_stale_star_is_pulled_back_to_the_digit(tmp_path):
+    pdf = tmp_path / "nums.pdf"
+    out = tmp_path / "out.pdf"
+    canvas_obj = canvas.Canvas(str(pdf), pagesize=(420, 300))
+    canvas_obj.setFont("Helvetica", 10)
+    canvas_obj.drawString(70, 160, "125.4")
+    canvas_obj.drawString(260, 160, "125.4")
+    canvas_obj.save()
+
+    width, _height, spans = _number_spans(pdf)
+    right = next(span for span in spans if span["bbox"][0] > 200)
+    # Сохранённая точка на 12 пт правее цифры — тот самый уехавший зазор.
+    stale_x = (right["bbox"][2] + 12.0) / width
+    row = {
+        "id": "c1",
+        "page": 1,
+        "x": stale_x,
+        "y": 0.45,
+        "comment_anchor_y": 0.91,
+        "cell_text": "125.4",
+        "cell_key": "1:10:20:125.4",
+        "comment": "рядом с правой цифрой",
+    }
+    apply_comments_to_pdf(target_pdf_path=out, base_pdf_path=pdf, comments=[row])
+
+    assert row["comment_anchor_y"] == 0.91
+    star_x = _star_origins(out)[0][0]
+    gap = star_x - right["bbox"][2]
+    assert abs(gap) < 1.5
+    # Левая такая же цифра дальше, к ней звёздочка не прыгает.
+    left = next(span for span in spans if span["bbox"][0] < 200)
+    assert star_x - left["bbox"][2] > 40
+
+
+def test_unknown_cell_text_keeps_the_saved_point(tmp_path):
+    pdf = tmp_path / "nums.pdf"
+    out = tmp_path / "out.pdf"
+    canvas_obj = canvas.Canvas(str(pdf), pagesize=(420, 300))
+    canvas_obj.setFont("Helvetica", 10)
+    canvas_obj.drawString(70, 160, "125.4")
+    canvas_obj.save()
+    row = {
+        "id": "c1",
+        "page": 1,
+        "x": 0.62,
+        "y": 0.33,
+        "cell_text": "999",
+        "cell_key": "1:1:1:999",
+        "comment": "чужой текст",
+    }
+    apply_comments_to_pdf(target_pdf_path=out, base_pdf_path=pdf, comments=[row])
+    assert row["x"] == 0.62
+    assert row["y"] == 0.33

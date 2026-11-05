@@ -225,6 +225,8 @@ def rebuild_summary_pdf_layers(item: Summary) -> None:
                 base_pdf_path=mid,
                 comments=comments,
             )
+            # Звёздочка могла притянуться к цифре — записать уже новую точку.
+            save_comments_store(comments_store)
         else:
             shutil.copy2(mid, working)
     finally:
