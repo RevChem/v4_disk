@@ -216,6 +216,43 @@ def test_stale_star_is_pulled_back_to_the_digit(tmp_path):
     assert star_x - left["bbox"][2] > 40
 
 
+def test_old_cell_text_still_snaps_to_the_same_cell(tmp_path):
+    """Комментарий поставлен, когда в ячейке было «128 473». Сейчас там «128 507»."""
+    pdf = tmp_path / "nums.pdf"
+    out = tmp_path / "out.pdf"
+    canvas_obj = canvas.Canvas(str(pdf), pagesize=(420, 300))
+    canvas_obj.setFont("Helvetica", 10)
+    canvas_obj.drawString(40, 160, "7 509.9")
+    canvas_obj.drawString(180, 160, "128 507")
+    canvas_obj.drawString(310, 160, "0")
+    canvas_obj.save()
+
+    _width, _height, spans = _number_spans(pdf)
+    target = next(span for span in spans if "128 507" in span["text"])
+    x0 = float(target["bbox"][0])
+    baseline = float(target["origin"][1])
+    size = float(target["size"])
+    # Как cell_key во фронтенде: пиксели viewport при масштабе 1.2, верх рамки pdf.js.
+    cell_key = f"1:{round(x0 * 1.2)}:{round((baseline - size) * 1.2)}:128 473"
+    page_w = 420.0
+    stale_x = (float(target["bbox"][2]) + 28.0) / page_w
+    row = {
+        "id": "c1",
+        "page": 1,
+        "x": stale_x,
+        "y": 0.2,
+        "cell_text": "128 473",
+        "cell_key": cell_key,
+        "comment": "старая приписка",
+    }
+    apply_comments_to_pdf(target_pdf_path=out, base_pdf_path=pdf, comments=[row])
+
+    star_x = _star_origins(out)[0][0]
+    assert abs(star_x - float(target["bbox"][2])) < 1.5
+    zero = next(span for span in spans if span["text"].strip() == "0")
+    assert zero["bbox"][0] - star_x > 15
+
+
 def test_unknown_cell_text_keeps_the_saved_point(tmp_path):
     pdf = tmp_path / "nums.pdf"
     out = tmp_path / "out.pdf"

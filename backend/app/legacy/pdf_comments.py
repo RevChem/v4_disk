@@ -78,37 +78,116 @@ def relocate_comments_below_table(pdf_path: Path, comments: list[dict[str, Any]]
     return moved
 
 
+# Редактор ячеек считает координаты при масштабе 1.2 и кладёт их в cell_key.
+_CELL_KEY_SCALE = 1.2
+# Звёздочка, уехавшая внутри своей ячейки, всё ещё левее следующей цифры.
+_MAX_STAR_GAP_PT = 55.0
+
+
 def _norm_comment_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\u00a0", " ").split())
 
 
-def _span_star_anchor(span: dict[str, Any]) -> tuple[float, float] | None:
-    """Точка звёздочки так же, как её считает редактор: 96% ширины фрагмента и 52% его высоты.
+def _span_star_anchor(span: dict[str, Any]) -> tuple[float, float, float, float, float, float] | None:
+    """Правый край цифры и точка звёздочки.
 
-    Высота — кегль от базовой линии вверх, как у pdf.js, а не рамка чернил.
+    Точка та же, что в редакторе: 96% ширины фрагмента и 52% кегля от базовой
+    линии вверх (рамка pdf.js, не чёрная краска).
     """
     bbox = span.get("bbox") or (0, 0, 0, 0)
     origin = span.get("origin") or (bbox[0], bbox[3])
     try:
         x0 = float(bbox[0])
+        y0 = float(bbox[1])
         x1 = float(bbox[2])
+        y1 = float(bbox[3])
         baseline = float(origin[1])
         size = float(span.get("size") or 0.0)
     except (TypeError, ValueError):
         return None
     width = x1 - x0
-    if width <= 0.2 or size < 1.0:
+    if width <= 0.2 or width > 90.0 or size < 1.0:
         return None
-    return (x0 + 0.96 * width, baseline - 0.48 * size)
+    return (x0, y0, x1, y1, x0 + 0.96 * width, baseline - 0.48 * size)
+
+
+def _cell_key_pdf_point(cell_key: Any) -> tuple[float, float] | None:
+    parts = str(cell_key or "").split(":", 3)
+    if len(parts) < 3:
+        return None
+    try:
+        left = float(parts[1]) / _CELL_KEY_SCALE
+        top = float(parts[2]) / _CELL_KEY_SCALE
+    except (TypeError, ValueError):
+        return None
+    if left < 0 or top < 0:
+        return None
+    return (left, top)
+
+
+def _pick_span_for_star(
+    spans: list[tuple[str, float, float, float, float, float, float, bool]],
+    row: dict[str, Any],
+    *,
+    width: float,
+    height: float,
+) -> tuple[str, float, float] | None:
+    """Фрагмент, к которому относится звёздочка: (текст, anchor_x, anchor_y)."""
+    try:
+        stored_x = float(row.get("x", 0.0)) * width
+        stored_y = float(row.get("y", 0.0)) * height
+    except (TypeError, ValueError):
+        stored_x, stored_y = 0.0, 0.0
+    wanted = _norm_comment_text(row.get("cell_text"))
+    wanted_digit = any(ch.isdigit() for ch in wanted)
+
+    def near_saved(anchor_x: float, anchor_y: float, limit: float) -> bool:
+        return (anchor_x - stored_x) ** 2 + (anchor_y - stored_y) ** 2 <= limit * limit
+
+    text_hits = [span for span in spans if wanted and span[0] == wanted and near_saved(span[5], span[6], 80.0)]
+    if text_hits:
+        chosen = min(text_hits, key=lambda span: (span[5] - stored_x) ** 2 + (span[6] - stored_y) ** 2)
+        return (chosen[0], chosen[5], chosen[6])
+
+    point = _cell_key_pdf_point(row.get("cell_key"))
+    if point is not None:
+        px, py = point
+        inside = []
+        for span in spans:
+            norm, x0, y0, x1, y1, ax, ay, has_digit = span
+            if wanted_digit and not has_digit:
+                continue
+            if (x0 - 4.0) <= px <= (x1 + 10.0) and (y0 - 8.0) <= py <= (y1 + 6.0):
+                inside.append(span)
+        if inside:
+            chosen = min(inside, key=lambda span: (span[1] - px) ** 2 + (span[2] - py) ** 2)
+            return (chosen[0], chosen[5], chosen[6])
+
+    # Старая точка уже правее цифры. Берём ближайший левый край той же строки.
+    left_of_star = []
+    for span in spans:
+        norm, _x0, _y0, _x1, _y1, ax, ay, has_digit = span
+        if wanted_digit and not has_digit:
+            continue
+        gap = stored_x - ax
+        if gap < -2.0 or gap > _MAX_STAR_GAP_PT:
+            continue
+        if abs(ay - stored_y) > 14.0:
+            continue
+        left_of_star.append((gap, span))
+    if not left_of_star:
+        return None
+    chosen = min(left_of_star, key=lambda item: (item[0], abs(item[1][6] - stored_y)))[1]
+    return (chosen[0], chosen[5], chosen[6])
 
 
 def snap_comment_stars(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
-    """Подтянуть звёздочку к концу той же цифры.
+    """Подтянуть звёздочку к концу цифры в её ячейке.
 
-    В файле хранится точка с прошлого сохранения. Если она уехала на несколько
-    пунктов, печать повторяет этот зазор. Здесь точка заново берётся из текста
-    страницы. Чужой фрагмент с другим текстом не трогаем: одинаковый текст
-    выбирается ближайший к сохранённой точке.
+    Точка хранится с того дня, когда комментарий поставили. Число с тех пор
+    меняется (56 367 → 56 372), а точка остаётся на старом месте и отстаёт
+    от цифры. Сначала ищем тот же текст, потом ячейку по координатам из
+    cell_key, и только затем цифру слева от самой звёздочки.
     """
     if not pdf_path.is_file() or not comments:
         return 0
@@ -126,9 +205,6 @@ def snap_comment_stars(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
         for row in comments:
             if not isinstance(row, dict):
                 continue
-            text = _norm_comment_text(row.get("cell_text"))
-            if not text:
-                continue
             try:
                 page_no = int(row.get("page", 1))
             except (TypeError, ValueError):
@@ -143,7 +219,7 @@ def snap_comment_stars(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
             page = doc[page_no - 1]
             width = float(page.rect.width) or 1.0
             height = float(page.rect.height) or 1.0
-            spans: list[tuple[str, float, float]] = []
+            spans: list[tuple[str, float, float, float, float, float, float, bool]] = []
             for block in page.get_text("dict").get("blocks") or []:
                 if int(block.get("type", 0) or 0) != 0:
                     continue
@@ -158,30 +234,27 @@ def snap_comment_stars(pdf_path: Path, comments: list[dict[str, Any]]) -> int:
                         anchor = _span_star_anchor(span)
                         if anchor is None:
                             continue
-                        spans.append((norm, anchor[0], anchor[1]))
+                        x0, y0, x1, y1, ax, ay = anchor
+                        spans.append((norm, x0, y0, x1, y1, ax, ay, any(ch.isdigit() for ch in norm)))
             if not spans:
                 continue
             for row in rows:
-                wanted = _norm_comment_text(row.get("cell_text"))
+                picked = _pick_span_for_star(spans, row, width=width, height=height)
+                if picked is None:
+                    continue
+                text, ax, ay = picked
                 try:
                     stored_x = float(row.get("x", 0.0)) * width
                     stored_y = float(row.get("y", 0.0)) * height
                 except (TypeError, ValueError):
-                    stored_x, stored_y = 0.0, 0.0
-                best: tuple[float, float, float] | None = None
-                for norm, ax, ay in spans:
-                    if norm != wanted:
-                        continue
-                    dist = (ax - stored_x) ** 2 + (ay - stored_y) ** 2
-                    if best is None or dist < best[0]:
-                        best = (dist, ax, ay)
-                if best is None:
-                    continue
-                ax, ay = best[1], best[2]
-                if (ax - stored_x) ** 2 + (ay - stored_y) ** 2 < 0.36:
+                    stored_x, stored_y = ax + 99.0, ay + 99.0
+                same_text = _norm_comment_text(row.get("cell_text")) == text
+                if same_text and (ax - stored_x) ** 2 + (ay - stored_y) ** 2 < 0.36:
                     continue
                 row["x"] = round(max(0.0, min(1.0, ax / width)), 6)
                 row["y"] = round(max(0.0, min(1.0, ay / height)), 6)
+                if text:
+                    row["cell_text"] = text
                 moved += 1
     finally:
         doc.close()
