@@ -843,6 +843,8 @@ class TaskQuestionsAskIn(BaseModel):
     time_to: str = Field(default="05:59", max_length=5)
     plate: str = Field(default="", max_length=40)
     surname: str = Field(default="", max_length=80)
+    firms: list[str] = Field(default_factory=list, max_length=20)
+    crew: str = Field(default="", max_length=16)
     operation: str = Field(default="", max_length=160)
     operations: list[str] = Field(default_factory=list, max_length=40)
     work_type_ids: list[int] = Field(default_factory=list, max_length=300)
@@ -884,6 +886,8 @@ def post_task_questions_ask(
         time_to=body.time_to,
         plate=body.plate,
         surname=body.surname,
+        firms=body.firms,
+        crew=body.crew,
         operation=body.operation,
         operations=body.operations,
         work_type_ids=body.work_type_ids,

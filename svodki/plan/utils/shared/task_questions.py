@@ -15,6 +15,8 @@ import driver_work as dw
 
 _TZ = timezone(timedelta(hours=3))
 _TASK_URL = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_id}"
+# plans.HIRED_GROUP_ID: в Cropwise наёмная техника — machine_group_id == 7.
+HIRED_GROUP_ID = 7
 
 
 def shift_cutoff(report_date: date) -> datetime:
@@ -58,17 +60,20 @@ def area_rows(con: sqlite3.Connection, start_ts: float, end_ts: float) -> list[d
                CAST(json_extract(t.data, '$.driver_id') AS INTEGER),
                CAST(json_extract(m.data, '$.field_id') AS INTEGER),
                {crop_col},
-               CAST(json_extract(m.data, '$.covered_area') AS REAL)
+               CAST(json_extract(m.data, '$.covered_area') AS REAL),
+               CAST(json_extract(m.data, '$.covered_area_by_track') AS REAL)
         FROM mtfmi m
         JOIN tasks t ON t.id = m.task_id
         {crop_join}
         WHERE t.end_ts >= ? AND t.end_ts < ?
           AND CAST(json_extract(m.data, '$.covered_area') AS REAL) > 0
     """
-    for task_id, machine_id, wt, end_ts, driver_id, field_id, crop, ha in con.execute(
+    for task_id, machine_id, wt, end_ts, driver_id, field_id, crop, ha, track in con.execute(
         query, (start_ts, end_ts)
     ):
         moment = datetime.fromtimestamp(float(end_ts), tz=_TZ)
+        # ha — убранная площадь (covered_area). track_ha — площадь по треку,
+        # то же поле mtfmi, что в отчёте «Обработанная площадь поля».
         found.append(
             {
                 "at": moment.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -79,21 +84,27 @@ def area_rows(con: sqlite3.Connection, start_ts: float, end_ts: float) -> list[d
                 "field_id": int(field_id) if field_id else None,
                 "crop": str(crop or "").strip() or "—",
                 "ha": round(float(ha or 0), 2),
+                "track_ha": None if track is None else round(float(track), 2),
             }
         )
     return found
 
 
-def _plates(refs_path: Path) -> dict[int, str]:
-    out: dict[int, str] = {}
+def _machine_refs(refs_path: Path) -> tuple[dict[int, str], dict[int, int]]:
+    """Госномер и machine_group_id. Группа 7 — наёмники, остальные — собственные."""
+    plates: dict[int, str] = {}
+    groups: dict[int, int] = {}
     for row in dw._load_ref(refs_path, "machines"):
         mid = dw._int_or_none(row.get("id"))
         if mid is None:
             continue
         reg = str(row.get("registration_number") or row.get("reg_number") or "").strip()
         name = str(row.get("name") or "").strip()
-        out[mid] = reg or name
-    return out
+        plates[mid] = reg or name
+        gid = dw._int_or_none(row.get("machine_group_id"))
+        if gid is not None:
+            groups[mid] = gid
+    return plates, groups
 
 
 def label_rows(
@@ -103,13 +114,16 @@ def label_rows(
     plates: dict[int, str],
     operations: dict[int, str],
     field_names: dict[int, str],
+    groups: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
+    machine_groups = groups or {}
     rows: list[dict[str, Any]] = []
     for rec in raw:
         fid = rec.get("field_id")
         mid = rec.get("machine_id")
         wt = rec.get("work_type_id")
         tid = rec.get("task_id")
+        group_id = machine_groups.get(mid) if isinstance(mid, int) else None
         rows.append(
             {
                 "at": rec.get("at"),
@@ -121,7 +135,10 @@ def label_rows(
                 "operator": "",
                 "surname": "",
                 "field": field_names.get(fid) or (f"поле {fid}" if fid else ""),
+                "field_id": fid if isinstance(fid, int) else None,
                 "ha": rec.get("ha") or 0,
+                "track_ha": rec.get("track_ha"),
+                "crew": "hired" if group_id == HIRED_GROUP_ID else "own",
                 "task_id": tid,
                 "machine_id": mid,
                 "driver_id": rec.get("driver_id"),
@@ -165,11 +182,13 @@ def load_rows(store_dir: Path, report_date: date) -> dict[str, Any]:
     refs = Path(store_dir) / "refs.sqlite"
     fields = dw._load_ref(refs, "fields")
     firms = dw.field_firms(fields, dw._load_ref(refs, "field_groups"), dw._load_ref(refs, "group_folders"))
+    plates, groups = _machine_refs(refs)
     rows = label_rows(
         raw,
         firms=firms,
-        plates=_plates(refs),
+        plates=plates,
         operations=dw._operation_labels(),
         field_names=dw._field_names(fields),
+        groups=groups,
     )
     return {"available": True, "detail": "", "rows": rows, "records": len(rows), **frame}

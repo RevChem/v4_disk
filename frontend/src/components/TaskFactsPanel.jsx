@@ -43,6 +43,7 @@ import {
   fetchTaskQuestions,
 } from "../api";
 import { ColumnFilter, EMPTY_COLUMNS, applyColumnFilters, distinctColumnValues } from "./ColumnFilter";
+import { FieldSliceTable, WorkerSliceTable } from "./TaskSliceTables";
 import { filterRows, normText, rankRows, sortRecordRows } from "../utils/namolotFilter";
 import { NAMOLOT_CROPS, NAMOLOT_FIRMS } from "../utils/namolotOptions";
 import { readView, useViewSnapshot } from "../utils/viewMemory";
@@ -56,7 +57,31 @@ const EXAMPLES = [
 
 function withArea(row) {
   const ha = Number(row?.ha) || 0;
-  return { ...row, ha, tonnes: ha };
+  const trackRaw = row?.track_ha;
+  const track = trackRaw == null || trackRaw === "" ? null : Number(trackRaw);
+  return { ...row, ha, tonnes: ha, track_ha: Number.isFinite(track) ? track : null };
+}
+
+function selectedFirms(applied) {
+  if (!applied) return [];
+  if (Array.isArray(applied.firms) && applied.firms.length) return applied.firms;
+  return applied.firm ? [applied.firm] : [];
+}
+
+function sliceIsNarrow(applied) {
+  if (!applied) return false;
+  return Boolean(
+    selectedFirms(applied).length ||
+      applied.crop ||
+      applied.operations?.length ||
+      applied.details?.length ||
+      applied.dateFrom ||
+      applied.dateTo ||
+      applied.plate ||
+      applied.surname ||
+      applied.crew === "hired" ||
+      applied.crew === "own",
+  );
 }
 
 function fmtHa(value) {
@@ -121,9 +146,12 @@ function narrowTasks(list, applied) {
 function sliceLabel(applied) {
   if (!applied) return "весь сезон";
   const parts = [];
+  const firms = selectedFirms(applied);
+  if (firms.length) parts.push(firms.join(", "));
+  if (applied.crew === "hired") parts.push("наемники");
+  if (applied.crew === "own") parts.push("собственные");
   if (applied.operations?.length) parts.push(applied.operations.map((item) => item.name).join(", "));
   if (applied.details?.length) parts.push(applied.details.map((item) => item.label).join(", "));
-  if (applied.firm) parts.push(applied.firm);
   if (applied.crop) parts.push(applied.crop);
   if (applied.dateFrom || applied.dateTo) {
     const from = [applied.dateFrom, applied.timeFrom].filter(Boolean).join(" ");
@@ -159,7 +187,9 @@ function shiftOf(iso) {
 
 function emptySlice(iso) {
   return {
+    firms: [],
     firm: "",
+    crew: "all",
     crop: "",
     operations: [],
     details: [],
@@ -188,7 +218,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
   const [workTypes, setWorkTypes] = useState([]);
   const [groups, setGroups] = useState([]);
 
-  const [firm, setFirm] = useState(boot.firm || "");
+  const [firms, setFirms] = useState(() => (Array.isArray(boot.firms) ? boot.firms : boot.firm ? [boot.firm] : []));
+  const [crew, setCrew] = useState(boot.crew === "hired" || boot.crew === "own" ? boot.crew : "all");
   const [crop, setCrop] = useState(boot.crop || "");
   const [operations, setOperations] = useState(() => (Array.isArray(boot.operations) ? boot.operations : []));
   const [details, setDetails] = useState(() => (Array.isArray(boot.details) ? boot.details : []));
@@ -226,7 +257,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setLoaded(Boolean(data.loaded));
     setError(data.error || "");
     setNamesNote(data.namesNote || "");
-    setFirm(data.firm || "");
+    setFirms(Array.isArray(data.firms) ? data.firms : data.firm ? [data.firm] : []);
+    setCrew(data.crew === "hired" || data.crew === "own" ? data.crew : "all");
     setCrop(data.crop || "");
     setOperations(Array.isArray(data.operations) ? data.operations : []);
     setDetails(Array.isArray(data.details) ? data.details : []);
@@ -258,7 +290,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       loaded,
       error,
       namesNote,
-      firm,
+      firms,
+      crew,
       crop,
       operations,
       details,
@@ -286,7 +319,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       loaded,
       error,
       namesNote,
-      firm,
+      firms,
+      crew,
       crop,
       operations,
       details,
@@ -382,7 +416,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     if (!applied) return [];
     return narrowTasks(
       filterRows(rows, {
-        firms: applied.firm ? [applied.firm] : [],
+        firms: selectedFirms(applied),
         crops: applied.crop ? [applied.crop] : [],
         dateFrom: applied.dateFrom,
         timeFrom: applied.timeFrom,
@@ -390,10 +424,16 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
         timeTo: applied.timeTo,
         plate: applied.plate,
         surname: applied.surname,
+        crew: applied.crew,
       }),
       applied,
     );
   }, [rows, applied]);
+
+  const firmPick = selectedFirms(applied);
+  const distinctFirms = useMemo(() => new Set(ranged.map((row) => row.firm).filter(Boolean)).size, [ranged]);
+  const showFirm = firmPick.length > 1 || (firmPick.length === 0 && distinctFirms > 1);
+  const sliceNote = applied ? `Срез: ${sliceLabel(applied)}` : "";
 
   const columnOptions = useMemo(() => distinctColumnValues(ranged), [ranged]);
 
@@ -407,8 +447,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     if (!applied) return [];
     return narrowTasks(
       filterRows(rows, {
-        firms: applied.firm ? [applied.firm] : [],
+        firms: selectedFirms(applied),
         crops: applied.crop ? [applied.crop] : [],
+        crew: applied.crew,
       }),
       applied,
     );
@@ -433,7 +474,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
   function draft() {
     return {
-      firm,
+      firms: [...firms],
+      firm: firms.length === 1 ? firms[0] : "",
+      crew,
       crop,
       operations: operations.map((item) => ({ name: item.name, ids: [...item.ids] })),
       details: details.map((item) => ({ id: item.id, label: item.label })),
@@ -451,7 +494,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
     setColumns(EMPTY_COLUMNS);
     setApplied(next);
     setPage(0);
-    if (showTable) setView("table");
+    if (showTable) setView((current) => (current === "slice" || current === "fields" ? current : "table"));
     // Сохранённый срез только на экране. «Сформировать» снова читает задания.
     if (loading) return next;
     if (!force && loaded) return next;
@@ -490,7 +533,8 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
   function resetFilters() {
     const shift = shiftOf(reportDate);
-    setFirm("");
+    setFirms([]);
+    setCrew("all");
     setCrop("");
     setOperations([]);
     setDetails([]);
@@ -537,7 +581,9 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
       const slice = await form({ showTable: false });
       const data = await askTaskQuestions({
         reportDate,
-        firm: slice.firm,
+        firm: slice.firms?.length === 1 ? slice.firms[0] : slice.firm || "",
+        firms: slice.firms?.length ? slice.firms : slice.firm ? [slice.firm] : [],
+        crew: slice.crew === "hired" || slice.crew === "own" ? slice.crew : "",
         crop: slice.crop,
         dateFrom: slice.dateFrom,
         timeFrom: slice.timeFrom,
@@ -581,24 +627,51 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
         <Stack spacing={1.5} sx={{ p: 2, flex: 1, minHeight: 0, overflow: "auto" }}>
           <Typography variant="body2" color="text.secondary">
             Дата сводки {reportDate}. По умолчанию стоит смена: вчера 06:00 — сегодня 05:59.
-            Агрофирма, культура, госномер и фамилия необязательны. Агрооперации — те же группы, что в планах,
+            Можно выбрать несколько агрофирм. Культура, госномер и фамилия необязательны. Агрооперации — те же группы, что в планах,
             можно выбрать несколько. Агрозадания ниже — отдельные виды работ, они необязательны: достаточно одного из списков.
           </Typography>
+          <Autocomplete
+            multiple
+            disableCloseOnSelect
+            size="small"
+            options={NAMOLOT_FIRMS}
+            value={firms}
+            onChange={(_event, value) => setFirms(value)}
+            limitTags={2}
+            disabled={loading}
+            slotProps={POPPER_PROPS}
+            renderOption={(props, option, { selected }) => {
+              const { key, ...rest } = props;
+              return (
+                <li key={key} {...rest}>
+                  <Checkbox size="small" checked={selected} sx={{ mr: 1, p: 0.5, pointerEvents: "none" }} />
+                  {option}
+                </li>
+              );
+            }}
+            renderTags={(value, getTagProps) =>
+              value.map((option, index) => {
+                const { key, ...tagProps } = getTagProps({ index });
+                return <Chip key={key} size="small" label={option} {...tagProps} />;
+              })
+            }
+            renderInput={(params) => (
+              <TextField {...params} label="Агрофирма" placeholder={firms.length ? "" : "Не выбраны"} />
+            )}
+          />
           <TextField
             select
-            label="Агрофирма"
+            label="Учет наемников"
             size="small"
             fullWidth
-            value={firm}
-            onChange={(event) => setFirm(event.target.value)}
+            value={crew}
+            onChange={(event) => setCrew(event.target.value)}
             disabled={loading}
+            helperText="Наемники — машины группы 7 в Cropwise. По умолчанию учитываются и наемники, и собственные."
           >
-            <MenuItem value="">Не выбрана</MenuItem>
-            {NAMOLOT_FIRMS.map((name) => (
-              <MenuItem key={name} value={name}>
-                {name}
-              </MenuItem>
-            ))}
+            <MenuItem value="all">Наемники + Собственные</MenuItem>
+            <MenuItem value="hired">Наемники</MenuItem>
+            <MenuItem value="own">Собственные</MenuItem>
           </TextField>
           <TextField
             select
@@ -757,9 +830,11 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
 
       <Paper variant="outlined" sx={{ display: "flex", flexDirection: "column", minHeight: { xs: 560, md: 0 }, overflow: "hidden" }}>
         <Stack direction="row" alignItems="center" sx={{ px: 1.5, borderBottom: 1, borderColor: "divider" }} spacing={1}>
-          <Tabs value={view} onChange={(_, next) => setView(next)} sx={{ minHeight: 44 }}>
+          <Tabs value={view} onChange={(_, next) => setView(next)} variant="scrollable" scrollButtons="auto" sx={{ minHeight: 44 }}>
             <Tab value="answers" label={`Ответы${answerHistory.length ? ` (${answerHistory.length})` : ""}`} sx={{ minHeight: 44 }} />
             <Tab value="table" label={`Таблица${applied && loaded ? ` (${visible.length.toLocaleString("ru-RU")})` : ""}`} sx={{ minHeight: 44 }} />
+            <Tab value="slice" label="Срез" sx={{ minHeight: 44 }} />
+            <Tab value="fields" label="Срезы, поля" sx={{ minHeight: 44 }} />
           </Tabs>
           <Box sx={{ flex: 1 }} />
           {view === "table" && (
@@ -971,7 +1046,7 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
                   </Box>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
-                    {applied.firm || applied.crop || applied.operations?.length || applied.details?.length || applied.dateFrom || applied.dateTo || applied.plate || applied.surname
+                    {sliceIsNarrow(applied)
                       ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
                       : "За этот период заданий с площадью нет."}
                   </Typography>
@@ -1000,6 +1075,43 @@ export default function TaskFactsPanel({ active = true, summaryDate }) {
             {!loading && !applied ? (
               <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
                 Таблица пустая, пока не нажато «Сформировать».
+              </Typography>
+            ) : null}
+          </Box>
+        )}
+
+        {(view === "slice" || view === "fields") && (
+          <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", p: { xs: 1.5, md: 2 }, gap: 1.5, overflow: "hidden" }}>
+            {loading ? (
+              <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 2 }}>
+                <CircularProgress size={22} />
+                <Typography variant="body2" color="text.secondary">
+                  Читаю задания…
+                </Typography>
+              </Stack>
+            ) : null}
+            {applied && loaded && ranged.length ? (
+              view === "slice" ? (
+                <WorkerSliceTable rows={ranged} showFirm={showFirm} note={sliceNote} />
+              ) : (
+                <FieldSliceTable rows={ranged} showFirm={showFirm} note={sliceNote} />
+              )
+            ) : null}
+            {applied && loaded && !loading && !ranged.length ? (
+              <Typography variant="body2" color="text.secondary">
+                {sliceIsNarrow(applied)
+                  ? "Ничего не найдено. Сбросьте фильтр или расширьте условия и снова нажмите «Сформировать»."
+                  : "За этот период заданий с площадью нет."}
+              </Typography>
+            ) : null}
+            {!loading && applied && !loaded ? (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
+                Задания не загрузились. Нажмите «Сформировать» ещё раз.
+              </Typography>
+            ) : null}
+            {!loading && !applied ? (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 6, textAlign: "center" }}>
+                Здесь появятся фамилии, машины и поля после «Сформировать».
               </Typography>
             ) : null}
           </Box>

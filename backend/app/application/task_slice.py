@@ -79,7 +79,7 @@ def _apply_work_titles(rows: list[dict[str, Any]]) -> None:
 def build_slice(report_date: date) -> dict[str, Any]:
     """Все операции с 1 января до 06:00 даты сводки. Повтор в пределах 15 минут берёт память."""
     global _cache
-    key = report_date.isoformat()
+    key = report_date.isoformat() + ":crew-track"
     now = time.monotonic()
     with _lock:
         cached = _cache

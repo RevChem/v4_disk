@@ -29,11 +29,13 @@ export function filterRows(rows, filters) {
   const crops = filters?.crops?.length ? new Set(filters.crops) : null;
   const plateQ = normPlate(filters?.plate);
   const nameQ = normText(filters?.surname);
+  const crew = filters?.crew === "hired" || filters?.crew === "own" ? filters.crew : "";
   const start = rangeStart(filters?.dateFrom, filters?.timeFrom);
   const end = rangeEnd(filters?.dateTo, filters?.timeTo);
 
   return list.filter((row) => {
     if (firms && !firms.has(row.firm)) return false;
+    if (crew && (row.crew === "hired" ? "hired" : "own") !== crew) return false;
     if (crops && !crops.has(row.crop)) return false;
     const stamp = String(row.at || "").slice(0, 16);
     if ((start || end) && !stamp) return false;

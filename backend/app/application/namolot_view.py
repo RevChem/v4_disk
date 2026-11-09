@@ -354,12 +354,16 @@ def filter_record_rows(
     plate: str = "",
     surname: str = "",
     operation: str = "",
+    firms: list[str] | None = None,
+    crew: str = "",
     group_ids: set[int] | list[int] | None = None,
     group_names: list[str] | None = None,
     detail_ids: set[int] | list[int] | None = None,
     detail_labels: list[str] | None = None,
 ) -> list[dict]:
     """Те же необязательные условия, что у кнопки Namolot. Пустые поля срез не сужают.
+
+    firms — несколько агрофирм. crew: hired (группа машин 7), own или пусто (все).
 
     operation — точное агрозадание из списка, например «3.1 Опрыскивание». Пустое значение не отсекает строки.
     group_ids / group_names — группы из plans.WORK_GROUPS: строка подходит, если её work_type_id
@@ -368,6 +372,16 @@ def filter_record_rows(
     остаются строки, которые подходят под оба списка.
     """
     firm_name = str(firm or "").strip()
+    firm_names: set[str] = set()
+    for raw in firms or []:
+        text = str(raw or "").strip()
+        if text:
+            firm_names.add(text)
+    if firm_name:
+        firm_names.add(firm_name)
+    crew_name = str(crew or "").strip().lower()
+    if crew_name not in ("hired", "own"):
+        crew_name = ""
     crop_name = str(crop or "").strip()
     plate_q = _norm_plate(plate)
     name_q = _norm_text(surname)
@@ -384,8 +398,12 @@ def filter_record_rows(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if firm_name and row.get("firm") != firm_name:
+        if firm_names and str(row.get("firm") or "") not in firm_names:
             continue
+        if crew_name:
+            kind = "hired" if row.get("crew") == "hired" else "own"
+            if kind != crew_name:
+                continue
         if crop_name and row.get("crop") != crop_name:
             continue
         stamp = str(row.get("at") or "")[:16]

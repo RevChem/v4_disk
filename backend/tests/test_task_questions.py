@@ -171,6 +171,49 @@ def test_several_groups_cover_their_work_types():
     assert [row["work_type_id"] for row in legacy] == [other_id]
 
 
+def test_track_area_and_hired_group_follow_cropwise():
+    """Площадь по треку — covered_area_by_track. Наемники — machine_group_id 7."""
+    _ensure_plan_path()
+    import task_questions
+
+    con = _db()
+    con.execute(
+        "INSERT INTO tasks VALUES (13, 9, 55, ?, ?)",
+        (_ts(2026, 4, 2, 12), _task(13, 9, 55, None, 5)),
+    )
+    con.execute(
+        "INSERT INTO mtfmi VALUES (13, ?)",
+        (
+            json.dumps(
+                {"field_id": 100, "history_item_id": 1, "covered_area": 6, "covered_area_by_track": 5.25},
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    raw = task_questions.area_rows(con, _ts(2026, 1, 1, 0), _ts(2026, 10, 26, 6))
+    by_id = {row["task_id"]: row for row in raw}
+    assert by_id[13]["track_ha"] == 5.25
+    assert by_id[10]["track_ha"] is None
+    labeled = task_questions.label_rows(
+        raw,
+        firms={100: "Актай"},
+        plates={7: "2824", 8: "1111", 9: "9000"},
+        operations={55: "удобрения", 90: "уборка"},
+        field_names={100: "Поле 1"},
+        groups={7: 7, 9: 5},
+    )
+    by_task = {row["task_id"]: row for row in labeled}
+    assert by_task[10]["crew"] == "hired"
+    assert by_task[13]["crew"] == "own"
+    assert by_task[11]["crew"] == "own"
+    assert by_task[13]["track_ha"] == 5.25
+    assert {row["task_id"] for row in filter_record_rows(labeled, crew="hired")} == {10}
+    assert 10 not in {row["task_id"] for row in filter_record_rows(labeled, crew="own")}
+    assert {row["task_id"] for row in filter_record_rows(labeled, crew="all")} == set(by_task)
+    assert {row["task_id"] for row in filter_record_rows(labeled, firms=["Актай", "Нурлат"])} == set(by_task)
+    assert filter_record_rows(labeled, firms=["Нурлат"]) == []
+
+
 def test_ask_table_totals_cover_hidden_operations():
     rows = [
         {"at": "2026-03-28T12:00:00", "firm": "Актай", "crop": "Соя", "operation": "1.1 Внесение минеральных удобрений", "plate": "1", "operator": "Иванов", "field": "П", "ha": float(index)}
