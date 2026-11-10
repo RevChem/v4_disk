@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 
 import { filterRows } from "./namolotFilter.js";
-import { flattenFieldGroups, flattenWorkerGroups, groupFields, groupWorkers, pageFieldTable, pageWorkerTable } from "./taskSlice.js";
+import { workbookXml } from "./excelSheet.js";
+import {
+  fieldSheetRows,
+  filterSliceRows,
+  flattenFieldGroups,
+  flattenWorkerGroups,
+  groupFields,
+  groupWorkers,
+  pageFieldTable,
+  pageWorkerTable,
+  sliceColumnOptions,
+  sliceStats,
+  statsSheetRows,
+  workerSheetRows,
+} from "./taskSlice.js";
 
 const rows = [
   { firm: "Актай", surname: "Пискеев", plate: "2824", field: "П2", field_id: 2, task_id: 20, task_url: "http://t/20", ha: 4, track_ha: 3.5, machine_id: 1, crew: "own" },
@@ -137,5 +151,46 @@ const own = filterRows(rows, { crew: "own" });
 assert.deepEqual(own.map((row) => row.task_id), [20, 10, 10]);
 assert.equal(filterRows(rows, { crew: "all" }).length, rows.length);
 assert.equal(filterRows(rows, { firms: ["Актай"] }).length, 4);
+
+const onlyField = filterSliceRows(rows, { field: "П1" });
+assert.equal(onlyField.length, 3);
+assert.equal(sliceStats(onlyField).ha, 13);
+assert.equal(sliceStats(onlyField).people, 1);
+assert.equal(sliceStats(rows).topPerson.name, "Пискеев");
+assert.equal(sliceStats(rows).topPerson.ha, 17);
+assert.deepEqual(sliceColumnOptions(rows, { person: "Пискеев" }).field, ["П1", "П2"]);
+assert.deepEqual(sliceColumnOptions([
+  { firm: "Актай", surname: "МАЧУКОВ", plate: "1", field: "П", ha: 1 },
+  { firm: "Актай", surname: "Мачуков", plate: "2", field: "П", ha: 2 },
+], {}).person, ["Мачуков"]);
+assert.equal(filterSliceRows([
+  { firm: "Актай", surname: "МАЧУКОВ", plate: "1", field: "П", ha: 1 },
+  { firm: "Актай", surname: "Мачуков", plate: "2", field: "П", ha: 2 },
+], { person: "Мачуков" }).length, 2);
+
+const byArea = pageWorkerTable(rows, 0, 10, { key: "ha", dir: "desc" });
+assert.equal(byArea.table.find((row) => row.kind === "line").person, "Пискеев");
+const byAreaAsc = pageWorkerTable(rows, 0, 10, { key: "ha", dir: "asc" });
+assert.equal(byAreaAsc.table.find((row) => row.kind === "line").person, "Иванов");
+const piskeevLines = byAreaAsc.table.filter((row) => row.kind === "line" && row.plate === "2824");
+assert.deepEqual(piskeevLines.map((row) => row.field), ["П2", "П1"]);
+const byTask = pageFieldTable(rows, 0, 10, { key: "task", dir: "desc" });
+assert.equal(byTask.table.find((row) => row.kind === "line").field, "П9");
+
+const sheet = workerSheetRows(rows, { showFirm: true });
+assert.equal(sheet[0][0], "Агрофирма");
+assert.equal(sheet.at(-1)[1], "Всего");
+assert.equal(sheet.at(-1)[4], 18);
+const fieldsSheet = fieldSheetRows(rows, { showFirm: false });
+assert.equal(fieldsSheet[0][0], "Поле");
+assert.ok(fieldsSheet.some((row) => row[1] === "Итого по полю"));
+const xml = workbookXml([
+  { name: "Срез", rows: sheet },
+  { name: "Статистика", rows: statsSheetRows(sliceStats(rows)) },
+]);
+assert.match(xml, /ss:Name="Срез"/);
+assert.match(xml, /ss:Name="Статистика"/);
+assert.match(xml, /ss:HRef="http:\/\/t\/10"/);
+assert.match(xml, /<Data ss:Type="Number">18<\/Data>/);
 
 console.log("task slice ok");

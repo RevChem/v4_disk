@@ -30,7 +30,7 @@ export function applyColumnFilters(rows, columns) {
 }
 
 /** Заголовок колонки: список значений текущего среза, клик оставляет только выбранное. */
-export function ColumnFilter({ label, values, selected, onSelect }) {
+export function ColumnFilter({ label, values, selected, onSelect, maxOptions = 0 }) {
   const [anchor, setAnchor] = useState(null);
   const [query, setQuery] = useState("");
   const options = useMemo(() => {
@@ -39,6 +39,8 @@ export function ColumnFilter({ label, values, selected, onSelect }) {
     if (!needle) return list;
     return list.filter((value) => String(value).toLocaleLowerCase("ru-RU").includes(needle));
   }, [values, query]);
+  const shown = maxOptions > 0 ? options.slice(0, maxOptions) : options;
+  const hidden = options.length - shown.length;
 
   function close() {
     setAnchor(null);
@@ -99,11 +101,12 @@ export function ColumnFilter({ label, values, selected, onSelect }) {
         <MenuItem selected={!selected} onClick={() => choose("")}>
           Все
         </MenuItem>
-        {options.map((value) => (
+        {shown.map((value) => (
           <MenuItem key={value} selected={selected === value} onClick={() => choose(value)}>
             {value}
           </MenuItem>
         ))}
+        {hidden > 0 ? <MenuItem disabled>Ещё {hidden}. Уточните поиск.</MenuItem> : null}
         {!options.length ? <MenuItem disabled>Нет значений</MenuItem> : null}
       </Menu>
     </>

@@ -234,7 +234,9 @@ export function flattenFieldGroups(firms) {
           table.push({
             kind: "person",
             firmSpan: 0,
+            firm: firm.firm,
             fieldSpan: 0,
+            field: field.name,
             personSpan: 0,
             person: person.name,
             ha: person.ha,
@@ -246,6 +248,7 @@ export function flattenFieldGroups(firms) {
       table.push({
         kind: "field",
         firmSpan: 0,
+        firm: firm.firm,
         fieldSpan: 0,
         field: field.name,
         ha: field.ha,
@@ -258,14 +261,227 @@ export function flattenFieldGroups(firms) {
   return table;
 }
 
+function fieldLabel(row) {
+  return String(row?.field || "").trim() || "без поля";
+}
+
+function sliceLabel(row, key) {
+  if (key === "firm") return firmName(row);
+  if (key === "person") return personName(row);
+  if (key === "plate") return machineLabel(row);
+  return fieldLabel(row);
+}
+
+export const EMPTY_SLICE_COLUMNS = { firm: "", person: "", plate: "", field: "" };
+
+export function filterSliceRows(rows, filters) {
+  const list = Array.isArray(rows) ? rows : [];
+  const firm = filters?.firm || "";
+  const person = filters?.person || "";
+  const personFold = person ? personKey(person) : "";
+  const plate = filters?.plate || "";
+  const field = filters?.field || "";
+  if (!firm && !person && !plate && !field) return list;
+  return list.filter((row) => {
+    if (firm && sliceLabel(row, "firm") !== firm) return false;
+    if (personFold && personKey(personName(row)) !== personFold) return false;
+    if (plate && sliceLabel(row, "plate") !== plate) return false;
+    if (field && sliceLabel(row, "field") !== field) return false;
+    return true;
+  });
+}
+
+export function sliceColumnOptions(rows, filters) {
+  const options = { firm: new Set(), person: new Map(), plate: new Set(), field: new Set() };
+  for (const key of ["firm", "plate", "field"]) {
+    for (const row of filterSliceRows(rows, { ...filters, [key]: "" })) options[key].add(sliceLabel(row, key));
+  }
+  for (const row of filterSliceRows(rows, { ...filters, person: "" })) {
+    const name = personName(row);
+    const key = personKey(name);
+    options.person.set(key, preferPersonName(options.person.get(key) || name, name));
+  }
+  return {
+    firm: [...options.firm].sort(compareText),
+    person: [...options.person.values()].sort(compareText),
+    plate: [...options.plate].sort(compareText),
+    field: [...options.field].sort(compareText),
+  };
+}
+
+export function sliceStats(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const people = new Set();
+  const plates = new Set();
+  const fields = new Set();
+  const tasks = new Set();
+  const firms = new Set();
+  const byPerson = new Map();
+  const byField = new Map();
+  let ha = 0;
+  let track = null;
+  for (const row of list) {
+    const person = sliceLabel(row, "person");
+    const field = sliceLabel(row, "field");
+    const amount = amountOf(row);
+    const trackValue = trackOf(row);
+    people.add(person);
+    plates.add(sliceLabel(row, "plate"));
+    fields.add(field);
+    firms.add(sliceLabel(row, "firm"));
+    if (row?.task_id != null && row.task_id !== "") tasks.add(String(row.task_id));
+    ha = round2(ha + amount);
+    if (trackValue != null) track = round2((track ?? 0) + trackValue);
+    byPerson.set(person, round2((byPerson.get(person) || 0) + amount));
+    byField.set(field, round2((byField.get(field) || 0) + amount));
+  }
+  return {
+    lines: list.length,
+    people: people.size,
+    plates: plates.size,
+    fields: fields.size,
+    tasks: tasks.size,
+    firms: firms.size,
+    ha,
+    track,
+    topPerson: topEntry(byPerson),
+    topField: topEntry(byField),
+  };
+}
+
+function topEntry(map) {
+  let best = null;
+  for (const [name, ha] of map) {
+    if (!best || ha > best.ha || (ha === best.ha && compareText(name, best.name) < 0)) best = { name, ha };
+  }
+  return best;
+}
+
+function taskIdsOf(node) {
+  if (node?.taskId != null && node.taskId !== "") {
+    const value = Number(node.taskId);
+    return Number.isFinite(value) ? [value] : [];
+  }
+  const kids = node?.lines || node?.machines || node?.people || node?.fields || [];
+  const ids = [];
+  for (const kid of kids) ids.push(...taskIdsOf(kid));
+  return ids;
+}
+
+function metricValue(node, sort) {
+  if (sort.key === "ha") return Number.isFinite(node.ha) ? node.ha : null;
+  if (sort.key === "track") return node.track == null ? null : Number(node.track);
+  const ids = taskIdsOf(node);
+  if (!ids.length) return null;
+  return sort.dir === "asc" ? Math.min(...ids) : Math.max(...ids);
+}
+
+function metricCmp(sort, labelOf) {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return (a, b) => {
+    const av = metricValue(a, sort);
+    const bv = metricValue(b, sort);
+    if (av == null || bv == null) {
+      if (av != null || bv != null) return av == null ? 1 : -1;
+    } else if (av !== bv) {
+      return sign * (av - bv);
+    }
+    return compareText(labelOf(a), labelOf(b));
+  };
+}
+
+function orderWorkerModel(model, sort) {
+  if (!sort?.key) return model;
+  model.firms.sort(metricCmp(sort, (node) => node.firm));
+  for (const firm of model.firms) {
+    firm.people.sort(metricCmp(sort, (node) => node.name));
+    for (const person of firm.people) {
+      person.machines.sort(metricCmp(sort, (node) => node.plate));
+      for (const machine of person.machines) machine.lines.sort(metricCmp(sort, (node) => node.field));
+    }
+  }
+  return model;
+}
+
+function orderFieldModel(model, sort) {
+  if (!sort?.key) return model;
+  model.firms.sort(metricCmp(sort, (node) => node.firm));
+  for (const firm of model.firms) {
+    firm.fields.sort(metricCmp(sort, (node) => node.name));
+    for (const field of firm.fields) {
+      field.people.sort(metricCmp(sort, (node) => node.name));
+      for (const person of field.people) {
+        person.machines.sort(metricCmp(sort, (node) => node.plate));
+        for (const machine of person.machines) machine.lines.sort(metricCmp(sort, (node) => String(node.taskId ?? "")));
+      }
+    }
+  }
+  return model;
+}
+
 function pageOf(flat, page, pageSize) {
   const size = Math.max(1, Number(pageSize) || 1);
   const start = Math.max(0, Number(page) || 0) * size;
   return { slice: flat.slice(start, start + size), count: flat.length };
 }
 
-export function pageWorkerTable(rows, page, pageSize) {
-  const model = groupWorkers(rows);
+function taskCell(row) {
+  if (row.taskId == null || row.taskId === "") return "";
+  const value = Number(row.taskId);
+  const shown = Number.isFinite(value) ? value : row.taskId;
+  return row.taskUrl ? { v: shown, href: row.taskUrl } : shown;
+}
+
+export function workerSheetRows(rows, { showFirm = false, sort = null } = {}) {
+  const model = orderWorkerModel(groupWorkers(rows), sort);
+  const header = [...(showFirm ? ["Агрофирма"] : []), "Фамилия", "Машина", "Поле", "Площадь, га", "Площадь по треку, га", "Задание"];
+  const body = flattenWorkerGroups(model.firms).map((row) => {
+    const firm = showFirm ? [row.firm] : [];
+    if (row.kind === "total") return [...firm, row.person, "Итого", "", row.ha, row.track ?? "", ""];
+    return [...firm, row.person, row.plate, row.field, row.ha, row.track ?? "", taskCell(row)];
+  });
+  body.push([...(showFirm ? [""] : []), "Всего", "", "", model.ha, model.track ?? "", ""]);
+  return [header, ...body];
+}
+
+export function fieldSheetRows(rows, { showFirm = false, sort = null } = {}) {
+  const model = orderFieldModel(groupFields(rows), sort);
+  const header = [...(showFirm ? ["Агрофирма"] : []), "Поле", "Фамилия", "Машина", "Площадь, га", "Площадь по треку, га", "Задание"];
+  const body = flattenFieldGroups(model.firms).map((row) => {
+    const firm = showFirm ? [row.firm || ""] : [];
+    if (row.kind === "field") return [...firm, row.field, "Итого по полю", "", row.ha, row.track ?? "", ""];
+    if (row.kind === "person") return [...firm, row.field || "", row.person, "Итого", row.ha, row.track ?? "", ""];
+    return [...firm, row.field, row.person, row.plate, row.ha, row.track ?? "", taskCell(row)];
+  });
+  body.push([...(showFirm ? [""] : []), "Всего", "", "", model.ha, model.track ?? "", ""]);
+  return [header, ...body];
+}
+
+export function statsSheetRows(stats) {
+  const diff = stats.track == null ? "" : round2(stats.ha - stats.track);
+  const share = stats.track == null || !stats.ha ? "" : round2((stats.track / stats.ha) * 100);
+  const average = (count) => (count ? round2(stats.ha / count) : "");
+  return [
+    ["Показатель", "Значение"],
+    ["Строк", stats.lines],
+    ["Фамилий", stats.people],
+    ["Машин", stats.plates],
+    ["Полей", stats.fields],
+    ["Заданий", stats.tasks],
+    ["Агрофирм", stats.firms],
+    ["Площадь, га", stats.ha],
+    ["Площадь по треку, га", stats.track ?? ""],
+    ["Разница, га", diff],
+    ["Доля трека, %", share],
+    ["Среднее на фамилию, га", average(stats.people)],
+    ["Среднее на поле, га", average(stats.fields)],
+    ["Больше всех", stats.topPerson ? `${stats.topPerson.name} · ${stats.topPerson.ha}` : ""],
+    ["Крупнейшее поле", stats.topField ? `${stats.topField.name} · ${stats.topField.ha}` : ""],
+  ];
+}
+
+export function pageWorkerTable(rows, page, pageSize, sort = null) {
+  const model = orderWorkerModel(groupWorkers(rows), sort);
   const flat = [];
   for (const firm of model.firms) {
     for (const person of firm.people) flat.push({ firmName: firm.firm, person });
@@ -285,8 +501,8 @@ export function pageWorkerTable(rows, page, pageSize) {
   return { table: flattenWorkerGroups(firms), count, ha: model.ha, track: model.track };
 }
 
-export function pageFieldTable(rows, page, pageSize) {
-  const model = groupFields(rows);
+export function pageFieldTable(rows, page, pageSize, sort = null) {
+  const model = orderFieldModel(groupFields(rows), sort);
   const flat = [];
   for (const firm of model.firms) {
     for (const field of firm.fields) flat.push({ firmName: firm.firm, field });
