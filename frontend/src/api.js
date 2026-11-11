@@ -1769,3 +1769,35 @@ export async function ignoreFieldFirmAlert(key, note = "") {
   const { data } = await api.post("/proverka/field-firm-alerts/ignore", { key, note }, { timeout: 15_000 });
   return data;
 }
+
+export async function fetchSupervisorsWorkGroups() {
+  try {
+    const { data } = await api.get("/supervisors-report/work-groups", { timeout: 60_000 });
+    return Array.isArray(data?.items) ? data.items : [];
+  } catch (err) {
+    throw new Error(formatError(err, "Не удалось загрузить типы работ."));
+  }
+}
+
+export async function downloadSupervisorsReport({ start, end, workGroupIds = [] }) {
+  try {
+    const res = await api.post(
+      "/supervisors-report/excel",
+      { start, end, work_group_ids: workGroupIds },
+      { responseType: "blob", timeout: 3_600_000 }
+    );
+    const blob = res.data;
+    const cd = res.headers["content-disposition"] || "";
+    const starred = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const plain = /filename="?([^";]+)"?/i.exec(cd);
+    const filename = starred?.[1] ? decodeURIComponent(starred[1]) : plain?.[1] || "otchet.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    throw new Error(await errorFromBlob(err));
+  }
+}

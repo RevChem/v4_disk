@@ -18,6 +18,7 @@ export default defineConfig({
       "/summaries": apiTarget,
       "/field-season": apiTarget,
       "/works-summary": apiTarget,
+      "/supervisors-report": apiTarget,
       "/page-order": apiTarget,
       "/interface-settings": apiTarget,
       "/schedule": apiTarget,

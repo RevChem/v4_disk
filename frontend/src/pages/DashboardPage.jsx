@@ -42,6 +42,7 @@ import Report1LayoutEditorDialog from "../components/Report1LayoutEditorDialog";
 import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
 import HarvestGrossDialog from "../components/HarvestGrossDialog";
 import Report27CustomDialog from "../components/Report27CustomDialog";
+import SupervisorsReportDialog from "../components/SupervisorsReportDialog";
 import Report2PeriodDialog from "../components/Report2PeriodDialog";
 import {
   buildHarvestGrossPayload,
@@ -139,6 +140,7 @@ export default function DashboardPage({
   const [report2PeriodOpen, setReport2PeriodOpen] = useState(false);
   const [report2PeriodGenerating, setReport2PeriodGenerating] = useState(false);
   const [report2PeriodError, setReport2PeriodError] = useState("");
+  const [supervisorsReportOpen, setSupervisorsReportOpen] = useState(false);
 
   useEffect(() => {
     if (!equipmentRequest) return;
@@ -731,6 +733,18 @@ export default function DashboardPage({
                   {enqueueing ? "Создание…" : "Создать выбранные сводки"}
                 </Button>
 
+                {canProverka && (
+                  <Button
+                    variant="outlined"
+                    fullWidth
+                    size="small"
+                    sx={sidebarToolBtnSx}
+                    onClick={() => setSupervisorsReportOpen(true)}
+                  >
+                    Отчет
+                  </Button>
+                )}
+
                 {canSitcentrOps && (
                   <Button
                     variant="outlined"
@@ -881,6 +895,10 @@ export default function DashboardPage({
         onFieldChange={updateHarvestGrossField}
         generating={enqueueing}
         onSubmit={() => void confirmHarvestGrossModal()}
+      />
+      <SupervisorsReportDialog
+        open={supervisorsReportOpen && canProverka}
+        onClose={() => setSupervisorsReportOpen(false)}
       />
       <Report27CustomDialog
         open={report27CustomOpen}
