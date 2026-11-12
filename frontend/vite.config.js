@@ -19,6 +19,7 @@ export default defineConfig({
       "/field-season": apiTarget,
       "/works-summary": apiTarget,
       "/supervisors-report": apiTarget,
+      "/field-harvest": apiTarget,
       "/page-order": apiTarget,
       "/interface-settings": apiTarget,
       "/schedule": apiTarget,

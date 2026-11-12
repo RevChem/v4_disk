@@ -1779,6 +1779,29 @@ export async function fetchSupervisorsWorkGroups() {
   }
 }
 
+export async function downloadFieldHarvest(year) {
+  try {
+    const res = await api.post(
+      "/field-harvest/excel",
+      { year },
+      { responseType: "blob", timeout: 3_600_000 }
+    );
+    const blob = res.data;
+    const cd = res.headers["content-disposition"] || "";
+    const starred = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const plain = /filename="?([^";]+)"?/i.exec(cd);
+    const filename = starred?.[1] ? decodeURIComponent(starred[1]) : plain?.[1] || "valovyi.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    throw new Error(await errorFromBlob(err));
+  }
+}
+
 export async function downloadSupervisorsReport({ start, end, workGroupIds = [] }) {
   try {
     const res = await api.post(

@@ -12,6 +12,7 @@ from app.adapters.inbound.api.routers import (
     audit,
     auth,
     convert,
+    field_harvest_report,
     field_season,
     interface_settings,
     users_manage,
@@ -77,4 +78,5 @@ app.include_router(page_order.router)
 app.include_router(field_season.router)
 app.include_router(works_summary.router)
 app.include_router(supervisors_report.router)
+app.include_router(field_harvest_report.router)
 app.include_router(pdf_header_labels.router)

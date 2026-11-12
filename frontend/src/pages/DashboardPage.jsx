@@ -16,6 +16,8 @@ import {
   FormControlLabel,
   FormGroup,
   Grid,
+  Menu,
+  MenuItem,
   Stack,
   TextField,
   Typography,
@@ -43,6 +45,7 @@ import PdfHeaderLabelsDialog from "../components/PdfHeaderLabelsDialog";
 import HarvestGrossDialog from "../components/HarvestGrossDialog";
 import Report27CustomDialog from "../components/Report27CustomDialog";
 import SupervisorsReportDialog from "../components/SupervisorsReportDialog";
+import FieldHarvestDialog from "../components/FieldHarvestDialog";
 import Report2PeriodDialog from "../components/Report2PeriodDialog";
 import {
   buildHarvestGrossPayload,
@@ -141,6 +144,8 @@ export default function DashboardPage({
   const [report2PeriodGenerating, setReport2PeriodGenerating] = useState(false);
   const [report2PeriodError, setReport2PeriodError] = useState("");
   const [supervisorsReportOpen, setSupervisorsReportOpen] = useState(false);
+  const [fieldHarvestOpen, setFieldHarvestOpen] = useState(false);
+  const [extraReportsAnchor, setExtraReportsAnchor] = useState(null);
 
   useEffect(() => {
     if (!equipmentRequest) return;
@@ -734,15 +739,46 @@ export default function DashboardPage({
                 </Button>
 
                 {canProverka && (
-                  <Button
-                    variant="outlined"
-                    fullWidth
-                    size="small"
-                    sx={sidebarToolBtnSx}
-                    onClick={() => setSupervisorsReportOpen(true)}
-                  >
-                    Отсутствие данных по топливу
-                  </Button>
+                  <>
+                    <Button
+                      variant="outlined"
+                      fullWidth
+                      size="small"
+                      sx={sidebarToolBtnSx}
+                      onClick={(event) => setExtraReportsAnchor(event.currentTarget)}
+                      endIcon={
+                        extraReportsAnchor ? (
+                          <ExpandLessRoundedIcon sx={{ fontSize: 18 }} />
+                        ) : (
+                          <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
+                        )
+                      }
+                    >
+                      Доп. отчеты
+                    </Button>
+                    <Menu
+                      anchorEl={extraReportsAnchor}
+                      open={Boolean(extraReportsAnchor)}
+                      onClose={() => setExtraReportsAnchor(null)}
+                    >
+                      <MenuItem
+                        onClick={() => {
+                          setExtraReportsAnchor(null);
+                          setSupervisorsReportOpen(true);
+                        }}
+                      >
+                        Отсутствие данных по топливу
+                      </MenuItem>
+                      <MenuItem
+                        onClick={() => {
+                          setExtraReportsAnchor(null);
+                          setFieldHarvestOpen(true);
+                        }}
+                      >
+                        Валовый сбор
+                      </MenuItem>
+                    </Menu>
+                  </>
                 )}
 
                 {canSitcentrOps && (
@@ -899,6 +935,10 @@ export default function DashboardPage({
       <SupervisorsReportDialog
         open={supervisorsReportOpen && canProverka}
         onClose={() => setSupervisorsReportOpen(false)}
+      />
+      <FieldHarvestDialog
+        open={fieldHarvestOpen && canProverka}
+        onClose={() => setFieldHarvestOpen(false)}
       />
       <Report27CustomDialog
         open={report27CustomOpen}
