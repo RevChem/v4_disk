@@ -60,33 +60,12 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
         {"id": 5, "machine_task_id": 481381, "field_id": 23, "work_distance": 0},
         {"id": 6, "machine_task_id": 481381, "field_id": 24, "work_distance": 14460},
     ]
-    operations = {
-        50: {
-            "id": 50,
-            "field_id": 20,
-            "application_mix_items": [
-                {
-                    "id": 1,
-                    "position": 1,
-                    "applicable_type": "Fertilizer",
-                    "applicable_id": 1114,
-                    "fact_amount": 100.0,
-                    "planned_rate": 80.0,
-                    "fact_rate": 80.0,
-                }
-            ],
-        }
-    }
-    links = [{"machine_task_id": 481381, "agro_operation_id": 50}]
     rows = assemble_rows(
         tasks,
         machines,
         {121: 3, 143: 4},
         {3: "Обработка почвы", 4: "Транспорт"},
         fields,
-        links,
-        operations,
-        {("fertilizer", 1114): "Калий хлористый"},
     )
     agri = [row for row in rows if row["sheet"] == "agri"]
     transport = [row for row in rows if row["sheet"] == "transport"]
@@ -96,13 +75,13 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert john["values"][2] == "7661АК"
     assert john["values"][3] == "Обработка почвы"
     assert john["values"][5] == 75.81
-    assert "Общий расход" not in HEADERS
+    assert john["values"][6] == 0
+    assert HEADERS[-1] == "Общий расход топлива, л"
+    assert "Внесение" not in " ".join(HEADERS)
     assert "Бункера" not in HEADERS
     paths = [row["values"][4] for row in agri if row["task_id"] == 481381]
     assert paths == [18.76, 11.33, 28.83, 0.0, 14.46]
-    named = next(row for row in agri if row["task_id"] == 481381 and row["values"][4] == 18.76)
-    assert named["values"][6] == "Калий хлористый"
-    assert named["values"][7] == 100.0
+    assert all(row["values"][6] == 0 for row in rows)
     assert transport[0]["values"][2] == "Р628ВЕ"
     assert transport[0]["values"][3] == "Транспорт"
     assert transport[0]["values"][5] == 324.39

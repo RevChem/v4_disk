@@ -1,8 +1,9 @@
-"""Отчёт по заданиям машин: листы agri и transport, без расхода топлива.
+"""Отчёт по заданиям машин: листы agri и transport.
 
 Строка — поле задания. Путь в рабочей области берётся из
 machine_task_field_mapping_items.work_distance, путь за задание — из
 machine_tasks.total_distance. Тип работ — имя группы work_type_groups.
+Колонка «Общий расход топлива, л» есть в файле, значение в каждой строке — 0.
 """
 from __future__ import annotations
 
@@ -30,17 +31,8 @@ HEADERS = (
     "Тип работ",
     "Пройденный путь в рабочей области, км",
     "Пройденный путь за время задания, км",
-    "Внесение 1",
-    "Всего(факт) 1",
-    "Норма(план) 1",
-    "Норма(факт) 1",
+    "Общий расход топлива, л",
 )
-
-_APPLICABLE = {
-    "fertilizer": "fertilizers",
-    "chemical": "chemicals",
-    "seed": "seeds",
-}
 
 _SHEET_ORDER = ("agri", "transport")
 
@@ -112,11 +104,7 @@ def build_excel(start: datetime, end: datetime, work_group_ids: list[int] | None
         machine_ids.discard(0)
         machines = _by_ids(client, "machines", sorted(machine_ids))
         fields = _by_task_ids(client, "machine_task_field_mapping_items", task_ids)
-        links = _by_task_ids(client, "machine_task_agro_operation_mapping_items", task_ids)
-        op_ids = sorted({_int(row.get("agro_operation_id")) for row in links if _int(row.get("agro_operation_id"))})
-        operations = _by_ids(client, "agro_operations", op_ids)
-        products = _product_names(client, operations)
-    rows = assemble_rows(tasks, machines, type_group, groups, fields, links, operations, products)
+    rows = assemble_rows(tasks, machines, type_group, groups, fields)
     return _workbook(rows), _filename(start_at, end_at)
 
 
@@ -126,9 +114,6 @@ def assemble_rows(
     type_group: dict[int, int],
     groups: dict[int, str],
     fields: list[dict],
-    links: list[dict],
-    operations: dict[int, dict],
-    products: dict[tuple[str, int], str],
 ) -> list[dict[str, Any]]:
     fields_by_task: dict[int, list[dict]] = defaultdict(list)
     for item in fields:
@@ -137,17 +122,6 @@ def assemble_rows(
             fields_by_task[tid].append(item)
     for bucket in fields_by_task.values():
         bucket.sort(key=lambda item: _int(item.get("id")))
-
-    ops_by_task_field: dict[tuple[int, int], list[dict]] = defaultdict(list)
-    for link in links:
-        tid = _int(link.get("machine_task_id"))
-        oid = _int(link.get("agro_operation_id"))
-        op = operations.get(oid)
-        if not tid or not op:
-            continue
-        fid = _int(op.get("field_id"))
-        if fid:
-            ops_by_task_field[(tid, fid)].append(op)
 
     rows: list[dict[str, Any]] = []
     ordered = sorted(tasks, key=lambda task: (_int(task.get("id"))))
@@ -161,35 +135,24 @@ def assemble_rows(
         task_km = _km(task.get("total_distance"))
         pieces = fields_by_task.get(tid) or [None]
         for piece in pieces:
-            field_id = _int(piece.get("field_id")) if piece else 0
             area_km = _km(piece.get("work_distance")) if piece else 0.0
-            mixes: list[dict] = []
-            for op in ops_by_task_field.get((tid, field_id), []):
-                mixes.extend(item for item in (op.get("application_mix_items") or []) if isinstance(item, dict))
-            mixes.sort(key=lambda item: _int(item.get("position")) or _int(item.get("id")))
-            if not mixes:
-                mixes = [{}]
-            for mix in mixes:
-                rows.append(
-                    {
-                        "sheet": kind,
-                        "machine": _machine_label(machine),
-                        "task_id": tid,
-                        "field_id": _int(piece.get("id")) if piece else 0,
-                        "values": (
-                            tid,
-                            _machine_label(machine),
-                            str(machine.get("registration_number") or "").strip(),
-                            group_name,
-                            area_km,
-                            task_km,
-                            _mix_name(mix, products),
-                            _mix_number(mix, "fact_amount"),
-                            _mix_number(mix, "planned_rate"),
-                            _mix_number(mix, "fact_rate"),
-                        ),
-                    }
-                )
+            rows.append(
+                {
+                    "sheet": kind,
+                    "machine": _machine_label(machine),
+                    "task_id": tid,
+                    "field_id": _int(piece.get("id")) if piece else 0,
+                    "values": (
+                        tid,
+                        _machine_label(machine),
+                        str(machine.get("registration_number") or "").strip(),
+                        group_name,
+                        area_km,
+                        task_km,
+                        0,
+                    ),
+                }
+            )
     rows.sort(key=lambda row: (row["sheet"], row["machine"].casefold(), row["task_id"], row["field_id"]))
     return rows
 
@@ -215,10 +178,11 @@ def _workbook(rows: list[dict[str, Any]]) -> bytes:
         for row in rows:
             if row["sheet"] == name:
                 sheet.append(list(row["values"]))
-        sheet.auto_filter.ref = f"A1:J{max(sheet.max_row, 1)}"
+        last_col = get_column_letter(len(HEADERS))
+        sheet.auto_filter.ref = f"A1:{last_col}{max(sheet.max_row, 1)}"
         sheet.freeze_panes = "A2"
         sheet.row_dimensions[1].height = 32
-        for index, width in enumerate((12, 62, 16, 24, 22, 22, 28, 16, 16, 16), start=1):
+        for index, width in enumerate((12, 62, 16, 24, 22, 22, 22), start=1):
             sheet.column_dimensions[get_column_letter(index)].width = width
     buffer = BytesIO()
     book.save(buffer)
@@ -236,25 +200,6 @@ def _machine_label(machine: dict) -> str:
     plate = str(machine.get("registration_number") or "").strip()
     inventory = str(machine.get("inventory_number") or "").strip()
     return " / ".join(part for part in (name, plate, inventory) if part)
-
-
-def _mix_name(mix: dict, products: dict[tuple[str, int], str]) -> str | None:
-    if not mix:
-        return None
-    kind = str(mix.get("applicable_type") or "").strip().lower()
-    applicable_id = _int(mix.get("applicable_id"))
-    if not kind or not applicable_id:
-        return None
-    return products.get((kind, applicable_id)) or None
-
-
-def _mix_number(mix: dict, key: str) -> float | None:
-    if not mix or key not in mix or mix.get(key) is None:
-        return None
-    try:
-        return float(mix[key])
-    except (TypeError, ValueError):
-        return None
 
 
 def _km(meters: Any) -> float:
@@ -373,28 +318,3 @@ def _by_ids(client: httpx.Client, endpoint: str, ids: list[int]) -> dict[int, di
                 found[item_id] = row
     return found
 
-
-def _product_names(client: httpx.Client, operations: dict[int, dict]) -> dict[tuple[str, int], str]:
-    wanted: dict[str, set[int]] = defaultdict(set)
-    for op in operations.values():
-        for mix in op.get("application_mix_items") or []:
-            if not isinstance(mix, dict):
-                continue
-            kind = str(mix.get("applicable_type") or "").strip().lower()
-            applicable_id = _int(mix.get("applicable_id"))
-            endpoint = _APPLICABLE.get(kind)
-            if endpoint and applicable_id:
-                wanted[endpoint].add(applicable_id)
-    names: dict[tuple[str, int], str] = {}
-    reverse = {endpoint: kind for kind, endpoint in _APPLICABLE.items()}
-    for endpoint, ids in wanted.items():
-        kind = reverse[endpoint]
-        try:
-            rows = _by_ids(client, endpoint, sorted(ids))
-        except httpx.HTTPError:
-            continue
-        for item_id, row in rows.items():
-            name = str(row.get("name") or "").strip()
-            if name:
-                names[(kind, item_id)] = name
-    return names
