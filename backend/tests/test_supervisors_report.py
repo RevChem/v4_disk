@@ -32,6 +32,7 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
         _task(480479, 1, 121, 75810, 1386.22),
         _task(481381, 2, 121, 76470, 10.5),
         _task(451674, 3, 143, 324390, 249.22),
+        _task(482999, 7, 121, 50000, 99),
     ]
     machines = {
         1: {
@@ -51,6 +52,13 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
             "registration_number": "Р628ВЕ",
             "inventory_number": "00-005796",
             "machine_type": "transport",
+        },
+        7: {
+            "name": "Наёмник",
+            "registration_number": "Н007НН",
+            "inventory_number": "7",
+            "machine_type": "agri",
+            "machine_group_id": 7,
         },
     }
     fields = [
@@ -89,6 +97,7 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert transport[0]["values"][6] == 249.22
     assert transport[0]["values"][3] == "Транспорт"
     assert transport[0]["values"][5] == 324.39
+    assert all(row["task_id"] != 482999 for row in rows)
 
     book = load_workbook(BytesIO(_workbook(rows)))
     assert book.sheetnames[:2] == ["agri", "transport"]

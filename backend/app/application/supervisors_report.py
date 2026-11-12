@@ -3,6 +3,7 @@
 Строка — поле задания. Путь в рабочей области берётся из
 machine_task_field_mapping_items.work_distance, путь за задание — из
 machine_tasks.total_distance. Тип работ — имя группы work_type_groups.
+Наёмная техника (machine_group_id == 7, как в сводках) в отчёт не входит.
 «Общий расход топлива, л» — fuel_consumption задания целиком и повторяется в каждой строке его полей.
 Последняя колонка — ссылка на карточку задания в Cropwise.
 """
@@ -40,6 +41,8 @@ _TASK_URL = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_i
 _LINK_FONT = Font(color="0563C1", underline="single")
 
 _SHEET_ORDER = ("agri", "transport")
+# plans.HIRED_GROUP_ID: в Cropwise наёмная техника — machine_group_id == 7.
+HIRED_GROUP_ID = 7
 
 
 class SupervisorsReportError(Exception):
@@ -103,11 +106,12 @@ def build_excel(start: datetime, end: datetime, work_group_ids: list[int] | None
         tasks = [task for task in tasks if _overlaps(task, start_at, end_at)]
         if selected:
             tasks = [task for task in tasks if type_group.get(_int(task.get("work_type_id"))) in selected]
-        task_ids = [_int(task.get("id")) for task in tasks]
-        task_ids = [item for item in task_ids if item]
         machine_ids = {_int(task.get("machine_id")) for task in tasks}
         machine_ids.discard(0)
         machines = _by_ids(client, "machines", sorted(machine_ids))
+        tasks = [task for task in tasks if not _is_hired(machines.get(_int(task.get("machine_id"))))]
+        task_ids = [_int(task.get("id")) for task in tasks]
+        task_ids = [item for item in task_ids if item]
         fields = _by_task_ids(client, "machine_task_field_mapping_items", task_ids)
     rows = assemble_rows(tasks, machines, type_group, groups, fields)
     return _workbook(rows), _filename(start_at, end_at)
@@ -136,6 +140,8 @@ def assemble_rows(
             continue
         machine_id = _int(task.get("machine_id"))
         machine = machines.get(machine_id) or {}
+        if _is_hired(machine):
+            continue
         kind = str(machine.get("machine_type") or "").strip().lower() or "прочие"
         group_name = groups.get(type_group.get(_int(task.get("work_type_id")), 0), "")
         task_km = _km(task.get("total_distance"))
@@ -213,6 +219,12 @@ def _filename(start: datetime, end: datetime) -> str:
     left = start.strftime("%d.%m.%Y_%H-%M")
     right = end.strftime("%d.%m.%Y_%H-%M")
     return f"Отчет_{left}_{right}.xlsx"
+
+
+def _is_hired(machine: dict | None) -> bool:
+    if not machine:
+        return False
+    return _int(machine.get("machine_group_id")) == HIRED_GROUP_ID
 
 
 def _machine_label(machine: dict) -> str:
