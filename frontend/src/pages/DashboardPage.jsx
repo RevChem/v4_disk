@@ -741,7 +741,7 @@ export default function DashboardPage({
                     sx={sidebarToolBtnSx}
                     onClick={() => setSupervisorsReportOpen(true)}
                   >
-                    Отчет
+                    Отсутствие данных по топливу
                   </Button>
                 )}
 

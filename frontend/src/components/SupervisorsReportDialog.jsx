@@ -110,14 +110,14 @@ export default function SupervisorsReportDialog({ open, onClose }) {
       fullWidth
       maxWidth="sm"
     >
-      <DialogTitle>Отчет</DialogTitle>
+      <DialogTitle>Отсутствие данных по топливу</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 0.5 }}>
           {error && <Alert severity="error">{error}</Alert>}
           {groupsError && <Alert severity="warning">{groupsError}</Alert>}
           <Typography variant="body2" color="text.secondary">
-            Задания машин за выбранный интервал. Время московское. Файл делится на листы agri и
-            transport. Сбор за месяц может занять несколько минут.
+            Задания машин за выбранный интервал. Время московское. Файл делится на листы agri,
+            transport и наемники. Сбор за месяц может занять несколько минут.
           </Typography>
           <TextField
             label="Начало"
