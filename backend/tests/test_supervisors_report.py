@@ -15,12 +15,13 @@ from app.application.supervisors_report import (
 TZ = timezone(timedelta(hours=3))
 
 
-def _task(tid, machine_id, work_type_id, total_m):
+def _task(tid, machine_id, work_type_id, total_m, fuel=0):
     return {
         "id": tid,
         "machine_id": machine_id,
         "work_type_id": work_type_id,
         "total_distance": total_m,
+        "fuel_consumption": fuel,
         "start_time": "2026-10-31T18:00:00.000+03:00",
         "end_time": "2026-11-01T05:59:00.000+03:00",
     }
@@ -28,9 +29,9 @@ def _task(tid, machine_id, work_type_id, total_m):
 
 def test_rows_match_checked_sample_and_split_by_machine_type():
     tasks = [
-        _task(480479, 1, 121, 75810),
-        _task(481381, 2, 121, 76470),
-        _task(451674, 3, 143, 324390),
+        _task(480479, 1, 121, 75810, 1386.22),
+        _task(481381, 2, 121, 76470, 10.5),
+        _task(451674, 3, 143, 324390, 249.22),
     ]
     machines = {
         1: {
@@ -75,7 +76,7 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert john["values"][2] == "7661АК"
     assert john["values"][3] == "Обработка почвы"
     assert john["values"][5] == 75.81
-    assert john["values"][6] == 0
+    assert john["values"][6] == 1386.22
     assert john["values"][7] == "https://operations.cropwise.com/machines/1/tasks/480479"
     assert "Общий расход топлива, л" in HEADERS
     assert HEADERS[-1] == "Задание"
@@ -83,8 +84,9 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert "Бункера" not in HEADERS
     paths = [row["values"][4] for row in agri if row["task_id"] == 481381]
     assert paths == [18.76, 11.33, 28.83, 0.0, 14.46]
-    assert all(row["values"][6] == 0 for row in rows)
+    assert {row["values"][6] for row in agri if row["task_id"] == 481381} == {10.5}
     assert transport[0]["values"][2] == "Р628ВЕ"
+    assert transport[0]["values"][6] == 249.22
     assert transport[0]["values"][3] == "Транспорт"
     assert transport[0]["values"][5] == 324.39
 

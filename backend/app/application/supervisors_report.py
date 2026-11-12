@@ -3,7 +3,7 @@
 Строка — поле задания. Путь в рабочей области берётся из
 machine_task_field_mapping_items.work_distance, путь за задание — из
 machine_tasks.total_distance. Тип работ — имя группы work_type_groups.
-Колонка «Общий расход топлива, л» есть в файле, значение в каждой строке — 0.
+«Общий расход топлива, л» — fuel_consumption задания целиком и повторяется в каждой строке его полей.
 Последняя колонка — ссылка на карточку задания в Cropwise.
 """
 from __future__ import annotations
@@ -139,6 +139,7 @@ def assemble_rows(
         kind = str(machine.get("machine_type") or "").strip().lower() or "прочие"
         group_name = groups.get(type_group.get(_int(task.get("work_type_id")), 0), "")
         task_km = _km(task.get("total_distance"))
+        fuel_l = _liters(task.get("fuel_consumption"))
         task_url = _TASK_URL.format(machine_id=machine_id, task_id=tid) if machine_id else ""
         pieces = fields_by_task.get(tid) or [None]
         for piece in pieces:
@@ -156,7 +157,7 @@ def assemble_rows(
                         group_name,
                         area_km,
                         task_km,
-                        0,
+                        fuel_l,
                         task_url,
                     ),
                 }
@@ -227,6 +228,13 @@ def _km(meters: Any) -> float:
     except (TypeError, ValueError):
         value = 0.0
     return round(value / 1000, 2)
+
+
+def _liters(value: Any) -> float:
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _overlaps(task: dict, start: datetime, end: datetime) -> bool:
