@@ -11,6 +11,8 @@ from app.application.field_harvest_report import (
     FieldHarvestError,
     assemble,
     available_field_ids,
+    field_firm,
+    parse_firms,
     parse_year,
     sown_hectares,
     variety_summary,
@@ -192,3 +194,23 @@ def test_year_must_be_a_season():
         assert "2000" in str(exc)
     else:
         raise AssertionError("ожидалась ошибка года")
+
+
+def test_laishevskaya_belongs_to_chistopol_and_ravines_do_not():
+    assert field_firm({"field_group_id": 11}) == "АФ Чистопольская"
+    assert field_firm({"field_group_id": 42}) is None
+    rows = assemble(
+        [
+            {"id": 1, "name": "ЛА-01-20 (2)", "tillable_area": 33.86, "field_group_id": 11},
+            {"id": 2, "name": "АФ2-03-21/1", "tillable_area": 21.69, "field_group_id": 42},
+            {"id": 3, "name": "АР-06-07", "tillable_area": 361, "field_group_id": 3},
+        ],
+        [
+            {"field_id": 1, "crop_id": 74, "variety": "сорт"},
+            {"field_id": 2, "crop_id": 74, "variety": "овраг"},
+            {"field_id": 3, "crop_id": 74, "variety": "СИ ротанго"},
+        ],
+        CROPS,
+        firms=parse_firms(["АФ Чистопольская"]),
+    )
+    assert [row["field"] for row in rows] == ["ЛА-01-20 (2)"]

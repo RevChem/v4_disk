@@ -17,12 +17,13 @@ router = APIRouter(prefix="/field-harvest", tags=["field-harvest"])
 
 class FieldHarvestIn(BaseModel):
     year: int
+    firms: list[str]
 
 
 @router.post("/excel")
 def post_excel(body: FieldHarvestIn, _: User = Depends(require_developer_access)) -> Response:
     try:
-        payload, filename = build_excel(body.year)
+        payload, filename = build_excel(body.year, body.firms)
     except FieldHarvestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:

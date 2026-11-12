@@ -1779,11 +1779,11 @@ export async function fetchSupervisorsWorkGroups() {
   }
 }
 
-export async function downloadFieldHarvest(year) {
+export async function downloadFieldHarvest(year, firms) {
   try {
     const res = await api.post(
       "/field-harvest/excel",
-      { year },
+      { year, firms },
       { responseType: "blob", timeout: 3_600_000 }
     );
     const blob = res.data;

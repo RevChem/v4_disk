@@ -57,10 +57,60 @@ SOWING_WORK_TYPE_IDS = (
     68, 148, 172,
 )
 SOWN_STATUSES = frozenset({"done", "in_progress"})
+# field_groups.id → агрофирма. ООО «Лаишевская» (11) входит в АФ Чистопольская.
+# «АФЧ Овраги/неудобия» в список не входит.
+FIRM_ORDER = (
+    "АФ Чистопольская",
+    "АгроРаздолье",
+    "Аксу-Агро",
+    "Актай",
+    "Дрожжаное Рассвет Агро",
+    "Лениногорская Птицефабрика",
+    "НурлатАгро",
+)
+GROUP_TO_FIRM: dict[int, str] = {
+    2: "АФ Чистопольская",
+    4: "АФ Чистопольская",
+    12: "АФ Чистопольская",
+    11: "АФ Чистопольская",
+    3: "АгроРаздолье",
+    5: "АгроРаздолье",
+    6: "Аксу-Агро",
+    8: "Аксу-Агро",
+    9: "Актай",
+    7: "Дрожжаное Рассвет Агро",
+    10: "Дрожжаное Рассвет Агро",
+    17: "Лениногорская Птицефабрика",
+    18: "НурлатАгро",
+    30: "НурлатАгро",
+    27: "НурлатАгро",
+}
 
 
 class FieldHarvestError(Exception):
     pass
+
+
+def parse_firms(firms: list[str] | None) -> set[str] | None:
+    """None — без фильтра. Иначе только известные агрофирмы, хотя бы одна."""
+    if firms is None:
+        return None
+    chosen: list[str] = []
+    for name in firms:
+        label = str(name or "").strip()
+        if not label:
+            continue
+        if label not in FIRM_ORDER:
+            raise FieldHarvestError(f"Неизвестная агрофирма: {label}.")
+        if label not in chosen:
+            chosen.append(label)
+    if not chosen:
+        raise FieldHarvestError("Выберите хотя бы одну агрофирму.")
+    return set(chosen)
+
+
+def field_firm(field: dict) -> str | None:
+    return GROUP_TO_FIRM.get(_int(field.get("field_group_id")))
 
 
 def parse_year(year: int) -> int:
@@ -117,6 +167,7 @@ def assemble(
     crops: list[dict] | None = None,
     available_ids: set[int] | None = None,
     sown_by_field: dict[int, float] | None = None,
+    firms: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Одна строка на поле сезона с культурой, сортом или весом."""
     crop_names = _crop_names(crops or [])
@@ -127,6 +178,8 @@ def assemble(
         if not fid or _archived(field):
             continue
         if available_ids is not None and fid not in available_ids:
+            continue
+        if firms is not None and field_firm(field) not in firms:
             continue
         by_id[fid] = field
 
@@ -218,8 +271,9 @@ def variety_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summary
 
 
-def build_excel(year: int) -> tuple[bytes, str]:
+def build_excel(year: int, firms: list[str] | None = None) -> tuple[bytes, str]:
     season = parse_year(year)
+    chosen = parse_firms(firms)
     with _client() as client:
         fields = _pages(client, "fields")
         history = _pages(client, "history_items", {"year": season})
@@ -232,6 +286,7 @@ def build_excel(year: int) -> tuple[bytes, str]:
         crops,
         available_field_ids(inventory, season),
         sown_hectares(operations),
+        chosen,
     )
     payload = workbook(rows, variety_summary(rows))
     return payload, f"Валовый_сбор_{season}.xlsx"

@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import {
   Alert,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
+  FormGroup,
   Stack,
   TextField,
   Typography,
@@ -14,16 +17,34 @@ import {
 
 import { downloadFieldHarvest } from "../api";
 
+const FIRMS = [
+  "АФ Чистопольская",
+  "АгроРаздолье",
+  "Аксу-Агро",
+  "Актай",
+  "Дрожжаное Рассвет Агро",
+  "Лениногорская Птицефабрика",
+  "НурлатАгро",
+];
+
 export default function FieldHarvestDialog({ open, onClose }) {
   const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [firms, setFirms] = useState(FIRMS);
   const [error, setError] = useState("");
   const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setYear(String(new Date().getFullYear()));
+    setFirms(FIRMS);
     setError("");
   }, [open]);
+
+  function toggleFirm(name) {
+    setFirms((current) =>
+      current.includes(name) ? current.filter((item) => item !== name) : [...current, name]
+    );
+  }
 
   async function submit() {
     const season = Number(year);
@@ -31,10 +52,14 @@ export default function FieldHarvestDialog({ open, onClose }) {
       setError("Укажите год сезона от 2000 до 2100.");
       return;
     }
+    if (!firms.length) {
+      setError("Выберите хотя бы одну агрофирму.");
+      return;
+    }
     setGenerating(true);
     setError("");
     try {
-      await downloadFieldHarvest(season);
+      await downloadFieldHarvest(season, firms);
       onClose?.();
     } catch (err) {
       setError(err?.message || "Не удалось сформировать отчёт.");
@@ -50,7 +75,7 @@ export default function FieldHarvestDialog({ open, onClose }) {
         if (!generating) onClose?.();
       }}
       fullWidth
-      maxWidth="xs"
+      maxWidth="sm"
     >
       <DialogTitle>Валовый сбор</DialogTitle>
       <DialogContent>
@@ -70,6 +95,24 @@ export default function FieldHarvestDialog({ open, onClose }) {
             disabled={generating}
             inputProps={{ min: 2000, max: 2100 }}
           />
+          <FormGroup>
+            <Typography variant="body2" sx={{ mb: 0.5 }}>
+              Агрофирмы
+            </Typography>
+            {FIRMS.map((name) => (
+              <FormControlLabel
+                key={name}
+                control={
+                  <Checkbox
+                    checked={firms.includes(name)}
+                    onChange={() => toggleFirm(name)}
+                    disabled={generating}
+                  />
+                }
+                label={name}
+              />
+            ))}
+          </FormGroup>
         </Stack>
       </DialogContent>
       <DialogActions>
