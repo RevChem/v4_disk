@@ -76,7 +76,9 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert john["values"][3] == "Обработка почвы"
     assert john["values"][5] == 75.81
     assert john["values"][6] == 0
-    assert HEADERS[-1] == "Общий расход топлива, л"
+    assert john["values"][7] == "https://operations.cropwise.com/machines/1/tasks/480479"
+    assert "Общий расход топлива, л" in HEADERS
+    assert HEADERS[-1] == "Задание"
     assert "Внесение" not in " ".join(HEADERS)
     assert "Бункера" not in HEADERS
     paths = [row["values"][4] for row in agri if row["task_id"] == 481381]
@@ -89,6 +91,13 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     book = load_workbook(BytesIO(_workbook(rows)))
     assert book.sheetnames[:2] == ["agri", "transport"]
     assert book["agri"]["C2"].value == "7449АЕ" or book["agri"]["C2"].value == "7661АК"
+    linked = {
+        cell.hyperlink.target
+        for row in book["agri"].iter_rows(min_row=2, min_col=8, max_col=8)
+        for cell in row
+        if cell.hyperlink is not None
+    }
+    assert "https://operations.cropwise.com/machines/1/tasks/480479" in linked
 
 
 def test_period_rejects_inverted_and_too_long():

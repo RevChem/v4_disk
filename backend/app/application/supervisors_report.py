@@ -4,6 +4,7 @@
 machine_task_field_mapping_items.work_distance, путь за задание — из
 machine_tasks.total_distance. Тип работ — имя группы work_type_groups.
 Колонка «Общий расход топлива, л» есть в файле, значение в каждой строке — 0.
+Последняя колонка — ссылка на карточку задания в Cropwise.
 """
 from __future__ import annotations
 
@@ -32,7 +33,11 @@ HEADERS = (
     "Пройденный путь в рабочей области, км",
     "Пройденный путь за время задания, км",
     "Общий расход топлива, л",
+    "Задание",
 )
+
+_TASK_URL = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_id}"
+_LINK_FONT = Font(color="0563C1", underline="single")
 
 _SHEET_ORDER = ("agri", "transport")
 
@@ -129,10 +134,12 @@ def assemble_rows(
         tid = _int(task.get("id"))
         if not tid:
             continue
-        machine = machines.get(_int(task.get("machine_id"))) or {}
+        machine_id = _int(task.get("machine_id"))
+        machine = machines.get(machine_id) or {}
         kind = str(machine.get("machine_type") or "").strip().lower() or "прочие"
         group_name = groups.get(type_group.get(_int(task.get("work_type_id")), 0), "")
         task_km = _km(task.get("total_distance"))
+        task_url = _TASK_URL.format(machine_id=machine_id, task_id=tid) if machine_id else ""
         pieces = fields_by_task.get(tid) or [None]
         for piece in pieces:
             area_km = _km(piece.get("work_distance")) if piece else 0.0
@@ -150,6 +157,7 @@ def assemble_rows(
                         area_km,
                         task_km,
                         0,
+                        task_url,
                     ),
                 }
             )
@@ -175,14 +183,25 @@ def _workbook(rows: list[dict[str, Any]]) -> bytes:
         for cell in sheet[1]:
             cell.font = header_font
             cell.alignment = Alignment(wrap_text=True, vertical="center")
+        excel_row = 2
+        link_col = len(HEADERS)
         for row in rows:
-            if row["sheet"] == name:
-                sheet.append(list(row["values"]))
+            if row["sheet"] != name:
+                continue
+            values = list(row["values"])
+            url = values[-1] if isinstance(values[-1], str) else ""
+            values[-1] = row["task_id"] if url else ""
+            sheet.append(values)
+            if url:
+                cell = sheet.cell(excel_row, link_col)
+                cell.hyperlink = url
+                cell.font = _LINK_FONT
+            excel_row += 1
         last_col = get_column_letter(len(HEADERS))
         sheet.auto_filter.ref = f"A1:{last_col}{max(sheet.max_row, 1)}"
         sheet.freeze_panes = "A2"
         sheet.row_dimensions[1].height = 32
-        for index, width in enumerate((12, 62, 16, 24, 22, 22, 22), start=1):
+        for index, width in enumerate((12, 62, 16, 24, 22, 22, 22, 14), start=1):
             sheet.column_dimensions[get_column_letter(index)].width = width
     buffer = BytesIO()
     book.save(buffer)
