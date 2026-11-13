@@ -24,6 +24,7 @@ import {
   toggleSummaryCommentFuture
 } from "../api";
 import { parsePdfCellsFromUrl } from "../utils/pdfCellParser";
+import { findCommentForCell } from "../utils/commentCellMatch";
 
 export function clampCommentNorm(v) {
   const n = Number(v);
@@ -86,9 +87,7 @@ export default function SummaryCommentEditorDialog({
     [items, summaryId]
   );
 
-  const selectedCellComment = selectedCell
-    ? commentRows.find((row) => String(row.cell_key) === String(selectedCell.cellKey))
-    : null;
+  const selectedCellComment = findCommentForCell(selectedCell, commentRows);
 
   const loadEditor = useCallback(
     async (summaryIdValue, { keepMessages = false } = {}) => {
@@ -186,7 +185,7 @@ export default function SummaryCommentEditorDialog({
 
   function onCellClick(cell) {
     setSelectedCell(cell);
-    const existing = commentRows.find((row) => String(row.cell_key) === String(cell.cellKey));
+    const existing = findCommentForCell(cell, commentRows);
     setInputText(existing?.comment || "");
     setDraftAnchorY(null);
     setDragPreview(null);
@@ -419,9 +418,7 @@ export default function SummaryCommentEditorDialog({
     if (saving || !selectedCell) return;
     const overlayEl = pageOverlayRefs.current[pageNum];
     if (!overlayEl) return;
-    const rowEditing = commentRows.find(
-      (r) => String(r.cell_key) === String(selectedCell.cellKey)
-    );
+    const rowEditing = findCommentForCell(selectedCell, commentRows);
     const autoY = defaultCommentAnchorYForCell(selectedCell, pdfPages);
     const initialAnchor =
       typeof draftAnchorY === "number" && Number.isFinite(draftAnchorY)
@@ -562,9 +559,7 @@ export default function SummaryCommentEditorDialog({
                       <Box sx={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
                         {page.cells.map((cell) => {
                           const selected = selectedCell?.cellKey === cell.cellKey;
-                          const existing = commentRows.find(
-                            (row) => String(row.cell_key) === String(cell.cellKey)
-                          );
+                          const existing = findCommentForCell(cell, commentRows);
                           return (
                             <Box
                               key={cell.cellKey}
@@ -597,8 +592,8 @@ export default function SummaryCommentEditorDialog({
                           .filter((crow) => Number(crow.page) === Number(page.page))
                           .map((crow) => {
                             const editingThisCell =
-                              Boolean(selectedCell) &&
-                              String(crow.cell_key) === String(selectedCell.cellKey);
+                              Boolean(selectedCellComment) &&
+                              String(crow.id) === String(selectedCellComment.id);
                             const live =
                               dragPreview && String(dragPreview.id) === String(crow.id)
                                 ? dragPreview
@@ -689,9 +684,7 @@ export default function SummaryCommentEditorDialog({
                             }}
                           >
                             {(() => {
-                              const rowEditing = commentRows.find(
-                                (r) => String(r.cell_key) === String(selectedCell.cellKey)
-                              );
+                              const rowEditing = findCommentForCell(selectedCell, commentRows);
                               const autoY = defaultCommentAnchorYForCell(
                                 selectedCell,
                                 pdfPages

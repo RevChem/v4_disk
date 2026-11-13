@@ -26,12 +26,15 @@ import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
 import ZoomInRoundedIcon from "@mui/icons-material/ZoomInRounded";
 import ZoomOutRoundedIcon from "@mui/icons-material/ZoomOutRounded";
 import {
+  deleteSummaryComment,
   fetchSummaryCellEdits,
+  fetchSummaryComments,
   getPreviewUrl,
   saveSummaryCellEditsBatch,
   summaryIsExcel
 } from "../api";
 import { parsePdfCellsFromUrl } from "../utils/pdfCellParser";
+import { commentsPrintedInCell } from "../utils/commentCellMatch";
 import {
   CHANGED_TINT,
   applyDraftValue,
@@ -45,6 +48,7 @@ import {
   mergeEditRows,
   originalText,
   readingNeighbor,
+  revertSavedEdit,
   stepZoom,
   verticalNeighbor
 } from "../utils/cellEditDraft";
@@ -74,6 +78,7 @@ export default function DocumentCellEditorDialog({
   const [success, setSuccess] = useState("");
   const [pdfPages, setPdfPages] = useState([]);
   const [edits, setEdits] = useState([]);
+  const [comments, setComments] = useState([]);
   const [reportId, setReportId] = useState("");
   const [selectedCell, setSelectedCell] = useState(null);
   const [inputOpen, setInputOpen] = useState(false);
@@ -86,6 +91,7 @@ export default function DocumentCellEditorDialog({
   const [scroller, setScroller] = useState(null);
 
   const draftRef = useRef({});
+  const commentsRef = useRef([]);
   const zoomRef = useRef(1);
   const zoomAnchorRef = useRef(null);
   const loadTokenRef = useRef(0);
@@ -143,13 +149,17 @@ export default function DocumentCellEditorDialog({
           !baseUrl || baseUrl === "#"
             ? baseUrl
             : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}ts=${Date.now()}`;
-        const [serverState, pages] = await Promise.all([
+        const [serverState, commentState, pages] = await Promise.all([
           fetchSummaryCellEdits(summaryItem.id),
+          fetchSummaryComments(summaryItem.id).catch(() => ({ comments: [] })),
           parsePdfCellsFromUrl(previewUrl, { imageScale: IMAGE_SCALE })
         ]);
         if (isStale()) return false;
         setEdits(Array.isArray(serverState?.edits) ? serverState.edits : []);
-        setReportId(String(serverState?.report_id || ""));
+        const nextComments = Array.isArray(commentState?.comments) ? commentState.comments : [];
+        commentsRef.current = nextComments;
+        setComments(nextComments);
+        setReportId(String(serverState?.report_id || commentState?.report_id || ""));
         setPdfPages(Array.isArray(pages) ? pages : []);
         return true;
       } catch (e) {
@@ -160,6 +170,8 @@ export default function DocumentCellEditorDialog({
           if (!silent) {
             setPdfPages([]);
             setEdits([]);
+            commentsRef.current = [];
+            setComments([]);
           }
         }
         return false;
@@ -304,7 +316,13 @@ export default function DocumentCellEditorDialog({
     const cell = selectedCell;
     const text = String(replacementText || "").trim();
     if (!text) {
-      setError("Значение не может быть пустым.");
+      const targets = commentsPrintedInCell(cell, commentsRef.current);
+      if (targets.length) {
+        closeEdit();
+        void deleteComments(targets.map((row) => row.id));
+        return;
+      }
+      setError("Значение не может быть пустым. Комментарий удаляется корзиной в списке справа.");
       return;
     }
     updateDraft((prev) => applyDraftValue(prev, edits, cell, text));
@@ -354,11 +372,55 @@ export default function DocumentCellEditorDialog({
   /** Отменить уже сохранённую правку: в черновик ложится исходное значение, на сервере правка
    * удалится при «Сохранить правки». */
   function cancelSavedEdit(row) {
-    const cell = findCellForEdit(pdfPages, row.edit);
-    if (!cell) return;
-    updateDraft((prev) => applyDraftValue(prev, edits, cell, row.edit.cell_text));
+    const edit = row?.edit;
+    if (!edit?.id) return;
+    const cell = findCellForEdit(pdfPages, edit);
+    updateDraft((prev) => revertSavedEdit(prev, edit, cell));
     setError("");
     setSuccess("");
+  }
+
+  /** Удалить комментарий, напечатанный на листе. Правка ячейки его не стирает:
+   * после сохранения слой комментариев рисуется поверх заново. */
+  async function deleteComments(commentIds) {
+    const ids = [...new Set((commentIds || []).map((id) => String(id || "")).filter(Boolean))];
+    if (!summaryItem?.id || !ids.length || saving) return;
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      let applyError = "";
+      let removed = 0;
+      for (const commentId of ids) {
+        try {
+          const result = await deleteSummaryComment({
+            summaryId: Number(summaryItem.id),
+            commentId
+          });
+          removed += 1;
+          if (result?.apply_error) applyError = String(result.apply_error);
+        } catch (e) {
+          // Одинаковые приписки на странице снимаются одним запросом.
+          if (e?.response?.status === 404 && removed > 0) continue;
+          throw e;
+        }
+      }
+      const reloaded = await loadEditor(true);
+      if (applyError) {
+        setError(`Комментарий снят, но PDF не пересобран: ${applyError}`);
+      } else {
+        setSuccess(
+          reloaded
+            ? "Комментарий удалён, PDF обновлён."
+            : "Комментарий удалён, но превью не обновилось — нажмите «Обновить»."
+        );
+      }
+      onSaved?.();
+    } catch (e) {
+      setError(String(e?.response?.data?.detail || e?.message || "Не удалось удалить комментарий."));
+    } finally {
+      setSaving(false);
+    }
   }
 
   function discardAll() {
@@ -785,6 +847,49 @@ export default function DocumentCellEditorDialog({
                 t.palette.mode === "light" ? t.palette.grey[50] : "rgba(255,255,255,0.03)"
             }}
           >
+            {comments.length ? (
+              <Box sx={{ mb: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Typography variant="subtitle2">Комментарии</Typography>
+                  <Chip size="small" label={comments.length} variant="outlined" />
+                </Stack>
+                <List dense disablePadding>
+                  {comments.map((row) => (
+                    <ListItem
+                      key={row.id}
+                      disableGutters
+                      secondaryAction={
+                        <Tooltip title="Удалить комментарий">
+                          <span>
+                            <IconButton
+                              edge="end"
+                              size="small"
+                              disabled={saving}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void deleteComments([row.id]);
+                              }}
+                              aria-label="Удалить комментарий"
+                            >
+                              <DeleteOutlineRoundedIcon fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                      }
+                      sx={{ alignItems: "flex-start", pr: 6 }}
+                    >
+                      <ListItemText
+                        primary={`Стр. ${row.page}: ${row.comment}`}
+                        secondary={row.cell_text || row.cell_key}
+                        primaryTypographyProps={{ variant: "body2", sx: { overflowWrap: "anywhere" } }}
+                        secondaryTypographyProps={{ variant: "caption" }}
+                        sx={{ minWidth: 0, mr: 0.5 }}
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </Box>
+            ) : null}
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap">
               <Typography variant="subtitle2">Правки</Typography>
               <Chip size="small" label={rows.length} variant="outlined" />
@@ -812,7 +917,10 @@ export default function DocumentCellEditorDialog({
                                 edge="end"
                                 size="small"
                                 disabled={saving}
-                                onClick={() => cancelSavedEdit(row)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  cancelSavedEdit(row);
+                                }}
                                 aria-label="Отменить правку"
                               >
                                 <DeleteOutlineRoundedIcon fontSize="small" />
@@ -826,7 +934,10 @@ export default function DocumentCellEditorDialog({
                                 edge="end"
                                 size="small"
                                 disabled={saving}
-                                onClick={() => discardDraftEntry(row.draftKey)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  discardDraftEntry(row.draftKey);
+                                }}
                                 aria-label="Сбросить изменение"
                               >
                                 <UndoRoundedIcon fontSize="small" />
@@ -835,21 +946,24 @@ export default function DocumentCellEditorDialog({
                           </Tooltip>
                         )
                       }
-                      sx={{ alignItems: "flex-start", pr: 5 }}
+                      sx={{ alignItems: "flex-start", pr: 6 }}
                     >
                       <ListItemText
                         primary={`Стр. ${row.page}: ${row.from || "—"} → ${row.to}`}
                         secondary={STATUS_LABEL[row.status]}
                         primaryTypographyProps={{
                           variant: "body2",
-                          sx: row.status === "revert" ? { textDecoration: "line-through" } : undefined
+                          sx: {
+                            overflowWrap: "anywhere",
+                            ...(row.status === "revert" ? { textDecoration: "line-through" } : null)
+                          }
                         }}
                         secondaryTypographyProps={{
                           variant: "caption",
                           color: unsaved ? "warning.main" : "text.secondary"
                         }}
                         onClick={() => openEditFromRow(row)}
-                        sx={{ cursor: "pointer", mr: 1 }}
+                        sx={{ cursor: "pointer", mr: 0.5, minWidth: 0 }}
                       />
                     </ListItem>
                   );

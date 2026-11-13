@@ -338,14 +338,40 @@ def delete_summary_comment(
     if not isinstance(bucket, dict):
         return ([], False)
     comments = list_summary_comments(store, summary_id)
-    kept = [row for row in comments if str(row.get("id", "")) != str(comment_id)]
-    removed = [row for row in comments if str(row.get("id", "")) == str(comment_id)]
+    removed_ids = {str(comment_id)}
+    seeds = [row for row in comments if str(row.get("id", "")) == str(comment_id)]
+    # Та же приписка, привязанная к другому ключу ячейки (цифра сдвинулась): на листе
+    # это один комментарий. Иначе после удаления на странице остаётся вторая копия.
+    for seed in seeds:
+        text = str(seed.get("comment") or "").strip()
+        page = _int_or_default(seed.get("page"), 1)
+        if not text:
+            continue
+        for row in comments:
+            if (
+                str(row.get("comment") or "").strip() == text
+                and _int_or_default(row.get("page"), 1) == page
+            ):
+                removed_ids.add(str(row.get("id", "")))
+    kept = [row for row in comments if str(row.get("id", "")) not in removed_ids]
+    removed = [row for row in comments if str(row.get("id", "")) in removed_ids]
     deleted = len(kept) != len(comments)
     bucket["comments"] = kept
-    # Комментарий «на будущее» удалён только в этой сводке: шаблон остаётся для других дат,
-    # но сюда повторно не подтягивается (иначе удаление отменялось бы при следующем открытии).
+    # Шаблон «на будущее» остаётся для других дат, но в эту сводку больше не возвращается.
+    # Иначе следующее открытие редактора сразу рисует комментарий заново.
+    report_id = str(bucket.get("report_id") or "")
+    future_rows = list_future_comments(store, report_id) if report_id else []
     for row in removed:
-        if row.get("apply_to_future"):
-            _suppress_future(bucket, str(row.get("cell_key", "")))
+        _suppress_future(bucket, str(row.get("cell_key", "")))
+        text = str(row.get("comment") or "").strip()
+        page = _int_or_default(row.get("page"), 1)
+        if not text:
+            continue
+        for future_row in future_rows:
+            if (
+                str(future_row.get("comment") or "").strip() == text
+                and _int_or_default(future_row.get("page"), 1) == page
+            ):
+                _suppress_future(bucket, str(future_row.get("cell_key", "")))
     return (kept, deleted)
 

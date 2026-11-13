@@ -121,6 +121,36 @@ export function draftCount(draft) {
 }
 
 /**
+ * Отменить сохранённую правку. Запись всегда привязана к её id.
+ * Поиск «какой это ячейки» здесь не используется: на плотной таблице (сводка 13)
+ * центр ячейки часто попадает в соседнюю правку, и отмена молча ничего не меняет.
+ */
+export function revertSavedEdit(draft, edit, cell) {
+  if (!edit?.id) return { ...(draft || {}) };
+  const key = String(cell?.cellKey || edit.cell_key || edit.id);
+  const next = { ...(draft || {}) };
+  for (const [draftKey, entry] of Object.entries(next)) {
+    if (entry?.editId && String(entry.editId) === String(edit.id)) delete next[draftKey];
+  }
+  next[key] = {
+    cell: {
+      cellKey: key,
+      cellText: String(edit.cell_text || ""),
+      page: Number(cell?.page ?? edit.page ?? 1),
+      leftPct: Number(cell?.leftPct ?? edit.left ?? 0),
+      topPct: Number(cell?.topPct ?? edit.top ?? 0),
+      widthPct: Number(cell?.widthPct ?? edit.width ?? 0.01),
+      heightPct: Number(cell?.heightPct ?? edit.height ?? 0.02),
+      fillColor: String(cell?.fillColor || edit.fill_color || ""),
+      textColor: String(cell?.textColor || edit.text_color || "")
+    },
+    replacement: String(edit.cell_text || ""),
+    editId: String(edit.id)
+  };
+  return next;
+}
+
+/**
  * Пакет для сохранения. Если в черновике для уже сохранённой правки стоит исходное
  * значение — это отмена правки, её нужно удалить, а не сохранять.
  */

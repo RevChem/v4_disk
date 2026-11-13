@@ -10,6 +10,7 @@ import {
   isCellChanged,
   mergeEditRows,
   readingNeighbor,
+  revertSavedEdit,
   stepZoom,
   verticalNeighbor
 } from "./cellEditDraft.js";
@@ -81,6 +82,40 @@ test("возврат к исходному значению превращает
   assert.deepEqual(payload.deleteIds, ["ed1"]);
   assert.deepEqual(payload.edits, []);
   assert.equal(isCellChanged(shown, savedEdit, draft[shown.cellKey]), false);
+});
+
+test("отмена правки удаляет именно её, даже если по месту находится соседняя", () => {
+  // Сводка 13: много нулей рядом. Центр ячейки попадает в более раннюю правку,
+  // у которой замена как раз равна исходному тексту удаляемой — черновик пропадал.
+  const editA = {
+    ...savedEdit,
+    id: "a",
+    cell_text: "100",
+    replacement: "0",
+    left: 0.1,
+    top: 0.1,
+    width: 0.2,
+    height: 0.05
+  };
+  const editB = {
+    ...savedEdit,
+    id: "b",
+    cell_key: "1:1:1:0",
+    cell_text: "0",
+    replacement: "примечание",
+    left: 0.12,
+    top: 0.11,
+    width: 0.08,
+    height: 0.02
+  };
+  const shown = cell("1:1:1:примечание", "примечание", 1, 0.12, 0.11, 0.08, 0.02);
+  assert.equal(draftCount(applyDraftValue({}, [editA, editB], shown, "0")), 0);
+  const draft = revertSavedEdit({}, editB, shown);
+  const payload = buildBatchPayload(draft, [editA, editB]);
+  assert.deepEqual(payload.deleteIds, ["b"]);
+  assert.deepEqual(payload.edits, []);
+  const rows = mergeEditRows([editA, editB], draft);
+  assert.ok(rows.some((row) => row.status === "revert" && row.edit.id === "b"));
 });
 
 test("значение, равное сохранённому, не создаёт черновик", () => {
