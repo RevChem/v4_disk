@@ -1,11 +1,10 @@
-import { Box, Typography } from "@mui/material";
+import { Box, Chip, Stack, Typography } from "@mui/material";
 
 import PageModalDialog from "./PageModalDialog";
 
 const REPORTS = [
   {
     id: "fuel",
-    tone: "amber",
     mark: "Топливо",
     title: "Отсутствие данных по топливу",
     description:
@@ -13,7 +12,6 @@ const REPORTS = [
   },
   {
     id: "harvest",
-    tone: "green",
     mark: "Урожай",
     title: "Валовый сбор",
     description:
@@ -24,22 +22,35 @@ const REPORTS = [
 export default function ExtraReportsDialog({ open, onClose, onOpen }) {
   return (
     <PageModalDialog open={open} onClose={onClose} title="Доп. отчеты">
-      <Box className="extra-reports-grid">
+      <Box className="schedule-grid">
         {REPORTS.map((item) => (
           <Box
             key={item.id}
             component="button"
             type="button"
-            className={`extra-report-card extra-report-card--${item.tone}`}
+            className="schedule-card schedule-card--green-outline"
             onClick={() => onOpen?.(item.id)}
           >
-            <span className="extra-report-card__mark">{item.mark}</span>
-            <Typography variant="subtitle1" fontWeight={700} lineHeight={1.3}>
-              {item.title}
-            </Typography>
-            <Typography variant="body2" className="extra-report-card__text">
-              {item.description}
-            </Typography>
+            <Stack spacing={1.25} sx={{ height: "100%", textAlign: "left" }}>
+              <Chip size="small" variant="outlined" label={item.mark} sx={{ alignSelf: "flex-start" }} />
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="subtitle2" fontWeight={700} lineHeight={1.3} gutterBottom>
+                  {item.title}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    display: "-webkit-box",
+                    WebkitLineClamp: 4,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {item.description}
+                </Typography>
+              </Box>
+            </Stack>
           </Box>
         ))}
       </Box>

@@ -9,6 +9,7 @@ machine_tasks.total_distance. Тип работ — имя группы work_typ
 """
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -24,6 +25,9 @@ from app.config import settings
 TZ = timezone(timedelta(hours=3))
 PAGE_LIMIT = 1000
 PAGE_SIZE = 100
+# Как в сводках: machine_task_field_mapping_items пачками и параллельно.
+FMI_BATCH_SIZE = 300
+FMI_PARALLEL = 20
 # Один запрос к Cropwise может висеть на длинном периоде. 30 минут.
 CROPWISE_TIMEOUT = httpx.Timeout(1800.0, connect=30.0)
 
@@ -133,7 +137,7 @@ def build_excel(start: datetime, end: datetime, work_group_ids: list[int] | None
         machines = _by_ids(client, "machines", sorted(machine_ids))
         task_ids = [_int(task.get("id")) for task in tasks]
         task_ids = [item for item in task_ids if item]
-        fields = _by_task_ids(client, "machine_task_field_mapping_items", task_ids)
+        fields = _fields_for_tasks(task_ids)
     rows = assemble_rows(tasks, machines, type_group, groups, fields)
     return _workbook(rows), _filename(start_at, end_at)
 
@@ -371,11 +375,87 @@ def _tasks(client: httpx.Client, start: datetime, end: datetime, work_ids: list[
     return list(found.values())
 
 
-def _by_task_ids(client: httpx.Client, endpoint: str, task_ids: list[int]) -> list[dict]:
+def _fields_for_tasks(task_ids: list[int]) -> list[dict]:
+    unique = sorted({item for item in task_ids if item})
+    if not unique:
+        return []
+    return asyncio.run(_fields_for_tasks_async(unique))
+
+
+async def _fields_for_tasks_async(task_ids: list[int]) -> list[dict]:
+    from app.config import get_cropwise_token
+
+    token = (get_cropwise_token() or "").strip()
+    if not token:
+        raise SupervisorsReportError("Не задан токен Cropwise.")
+    base = (settings.cropwise_base_url or "https://operations.cropwise.com/api/v3").rstrip("/")
+    limits = httpx.Limits(max_connections=FMI_PARALLEL, max_keepalive_connections=FMI_PARALLEL)
+    async with httpx.AsyncClient(
+        base_url=base,
+        headers={"X-User-Api-Token": token},
+        timeout=CROPWISE_TIMEOUT,
+        limits=limits,
+    ) as client:
+        return await _fetch_fields(client, task_ids)
+
+
+async def _fetch_fields(client: httpx.AsyncClient, task_ids: list[int]) -> list[dict]:
+    """Поля заданий пачками по 300, до 20 запросов одновременно. Упавшая пачка повторяется по одному id."""
+    batches = [task_ids[index:index + FMI_BATCH_SIZE] for index in range(0, len(task_ids), FMI_BATCH_SIZE)]
+    semaphore = asyncio.Semaphore(FMI_PARALLEL)
+    batch_results = await asyncio.gather(
+        *[
+            _pages_async(client, "machine_task_field_mapping_items", {"machine_task_id": ",".join(str(item) for item in batch)}, semaphore)
+            for batch in batches
+        ],
+        return_exceptions=True,
+    )
     out: list[dict] = []
-    for index in range(0, len(task_ids), 80):
-        chunk = task_ids[index:index + 80]
-        out.extend(_pages(client, endpoint, {"machine_task_id": ",".join(str(item) for item in chunk)}))
+    failed: list[int] = []
+    for batch, result in zip(batches, batch_results):
+        if isinstance(result, BaseException):
+            failed.extend(batch)
+            continue
+        out.extend(result)
+    if not failed:
+        return out
+    retries = await asyncio.gather(
+        *[
+            _pages_async(client, "machine_task_field_mapping_items", {"machine_task_id": str(item)}, semaphore)
+            for item in failed
+        ],
+        return_exceptions=True,
+    )
+    for result in retries:
+        if isinstance(result, BaseException):
+            raise result
+        out.extend(result)
+    return out
+
+
+async def _pages_async(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    params: dict,
+    semaphore: asyncio.Semaphore,
+) -> list[dict]:
+    out: list[dict] = []
+    from_id = 0
+    async with semaphore:
+        while True:
+            response = await client.get(f"/{endpoint}", params={**params, "from_id": from_id, "limit": PAGE_LIMIT})
+            response.raise_for_status()
+            body = response.json()
+            chunk = body.get("data") or []
+            if not isinstance(chunk, list) or not chunk:
+                break
+            out.extend(item for item in chunk if isinstance(item, dict))
+            meta = ((body.get("meta") or {}).get("response") or {})
+            last = meta.get("last_record_id")
+            obtained = int(meta.get("obtained_records") or len(chunk))
+            if not last or obtained < PAGE_LIMIT:
+                break
+            from_id = int(last) + 1
     return out
 
 

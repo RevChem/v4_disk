@@ -1,14 +1,18 @@
 """Сборка отчёта по заданиям: госномер, пути, листы agri/transport."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from openpyxl import load_workbook
 from io import BytesIO
 
 from app.application.supervisors_report import (
+    FMI_BATCH_SIZE,
     HEADERS,
     assemble_rows,
     parse_period,
     SupervisorsReportError,
+    _fetch_fields,
     _workbook,
 )
 
@@ -115,6 +119,56 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
         if cell.hyperlink is not None
     }
     assert "https://operations.cropwise.com/machines/1/tasks/480479" in linked
+
+
+def test_fields_are_fetched_in_batches_of_300():
+    seen: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ids = request.url.params["machine_task_id"].split(",")
+        if int(request.url.params.get("from_id") or 0) > 0:
+            return httpx.Response(200, json={"data": [], "meta": {"response": {}}})
+        seen.append(ids)
+        data = [{"id": int(item), "machine_task_id": int(item), "work_distance": 1000} for item in ids]
+        return httpx.Response(
+            200,
+            json={"data": data, "meta": {"response": {"last_record_id": int(ids[-1]), "obtained_records": len(data)}}},
+        )
+
+    task_ids = list(range(1, FMI_BATCH_SIZE + 2))
+
+    async def run() -> list[dict]:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url="https://example.test") as client:
+            return await _fetch_fields(client, task_ids)
+
+    rows = asyncio.run(run())
+    assert [len(batch) for batch in seen] == [FMI_BATCH_SIZE, 1]
+    assert len(rows) == FMI_BATCH_SIZE + 1
+    assert {row["machine_task_id"] for row in rows} == set(task_ids)
+
+
+def test_failed_field_batch_is_retried_one_task_at_a_time():
+    def handler(request: httpx.Request) -> httpx.Response:
+        ids = request.url.params["machine_task_id"].split(",")
+        if len(ids) > 1:
+            return httpx.Response(500, json={"error": "batch"})
+        item = ids[0]
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"id": int(item), "machine_task_id": int(item), "work_distance": 500}],
+                "meta": {"response": {"obtained_records": 1}},
+            },
+        )
+
+    async def run() -> list[dict]:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url="https://example.test") as client:
+            return await _fetch_fields(client, [11, 12])
+
+    rows = asyncio.run(run())
+    assert sorted(row["machine_task_id"] for row in rows) == [11, 12]
 
 
 def test_period_rejects_inverted_and_accepts_any_length():
