@@ -105,9 +105,8 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert transport[0]["values"][7] == 249.22
     assert transport[0]["values"][4] == "Транспорт"
     assert transport[0]["values"][6] == 324.39
-    hired = [row for row in rows if row["sheet"] == "наемники"]
-    assert [row["task_id"] for row in hired] == [482999]
-    assert all(row["task_id"] != 482999 for row in agri + transport)
+    assert all(row["sheet"] != "наемники" for row in rows)
+    assert all(row["task_id"] != 482999 for row in rows)
 
     book = load_workbook(BytesIO(_workbook(rows)))
     assert book.sheetnames[:2] == ["agri", "transport"]

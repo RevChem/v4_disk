@@ -3,7 +3,7 @@
 Строка — поле задания. Путь в рабочей области берётся из
 machine_task_field_mapping_items.work_distance, путь за задание — из
 machine_tasks.total_distance. Тип работ — имя группы work_type_groups.
-Наёмная техника (machine_group_id == 7, как в сводках) собирается на лист «наемники».
+Наёмная техника (machine_group_id == 7, как в сводках) в отчёт не входит.
 «Общий расход топлива, л» — fuel_consumption задания целиком и повторяется в каждой строке его полей.
 Последняя колонка — ссылка на карточку задания в Cropwise.
 """
@@ -68,7 +68,7 @@ _MACHINE_SUBTYPES = {
 _TASK_URL = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_id}"
 _LINK_FONT = Font(color="0563C1", underline="single")
 
-_SHEET_ORDER = ("agri", "transport", "наемники")
+_SHEET_ORDER = ("agri", "transport")
 # plans.HIRED_GROUP_ID: в Cropwise наёмная техника — machine_group_id == 7.
 HIRED_GROUP_ID = 7
 
@@ -135,6 +135,7 @@ def build_excel(start: datetime, end: datetime, work_group_ids: list[int] | None
         machine_ids = {_int(task.get("machine_id")) for task in tasks}
         machine_ids.discard(0)
         machines = _by_ids(client, "machines", sorted(machine_ids))
+        tasks = [task for task in tasks if not _is_hired(machines.get(_int(task.get("machine_id"))))]
         task_ids = [_int(task.get("id")) for task in tasks]
         task_ids = [item for item in task_ids if item]
         fields = _fields_for_tasks(task_ids)
@@ -166,9 +167,8 @@ def assemble_rows(
         machine_id = _int(task.get("machine_id"))
         machine = machines.get(machine_id) or {}
         if _is_hired(machine):
-            kind = "наемники"
-        else:
-            kind = str(machine.get("machine_type") or "").strip().lower() or "прочие"
+            continue
+        kind = str(machine.get("machine_type") or "").strip().lower() or "прочие"
         group_name = groups.get(type_group.get(_int(task.get("work_type_id")), 0), "")
         task_km = _km(task.get("total_distance"))
         fuel_l = _liters(task.get("fuel_consumption"))
