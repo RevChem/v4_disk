@@ -24,6 +24,8 @@ from app.config import settings
 TZ = timezone(timedelta(hours=3))
 PAGE_LIMIT = 1000
 PAGE_SIZE = 100
+# Один запрос к Cropwise может висеть на длинном периоде. 30 минут.
+CROPWISE_TIMEOUT = httpx.Timeout(1800.0, connect=30.0)
 
 HEADERS = (
     "№",
@@ -325,7 +327,7 @@ def _client() -> httpx.Client:
     return httpx.Client(
         base_url=base,
         headers={"X-User-Api-Token": token},
-        timeout=180,
+        timeout=CROPWISE_TIMEOUT,
     )
 
 

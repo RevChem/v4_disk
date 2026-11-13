@@ -717,6 +717,124 @@
   background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%) !important;
 }
 
+/* --- Доп. отчеты: цветные карточки --- */
+.extra-reports-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.extra-report-card {
+  appearance: none;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  padding: 18px 18px 16px;
+  min-height: 196px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.extra-report-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+}
+
+.extra-report-card__mark {
+  align-self: flex-start;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.extra-report-card__text {
+  color: inherit;
+  opacity: 0.82;
+  line-height: 1.45;
+}
+
+.extra-report-card--amber::before {
+  background: linear-gradient(180deg, #f59e0b, #ea580c);
+}
+
+.extra-report-card--amber .extra-report-card__mark {
+  background: rgba(245, 158, 11, 0.18);
+  color: #d97706;
+}
+
+.extra-report-card--green::before {
+  background: linear-gradient(180deg, #22c55e, #15803d);
+}
+
+.extra-report-card--green .extra-report-card__mark {
+  background: rgba(34, 197, 94, 0.18);
+  color: #16a34a;
+}
+
+.app-bg[data-disk-theme="light"] .extra-report-card--amber {
+  background: linear-gradient(160deg, rgba(255, 247, 237, 0.95), rgba(255, 255, 255, 0.92));
+  border-color: rgba(234, 88, 12, 0.22);
+  box-shadow: 0 10px 24px rgba(234, 88, 12, 0.08);
+}
+
+.app-bg[data-disk-theme="light"] .extra-report-card--green {
+  background: linear-gradient(160deg, rgba(240, 253, 244, 0.95), rgba(255, 255, 255, 0.92));
+  border-color: rgba(22, 163, 74, 0.22);
+  box-shadow: 0 10px 24px rgba(22, 163, 74, 0.08);
+}
+
+.app-bg[data-disk-theme="dark"] .extra-report-card--amber,
+.app-bg[data-disk-theme="green"] .extra-report-card--amber {
+  background: linear-gradient(160deg, rgba(245, 158, 11, 0.16), rgba(255, 255, 255, 0.04));
+  border-color: rgba(245, 158, 11, 0.35);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.app-bg[data-disk-theme="dark"] .extra-report-card--green,
+.app-bg[data-disk-theme="green"] .extra-report-card--green {
+  background: linear-gradient(160deg, rgba(34, 197, 94, 0.16), rgba(255, 255, 255, 0.04));
+  border-color: rgba(34, 197, 94, 0.32);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.app-bg[data-disk-theme="dark"] .extra-report-card--amber .extra-report-card__mark,
+.app-bg[data-disk-theme="green"] .extra-report-card--amber .extra-report-card__mark {
+  color: #fbbf24;
+}
+
+.app-bg[data-disk-theme="dark"] .extra-report-card--green .extra-report-card__mark,
+.app-bg[data-disk-theme="green"] .extra-report-card--green .extra-report-card__mark {
+  color: #4ade80;
+}
+
+.extra-report-card:hover {
+  transform: translateY(-3px);
+}
+
+.app-bg[data-disk-theme="light"] .extra-report-card--amber:hover {
+  box-shadow: 0 16px 32px rgba(234, 88, 12, 0.16);
+}
+
+.app-bg[data-disk-theme="light"] .extra-report-card--green:hover {
+  box-shadow: 0 16px 32px rgba(22, 163, 74, 0.16);
+}
+
+.app-bg[data-disk-theme="dark"] .extra-report-card:hover,
+.app-bg[data-disk-theme="green"] .extra-report-card:hover {
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hero-card,
   .summary-row {

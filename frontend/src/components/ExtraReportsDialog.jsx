@@ -5,43 +5,39 @@ import PageModalDialog from "./PageModalDialog";
 const REPORTS = [
   {
     id: "fuel",
+    tone: "amber",
+    mark: "Топливо",
     title: "Отсутствие данных по топливу",
     description:
-      "Задания машин за любой период: путь, расход топлива и ссылка на задание. Наёмники вынесены на отдельный лист.",
+      "Задания машин за выбранный период. По каждому полю — километры в работе и за всё задание, общий расход в литрах и ссылка на карточку. Нулевой расход остаётся в строке, наёмники собраны отдельно.",
   },
   {
     id: "harvest",
+    tone: "green",
+    mark: "Урожай",
     title: "Валовый сбор",
     description:
-      "По действующим полям сезона: культура, сорт, валовый сбор, урожайность, даты сева и уборки.",
+      "Действующие поля сезона: учётные гектары, культура, сорт и сколько реально посеяно. Дальше даты сева и уборки, валовый сбор, урожай в тоннах и урожайность с карточки поля. Архивные поля не входят.",
   },
 ];
 
 export default function ExtraReportsDialog({ open, onClose, onOpen }) {
   return (
     <PageModalDialog open={open} onClose={onClose} title="Доп. отчеты">
-      <Box className="schedule-grid">
+      <Box className="extra-reports-grid">
         {REPORTS.map((item) => (
           <Box
             key={item.id}
             component="button"
             type="button"
-            className="schedule-card"
+            className={`extra-report-card extra-report-card--${item.tone}`}
             onClick={() => onOpen?.(item.id)}
           >
-            <Typography variant="subtitle2" fontWeight={700} lineHeight={1.3} gutterBottom>
+            <span className="extra-report-card__mark">{item.mark}</span>
+            <Typography variant="subtitle1" fontWeight={700} lineHeight={1.3}>
               {item.title}
             </Typography>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                display: "-webkit-box",
-                WebkitLineClamp: 3,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-              }}
-            >
+            <Typography variant="body2" className="extra-report-card__text">
               {item.description}
             </Typography>
           </Box>
