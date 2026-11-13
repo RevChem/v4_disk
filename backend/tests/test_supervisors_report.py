@@ -40,6 +40,7 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
             "registration_number": "7661АК",
             "inventory_number": "00-010373",
             "machine_type": "agri",
+            "machine_subtype": "tractor",
         },
         2: {
             "name": "Трактор  CLAAS AXION 940 7449АЕ АФЧ0304",
@@ -52,6 +53,7 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
             "registration_number": "Р628ВЕ",
             "inventory_number": "00-005796",
             "machine_type": "transport",
+            "machine_subtype": "fuel_bowser",
         },
         7: {
             "name": "Наёмник",
@@ -78,25 +80,27 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     )
     agri = [row for row in rows if row["sheet"] == "agri"]
     transport = [row for row in rows if row["sheet"] == "transport"]
-    assert [row["values"][4] for row in agri if row["task_id"] == 480479] == [75.53]
+    assert [row["values"][5] for row in agri if row["task_id"] == 480479] == [75.53]
     john = next(row for row in agri if row["task_id"] == 480479)
     assert john["values"][1].endswith("7661АК / 00-010373")
     assert john["values"][2] == "7661АК"
-    assert john["values"][3] == "Обработка почвы"
-    assert john["values"][5] == 75.81
-    assert john["values"][6] == 1386.22
-    assert john["values"][7] == "https://operations.cropwise.com/machines/1/tasks/480479"
+    assert john["values"][3] == "Трактор"
+    assert john["values"][4] == "Обработка почвы"
+    assert john["values"][6] == 75.81
+    assert john["values"][7] == 1386.22
+    assert john["values"][8] == "https://operations.cropwise.com/machines/1/tasks/480479"
     assert "Общий расход топлива, л" in HEADERS
     assert HEADERS[-1] == "Задание"
     assert "Внесение" not in " ".join(HEADERS)
     assert "Бункера" not in HEADERS
-    paths = [row["values"][4] for row in agri if row["task_id"] == 481381]
+    paths = [row["values"][5] for row in agri if row["task_id"] == 481381]
     assert paths == [18.76, 11.33, 28.83, 0.0, 14.46]
-    assert {row["values"][6] for row in agri if row["task_id"] == 481381} == {10.5}
+    assert {row["values"][7] for row in agri if row["task_id"] == 481381} == {10.5}
     assert transport[0]["values"][2] == "Р628ВЕ"
-    assert transport[0]["values"][6] == 249.22
-    assert transport[0]["values"][3] == "Транспорт"
-    assert transport[0]["values"][5] == 324.39
+    assert transport[0]["values"][3] == "Топливозаправщик"
+    assert transport[0]["values"][7] == 249.22
+    assert transport[0]["values"][4] == "Транспорт"
+    assert transport[0]["values"][6] == 324.39
     hired = [row for row in rows if row["sheet"] == "наемники"]
     assert [row["task_id"] for row in hired] == [482999]
     assert all(row["task_id"] != 482999 for row in agri + transport)
@@ -106,14 +110,14 @@ def test_rows_match_checked_sample_and_split_by_machine_type():
     assert book["agri"]["C2"].value == "7449АЕ" or book["agri"]["C2"].value == "7661АК"
     linked = {
         cell.hyperlink.target
-        for row in book["agri"].iter_rows(min_row=2, min_col=8, max_col=8)
+        for row in book["agri"].iter_rows(min_row=2, min_col=9, max_col=9)
         for cell in row
         if cell.hyperlink is not None
     }
     assert "https://operations.cropwise.com/machines/1/tasks/480479" in linked
 
 
-def test_period_rejects_inverted_and_too_long():
+def test_period_rejects_inverted_and_accepts_any_length():
     start = datetime(2026, 11, 1, 6, 0, tzinfo=TZ)
     try:
         parse_period(start, start)
@@ -121,15 +125,6 @@ def test_period_rejects_inverted_and_too_long():
         assert "позже" in str(exc)
     else:
         raise AssertionError("ожидался отказ")
-    try:
-        parse_period(start, start + timedelta(days=94))
-    except SupervisorsReportError as exc:
-        assert "93" in str(exc)
-    else:
-        raise AssertionError("ожидался отказ")
-    parsed_start, parsed_end = parse_period(
-        datetime(2026, 11, 1, 6, 0),
-        datetime(2026, 11, 30, 5, 59),
-    )
-    assert parsed_start.tzinfo == TZ
-    assert parsed_end.hour == 5 and parsed_end.minute == 59
+    parsed_start, parsed_end = parse_period(start, start + timedelta(days=400))
+    assert parsed_start == start
+    assert parsed_end - parsed_start == timedelta(days=400)

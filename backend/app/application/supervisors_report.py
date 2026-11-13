@@ -24,18 +24,40 @@ from app.config import settings
 TZ = timezone(timedelta(hours=3))
 PAGE_LIMIT = 1000
 PAGE_SIZE = 100
-MAX_PERIOD = timedelta(days=93)
 
 HEADERS = (
     "№",
     "Машина",
     "Госномер",
+    "Тип машины",
     "Тип работ",
     "Пройденный путь в рабочей области, км",
     "Пройденный путь за время задания, км",
     "Общий расход топлива, л",
     "Задание",
 )
+
+# machine_type и machine_subtype из Cropwise Operations API.
+_MACHINE_TYPES = {
+    "agri": "Сельхозтехника",
+    "transport": "Транспорт",
+}
+_MACHINE_SUBTYPES = {
+    "lorrie": "Грузовик",
+    "tipper": "Самосвал",
+    "car": "Легковой автомобиль",
+    "fuel_bowser": "Топливозаправщик",
+    "harvester": "Комбайн",
+    "sprayer": "Опрыскиватель",
+    "tractor": "Трактор",
+    "buldozer": "Бульдозер",
+    "bulldozer": "Бульдозер",
+    "telehandler": "Телескопический погрузчик",
+    "maintenance": "Служебная",
+    "minibus": "Микроавтобус",
+    "truck_crane": "Автокран",
+    "other": "Другое",
+}
 
 _TASK_URL = "https://operations.cropwise.com/machines/{machine_id}/tasks/{task_id}"
 _LINK_FONT = Font(color="0563C1", underline="single")
@@ -54,8 +76,6 @@ def parse_period(start: datetime, end: datetime) -> tuple[datetime, datetime]:
     end_at = _as_moscow(end)
     if end_at <= start_at:
         raise SupervisorsReportError("Конец периода должен быть позже начала.")
-    if end_at - start_at > MAX_PERIOD:
-        raise SupervisorsReportError("Период длиннее 93 суток.")
     return start_at, end_at
 
 
@@ -160,6 +180,7 @@ def assemble_rows(
                         tid,
                         _machine_label(machine),
                         str(machine.get("registration_number") or "").strip(),
+                        _machine_kind_ru(machine),
                         group_name,
                         area_km,
                         task_km,
@@ -208,7 +229,7 @@ def _workbook(rows: list[dict[str, Any]]) -> bytes:
         sheet.auto_filter.ref = f"A1:{last_col}{max(sheet.max_row, 1)}"
         sheet.freeze_panes = "A2"
         sheet.row_dimensions[1].height = 32
-        for index, width in enumerate((12, 62, 16, 24, 22, 22, 22, 14), start=1):
+        for index, width in enumerate((12, 62, 16, 28, 24, 22, 22, 22, 14), start=1):
             sheet.column_dimensions[get_column_letter(index)].width = width
     buffer = BytesIO()
     book.save(buffer)
@@ -219,6 +240,15 @@ def _filename(start: datetime, end: datetime) -> str:
     left = start.strftime("%d.%m.%Y_%H-%M")
     right = end.strftime("%d.%m.%Y_%H-%M")
     return f"Отчет_{left}_{right}.xlsx"
+
+
+def _machine_kind_ru(machine: dict) -> str:
+    """Подтип машины по-русски. Если подтипа нет — тип agri/transport."""
+    subtype = str(machine.get("machine_subtype") or "").strip().lower()
+    if subtype:
+        return _MACHINE_SUBTYPES.get(subtype, subtype)
+    kind = str(machine.get("machine_type") or "").strip().lower()
+    return _MACHINE_TYPES.get(kind, kind)
 
 
 def _is_hired(machine: dict | None) -> bool:

@@ -116,8 +116,8 @@ export default function SupervisorsReportDialog({ open, onClose }) {
           {error && <Alert severity="error">{error}</Alert>}
           {groupsError && <Alert severity="warning">{groupsError}</Alert>}
           <Typography variant="body2" color="text.secondary">
-            Задания машин за выбранный интервал. Время московское. Файл делится на листы agri,
-            transport и наемники. Сбор за месяц может занять несколько минут.
+            Задания машин за любой выбранный интервал. Время московское. Файл делится на листы
+            agri, transport и наемники. Длинный период собирается дольше.
           </Typography>
           <TextField
             label="Начало"

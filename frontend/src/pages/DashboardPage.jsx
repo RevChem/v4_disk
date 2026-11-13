@@ -16,8 +16,6 @@ import {
   FormControlLabel,
   FormGroup,
   Grid,
-  Menu,
-  MenuItem,
   Stack,
   TextField,
   Typography,
@@ -46,6 +44,7 @@ import HarvestGrossDialog from "../components/HarvestGrossDialog";
 import Report27CustomDialog from "../components/Report27CustomDialog";
 import SupervisorsReportDialog from "../components/SupervisorsReportDialog";
 import FieldHarvestDialog from "../components/FieldHarvestDialog";
+import ExtraReportsDialog from "../components/ExtraReportsDialog";
 import Report2PeriodDialog from "../components/Report2PeriodDialog";
 import {
   buildHarvestGrossPayload,
@@ -145,7 +144,7 @@ export default function DashboardPage({
   const [report2PeriodError, setReport2PeriodError] = useState("");
   const [supervisorsReportOpen, setSupervisorsReportOpen] = useState(false);
   const [fieldHarvestOpen, setFieldHarvestOpen] = useState(false);
-  const [extraReportsAnchor, setExtraReportsAnchor] = useState(null);
+  const [extraReportsOpen, setExtraReportsOpen] = useState(false);
 
   useEffect(() => {
     if (!equipmentRequest) return;
@@ -745,39 +744,10 @@ export default function DashboardPage({
                       fullWidth
                       size="small"
                       sx={sidebarToolBtnSx}
-                      onClick={(event) => setExtraReportsAnchor(event.currentTarget)}
-                      endIcon={
-                        extraReportsAnchor ? (
-                          <ExpandLessRoundedIcon sx={{ fontSize: 18 }} />
-                        ) : (
-                          <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
-                        )
-                      }
+                      onClick={() => setExtraReportsOpen(true)}
                     >
                       Доп. отчеты
                     </Button>
-                    <Menu
-                      anchorEl={extraReportsAnchor}
-                      open={Boolean(extraReportsAnchor)}
-                      onClose={() => setExtraReportsAnchor(null)}
-                    >
-                      <MenuItem
-                        onClick={() => {
-                          setExtraReportsAnchor(null);
-                          setSupervisorsReportOpen(true);
-                        }}
-                      >
-                        Отсутствие данных по топливу
-                      </MenuItem>
-                      <MenuItem
-                        onClick={() => {
-                          setExtraReportsAnchor(null);
-                          setFieldHarvestOpen(true);
-                        }}
-                      >
-                        Валовый сбор
-                      </MenuItem>
-                    </Menu>
                   </>
                 )}
 
@@ -931,6 +901,15 @@ export default function DashboardPage({
         onFieldChange={updateHarvestGrossField}
         generating={enqueueing}
         onSubmit={() => void confirmHarvestGrossModal()}
+      />
+      <ExtraReportsDialog
+        open={extraReportsOpen && canProverka}
+        onClose={() => setExtraReportsOpen(false)}
+        onOpen={(id) => {
+          setExtraReportsOpen(false);
+          if (id === "fuel") setSupervisorsReportOpen(true);
+          if (id === "harvest") setFieldHarvestOpen(true);
+        }}
       />
       <SupervisorsReportDialog
         open={supervisorsReportOpen && canProverka}
